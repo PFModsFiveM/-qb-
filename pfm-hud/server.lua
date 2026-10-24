@@ -17,14 +17,26 @@ QBCore.Commands.Add('dev', 'Enable/Disable developer Mode', {}, false, function(
     TriggerClientEvent('qb-admin:client:ToggleDevmode', source)
 end, 'admin')
 
+-- pf-hud is the active HUD and handles these same two events itself (validated); with both started,
+-- every stress change was applied twice. pfm-hud only handles stress when pf-hud is not running.
+local function pfHudHandlesStress()
+    return GetResourceState('pf-hud') == 'started'
+end
+
 RegisterNetEvent('hud:server:GainStress', function(amount)
-    if Config.DisableStress then return end
+    if Config.DisableStress or pfHudHandlesStress() then return end
     local src = source
+    -- a whole gain of 1 to 10, as pf-hud allows (any number was accepted: a negative one cleared
+    -- stress, a missing one raised an error)
+    amount = math.floor(tonumber(amount) or 0)
+    if amount < 1 then return end
+    if amount > 10 then amount = 10 end
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return end
     local Job = Player.PlayerData.job.name
     local JobType = Player.PlayerData.job.type
     local newStress
-    if not Player or Config.WhitelistedJobs[JobType] or Config.WhitelistedJobs[Job] then return end
+    if Config.WhitelistedJobs[JobType] or Config.WhitelistedJobs[Job] then return end
     if not ResetStress then
         if not Player.PlayerData.metadata['stress'] then
             Player.PlayerData.metadata['stress'] = 0
@@ -43,7 +55,7 @@ RegisterNetEvent('hud:server:GainStress', function(amount)
 end)
 
 RegisterNetEvent('hud:server:RelieveStress', function(amount)
-    if Config.DisableStress then return end
+    if Config.DisableStress or pfHudHandlesStress() then return end
     local src = source
     if type(amount) ~= 'number' then return end
     amount = math.floor(amount)

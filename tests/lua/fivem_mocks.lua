@@ -124,7 +124,16 @@ function ExecuteCommand() end
 function WasEventCanceled() return false end
 
 -- ── events / threads ──────────────────────────────────────────────
-function RegisterNetEvent(name, fn) if fn then Mock.netHandlers[name] = fn end end
+-- Mock.netHandlers keeps the last handler per event (Mock.fireNet); Mock.netHandlerList keeps every
+-- handler, as FiveM runs all of them (Mock.fireNetAll), to catch two resources handling one event.
+Mock.netHandlerList = {}
+function RegisterNetEvent(name, fn)
+    if fn then
+        Mock.netHandlers[name] = fn
+        Mock.netHandlerList[name] = Mock.netHandlerList[name] or {}
+        table.insert(Mock.netHandlerList[name], fn)
+    end
+end
 RegisterServerEvent = RegisterNetEvent
 function AddEventHandler(name, fn) Mock.eventHandlers[name] = fn end
 function TriggerClientEvent(name, target, ...) Mock.clientEvents[#Mock.clientEvents + 1] = { name = name, target = target, args = { ... } } end
@@ -197,6 +206,17 @@ function Mock.callCallback(name, src, ...)
 end
 
 --- Invokes a registered net event as if `src` triggered it from a client.
+function Mock.fireNetAll(name, src, ...)
+    local list = Mock.netHandlerList[name]
+    assert(list and #list > 0, 'no net handler registered for ' .. name)
+    for _, handler in ipairs(list) do
+        source = src
+        local ok, err = pcall(handler, ...)
+        source = nil
+        if not ok then error(err, 2) end
+    end
+end
+
 function Mock.fireNet(name, src, ...)
     local handler = Mock.netHandlers[name]
     assert(handler, 'no net handler registered for ' .. name)
