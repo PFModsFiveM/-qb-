@@ -1427,3 +1427,26 @@ body {
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
 }
+
+/* ══ freshness (server-computed, display only) ══ */
+.fresh-pip {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(10, 11, 15, 0.7);
+    pointer-events: none;
+    z-index: 2;
+}
+.fresh-pip.fresh-fresh { background: var(--inv-good); }
+.fresh-pip.fresh-good { background: #b8d94a; }
+.fresh-pip.fresh-stale { background: var(--inv-warn); }
+.fresh-pip.fresh-spoiled { background: var(--inv-bad); box-shadow: 0 0 0 2px rgba(10, 11, 15, 0.7), 0 0 8px var(--inv-bad); }
+.ii-chip.fresh-chip i { margin-right: 4px; }
+.ii-chip.fresh-chip.fresh-fresh i { color: var(--inv-good); }
+.ii-chip.fresh-chip.fresh-good i { color: #b8d94a; }
+.ii-chip.fresh-chip.fresh-stale i { color: var(--inv-warn); }
+.ii-chip.fresh-chip.fresh-spoiled i { color: var(--inv-bad); }
+.ii-chip.fresh-chip { white-space: nowrap; }

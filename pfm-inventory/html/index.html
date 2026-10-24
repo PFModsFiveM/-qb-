@@ -50,6 +50,7 @@
                                 <div class="unique-corner" v-if="getItemInSlot(slot, 'player').unique"></div>
                                 <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'player').image" alt="" draggable="false" /></div>
                                 <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'player').amount }}</p></div>
+<div class="fresh-pip" v-if="freshOf(getItemInSlot(slot, 'player'))" :class="'fresh-' + freshOf(getItemInSlot(slot, 'player')).state" :title="freshOf(getItemInSlot(slot, 'player')).label + ' ' + freshOf(getItemInSlot(slot, 'player')).pct + '%'"></div>
                                 <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'player').label }}</p></div>
                                 <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'player'))">
                                     <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'player')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'player'))"></div>
@@ -128,6 +129,7 @@
                                     <div class="unique-corner" v-if="getItemInSlot(slot, 'player').unique"></div>
                                     <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'player').image" alt="" draggable="false" /></div>
                                     <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'player').amount }}</p></div>
+<div class="fresh-pip" v-if="freshOf(getItemInSlot(slot, 'player'))" :class="'fresh-' + freshOf(getItemInSlot(slot, 'player')).state" :title="freshOf(getItemInSlot(slot, 'player')).label + ' ' + freshOf(getItemInSlot(slot, 'player')).pct + '%'"></div>
                                     <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'player').label }}</p></div>
                                     <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'player'))">
                                         <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'player')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'player'))"></div>
@@ -158,6 +160,7 @@
                                         <div class="unique-corner" v-if="getItemInSlot(slot, 'backpack').unique"></div>
                                         <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'backpack').image" alt="" draggable="false" /></div>
                                         <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'backpack').amount }}</p></div>
+<div class="fresh-pip" v-if="freshOf(getItemInSlot(slot, 'backpack'))" :class="'fresh-' + freshOf(getItemInSlot(slot, 'backpack')).state" :title="freshOf(getItemInSlot(slot, 'backpack')).label + ' ' + freshOf(getItemInSlot(slot, 'backpack')).pct + '%'"></div>
                                         <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'backpack').label }}</p></div>
                                         <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'backpack'))">
                                             <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'backpack')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'backpack'))"></div>
@@ -193,6 +196,7 @@
                                 <div class="ii-meta">
                                     <span class="ii-chip"><i class="fas fa-weight-hanging"></i>{{ ((infoItem.weight * infoItem.amount) / 1000).toFixed(1) }}kg</span>
                                     <span class="ii-chip" v-if="hasQuality(infoItem)"><i class="fas fa-heart-pulse"></i>{{ qualityOf(infoItem) }}%</span>
+                                    <span class="ii-chip fresh-chip" v-if="freshOf(infoItem)" :class="'fresh-' + freshOf(infoItem).state"><i class="fas fa-leaf"></i>{{ freshOf(infoItem).label }} {{ freshOf(infoItem).pct }}%</span>
                                     <span class="ii-chip price" v-if="isShopInventory && infoItem.price"><i class="fas fa-tag"></i>${{ infoItem.price }} each</span>
                                     <span class="ii-chip price" v-if="isShopInventory && infoItem.price && transferAmount > 1"><i class="fas fa-cart-shopping"></i>${{ (infoItem.price * transferAmount).toLocaleString() }} for {{ transferAmount }}</span>
                                     <span class="ii-chip" v-for="(v, k) in infoMeta" :key="k">{{ k }}: {{ v }}</span>
@@ -232,6 +236,7 @@
                                     <div class="unique-corner" v-if="getItemInSlot(slot, 'other').unique"></div>
                                     <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'other').image" alt="" draggable="false" /></div>
                                     <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'other').amount }}</p></div>
+<div class="fresh-pip" v-if="freshOf(getItemInSlot(slot, 'other'))" :class="'fresh-' + freshOf(getItemInSlot(slot, 'other')).state" :title="freshOf(getItemInSlot(slot, 'other')).label + ' ' + freshOf(getItemInSlot(slot, 'other')).pct + '%'"></div>
                                     <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'other').label }}</p></div>
                                     <div v-if="isShopInventory" class="item-price"><p>${{ getItemInSlot(slot, 'other').price }}</p></div>
                                     <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'other'))">
@@ -252,6 +257,7 @@
                         <template v-if="getHotbarItemInSlot(slot)">
                             <div class="item-slot-img"><img :src="'images/' + getHotbarItemInSlot(slot).image" alt="" /></div>
                             <div class="item-slot-amount"><p>{{ getHotbarItemInSlot(slot).amount }}</p></div>
+<div class="fresh-pip" v-if="freshOf(getHotbarItemInSlot(slot))" :class="'fresh-' + freshOf(getHotbarItemInSlot(slot)).state" :title="freshOf(getHotbarItemInSlot(slot)).label + ' ' + freshOf(getHotbarItemInSlot(slot)).pct + '%'"></div>
                             <div class="item-slot-label"><p>{{ getHotbarItemInSlot(slot).label }}</p></div>
                             <div class="item-slot-durability" v-if="hasQuality(getHotbarItemInSlot(slot))">
                                 <div class="item-slot-durability-fill" :style="{ width: qualityOf(getHotbarItemInSlot(slot)) + '%' }" :class="qualityClass(getHotbarItemInSlot(slot))"></div>

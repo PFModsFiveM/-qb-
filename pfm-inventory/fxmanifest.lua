@@ -9,7 +9,10 @@ shared_scripts {
     '@pfm-core/shared/locale.lua',
     'locales/en.lua',
     'locales/*.lua',
-    'config/*.lua',
+    -- config.lua assigns Config, so it must load before the files that extend it
+    'config/config.lua',
+    'config/vehicles.lua',
+    'config/freshness.lua',
 }
 
 client_scripts {
@@ -20,6 +23,7 @@ client_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    'server/freshness.lua',
     'server/main.lua',
     'server/functions.lua',
     'server/commands.lua',

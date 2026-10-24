@@ -218,13 +218,29 @@ const InventoryContainer = Vue.createApp({
                 await new Promise((r) => setTimeout(r, 60));
             }
         },
+        // Mirrors the server's merge rule (pfm-inventory server/freshness.lua CanStack): perishables
+        // only stack within one batch at matching freshness, so no item loses its own state.
+        canStackItems(a, b) {
+            if (!a || !b || a.name !== b.name || a.unique || b.unique) return false;
+            const fa = a.info && a.info.fresh;
+            const fb = b.info && b.info.fresh;
+            if (!fa && !fb) return true;
+            if (!fa || !fb || fa.batch !== fb.batch) return false;
+            const pa = a.info.freshDisplay && a.info.freshDisplay.pct;
+            const pb = b.info.freshDisplay && b.info.freshDisplay.pct;
+            return pa == null || pb == null || Math.abs(pa - pb) <= 1;
+        },
+        freshOf(item) {
+            return item && item.info && item.info.freshDisplay ? item.info.freshDisplay : null;
+        },
         async tidyInventory() {
-            // combine duplicate non-unique stacks into the earliest slot
+            // combine stackable duplicates into the earliest slot (perishables: per batch)
             const inv = this.playerInventory;
             const byName = {};
             for (const item of Object.values(inv)) {
                 if (!item || item.unique) continue;
-                (byName[item.name] = byName[item.name] || []).push(item);
+                const key = item.name + "|" + ((item.info && item.info.fresh && item.info.fresh.batch) || "");
+                (byName[key] = byName[key] || []).push(item);
             }
             let merged = 0;
             for (const stacks of Object.values(byName)) {
@@ -232,6 +248,7 @@ const InventoryContainer = Vue.createApp({
                 stacks.sort((a, b) => a.slot - b.slot);
                 const target = stacks[0];
                 for (const src of stacks.slice(1)) {
+                    if (!this.canStackItems(src, target)) continue;
                     const amt = src.amount;
                     target.amount += amt;
                     delete inv[src.slot];
@@ -463,7 +480,7 @@ const InventoryContainer = Vue.createApp({
                 targetInventory[targetSlot] = newItem;
                 newItem.slot = targetSlot;
             } else {
-                const targetItemKey = Object.keys(targetInventory).find((key) => targetInventory[key] && targetInventory[key].name === item.name);
+                const targetItemKey = Object.keys(targetInventory).find((key) => this.canStackItems(item, targetInventory[key]));
                 const targetItem = targetInventory[targetItemKey];
 
                 if (!targetItem) {
@@ -695,11 +712,7 @@ const InventoryContainer = Vue.createApp({
                 const targetItem = targetInventory[targetSlotNumber];
 
                 if (targetItem) {
-                    if (sourceItem.name === targetItem.name && targetItem.unique) {
-                        this.inventoryError(this.currentlyDraggingSlot);
-                        return;
-                    }
-                    if (sourceItem.name === targetItem.name && !targetItem.unique) {
+                    if (this.canStackItems(sourceItem, targetItem)) {
                         targetItem.amount += amountToTransfer;
                         sourceItem.amount -= amountToTransfer;
                         if (sourceItem.amount <= 0) {
