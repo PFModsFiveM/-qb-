@@ -334,6 +334,18 @@ describe('work trucks', function()
 end)
 
 describe('restarts', function()
+    it('pf-trucking starting before pf-stores has migrated does not query the order table yet', function()
+        -- seen on staging: pf-trucking started first and its event ran a query for columns the
+        -- pf-stores migration had not added yet; pf-stores recovers contracts itself after migrating
+        local recovered, orig = 0, O.RecoverContracts
+        O.RecoverContracts = function() recovered = recovered + 1 return 0 end
+        O.ready = false
+        TriggerEvent('pf-trucking:server:started')
+        O.ready = true
+        TriggerEvent('pf-trucking:server:started')
+        O.RecoverContracts = orig
+        assert_eq(recovered, 1)
+    end)
     it('a claimed contract comes back to its driver after pf-trucking restarts', function()
         local id = tonumber(MySQL.scalar.await("SELECT MAX(id) FROM pf_store_supply_orders WHERE status = 'assigned'"))
         assert_true(id ~= nil)
