@@ -1,0 +1,186 @@
+:root {
+    --font-primary: "Inter", sans-serif;
+    --notify-bg: rgba(15, 16, 21, 0.88);
+    --notify-fg: #eceef2;
+    --notify-fg-dim: rgba(236, 238, 242, 0.62);
+    --notify-radius: 14px;
+    --notify-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+* {
+    font-family: var(--font-primary);
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html::-webkit-scrollbar {
+    display: none;
+}
+
+/* variant accents */
+.success   { --accent-c: #34d17b; }
+.primary   { --accent-c: #5b9dff; }
+.warning   { --accent-c: #ffb547; }
+.error     { --accent-c: #ff5d5d; }
+.police    { --accent-c: #4fa3ff; }
+.ambulance { --accent-c: #2fd4c4; }
+
+.notify-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    overflow: hidden;
+    min-width: 310px;
+    max-width: 410px;
+    padding: 13px 16px;
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--accent-c) 10%, transparent), transparent 45%),
+        var(--notify-bg);
+    color: var(--notify-fg);
+    border: 1px solid color-mix(in srgb, var(--accent-c) 28%, rgba(255, 255, 255, 0.08));
+    border-radius: var(--notify-radius);
+    box-shadow: var(--notify-shadow), 0 0 24px -8px color-mix(in srgb, var(--accent-c) 45%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    opacity: 0;
+    transform: translateX(32px) scale(0.96);
+    transition:
+        opacity 0.3s cubic-bezier(0.34, 1.3, 0.64, 1),
+        transform 0.3s cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+/* shine sweep on entry */
+.notify-item::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -80%;
+    width: 60%;
+    height: 100%;
+    background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.07), transparent);
+    transform: skewX(-18deg);
+    pointer-events: none;
+}
+
+.notify-item.notify-show::after {
+    animation: notify-shine 0.9s ease 0.15s 1;
+}
+
+@keyframes notify-shine {
+    to { left: 130%; }
+}
+
+.notify-item.notify-show {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+}
+
+.notify-item.notify-hide {
+    opacity: 0;
+    transform: translateX(32px) scale(0.96);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.notify-icon-wrap {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    background:
+        linear-gradient(145deg, color-mix(in srgb, var(--accent-c) 32%, transparent), color-mix(in srgb, var(--accent-c) 12%, transparent));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-c) 40%, transparent), 0 0 14px -4px var(--accent-c);
+    animation: icon-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+
+@keyframes icon-pop {
+    from { transform: scale(0.4) rotate(-12deg); }
+    to { transform: scale(1) rotate(0); }
+}
+
+.notify-icon {
+    color: var(--accent-c);
+    font-size: 20px;
+}
+
+.notify-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.notify-title {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+    text-transform: uppercase;
+    color: var(--accent-c);
+    margin-bottom: 2px;
+}
+
+.notify-message {
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.45;
+    letter-spacing: 0.1px;
+}
+
+.notify-multiline {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.notify-caption {
+    font-size: 12px;
+    font-weight: 500;
+    margin-top: 2px;
+    color: var(--notify-fg-dim);
+}
+
+.notify-count {
+    flex-shrink: 0;
+    align-self: center;
+    display: none;
+    min-width: 23px;
+    height: 23px;
+    padding: 0 7px;
+    border-radius: 12px;
+    background: var(--accent-c);
+    color: #0d0e12;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 23px;
+    text-align: center;
+    box-shadow: 0 0 12px -2px var(--accent-c);
+}
+
+.notify-count.notify-count-show {
+    display: block;
+    animation: notify-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes notify-pop {
+    from { transform: scale(0.4); }
+    to   { transform: scale(1); }
+}
+
+.notify-progress {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    width: 100%;
+    background: linear-gradient(90deg, var(--accent-c), color-mix(in srgb, var(--accent-c) 50%, transparent));
+    box-shadow: 0 0 8px -1px var(--accent-c);
+    opacity: 0.8;
+    border-radius: 0 2px 2px 0;
+    animation: notify-shrink linear forwards;
+}
+
+@keyframes notify-shrink {
+    from { width: 100%; }
+    to   { width: 0%; }
+}

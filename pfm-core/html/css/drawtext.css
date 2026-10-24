@@ -1,0 +1,93 @@
+:root {
+    --dt-bg: rgba(17, 18, 23, 0.88);
+    --dt-fg: #eceef2;
+    --dt-accent: #5b9dff;
+    --dt-pressed: #34d17b;
+    --dt-radius: 10px;
+    --dt-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+#drawtext-container {
+    display: none;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: var(--font-primary);
+}
+
+.text {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--dt-bg);
+    color: var(--dt-fg);
+    padding: 10px 14px;
+    font-size: 13.5px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    line-height: 1.4;
+    border-radius: var(--dt-radius);
+    border-left: 4px solid var(--dt-accent);
+    box-shadow: var(--dt-shadow);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    opacity: 0;
+    transition:
+        opacity 0.35s cubic-bezier(0.21, 1.02, 0.73, 1),
+        left 0.35s cubic-bezier(0.21, 1.02, 0.73, 1),
+        right 0.35s cubic-bezier(0.21, 1.02, 0.73, 1),
+        top 0.35s cubic-bezier(0.21, 1.02, 0.73, 1),
+        border-color 0.2s ease;
+}
+
+.dt-key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--dt-accent) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--dt-accent) 55%, transparent);
+    color: var(--dt-accent);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    transition: all 0.2s ease;
+}
+
+.text.pressed {
+    border-left-color: var(--dt-pressed);
+}
+
+.text.pressed .dt-key {
+    background: var(--dt-pressed);
+    border-color: var(--dt-pressed);
+    color: #0d0e12;
+}
+
+.top {
+    left: 50%;
+    translate: -50% 0;
+    top: -100px;
+}
+.top.show { top: 16px; opacity: 1; }
+.top.hide { top: -100px; opacity: 0; }
+
+.right {
+    top: 50%;
+    translate: 0 -50%;
+    right: -220px;
+}
+.right.show { right: 16px; opacity: 1; }
+.right.hide { right: -220px; opacity: 0; }
+
+.left {
+    top: 50%;
+    translate: 0 -50%;
+    left: -220px;
+}
+.left.show { left: 16px; opacity: 1; }
+.left.hide { left: -220px; opacity: 0; }

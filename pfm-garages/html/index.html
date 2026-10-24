@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>PFM Garages</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Material+Icons+Round" />
+        <link rel="stylesheet" href="style.css" />
+    </head>
+
+    <body>
+        <div class="container" id="container">
+            <div class="panel">
+                <div class="header">
+                    <div class="h-badge"><span class="material-icons-round" id="garage-icon">garage</span></div>
+                    <div class="h-text">
+                        <div class="h-title" id="garage-header">Garage</div>
+                        <div class="h-sub"><span id="garage-count">0 vehicles</span><span class="h-type" id="garage-type"></span></div>
+                    </div>
+                    <div class="h-close" id="close-btn" title="Close (ESC)"><span class="material-icons-round">close</span></div>
+                </div>
+                <div class="search-row">
+                    <span class="material-icons-round">search</span>
+                    <input type="text" id="search" placeholder="Search by name or plate…" autocomplete="off" />
+                </div>
+                <div class="vehicle-table" id="vehicle-container"></div>
+            </div>
+        </div>
+        <script src="script.js"></script>
+    </body>
+</html>

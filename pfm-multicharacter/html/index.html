@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Material+Icons" />
+        <link href="style.css" rel="stylesheet" />
+        <title>QB-Multicharacter</title>
+    </head>
+    <body>
+        <div id="app">
+            <!-- Loading screen -->
+            <div class="welcomescreen hidden" id="loading-screen">
+                <div class="loading-container">
+                    <div class="loading-ring"></div>
+                    <p id="loading-text"></p>
+                </div>
+            </div>
+
+            <!-- Character selection -->
+            <div class="char-panel hidden" id="char-panel">
+                <div class="char-brand">PF <span>ROLEPLAY</span></div>
+                <div class="char-panel-title" id="panel-title">Characters</div>
+                <div class="char-list" id="char-list"></div>
+            </div>
+
+            <!-- Selected character detail -->
+            <div class="char-detail hidden" id="char-detail">
+                <div class="detail-avatar"><span class="material-icons">person</span></div>
+                <div class="detail-name" id="detail-name"></div>
+                <div class="detail-cid" id="detail-cid"></div>
+                <div class="detail-grid">
+                    <div class="detail-stat"><span class="material-icons">badge</span><div><div class="ds-label">Job</div><div class="ds-value" id="detail-job"></div></div></div>
+                    <div class="detail-stat"><span class="material-icons">payments</span><div><div class="ds-label">Cash</div><div class="ds-value" id="detail-cash"></div></div></div>
+                    <div class="detail-stat"><span class="material-icons">account_balance</span><div><div class="ds-label">Bank</div><div class="ds-value" id="detail-bank"></div></div></div>
+                    <div class="detail-stat"><span class="material-icons">public</span><div><div class="ds-label">Nationality</div><div class="ds-value" id="detail-nat"></div></div></div>
+                </div>
+                <button class="btn btn-play" id="detail-play"><span class="material-icons">play_arrow</span><span id="detail-play-label">Play</span></button>
+                <button class="btn btn-ghost btn-del hidden" id="detail-delete"><span class="material-icons">delete</span>Delete character</button>
+            </div>
+
+            <!-- Delete confirmation -->
+            <div class="modal-backdrop hidden" id="delete-modal">
+                <div class="modal">
+                    <div class="modal-icon danger"><span class="material-icons">delete_forever</span></div>
+                    <p class="modal-text" id="delete-text"></p>
+                    <div class="modal-btns">
+                        <button class="btn btn-danger" id="delete-confirm"></button>
+                        <button class="btn btn-ghost" id="delete-cancel"></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Character creation -->
+            <div class="modal-backdrop hidden" id="register-modal">
+                <div class="modal register">
+                    <div class="register-head">
+                        <span id="register-title"></span>
+                        <span class="material-icons close-btn" id="register-close">close</span>
+                    </div>
+                    <div class="register-fields">
+                        <input type="text" id="reg-firstname" maxlength="16" autocomplete="off" />
+                        <input type="text" id="reg-lastname" maxlength="16" autocomplete="off" />
+                        <input type="text" id="reg-nationality" autocomplete="off" class="hidden" />
+                        <select id="reg-nationality-select" class="hidden"></select>
+                        <select id="reg-gender"></select>
+                        <div class="date-field">
+                            <label id="reg-date-label"></label>
+                            <input type="date" id="reg-date" min="1900-01-01" />
+                        </div>
+                    </div>
+                    <button class="btn btn-primary btn-wide" id="register-submit"></button>
+                </div>
+            </div>
+
+            <!-- Error toast -->
+            <div class="toast hidden" id="toast">
+                <span class="material-icons">error</span>
+                <div>
+                    <div class="toast-title" id="toast-title"></div>
+                    <div class="toast-text" id="toast-text"></div>
+                </div>
+            </div>
+        </div>
+
+        <script type="text/javascript" src="profanity.js"></script>
+        <script type="text/javascript" src="validation.js"></script>
+        <script type="text/javascript" src="translations.js"></script>
+        <script type="text/javascript" src="app.js"></script>
+    </body>
+</html>

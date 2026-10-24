@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Loading</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <div class="bg">
+            <img src="../assets/images/1.png" alt="" />
+            <div class="bg-overlay"></div>
+        </div>
+
+        <audio id="music" loop>
+            <source src="../assets/audio/noncopyright.mp3" type="audio/mpeg" />
+        </audio>
+
+        <main>
+            <div class="brand">
+                <div class="brand-name">PF <span>ROLEPLAY</span></div>
+                <div class="brand-sub">Loading your city</div>
+            </div>
+
+            <div class="center-card">
+                <div class="tip-label">Tip</div>
+                <div class="tip" id="tip"></div>
+                <button class="explore-btn" id="explore-btn">Get familiar with the server</button>
+            </div>
+
+            <!-- explore panel (hidden until requested — the start stays clean) -->
+            <div class="explore hidden" id="explore">
+                <div class="explore-head">
+                    <div class="explore-tabs" id="explore-tabs">
+                        <button class="active" data-tab="keys">Keybinds</button>
+                        <button data-tab="start">Getting started</button>
+                        <button data-tab="features">Features</button>
+                    </div>
+                    <button class="explore-close" id="explore-close">×</button>
+                </div>
+                <div class="explore-body">
+                    <div class="explore-page" id="page-keys">
+                        <div class="kb-grid">
+                            <div class="key-hint"><img src="../assets/keybinds/TAB.svg" alt="TAB" /><span>Inventory</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/M.svg" alt="M" /><span>Phone</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/F1.svg" alt="F1" /><span>Radial Menu</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/I.svg" alt="I" /><span>HUD Settings</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/Z.svg" alt="Z" /><span>Scoreboard</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/B.svg" alt="B" /><span>Seatbelt</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/G.svg" alt="G" /><span>Interact</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/HOME.svg" alt="HOME" /><span>Pause / Map</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/LALT.svg" alt="LALT" /><span>Eye Target</span></div>
+                            <div class="key-hint"><img src="../assets/keybinds/Y.svg" alt="Y" /><span>Accept Job</span></div>
+                        </div>
+                    </div>
+                    <div class="explore-page hidden" id="page-start">
+                        <ol class="start-list">
+                            <li><b>Create your character</b> — pick a slot, fill in your details and spawn into the city.</li>
+                            <li><b>Grab a starter job</b> — City Hall has taxi, bus, garbage and delivery work with no requirements.</li>
+                            <li><b>Keep yourself fed</b> — hunger and thirst drain over time; stores and restaurants are marked on the map.</li>
+                            <li><b>Visit the bank</b> — set up your accounts, order a card and check your credit score for loans.</li>
+                            <li><b>Make the HUD yours</b> — press <b>I</b> to restyle, recolor and reposition everything on screen.</li>
+                        </ol>
+                    </div>
+                    <div class="explore-page hidden" id="page-features">
+                        <div class="feat-grid">
+                            <div class="feat"><b>Jobs & businesses</b><span>Mechanic shops, trucking, restaurants, taxi, EMS, police and more.</span></div>
+                            <div class="feat"><b>Banking & credit</b><span>Loans, credit cards and a credit score that reacts to how you pay.</span></div>
+                            <div class="feat"><b>Housing</b><span>Apartments and houses with storage, outfits and shared keys.</span></div>
+                            <div class="feat"><b>Vehicles</b><span>Persistent damage, tuning, keys you can hand over, and garages city-wide.</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bottom">
+                <div class="progress-wrap">
+                    <div class="progress-text"><span id="status">Starting up…</span><span id="pct">0%</span></div>
+                    <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
+                </div>
+                <button class="sound-btn" id="sound-btn" title="Toggle music">♪</button>
+            </div>
+        </main>
+
+        <script src="app.js"></script>
+    </body>
+</html>

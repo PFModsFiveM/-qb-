@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>PFM Spawn</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Material+Icons+Round" />
+        <link rel="stylesheet" type="text/css" href="style.css" />
+    </head>
+    <body>
+        <div id="panel" class="panel">
+            <div class="head">
+                <div class="h-badge"><span class="material-icons-round">explore</span></div>
+                <div class="h-text">
+                    <div class="h-title" id="title">Where would you like to start?</div>
+                    <div class="h-sub" id="subtitle">Pick a location — the camera will fly to it</div>
+                </div>
+            </div>
+            <div class="list" id="list"></div>
+            <button class="confirm" id="confirm" disabled>
+                <span class="material-icons-round">flight_land</span><span id="confirm-label">Spawn here</span>
+            </button>
+        </div>
+
+        <script>
+            let selected = null;
+            let translations = {};
+            let state = { locations: {}, houses: [], apartments: {}, isNew: false };
+
+            const t = (k, fallback) => translations[k] || fallback;
+
+            function post(cb, body) {
+                return fetch(`https://pfm-spawn/${cb}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json; charset=UTF-8" },
+                    body: JSON.stringify(body || {}),
+                });
+            }
+
+            function makeItem({ icon, label, sub, type, name, accentClass }) {
+                const el = document.createElement("div");
+                el.className = "item " + (accentClass || "");
+                el.innerHTML = `
+                    <div class="i-badge"><span class="material-icons-round">${icon}</span></div>
+                    <div class="i-text">
+                        <div class="i-label">${label}</div>
+                        ${sub ? `<div class="i-sub">${sub}</div>` : ""}
+                    </div>
+                    <span class="material-icons-round i-check">check_circle</span>`;
+                el.onclick = () => {
+                    document.querySelectorAll(".item.selected").forEach((e) => e.classList.remove("selected"));
+                    el.classList.add("selected");
+                    selected = { type, name };
+                    // fly the camera for every location type (the client resolves coords per type)
+                    post("setCam", { posname: name, type });
+                    const btn = document.getElementById("confirm");
+                    btn.disabled = false;
+                    document.getElementById("confirm-label").textContent =
+                        type === "appartment" ? t("choose_appa", "Move in & spawn") : t("confirm", "Spawn here");
+                };
+                return el;
+            }
+
+            function sectionTitle(icon, label) {
+                const el = document.createElement("div");
+                el.className = "sect";
+                el.innerHTML = `<span class="material-icons-round">${icon}</span>${label}`;
+                return el;
+            }
+
+            function render() {
+                const list = document.getElementById("list");
+                list.innerHTML = "";
+                selected = null;
+                document.getElementById("confirm").disabled = true;
+
+                if (state.isNew) {
+                    document.getElementById("title").textContent = t("choose_your_apartment", "Choose your apartment");
+                    document.getElementById("subtitle").textContent = "This will be your first home in the city";
+                    list.appendChild(sectionTitle("apartment", "Apartments"));
+                    for (const [name, loc] of Object.entries(state.apartments)) {
+                        list.appendChild(makeItem({ icon: "apartment", label: loc.label || name, sub: "Furnished starter apartment", type: "appartment", name, accentClass: "gold" }));
+                    }
+                    return;
+                }
+
+                document.getElementById("title").textContent = t("where_would_you_like_to_start", "Where would you like to start?");
+                document.getElementById("subtitle").textContent = "Pick a location — the camera will fly to it";
+
+                list.appendChild(
+                    makeItem({ icon: "history", label: t("last_location", "Last location"), sub: "Right where you logged out", type: "current", name: "current", accentClass: "green" })
+                );
+
+                if (state.houses.length > 0) {
+                    list.appendChild(sectionTitle("home", "My properties"));
+                    for (const h of state.houses) {
+                        list.appendChild(makeItem({ icon: "home", label: h.label || h.house, sub: "Owned residence", type: "house", name: h.house, accentClass: "gold" }));
+                    }
+                }
+
+                const spawnEntries = Object.entries(state.locations);
+                if (spawnEntries.length > 0) {
+                    list.appendChild(sectionTitle("place", "City spawns"));
+                    for (const [name, loc] of spawnEntries) {
+                        list.appendChild(makeItem({ icon: "place", label: loc.label || name, type: "normal", name }));
+                    }
+                }
+            }
+
+            document.getElementById("confirm").onclick = () => {
+                if (!selected) return;
+                document.getElementById("panel").classList.remove("show");
+                if (selected.type === "appartment") {
+                    post("chooseAppa", { appType: selected.name });
+                } else {
+                    post("spawnplayer", { spawnloc: selected.name, typeLoc: selected.type });
+                }
+            };
+
+            window.addEventListener("message", (event) => {
+                const data = event.data;
+                switch (data.action) {
+                    case "showUi":
+                        if (data.translations) translations = data.translations;
+                        document.getElementById("panel").classList.toggle("show", data.status === true);
+                        break;
+                    case "setupLocations":
+                        state = { locations: data.locations || {}, houses: data.houses || [], apartments: {}, isNew: false };
+                        render();
+                        break;
+                    case "setupAppartements":
+                        state = { locations: {}, houses: [], apartments: data.locations || {}, isNew: true };
+                        render();
+                        break;
+                    case "theme": {
+                        const th = data.theme;
+                        if (!th) break;
+                        const r = document.documentElement.style;
+                        const hexToRgba = (hex, a) => {
+                            const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                            return m ? `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${a})` : hex;
+                        };
+                        const op = typeof th.opacity === "number" ? Math.max(0.5, Math.min(1, th.opacity)) : 0.92;
+                        if (th.primary) r.setProperty("--s-bg", hexToRgba(th.primary, op));
+                        if (th.secondary) {
+                            r.setProperty("--s-item", hexToRgba(th.secondary, 0.5));
+                            r.setProperty("--s-item-hover", hexToRgba(th.secondary, 0.75));
+                        }
+                        if (th.accent) r.setProperty("--s-accent", th.accent);
+                        if (th.text) {
+                            r.setProperty("--s-fg", th.text);
+                            r.setProperty("--s-dim", hexToRgba(th.text, 0.55));
+                        }
+                        break;
+                    }
+                }
+            });
+        </script>
+    </body>
+</html>

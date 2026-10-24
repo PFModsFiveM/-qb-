@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>PFM Inventory</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Material+Icons+Round" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+        <link rel="stylesheet" href="main.css" />
+        <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.2/axios.min.js"></script>
+        <script src="app.js" defer></script>
+    </head>
+    <body>
+        <div id="app">
+            <div class="inventory-container spread" v-if="isInventoryOpen" @mousemove="drag" @mouseup="endDrag" @mousedown="containerMouseDownAction">
+                <!-- ══ top bar ══ -->
+                <div class="top-bar">
+                    <div class="tb-title">
+                        <h1>Inventory</h1>
+                        <div class="tb-sub" v-if="playerInfo">{{ playerInfo.name }}</div>
+                    </div>
+                    <div class="tb-close" @click="closeInventory">
+                        <span>Close<br />Inventory</span>
+                        <kbd>ESC</kbd>
+                    </div>
+                </div>
+
+                <!-- ══ left: pockets + personal info ══ -->
+                <div class="col col-pockets player-inventory-section">
+                    <div class="sect-head">
+                        <div class="sh-badge"><span class="material-icons-round">front_hand</span></div>
+                        <div class="sh-text">
+                            <div class="sh-title">Pockets</div>
+                            <div class="sh-sub">keys 1–{{ pockets }}</div>
+                        </div>
+                    </div>
+                    <div class="pockets-strip">
+                        <div v-for="slot in pockets" :key="'p' + slot" class="item-slot pocket-slot" :data-slot="slot"
+                            :class="slotClasses(slot, 'player')"
+                            @dblclick="getItemInSlot(slot, 'player') && useItem(getItemInSlot(slot, 'player'))"
+                            @mousedown="event => handleMouseDown(event, slot, 'player')"
+                            @mouseenter="hoverItem(getItemInSlot(slot, 'player'))"
+                            @mouseleave="hoverItem(null)">
+                            <div class="item-slot-key"><p>{{ slot }}</p></div>
+                            <template v-if="getItemInSlot(slot, 'player')">
+                                <div class="fav-star" v-if="isFavorite(getItemInSlot(slot, 'player'))"><i class="fas fa-star"></i></div>
+                                <div class="unique-corner" v-if="getItemInSlot(slot, 'player').unique"></div>
+                                <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'player').image" alt="" draggable="false" /></div>
+                                <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'player').amount }}</p></div>
+                                <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'player').label }}</p></div>
+                                <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'player'))">
+                                    <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'player')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'player'))"></div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- personal info -->
+                    <div class="pi-card" v-if="playerInfo">
+                        <div class="pi-head">
+                            <div class="pi-avatar"><span class="material-icons-round">badge</span></div>
+                            <div class="pi-headtext">
+                                <div class="pi-title">Personal Information</div>
+                                <div class="pi-name">{{ playerInfo.name }}</div>
+                            </div>
+                        </div>
+                        <div class="pi-money">
+                            <span class="pm cash"><i class="fas fa-money-bill-wave"></i>${{ (playerInfo.cash || 0).toLocaleString() }}</span>
+                            <span class="pm bank"><i class="fas fa-building-columns"></i>${{ (playerInfo.bank || 0).toLocaleString() }}</span>
+                        </div>
+                        <div class="pi-grid">
+                            <div class="pi-row acc-purple" v-if="playerInfo.hasSim">
+                                <div class="pi-label">Phone Number</div>
+                                <div class="pi-value">{{ playerInfo.phone }}</div>
+                            </div>
+                            <div class="pi-row acc-purple nosim" v-else-if="playerInfo.hasPhone">
+                                <div class="pi-label">Phone Number</div>
+                                <div class="pi-value">No SIM card</div>
+                            </div>
+                            <div class="pi-row acc-blue" v-if="playerInfo.citizenid">
+                                <div class="pi-label">Citizen ID</div>
+                                <div class="pi-value">{{ playerInfo.citizenid }}</div>
+                            </div>
+                            <div class="pi-row acc-gold" v-if="playerInfo.job">
+                                <div class="pi-label">Occupation</div>
+                                <div class="pi-value">{{ playerInfo.job }}</div>
+                            </div>
+                            <div class="pi-row acc-red">
+                                <div class="pi-label">Residence</div>
+                                <div class="pi-value">{{ playerInfo.residence || "No fixed address" }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ══ player grid + backpack ══ -->
+                <div class="col col-player player-inventory-section">
+                    <div class="sect-head wide">
+                        <div class="sh-badge"><span class="material-icons-round">person</span></div>
+                        <div class="sh-text">
+                            <div class="sh-title">{{ inventoryLabel }}</div>
+                            <div class="sh-sub">items on your character</div>
+                        </div>
+                        <div class="sh-metrics">
+                            <div class="sh-weight"><span class="material-icons-round">work_outline</span>{{ (playerWeight / 1000).toFixed(1) }} / {{ (maxWeight / 1000).toFixed(1) }} kg</div>
+                            <div class="weight-bar"><div class="weight-bar-fill" :style="{ width: Math.min((playerWeight / maxWeight) * 100, 100) + '%' }" :class="weightBarClass"></div></div>
+                        </div>
+                    </div>
+                    <div class="search-row">
+                        <span class="material-icons-round">search</span>
+                        <input type="text" v-model="searchQuery" placeholder="Search items…" @mousedown.stop />
+                        <span v-if="searchQuery" class="material-icons-round clear-search" @click="searchQuery = ''">close</span>
+                        <span class="material-icons-round tidy-btn" @click="tidyInventory" title="Tidy — combine duplicate stacks">auto_fix_high</span>
+                    </div>
+                    <div class="grid-scroll">
+                        <div class="item-grid">
+                            <div v-for="slot in mainSlots" :key="slot" class="item-slot" :data-slot="slot"
+                                :class="slotClasses(slot, 'player')"
+                                @dblclick="getItemInSlot(slot, 'player') && useItem(getItemInSlot(slot, 'player'))"
+                                @mousedown="event => handleMouseDown(event, slot, 'player')"
+                                @mouseenter="hoverItem(getItemInSlot(slot, 'player'))"
+                                @mouseleave="hoverItem(null)">
+                                <template v-if="getItemInSlot(slot, 'player')">
+                                    <div class="fav-star" v-if="isFavorite(getItemInSlot(slot, 'player'))"><i class="fas fa-star"></i></div>
+                                    <div class="unique-corner" v-if="getItemInSlot(slot, 'player').unique"></div>
+                                    <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'player').image" alt="" draggable="false" /></div>
+                                    <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'player').amount }}</p></div>
+                                    <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'player').label }}</p></div>
+                                    <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'player'))">
+                                        <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'player')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'player'))"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- backpack -->
+                        <template v-if="backpackMeta">
+                            <div class="sect-head wide backpack-head">
+                                <div class="sh-badge gold"><span class="material-icons-round">backpack</span></div>
+                                <div class="sh-text">
+                                    <div class="sh-title">{{ backpackMeta.label }}</div>
+                                    <div class="sh-sub">carried on your back</div>
+                                </div>
+                                <div class="sh-metrics">
+                                    <div class="sh-weight"><span class="material-icons-round">work_outline</span>{{ (backpackWeight / 1000).toFixed(1) }} / {{ (backpackMeta.maxweight / 1000).toFixed(1) }} kg</div>
+                                    <div class="weight-bar"><div class="weight-bar-fill gold-fill" :style="{ width: Math.min((backpackWeight / backpackMeta.maxweight) * 100, 100) + '%' }"></div></div>
+                                </div>
+                            </div>
+                            <div class="item-grid backpack-section">
+                                <div v-for="slot in backpackMeta.slots" :key="'b' + slot" class="item-slot backpack-slot" :data-slot="slot"
+                                    @mousedown="event => handleMouseDown(event, slot, 'backpack')"
+                                    @mouseenter="hoverItem(getItemInSlot(slot, 'backpack'))"
+                                    @mouseleave="hoverItem(null)">
+                                    <template v-if="getItemInSlot(slot, 'backpack')">
+                                        <div class="unique-corner" v-if="getItemInSlot(slot, 'backpack').unique"></div>
+                                        <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'backpack').image" alt="" draggable="false" /></div>
+                                        <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'backpack').amount }}</p></div>
+                                        <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'backpack').label }}</p></div>
+                                        <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'backpack'))">
+                                            <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'backpack')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'backpack'))"></div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- ══ controls strip ══ -->
+                <div class="col col-controls" v-if="!isOtherInventoryEmpty || backpackMeta">
+                    <div class="cc-amount">
+                        <div class="cc-label">amount</div>
+                        <input type="number" v-model="transferAmount" min="1" :placeholder="transferAmount === null ? 'all' : ''" @mousedown.stop />
+                        <div class="cc-chips">
+                            <button @click="transferAmount = 1">1</button>
+                            <button @click="transferAmount = 5">5</button>
+                            <button @click="transferAmount = 10">10</button>
+                            <button @click="clearTransferAmount" :class="{ on: transferAmount === null }">all</button>
+                        </div>
+                    </div>
+                    <button class="cc-action" v-if="!isOtherInventoryEmpty && !isShopInventory" @click="quickStack" title="Move everything that already stacks in the container">
+                        <span class="material-icons-round">move_down</span>Quick stack
+                    </button>
+                    <div class="item-info" :class="{ show: infoItem }">
+                        <template v-if="infoItem">
+                            <img class="ii-img" :src="'images/' + infoItem.image" alt="" />
+                            <div class="ii-main">
+                                <div class="ii-name">{{ infoItem.label }} <span v-if="infoItem.unique" class="ii-unique">unique</span></div>
+                                <div class="ii-desc">{{ infoDescription }}</div>
+                                <div class="ii-meta">
+                                    <span class="ii-chip"><i class="fas fa-weight-hanging"></i>{{ ((infoItem.weight * infoItem.amount) / 1000).toFixed(1) }}kg</span>
+                                    <span class="ii-chip" v-if="hasQuality(infoItem)"><i class="fas fa-heart-pulse"></i>{{ qualityOf(infoItem) }}%</span>
+                                    <span class="ii-chip price" v-if="isShopInventory && infoItem.price"><i class="fas fa-tag"></i>${{ infoItem.price }} each</span>
+                                    <span class="ii-chip price" v-if="isShopInventory && infoItem.price && transferAmount > 1"><i class="fas fa-cart-shopping"></i>${{ (infoItem.price * transferAmount).toLocaleString() }} for {{ transferAmount }}</span>
+                                    <span class="ii-chip" v-for="(v, k) in infoMeta" :key="k">{{ k }}: {{ v }}</span>
+                                </div>
+                            </div>
+                        </template>
+                        <div class="ii-empty" v-else><span class="material-icons-round">touch_app</span>hover an item</div>
+                    </div>
+                    <div class="cc-hint">
+                        <p><b>drag</b> move · <b>right-click</b> quick move</p>
+                        <p><b>shift</b> split · <b>ctrl+click</b> half</p>
+                        <p><b>F</b> favorite · <b>double-click</b> use</p>
+                    </div>
+                </div>
+
+                <!-- ══ other panel ══ -->
+                <div class="col col-other other-inventory-section" v-if="!isOtherInventoryEmpty">
+                    <div class="sect-head wide">
+                        <div class="sh-badge"><span class="material-icons-round">{{ isShopInventory ? "storefront" : "inventory_2" }}</span></div>
+                        <div class="sh-text">
+                            <div class="sh-title">{{ otherInventoryLabel }}</div>
+                            <div class="sh-sub">{{ isShopInventory ? "right-click buys 1 · drag to buy amount" : usedSlots('other') + "/" + otherInventorySlots + " slots" }}</div>
+                        </div>
+                        <div class="sh-metrics" v-if="!isShopInventory">
+                            <div class="sh-weight"><span class="material-icons-round">work_outline</span>{{ (otherInventoryWeight / 1000).toFixed(1) }} / {{ (otherInventoryMaxWeight / 1000).toFixed(1) }} kg</div>
+                            <div class="weight-bar"><div class="weight-bar-fill" :style="{ width: Math.min((otherInventoryWeight / otherInventoryMaxWeight) * 100, 100) + '%' }" :class="otherWeightBarClass"></div></div>
+                        </div>
+                    </div>
+                    <div class="grid-scroll">
+                        <div class="item-grid">
+                            <div v-for="slot in otherInventorySlots" :key="slot" class="item-slot" :data-slot="slot"
+                                :class="slotClasses(slot, 'other')"
+                                @mousedown="event => handleMouseDown(event, slot, 'other')"
+                                @mouseenter="hoverItem(getItemInSlot(slot, 'other'))"
+                                @mouseleave="hoverItem(null)" @dragover.prevent>
+                                <template v-if="getItemInSlot(slot, 'other')">
+                                    <div class="unique-corner" v-if="getItemInSlot(slot, 'other').unique"></div>
+                                    <div class="item-slot-img"><img :src="'images/' + getItemInSlot(slot, 'other').image" alt="" draggable="false" /></div>
+                                    <div class="item-slot-amount"><p>{{ getItemInSlot(slot, 'other').amount }}</p></div>
+                                    <div class="item-slot-label"><p>{{ getItemInSlot(slot, 'other').label }}</p></div>
+                                    <div v-if="isShopInventory" class="item-price"><p>${{ getItemInSlot(slot, 'other').price }}</p></div>
+                                    <div class="item-slot-durability" v-if="hasQuality(getItemInSlot(slot, 'other'))">
+                                        <div class="item-slot-durability-fill" :style="{ width: qualityOf(getItemInSlot(slot, 'other')) + '%' }" :class="qualityClass(getItemInSlot(slot, 'other'))"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ hotbar ══ -->
+            <div class="hotbar-container" v-if="showHotbar">
+                <div class="hotbar">
+                    <div v-for="slot in 5" :key="slot" class="item-slot hotbar-slot">
+                        <div class="item-slot-key"><p>{{ slot }}</p></div>
+                        <template v-if="getHotbarItemInSlot(slot)">
+                            <div class="item-slot-img"><img :src="'images/' + getHotbarItemInSlot(slot).image" alt="" /></div>
+                            <div class="item-slot-amount"><p>{{ getHotbarItemInSlot(slot).amount }}</p></div>
+                            <div class="item-slot-label"><p>{{ getHotbarItemInSlot(slot).label }}</p></div>
+                            <div class="item-slot-durability" v-if="hasQuality(getHotbarItemInSlot(slot))">
+                                <div class="item-slot-durability-fill" :style="{ width: qualityOf(getHotbarItemInSlot(slot)) + '%' }" :class="qualityClass(getHotbarItemInSlot(slot))"></div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ item box notifications ══ -->
+            <div class="notification-container">
+                <transition-group name="ibox">
+                    <div v-for="n in itemNotifications" :key="n.id" class="notification-slot" :class="n.kind">
+                        <div class="n-ico"><img :src="n.image" alt="" /></div>
+                        <div class="n-main">
+                            <div class="n-type">{{ n.type }}</div>
+                            <div class="n-label">{{ n.label }}</div>
+                        </div>
+                        <div class="n-amount">×{{ n.amount }}</div>
+                    </div>
+                </transition-group>
+            </div>
+
+            <!-- ══ required items ══ -->
+            <div class="required-item-container" v-if="showRequiredItems">
+                <div class="required-item">
+                    <div v-for="(item, index) in requiredItems" :key="index" class="req-slot">
+                        <img :src="'images/' + item.image" alt="" />
+                        <p>{{ item.label }}</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ weapon attachments ══ -->
+            <div class="weapon-attachments" v-if="showWeaponAttachments">
+                <div class="wa-head">Attachments — click one to remove it<span class="material-icons-round wa-close" @click="openWeaponAttachments()">close</span></div>
+                <img class="weapon" :src="'images/' + selectedWeapon.image" alt="" />
+                <div class="wa-list">
+                    <div class="attachment-slot" v-for="(attachment, i) in selectedWeaponAttachments" :key="i" @click="removeAttachment(attachment)">
+                        <img :src="'images/' + attachment.attachment + '.png'" alt="" />
+                        <p>{{ attachment.label || attachment.attachment }}</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ══ context menu ══ -->
+            <ul v-if="showContextMenu" class="context-menu" :style="{ top: contextMenuPosition.top, left: contextMenuPosition.left }">
+                <li v-if="contextMenuItem.useable" @click="useItem(contextMenuItem)"><i class="fas fa-hand-pointer"></i>Use</li>
+                <li @click="toggleFavorite(contextMenuItem)"><i class="fas fa-star"></i>{{ isFavorite(contextMenuItem) ? "Unfavorite" : "Favorite" }}</li>
+                <li class="has-sub" :class="{ locked: isFavorite(contextMenuItem) }">
+                    <i class="fas fa-hand-holding-hand"></i>Give<i class="fas fa-chevron-right sub-arrow"></i>
+                    <ul class="submenu" v-if="!isFavorite(contextMenuItem)">
+                        <li @click="giveItem(contextMenuItem, 1)">One</li>
+                        <li @click="giveItem(contextMenuItem, 'half')">Half</li>
+                        <li @click="giveItem(contextMenuItem, 'all')">All</li>
+                    </ul>
+                </li>
+                <li class="has-sub" :class="{ locked: isFavorite(contextMenuItem) }">
+                    <i class="fas fa-arrow-down"></i>Drop<i class="fas fa-chevron-right sub-arrow"></i>
+                    <ul class="submenu" v-if="!isFavorite(contextMenuItem)">
+                        <li @click="dropItem(contextMenuItem, 1)">One</li>
+                        <li @click="dropItem(contextMenuItem, 'half')">Half</li>
+                        <li @click="dropItem(contextMenuItem, 'all')">All</li>
+                    </ul>
+                </li>
+                <li v-if="backpackMeta && contextMenuItem.name !== 'backpack'" @click="moveToBackpack(contextMenuItem)"><i class="fas fa-suitcase"></i>Put in backpack</li>
+                <li v-if="contextMenuItem.amount > 1" @click="splitAndPlaceItem(contextMenuItem, 'player')"><i class="fas fa-scissors"></i>Split</li>
+                <li v-if="contextMenuItem.name.includes('weapon_')" @click="copySerial()"><i class="fas fa-barcode"></i>Copy serial</li>
+                <li v-if="contextMenuItem.name.includes('weapon_')" @click="openWeaponAttachments()"><i class="fas fa-puzzle-piece"></i>Attachments</li>
+            </ul>
+        </div>
+    </body>
+</html>
