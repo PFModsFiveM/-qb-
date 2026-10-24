@@ -1097,3 +1097,36 @@ All three resources now include `@pfm-banking/payouts.lua`. Every payment has a 
 - `pf-policemdt-DEV` fines and bonuses;
 - `pf-rentals`;
 - `pf-governmentwebsiteonly` (to be removed).
+
+### Batch 5d — the remaining direct money calls
+
+**Audit correction:** my earlier audits searched only for `Functions.AddMoney/RemoveMoney`. They missed the method form `Player.AddMoney(...)`, which pfm-fuel, pfm-garages, pfm-smallresources, pfm-weapons, pfm-cityhall and the [qb] pfm-ambulancejob use. A wider search (`.AddMoney(`, `.RemoveMoney(`, `.SetMoney(`) found them, and they are covered below.
+
+| Resource | Commit | Moved to the ledger | Bugs fixed on the way |
+|---|---|---|---|
+| pfm-inventory | 8362d43 | shop purchases (cash), refund on a failed hand-over, sales tax by exact amount and key | stock is now reserved before payment (two purchases at once could oversell; not reproducible in the single-threaded mocks) |
+| pfm-ambulancejob ([qb]) / pf-ambulancejob ([pfscripts]) | 5aebb3a / f1d8d49 | hospital bill (5 places each), revive fee | the ambulance account was credited even when the patient could not pay |
+| pfm-crypto | 52d4246 | the bank side of buying and selling Qbit | selling now gives the coins back if the bank cannot pay. Coins stay a direct balance: the ledger only carries bank and cash in cents |
+| pfm-fuel, pfm-garages, pfm-smallresources, pfm-weapons, pfm-truckrobbery, pfm-cityhall | b4636bf | refuel, jerry can, impound release, car wash, weapon repair (+ refund), armored truck activation, city hall ID | <ul><li>the fuel tax is now handed over by its exact amount</li><li>the impound fee credits the treasury only after a successful charge</li><li>pfm-cityhall crashed on an unknown hall</li></ul> |
+| pf-government civil | 20231ad | city hall ID fee | the fee was kept when the document could not be handed over |
+| pf-policemdt-DEV | ab54a15 | sentence fine (citizen to `system:pf-policemdt`, then department, same key) | **fines never reached the police account**: the deposit called a `pfm-management` export that does not exist and fell back to a `management_funds` table nothing reads. Also removed unused bonus helpers that rewrote offline money records |
+| pf-rentals | ff70708 | rental payment | <ul><li>the client sent the total price</li><li>**`pf-rentals:spawnVehicle` spawned any model anywhere**; now only the rented car, once, within 50 m</li></ul> |
+| pfm-core | 0b0a11f | `/givemoney`, `/setmoney` for bank and cash (via `system:admin`) | negative or missing amounts are refused |
+
+**Left direct on purpose:**
+- **Fallbacks without pfm-banking:** the paycheck, the admin commands, and the MDT's other-framework fallbacks only run when pfm-banking is not started (the paycheck refuses society pay in that case).
+- **Crypto coins:** buying, mining a stick and transferring coins need a new account kind in the ledger.
+- **`pf-governmentwebsiteonly`:** an old copy that should be removed from start-up.
+
+**Tests:**
+- New or changed mocked specs:
+  - `inventory_shop_spec` (6), `ambulance_bills_spec` and `pf_ambulance_bills_spec` (5 each), `crypto_spec` (4), `service_fees_spec` (2), `civil_fee_spec` (3), `mdt_fine_spec` (2), `rentals_spec` (4), `admin_money_spec` (4);
+  - `truckrobbery_spec` now checks the activation fee. It was broken by b4636bf and fixed in 0b0a11f.
+- Mocks gained `RegisterCommand`, `ExecuteCommand` and `WasEventCanceled`.
+- Full mocked suite: **355 passed, 0 failed, 42 spec files**.
+- Real-database suite, re-run after these changes on the throwaway MariaDB: **54 passed, 0 failed**.
+- Nothing was run in game or on staging.
+
+**Duplicates to resolve before going live:**
+- pfm-ambulancejob ([qb]) and pf-ambulancejob ([pfscripts]) register the same `hospital:server:*` events. Started together, every bill and revive runs twice. Both are fixed, but only one should run.
+- The same applies to pfm-cityhall and pf-government civil services; pf-government already disables its civil services while pfm-cityhall runs.
