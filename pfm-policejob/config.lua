@@ -200,3 +200,6 @@ Config.Gameplay = {
         BlipSeconds = 60,          -- how long the backup blip flashes
     },
 }
+
+-- Highest fine or bill an officer can issue with /fine or the bill menu
+Config.MaxFine = 50000

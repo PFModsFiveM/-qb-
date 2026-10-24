@@ -4,6 +4,9 @@ local function IsOnDutyLeo(Player)
     return Player and Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty
 end
 
+-- seized cash is held here until an officer opens the evidence bag (server/main.lua pays from it)
+EVIDENCE_ACCOUNT = 'system:pfm-policejob-evidence'
+
 RegisterNetEvent('police:server:SearchPlayer', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -192,9 +195,16 @@ RegisterNetEvent('police:server:BillPlayer', function(playerId, price)
     price = tonumber(price)
     if not price or price <= 0 or price ~= price or price == math.huge then return end
     price = math.floor(price)
+    if price > (Config.MaxFine or 50000) then return end
 
-    OtherPlayer.Functions.RemoveMoney('bank', price, 'paid-bills')
-    exports['pfm-banking']:AddMoney('police', price, 'Fine paid')
+    -- taken through the ledger and only then credited to the police account (the payment was not
+    -- checked, so billing someone without the money still credited the police)
+    local key = ('pfm-policejob:bill:%s:%s'):format(OtherPlayer.PlayerData.citizenid, PFPayout.NewId())
+    if not PFPayout.Charge(OtherPlayer, 'bank', price, { key = key, kind = 'fine', reason = 'Police bill', quiet = true }) then
+        TriggerClientEvent('QBCore:Notify', src, 'They cannot pay this bill', 'error')
+        return
+    end
+    PFPayout.PaySociety('police', price, { key = key .. ':society', reason = 'Fine paid' })
     TriggerClientEvent('QBCore:Notify', OtherPlayer.PlayerData.source, Lang:t('info.fine_received', { fine = price }))
 end)
 
@@ -239,10 +249,19 @@ RegisterNetEvent('police:server:SeizeCash', function(playerId)
     local SearchedPlayer = exports['pfm-core']:GetPlayer(playerId)
     if not Player or not SearchedPlayer then return end
     if not IsOnDutyLeo(Player) then return end
-    local moneyAmount = SearchedPlayer.PlayerData.money['cash']
-    local info = { cash = moneyAmount }
-    SearchedPlayer.Functions.RemoveMoney('cash', moneyAmount, 'police-cash-seized')
-    exports['pfm-inventory']:AddItem(src, 'moneybag', 1, false, info, 'police:server:SeizeCash')
+    local moneyAmount = math.floor(tonumber(SearchedPlayer.PlayerData.money['cash']) or 0)
+    if moneyAmount <= 0 then return end
+    -- The cash goes to the police evidence account and the bag carries an id; opening the bag pays
+    -- out of that account once per bag (a duplicated bag cannot pay twice).
+    local bagId = PFPayout.NewId()
+    local key = 'pfm-policejob:seize:' .. bagId
+    if not PFPayout.Charge(SearchedPlayer, 'cash', moneyAmount, { key = key, to = EVIDENCE_ACCOUNT, kind = 'seizure', reason = 'Cash seized by police', quiet = true }) then return end
+    local info = { cash = moneyAmount, bag = bagId }
+    if not exports['pfm-inventory']:AddItem(src, 'moneybag', 1, false, info, 'police:server:SeizeCash') then
+        PFPayout.Transfer({ from = EVIDENCE_ACCOUNT, to = ('player:%s:cash'):format(SearchedPlayer.PlayerData.citizenid), amount = moneyAmount, key = key .. ':returned', kind = 'refund', reason = 'Seizure undone' })
+        TriggerClientEvent('QBCore:Notify', src, 'Your inventory is full', 'error')
+        return
+    end
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['moneybag'], 'add')
     TriggerClientEvent('QBCore:Notify', SearchedPlayer.PlayerData.source, Lang:t('info.cash_confiscated'))
 end)
@@ -286,9 +305,17 @@ RegisterNetEvent('police:server:RobPlayer', function(playerId)
         return
     end
 
-    local money = SearchedPlayer.PlayerData.money['cash']
-    Player.AddMoney('cash', money, 'police-player-robbed')
-    SearchedPlayer.Functions.RemoveMoney('cash', money, 'police-player-robbed')
+    -- one ledger transfer from the victim's cash to the robber's (the robber used to be paid first,
+    -- then the victim's cash taken, as two separate steps)
+    local money = math.floor(tonumber(SearchedPlayer.PlayerData.money['cash']) or 0)
+    if money > 0 then
+        local res = PFPayout.Transfer({
+            from = ('player:%s:cash'):format(SearchedPlayer.PlayerData.citizenid), to = ('player:%s:cash'):format(Player.PlayerData.citizenid),
+            amount = money, key = ('pfm-policejob:rob:%s:%s'):format(SearchedPlayer.PlayerData.citizenid, PFPayout.NewId()),
+            kind = 'robbery', reason = 'Robbed', actor = Player.PlayerData.citizenid,
+        })
+        if not res.ok then money = 0 end
+    end
     exports['pfm-inventory']:OpenInventoryById(src, playerId)
     TriggerClientEvent('QBCore:Notify', SearchedPlayer.PlayerData.source, Lang:t('info.cash_robbed', { money = money }))
     TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('info.stolen_money', { stolen = money }))

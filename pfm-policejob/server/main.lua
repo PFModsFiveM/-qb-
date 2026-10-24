@@ -282,8 +282,19 @@ QBCore.Functions.CreateUseableItem('moneybag', function(source, item)
     if Player.PlayerData.job.type ~= 'leo' then return end
     local cash = tonumber(item.info.cash)
     if not cash or cash <= 0 or cash ~= cash or cash == math.huge then return end
+    -- paid out of the evidence account the cash was seized into, once per bag id; bags made before
+    -- this change have no id and are paid under a fresh key
+    local bagKey = 'pfm-policejob:moneybag:' .. tostring(item.info.bag or ('legacy-' .. PFPayout.NewId()))
     if not exports['pfm-inventory']:RemoveItem(src, 'moneybag', 1, item.slot, 'qb-policejob:moneybag') then return end
-    Player.AddMoney('cash', math.floor(cash), 'qb-policejob:moneybag')
+    local res = PFPayout.Transfer({
+        from = 'system:pfm-policejob-evidence', to = ('player:%s:cash'):format(Player.PlayerData.citizenid),
+        amount = math.floor(cash), key = bagKey, kind = 'seizure', reason = 'Evidence bag opened', actor = Player.PlayerData.citizenid,
+    })
+    if not res.ok then
+        exports['pfm-inventory']:AddItem(src, 'moneybag', 1, false, item.info, 'qb-policejob:moneybag-return')
+    elseif res.duplicate then
+        TriggerClientEvent('QBCore:Notify', src, 'This evidence bag was already opened', 'error')
+    end
 end)
 
 -- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered

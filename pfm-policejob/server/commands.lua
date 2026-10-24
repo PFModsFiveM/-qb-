@@ -171,9 +171,9 @@ end)
 QBCore.Commands.Add('fine', Lang:t('commands.fine'), { { name = 'id', help = Lang:t('info.player_id') }, { name = 'amount', help = Lang:t('info.amount') } }, false, function(source, args)
     local biller = exports['pfm-core']:GetPlayer(source)
     local billed = exports['pfm-core']:GetPlayer(tonumber(args[1]))
-    local amount = tonumber(args[2])
+    local amount = math.floor(tonumber(args and args[2]) or 0)
 
-    if biller.PlayerData.job.type ~= 'leo' then
+    if not biller or biller.PlayerData.job.type ~= 'leo' or not biller.PlayerData.job.onduty then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.on_duty_police_only'), 'error')
         return
     end
@@ -188,21 +188,22 @@ QBCore.Commands.Add('fine', Lang:t('commands.fine'), { { name = 'id', help = Lan
         return
     end
 
-    if amount <= 0 then
+    -- a whole amount up to Config.MaxFine (a missing amount used to crash the command; no limit)
+    if amount <= 0 or amount > (Config.MaxFine or 50000) then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.amount_higher'), 'error')
         return
     end
 
-    if billed.Functions.RemoveMoney('bank', amount, 'paid-fine') then
+    -- Bank first, then cash, through the ledger; the fine then goes to the department.
+    -- (RemoveMoney + AddMoney were two separate steps that a crash could split.)
+    local key = ('pfm-policejob:fine:%s:%s'):format(billed.PlayerData.citizenid, PFPayout.NewId())
+    local paidFrom = PFPayout.Charge(billed, { 'bank', 'cash' }, amount, { key = key, kind = 'fine', reason = 'Police fine', quiet = true })
+    if paidFrom then
+        PFPayout.PaySociety(biller.PlayerData.job.name, amount, { key = key .. ':society', reason = 'Fine' })
         TriggerClientEvent('QBCore:Notify', source, Lang:t('info.fine_issued'), 'success')
         TriggerClientEvent('QBCore:Notify', billed.PlayerData.source, Lang:t('info.received_fine'))
-        exports['pfm-banking']:AddMoney(biller.PlayerData.job.name, amount, 'Fine')
-    elseif billed.Functions.RemoveMoney('cash', amount, 'paid-fine') then
-        TriggerClientEvent('QBCore:Notify', source, Lang:t('info.fine_issued'), 'success')
-        TriggerClientEvent('QBCore:Notify', billed.PlayerData.source, Lang:t('info.received_fine'))
-        exports['pfm-banking']:AddMoney(biller.PlayerData.job.name, amount, 'Fine')
     else
-        MySQL.Async.insert('INSERT INTO phone_invoices (citizenid, amount, society, sender, sendercitizenid) VALUES (?, ?, ?, ?, ?)', { billed.PlayerData.citizenid, amount, biller.PlayerData.job.name, biller.PlayerData.charinfo.firstname, biller.PlayerData.citizenid }, function(id)
+        MySQL.insert('INSERT INTO phone_invoices (citizenid, amount, society, sender, sendercitizenid) VALUES (?, ?, ?, ?, ?)', { billed.PlayerData.citizenid, amount, biller.PlayerData.job.name, biller.PlayerData.charinfo.firstname, biller.PlayerData.citizenid }, function(id)
             if id then
                 TriggerClientEvent('qb-phone:client:AcceptorDenyInvoice', billed.PlayerData.source, id, biller.PlayerData.charinfo.firstname, biller.PlayerData.job.name, biller.PlayerData.citizenid, amount, GetInvokingResource())
             end
