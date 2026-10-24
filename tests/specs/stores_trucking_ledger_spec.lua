@@ -38,8 +38,16 @@ Config.WorkTruck = {
 }
 
 -- pf-government stub
-Gov = { accept = true, credited = {}, keys = {} }
+Gov = { accept = true, credited = {}, keys = {}, perms = {}, fines = {} }
 Mock.exportsByResource['pf-government'] = {
+    HasPermission = function(_, src, perm)
+        local p = Gov.perms[src]
+        return p ~= nil and (p[perm] == true or p.all == true)
+    end,
+    IssueFineImmediate = function(_, target, amount)
+        Gov.fines[#Gov.fines + 1] = { target = target, amount = amount }
+        return true, { billId = #Gov.fines }
+    end,
     GetSalesTaxBreakdown = function(_, subtotal)
         local tax = math.floor(subtotal * 10 + 0.5) / 100
         return { subtotal = subtotal, tax = tax, total = subtotal + tax, rate = 10 }
@@ -226,7 +234,8 @@ BeforeEach = function()
             return true
         end
     end
-    Gov.accept, Gov.credited, Gov.keys = true, {}, {}
+    Gov.accept, Gov.credited, Gov.keys, Gov.perms, Gov.fines = true, {}, {}, {}, {}
+    Mock.gameTimer = Mock.gameTimer + 100000 -- refills pf-computer's per-player call budget
     resetStore()
     for k in pairs(BankingAccounts) do BankingAccounts[k] = nil end   -- pfm-banking's in-memory account cache
     L.ready, L.failed = false, false
@@ -362,6 +371,21 @@ describe('pf-trucking pay', function()
     end
     local function claim(id) return cb('pf-trucking:server:claimContract', DRIVER, id) end
 
+    it('the AcceptJob export finds and claims the same contract the app sees, once', function()
+        local id = postJob()
+        local res = Mock.selfExport('AcceptJob')(DRIVER, id)
+        assert_true(res.ok, 'contract found')
+        assert_eq(res.job.id, id)
+        assert_false(claim(id).ok, 'already claimed: not claimable twice')
+        local listed = false
+        for _, j in ipairs(Mock.selfExport('GetAvailableJobs')(DRIVER)) do if j.id == id then listed = true end end
+        assert_false(listed, 'no longer listed as available')
+        assert_true(Mock.selfExport('CancelContract')(DRIVER).ok)
+        listed = false
+        for _, j in ipairs(Mock.selfExport('GetAvailableJobs')(DRIVER)) do if j.id == id then listed = true end end
+        assert_true(listed, 'a cancelled contract goes back to the pool')
+        assert_false(Mock.selfExport('AcceptJob')(DRIVER, 'no-such-id').ok)
+    end)
     it('completing away from the drop-off pays nothing and keeps the job', function()
         claim(postJob())
         Mock.clock = Mock.clock + 600
@@ -742,36 +766,171 @@ describe('pf-computer company accounts are the job bank account', function()
         assert_eq(bank('mechanic'), 880)
         Mock.exportsByResource['pf-mechanicjob'] = nil    end)
 end)
-describe('pf-computer staff-only events', function()
+describe('pf-computer world computers', function()
     local function spawned() return Mock.clientEventsNamed('pf-computer:client:spawnProp') end
-    local prop = { model = 'prop_laptop_01a', x = 10.0, y = 20.0, z = 30.0, heading = 90.0 }
-
-    it('a player without staff permission cannot place or delete computers', function()
+    local function deleted() return Mock.clientEventsNamed('pf-computer:client:deleteProp') end
+    local SPOT = vector3(10.0, 20.0, 30.0)
+    local prop = { model = 'prop_laptop_01a', x = 10.0, y = 20.0, z = 30.0, heading = 450.0 }
+    local function staff(...) local a = {} for _, src in ipairs({ ... }) do a[src] = { admin = true } end Mock.aces = a end
+    local function clearProps()
+        -- remove whatever earlier tests saved, as a senior admin standing on each spot
+        Mock.aces = { [OWNER] = { god = true } }
+        for _ = 1, 20 do
+            Mock.coords[OWNER] = SPOT
+            Mock.fireNet('pf-computer:server:deleteProp', OWNER, SPOT)
+            Mock.coords[OWNER] = vector3(500.0, 500.0, 30.0)
+            Mock.fireNet('pf-computer:server:deleteProp', OWNER, vector3(500.0, 500.0, 30.0))
+        end
+        Mock.reset()
         Mock.aces = {}
+    end
+
+    it('players without staff permission cannot place or remove computers', function()
+        clearProps()
+        Mock.coords[SHOPPER] = SPOT
         Mock.fireNet('pf-computer:server:saveProp', SHOPPER, prop)
         assert_eq(#spawned(), 0)
-        Mock.aces = { [OWNER] = { admin = true } }
+    end)
+    it('staff place computers next to themselves, with a server id and a clean heading', function()
+        clearProps()
+        staff(OWNER)
+        Mock.coords[OWNER] = vector3(900.0, 900.0, 30.0)
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)          -- across the map
+        assert_eq(#spawned(), 0)
+        Mock.coords[OWNER] = SPOT
         Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)
         assert_eq(#spawned(), 1)
-        Mock.aces = {}
-        Mock.reset()
-        Mock.fireNet('pf-computer:server:deleteProp', SHOPPER, vector3(10.0, 20.0, 30.0))
-        assert_eq(#Mock.clientEventsNamed('pf-computer:client:deleteProp'), 0)
-        Mock.aces = { [OWNER] = { admin = true } }
-        Mock.fireNet('pf-computer:server:deleteProp', OWNER, vector3(10.0, 20.0, 30.0))
-        assert_eq(#Mock.clientEventsNamed('pf-computer:client:deleteProp'), 1)
+        local sent = spawned()[1].args[1]
+        assert_true(type(sent.id) == 'string')
+        assert_eq(sent.heading, 90.0)
+        assert_eq(sent.placedBy, nil, 'who placed it is not broadcast')
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)          -- same spot again
+        assert_eq(#spawned(), 1)
         Mock.aces = {}
     end)
-    it('staff can only place computer models, at real coordinates', function()
-        Mock.aces = { [OWNER] = { admin = true } }
+    it('only allowed models, real coordinates and tables are accepted', function()
+        clearProps()
+        staff(OWNER)
+        Mock.coords[OWNER] = vector3(1.0, 1.0, 1.0)
         Mock.fireNet('pf-computer:server:saveProp', OWNER, { model = 'prop_big_cargo_ship', x = 1.0, y = 1.0, z = 1.0 })
         Mock.fireNet('pf-computer:server:saveProp', OWNER, { model = 'prop_laptop_01a', x = 0 / 0, y = 1.0, z = 1.0 })
         Mock.fireNet('pf-computer:server:saveProp', OWNER, 'not a table')
         assert_eq(#spawned(), 0)
         Mock.aces = {}
     end)
+    it("staff cannot remove another staff member's computer; a senior admin can", function()
+        clearProps()
+        staff(OWNER, SHOPPER)
+        Mock.coords[OWNER], Mock.coords[SHOPPER] = SPOT, SPOT
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)
+        Mock.fireNet('pf-computer:server:deleteProp', SHOPPER, SPOT)
+        assert_eq(#deleted(), 0)
+        Mock.aces[SHOPPER] = { admin = true, ['pf-computer.admin.all'] = true }
+        Mock.fireNet('pf-computer:server:deleteProp', SHOPPER, SPOT)
+        assert_eq(#deleted(), 1)
+        Mock.aces = {}
+    end)
+    it('removal needs the staff member beside the computer, whatever coordinates the client sends', function()
+        clearProps()
+        staff(OWNER)
+        Mock.coords[OWNER] = SPOT
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)
+        Mock.coords[OWNER] = vector3(900.0, 900.0, 30.0)
+        Mock.fireNet('pf-computer:server:deleteProp', OWNER, SPOT)
+        assert_eq(#deleted(), 0)
+        Mock.coords[OWNER] = SPOT
+        Mock.fireNet('pf-computer:server:deleteProp', OWNER, SPOT)
+        assert_eq(#deleted(), 1)
+        Mock.aces = {}
+    end)
+    it('a player who joins later receives the saved computers', function()
+        clearProps()
+        staff(OWNER)
+        Mock.coords[OWNER] = SPOT
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)
+        Mock.reset()
+        Mock.fireNet('pf-computer:server:requestProps', SHOPPER)
+        assert_eq(#spawned(), 1)
+        assert_eq(spawned()[1].target, SHOPPER)
+        Mock.aces = {}
+    end)
     it('clients can no longer mark job supply orders as picked up', function()
         assert_eq(Mock.netHandlers['pf-computer:server:supplies:completeOrder'], nil)
         assert_true(Mock.eventHandlers['pf-computer:server:supplies:completeOrder'] ~= nil)
+    end)
+end)
+
+
+describe('pf-computer action security', function()
+    local function pc(action, src, payload)
+        Mock.clientEvents = {}
+        Mock.fireNet('pf-computer:server:callback', src, 11, action, payload)
+        local ev = Mock.clientEventsNamed('pf-computer:client:callback')[1]
+        return ev and ev.args[2]
+    end
+    local function setJob(src, name, grade, isboss)
+        Mock.players[src].PlayerData.job = { name = name, label = name, isboss = isboss or false, grade = { level = grade or 0 } }
+    end
+
+    it('a grade-0 police officer cannot fine anyone; a government role with "fines" can, within the limit', function()
+        setJob(OWNER, 'police', 0)
+        local res = pc('gov:fines:issue', OWNER, { targetCitizenId = 'SHOP1', amount = 1000000000 })
+        assert_false(res.ok)
+        assert_eq(res.error, 'not_authorized')
+        assert_eq(#Gov.fines, 0)
+        setJob(OWNER, 'government', 1)
+        Gov.perms[OWNER] = { fines = true, audit = true }
+        assert_false(pc('gov:fines:issue', OWNER, { targetCitizenId = 'SHOP1', amount = 1000000000 }).ok)
+        assert_true(pc('gov:fines:issue', OWNER, { targetCitizenId = 'SHOP1', amount = 250 }).ok)
+        assert_eq(Gov.fines[1].amount, 250)
+    end)
+    it('taxes, budgets and utilities need their own government permission', function()
+        setJob(OWNER, 'government', 0)
+        Gov.perms[OWNER] = { utilities = true, audit = true }
+        assert_eq(pc('gov:taxes:update', OWNER, { taxType = 'sales', rate = 0 }).error, 'not_authorized')
+        assert_eq(pc('gov:budgets:update', OWNER, {}).error, 'not_authorized')
+    end)
+    it('announcements cannot be posted without the government permission, and the old net event is gone', function()
+        setJob(SHOPPER, 'police', 4, true)
+        assert_eq(pc('gov:announcements:create', SHOPPER, { title = 'Free money', body = 'x' }).error, 'not_authorized')
+        assert_eq(Mock.netHandlers['pf-computer:announcements:create'], nil)
+        assert_eq(Mock.netHandlers['pf-computer:gov:laws:sync'], nil)
+        assert_true(Mock.eventHandlers['pf-computer:gov:laws:sync'] ~= nil, 'still reachable from pf-government')
+    end)
+    it("players only see and delete their own mail, and cannot send as someone else", function()
+        local sent = pc('emails:send', OWNER, { to = 'shop1@los-santos.gov', from = 'mayor@los-santos.gov', subject = 'Hi', body = 'hello', mailbox = 'shop1@los-santos.gov' })
+        assert_true(sent.ok)
+        assert_eq(sent.data.from, 'OWN1@los-santos.gov')
+        local mine = pc('emails:list', OWNER, { mailbox = 'shop1@los-santos.gov' })
+        for _, e in ipairs(mine.data) do assert_eq(e.mailbox, 'OWN1@los-santos.gov') end
+        local theirs = pc('emails:list', SHOPPER, {})
+        assert_eq(#theirs.data, 1, 'the recipient gets it')
+        local id = theirs.data[1].id
+        assert_false(pc('emails:delete', OWNER, { emailId = id, mailbox = 'shop1@los-santos.gov' }).ok)
+        assert_true(pc('emails:delete', SHOPPER, { emailId = id }).ok)
+    end)
+    it('a domain costs the server price through the ledger, whatever price the client sends', function()
+        local before = money(OWNER)
+        local res = pc('browser:domain:buy', OWNER, { domain = 'cheapsite.ls', price = 0 })
+        assert_true(res.ok, tostring(res.error))
+        assert_eq(money(OWNER), before - 2500)
+    end)
+    it('business writes need the boss, not just the job', function()
+        setJob(OWNER, 'mechanic', 4, false)
+        assert_eq(pc('business:supplies:orders:create', OWNER, { items = { { item = 'x', quantity = 1 } } }).error, 'not_authorized')
+        assert_eq(pc('business:menu:add', OWNER, { name = 'x', price = -50 }).error, 'not_authorized')
+    end)
+    it('malformed calls are refused instead of crashing', function()
+        assert_eq(pc(42, OWNER, {}).error, 'bad_request')
+        assert_eq(pc('emails:list', OWNER, 'not a table').error, 'bad_request')
+        assert_eq(pc('no:such:action', OWNER, {}).error, 'unknown_action')
+    end)
+    it('a burst of calls is rate limited', function()
+        local limited = false
+        for _ = 1, 40 do
+            local r = pc('jobs:list', OWNER, {})
+            if r and r.error == 'rate_limited' then limited = true break end
+        end
+        assert_true(limited)
     end)
 end)
