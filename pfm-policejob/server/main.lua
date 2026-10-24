@@ -285,3 +285,19 @@ QBCore.Functions.CreateUseableItem('moneybag', function(source, item)
     if not exports['pfm-inventory']:RemoveItem(src, 'moneybag', 1, item.slot, 'qb-policejob:moneybag') then return end
     Player.AddMoney('cash', math.floor(cash), 'qb-policejob:moneybag')
 end)
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+-- (every leo job; police also return impounded player cars, so any catalog model is allowed on duty)
+CreateThread(function()
+    local models = { Config.PoliceHelicopter }
+    for _, grade in pairs(Config.AuthorizedVehicles or {}) do
+        for model in pairs(grade) do models[#models + 1] = model end
+    end
+    for model in pairs(Config.WhitelistedVehicles or {}) do models[#models + 1] = model end
+    for name, job in pairs(exports['pfm-core']:GetShared('Jobs') or {}) do
+        if job.type == 'leo' or name == 'police' then
+            pcall(function() exports['pfm-core']:RegisterJobVehicles(name, models, { catalog = true }) end)
+        end
+    end
+end)

@@ -47,6 +47,7 @@ RegisterNetEvent('qb-tow:server:DoBail', function(bool, vehInfo)
         if paidFrom then
             Bail[Player.PlayerData.citizenid] = { amount = Config.BailPrice, id = bailId }
             TriggerClientEvent('QBCore:Notify', src, Lang:t(paidFrom == 'cash' and 'success.paid_with_cash' or 'success.paid_with_bank', { value = Config.BailPrice }), 'success')
+            exports['pfm-core']:GrantVehicleSpawn(src, vehInfo)
             TriggerClientEvent('qb-tow:client:SpawnVehicle', src, vehInfo)
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_deposit', { value = Config.BailPrice }), 'error')
@@ -160,4 +161,10 @@ QBCore.Commands.Add('tow', Lang:t('info.tow'), {}, false, function(source)
     if Player.PlayerData.job.name == 'tow' or Player.PlayerData.job.name == 'mechanic' then
         TriggerClientEvent('qb-tow:client:TowVehicle', source)
     end
+end)
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+CreateThread(function()
+    pcall(function() exports['pfm-core']:RegisterJobVehicles('tow', Config.Vehicles or {}) end)
 end)

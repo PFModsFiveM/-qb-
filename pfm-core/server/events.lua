@@ -273,6 +273,13 @@ end)
 -- use the netid on the client with the NetworkGetEntityFromNetworkId native
 -- convert it to a vehicle via the NetToVeh native
 QBCore.Functions.CreateCallback('QBCore:Server:SpawnVehicle', function(source, cb, model, coords, warp)
+    -- only models the player's job or a server-granted ticket allows, near the player (vehicle_spawns.lua)
+    local ok, why = PFVehicleSpawns.Authorize(source, model, coords)
+    if not ok then
+        print(('[pfm-core] vehicle spawn refused for %s (%s): %s'):format(source, tostring(model), why))
+        cb(nil)
+        return
+    end
     local veh = QBCore.Functions.SpawnVehicle(source, model, coords, warp)
     cb(DoesEntityExist(veh) and NetworkGetNetworkIdFromEntity(veh) or nil)
 end)
@@ -282,6 +289,12 @@ end)
 -- use the netid on the client with the NetworkGetEntityFromNetworkId native
 -- convert it to a vehicle via the NetToVeh native
 QBCore.Functions.CreateCallback('QBCore:Server:CreateVehicle', function(source, cb, model, coords, warp)
+    local ok, why = PFVehicleSpawns.Authorize(source, model, coords)
+    if not ok then
+        print(('[pfm-core] vehicle spawn refused for %s (%s): %s'):format(source, tostring(model), why))
+        cb(nil)
+        return
+    end
     local veh = QBCore.Functions.CreateAutomobile(source, model, coords, warp)
     cb(DoesEntityExist(veh) and NetworkGetNetworkIdFromEntity(veh) or nil)
 end)

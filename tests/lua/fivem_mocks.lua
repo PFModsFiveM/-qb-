@@ -311,8 +311,11 @@ function Mock.newPlayer(src, citizenid)
 end
 
 -- ── exports ───────────────────────────────────────────────────────
+Mock.vehicleGrants = {}
 Mock.exportsByResource['pfm-core'] = {
     GetCoreObject = function() return QBCoreMock end,
+    GrantVehicleSpawn = function(_, src, model) Mock.vehicleGrants[#Mock.vehicleGrants + 1] = { src = src, model = model } return true end,
+    RegisterJobVehicles = function() return true end,
     GetPlayer = function(_, id) return Mock.players[id] end,
     GetShared = function(_, key) return QBCoreMock.Shared[key] end,
     GetPlayerByCitizenId = function(_, cid)

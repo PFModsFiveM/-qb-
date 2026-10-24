@@ -227,3 +227,9 @@ QBCore.Commands.Add('cleargarbroutes', 'Removes garbo routes for user (admin onl
     TriggerClientEvent('QBCore:Notify', source, Lang:t('success.clear_routes', { value = count }), 'success')
     Routes[CitizenId] = nil
 end, 'admin')
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+CreateThread(function()
+    pcall(function() exports['pfm-core']:RegisterJobVehicles(Config.Jobname or 'garbage', { Config.Vehicle }) end)
+end)

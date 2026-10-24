@@ -77,3 +77,15 @@ else
         TriggerClientEvent('Mic:ToggleBMic', source)
     end)
 end
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+CreateThread(function()
+    local models = {}
+    for _, location in pairs(Config.Locations or {}) do
+        for _, grade in pairs(location.vehicles or {}) do
+            for model in pairs(grade) do models[#models + 1] = model end
+        end
+    end
+    pcall(function() exports['pfm-core']:RegisterJobVehicles('reporter', models) end)
+end)

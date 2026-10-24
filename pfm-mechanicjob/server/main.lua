@@ -366,3 +366,14 @@ QBCore.Commands.Add('fix', 'Repair your vehicle (Admin Only)', {}, false, functi
     end
     TriggerClientEvent('qb-mechanicjob:client:fixEverything', source)
 end, 'admin')
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+-- (each shop is keyed by its job name)
+CreateThread(function()
+    for job, shop in pairs(Config.Shops or {}) do
+        if shop.vehicles and shop.vehicles.list then
+            pcall(function() exports['pfm-core']:RegisterJobVehicles(job, shop.vehicles.list) end)
+        end
+    end
+end)

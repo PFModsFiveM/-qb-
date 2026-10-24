@@ -88,6 +88,7 @@ RegisterNetEvent('qb-occasions:server:ReturnVehicle', function(vehicleData)
         if result[1].seller == Player.PlayerData.citizenid then
             MySQL.insert('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, state) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.license, Player.PlayerData.citizenid, vehicleData['model'], joaat(vehicleData['model']), vehicleData['mods'], vehicleData['plate'], 0 })
             MySQL.query('DELETE FROM occasion_vehicles WHERE occasionid = ? AND plate = ?', { vehicleData['oid'], vehicleData['plate'] })
+            exports['pfm-core']:GrantVehicleSpawn(src, result[1].model)
             TriggerClientEvent('qb-occasions:client:ReturnOwnedVehicle', src, result[1])
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
         else
@@ -197,6 +198,7 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
                 end)
             end
 
+            exports['pfm-core']:GrantVehicleSpawn(src, result[1].model)
             TriggerClientEvent('qb-occasions:client:BuyFinished', src, result[1])
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
             MySQL.query('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { result[1].plate, result[1].occasionid })

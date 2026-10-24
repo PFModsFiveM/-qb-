@@ -88,3 +88,11 @@ AddEventHandler('playerDropped', function()
     LastNpcPay[source] = nil
     Sessions[source] = nil
 end)
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+CreateThread(function()
+    local models = {}
+    for _, v in pairs(Config.AllowedVehicles or {}) do models[#models + 1] = v.model end
+    pcall(function() exports['pfm-core']:RegisterJobVehicles('bus', models) end)
+end)

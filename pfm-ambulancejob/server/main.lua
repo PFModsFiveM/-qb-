@@ -552,3 +552,13 @@ QBCore.Functions.CreateUseableItem('firstaid', function(source, item)
 end)
 
 exports('GetDoctorCount', function() return doctorCount end)
+
+-- Vehicles this job may spawn through pfm-core (QBCore:Server:SpawnVehicle only spawns registered
+-- job vehicles or vehicles the server granted a ticket for)
+CreateThread(function()
+    local models = { Config.Helicopter }
+    for _, grade in pairs(Config.AuthorizedVehicles or {}) do
+        for model in pairs(grade) do models[#models + 1] = model end
+    end
+    pcall(function() exports['pfm-core']:RegisterJobVehicles('ambulance', models) end)
+end)

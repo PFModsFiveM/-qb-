@@ -123,6 +123,7 @@ RegisterNetEvent('qb-shops:server:DoBail', function(bool)
         if paidFrom then
             Bail[Player.PlayerData.citizenid] = { amount = Config.TruckDeposit, id = bailId }
             TriggerClientEvent('QBCore:Notify', src, Lang:t(paidFrom == 'cash' and 'success.paid_with_cash' or 'success.paid_with_bank', { value = Config.TruckDeposit }), 'success')
+            exports['pfm-core']:GrantVehicleSpawn(src, 'boxville2')
             TriggerClientEvent('qb-shops:client:SpawnVehicle', src)
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_deposit', { value = Config.TruckDeposit }), 'error')
