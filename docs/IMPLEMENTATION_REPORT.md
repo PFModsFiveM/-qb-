@@ -1065,3 +1065,35 @@ All three resources now include `@pfm-banking/payouts.lua`. Every payment has a 
 - `pf-policemdt-DEV`, `pf-rentals`.
 
 **Found, not fixed:** `qb-phone:server:BillingEmail` in pfm-phone lets a client send fake "bill paid" mails to a job.
+
+### Batch 5c — police and vehicle shop money on the ledger
+
+| Resource | Commit | Moved to the ledger | Exploits fixed on the way |
+|---|---|---|---|
+| pfm-policejob | 8a0faff | <ul><li>`/fine` (bank then cash, then to the department, falling back to an invoice)</li><li>bill menu</li><li>cash seizure into `system:pfm-policejob-evidence`</li><li>evidence bag payout</li><li>robbing a cuffed player (victim to robber in one transfer)</li></ul> | <ul><li>the bill menu credited the police even when the payment failed</li><li>a duplicated evidence bag paid out twice (each bag now has an id)</li><li>`/fine` crashed on a missing amount, had no limit (new `Config.MaxFine` = 50000) and worked off duty</li><li>the robber was paid before the victim's cash was taken</li><li>seizing an empty pocket made a bag</li></ul> |
+| pfm-vehicleshop | df4c115 | <ul><li>showroom purchase</li><li>finance down payment, instalments and pay-off</li><li>dealer sale: dealership account and commission</li><li>paid `/transfervehicle`</li></ul> | <ul><li>anyone could "sell" a dealer car to a nearby player, who was charged without being asked; the seller earned the commission</li><li>`/transfervehicle` charged a nearby player any amount without asking</li><li>the car was written before payment, and the payment was never checked</li><li>free-use purchases accepted any model from anywhere</li><li>missing finance values crashed the handler; zero payments divided by zero</li></ul> |
+
+**Behaviour changes to check in game:**
+- Dealer sales and paid vehicle transfers now show the customer a pfm-menu offer (accept or decline, valid 60 s).
+- The amounts are unchanged:
+  - the dealership gets the full price, and the seller gets 10 % (`Config.Commission`; `Config.FinanceCommission` is still unused, as before);
+  - finance payments go to `system:pfm-vehicleshop`.
+
+**Tests (mocked):**
+- New specs: `police_money_spec` (8) and `vehicleshop_spec` (12).
+- On the pre-change code, 6 and 8 of them fail. Some of those failures are crashes or the missing confirmation step rather than wrong amounts.
+- Full suite: **324 passed, 0 failed, 34 spec files**.
+- Not run on the real database or staging.
+
+**Correction to my first reading of the vehicle shop:** the old finance instalment code looked as if it swapped the payment count and amount, but its two swaps cancel out, and the stored values were right. The new code computes them directly.
+
+**Still direct after this batch:**
+- `pfm-inventory` shop purchases;
+- `pfm-crypto` transfer;
+- `pfm-truckrobbery` activation;
+- the `pfm-core` paycheck and admin give/set;
+- `pf-ambulancejob` hospital bills and revive fee;
+- `pf-government` civil ID fee;
+- `pf-policemdt-DEV` fines and bonuses;
+- `pf-rentals`;
+- `pf-governmentwebsiteonly` (to be removed).
