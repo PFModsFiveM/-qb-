@@ -1022,3 +1022,13 @@ These tests use a fake database and fake FiveM natives. They prove the Lua logic
    - retire `pf-governmentwebsiteonly`;
    - fix `pfm-inventory/migrate.sql` and `vehshop.sql` so they work on fresh databases;
    - update the standalone repositories from `[pfscripts]` if they are still used.
+
+### Update: inventory work committed
+
+Your pfm-inventory and pfm-smallresources work, together with the drop fixes and exports above, is now committed on this branch:
+- 623a49d: freshness module and UI;
+- 7f2211d: drop security and item integrity, including `SaveStash` and `RegisterPerishables`;
+- 5f4fc64: consumables;
+- 1d6615f: pf-tablet config test.
+
+Where sections 2, 4 and 11 say "uncommitted", read "committed in these commits". The branch now runs on its own, and the `updateDrop` exploit is closed in committed code. Mocked suite: 277 passed, 0 failed. `leonida-id-maker/` stays untracked.
