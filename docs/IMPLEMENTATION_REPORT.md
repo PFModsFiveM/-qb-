@@ -1185,3 +1185,26 @@ All three resources now include `@pfm-banking/payouts.lua`. Every payment has a 
 - Fix: read `fromInventory, toInventory` and use `source`.
 
 **Still not verified:** no game client connected to staging.
+
+### Follow-up: stress, Gruppe6, and the removed [qb] duplicates
+
+| Change | Commit | Test |
+|---|---|---|
+| `pfm-hud` leaves stress to `pf-hud` while pf-hud is started (each change used to apply twice); on its own it limits a gain to 1–10 (any number was accepted, a negative one cleared stress) | 47ea23d | `hud_stress_spec` (4; all fail on the old code). Mocks: `Mock.fireNetAll` runs every handler of an event |
+| Gruppe6 (`pf-jobs`) reads pfm-inventory's move event in the right order (`fromInventory, toInventory`, mover = `source`). Bags taken out of a pickup stash were never counted with `ServerSideStash = false`, the current setting. Bags are now credited only to the player whose pickup it is | 40d5d86 | `gruppe6_stash_spec` (3; 2 fail on the old code) |
+| `pfm-garages` saves parked cars' mods itself (`qb-garages:server:SaveVehicleProps`, owner only). The save used to go to pfm-mechanicjob | 8b382fd | `service_fees_spec` (+2) |
+| **Removed `pfm-mechanicjob` and `pfm-scoreboard`** from [qb] (owner's decision: pf-mechanicjob and pf-scoreboard are the ones in use) | 594e382 | — |
+
+**Removal checks:**
+- The only other user of pfm-mechanicjob's server events was the pfm-garages mods save (moved above).
+- pf-computer falls back to its own blip.
+- pf-mechanicjob spawns its own vehicles and does not need pfm-core spawn registration.
+- The robberies' `qb-scoreboard:server:SetActivityBusy` calls become no-ops. The scoreboard's open net event of that name, which any client could fire, is gone.
+- pfm-mechanicjob's database tables are untouched.
+
+**Tests:**
+- Full mocked suite: **364 passed, 0 failed, 44 spec files**.
+- Staging (`docs/staging/server.staging.cfg`, updated): 97 resources started. The only failures are the missing `ox_lib` (so pf-mechanicjob does not start and illenium-appearance errors) and `kq_wheeldamage`'s licence.
+
+**Still to look at:**
+- Once ox_lib is installed, `pf-mechanicjob/server/garage_sync.lua` also handles `qb-garages:server:updateVehicleStats` (beside pfm-garages) with no check on who sends it. It updates its cached vehicle state for any plate.
