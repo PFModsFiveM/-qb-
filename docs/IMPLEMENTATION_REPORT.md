@@ -1064,4 +1064,4 @@ All three resources now include `@pfm-banking/payouts.lua`. Every payment has a 
 - `pf-ambulancejob`, `pf-government` civil fees;
 - `pf-policemdt-DEV`, `pf-rentals`.
 
-**Found, not fixed:** `qb-houses:server:BillingEmail` in pfm-phone lets a client send fake "bill paid" mails to a job.
+**Found, not fixed:** `qb-phone:server:BillingEmail` in pfm-phone lets a client send fake "bill paid" mails to a job.
