@@ -217,7 +217,8 @@ QBCore.Functions.CreateCallback('qb-banking:server:openBank', function(source, c
             accounts[#accounts + 1] = accountInfo
             if Statements[accountName] then statements[accountName] = Statements[accountName] end
         end
-        if accountInfo.users and string.find(accountInfo.users, citizenid) then
+        -- listed users by exact citizen id (string.find matched any id that contained it)
+        if accountInfo.account_type == 'shared' and accountInfo.citizenid ~= citizenid and canUseAccount(Player, accountInfo) then
             accounts[#accounts + 1] = accountInfo
             if Statements[accountName] then statements[accountName] = Statements[accountName] end
         end
@@ -245,7 +246,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:openATM', function(source, cb
         if accountInfo.citizenid == citizenid then
             accounts[#accounts + 1] = accountInfo
         end
-        if accountInfo.users and string.find(accountInfo.users, citizenid) then
+        if accountInfo.account_type == 'shared' and accountInfo.citizenid ~= citizenid and canUseAccount(Player, accountInfo) then
             accounts[#accounts + 1] = accountInfo
         end
         if (accountName == job.name and job.isboss) or (accountName == gang.name and gang.isboss) then
@@ -403,6 +404,10 @@ QBCore.Functions.CreateCallback('qb-banking:server:openAccount', function(source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
+    -- new shared accounts are IBAN accounts (Accounts tab); the legacy kind is being retired
+    if Config.MigrateLegacySharedAccounts ~= false then
+        return cb({ success = false, message = 'Open shared accounts from the Accounts tab' })
+    end
     local accountName = data.accountName
     if type(accountName) ~= 'string' or not accountName:match('^[%w_%-]+$') or #accountName > 50 or accountName == 'checking' then
         return cb({ success = false, message = Lang:t('error.error') })
@@ -539,9 +544,14 @@ CreateThread(function()
     -- the ledger migration widens bank_accounts and creates the baseline table first
     while not PFLedger.ready and not PFLedger.failed do Wait(100) end
     local accounts = MySQL.query.await('SELECT * FROM bank_accounts')
+    -- legacy shared accounts move to IBAN accounts (server_shared_migration.lua); moved ones are no
+    -- longer offered here, so nothing can reach their (empty) legacy rows
+    local moved = MigrateLegacySharedAccounts(accounts)
 
     for _, account in ipairs(accounts) do
-        Accounts[account.account_name] = account
+        if not moved[account.account_name] then
+            Accounts[account.account_name] = account
+        end
     end
 
     for job in pairs(QBCore.Shared.Jobs) do

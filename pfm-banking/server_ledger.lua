@@ -624,6 +624,38 @@ L.Migrations = {
             MySQL.query.await("ALTER TABLE `bank_accounts` MODIFY `account_type` ENUM('shared','job','gang','business') NOT NULL")
         end,
     },
+    {
+        version = 4,
+        name = 'ledger tables use the same collation as bank_accounts',
+        up = function()
+            -- The ledger tables were created with the server's default collation. Reconciliation joins
+            -- them to bank_accounts, which ships as utf8mb4_unicode_ci; on servers whose default is
+            -- different (MariaDB defaults to utf8mb4_general_ci) every reconcile failed with
+            -- "Illegal mix of collations". Found by running the ledger against a real MariaDB.
+            local target = MySQL.scalar.await([[SELECT TABLE_COLLATION FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bank_accounts']])
+            if type(target) ~= 'string' or not target:match('^utf8mb4_[%w_]+$') then return end
+            for _, tableName in ipairs({ 'pf_transactions', 'pf_ledger_baselines' }) do
+                local current = MySQL.scalar.await([[SELECT TABLE_COLLATION FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?]], { tableName })
+                if current and current ~= target then
+                    MySQL.query.await(('ALTER TABLE `%s` CONVERT TO CHARACTER SET utf8mb4 COLLATE %s'):format(tableName, target))
+                end
+            end
+        end,
+    },
+    {
+        version = 5,
+        name = 'record of legacy shared accounts moved to IBAN accounts',
+        up = {
+            [[CREATE TABLE IF NOT EXISTS `pf_shared_account_migration` (
+                `legacy_name` VARCHAR(50) NOT NULL,
+                `account_id` INT NOT NULL,
+                `migrated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`legacy_name`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
+        },
+    },
 }
 
 function L.Start()

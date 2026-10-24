@@ -35,6 +35,9 @@ Config.brandStyles = {
 }
 
 -- ── Multi-account banking (server_accounts.lua) ─────────────────────
+-- Legacy shared accounts (bank_accounts, type 'shared') are moved to IBAN accounts at start and the
+-- legacy "open account" is closed. Set to false to keep the legacy kind (not recommended).
+Config.MigrateLegacySharedAccounts = true
 Config.AccountCreationFee = 500          -- charged from bank when opening a shared/business account
 Config.MaxOwnedAccounts = 3              -- max shared/business accounts owned per citizen
 Config.MaxCardsPerAccount = 4            -- max active (non-cancelled) cards per account / personal

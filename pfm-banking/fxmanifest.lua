@@ -27,7 +27,8 @@ server_scripts {
     'server_ledger.lua',
     'server.lua',
     'server_finance.lua',
-    'server_accounts.lua'
+    'server_accounts.lua',
+    'server_shared_migration.lua'
 }
 
 ui_page 'html/index.html'
