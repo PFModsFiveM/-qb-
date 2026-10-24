@@ -646,3 +646,379 @@ Payouts of 0 skip the payment call.
 
 ### Not verified
 Not run on a live server. Every one of these jobs needs pfm-banking started, with the ledger migrations applied, before it can pay.
+
+
+## Batch 5 — 2026-10-24: Source verification, security corrections, persistent supply chain
+
+Branch `batch5-security-supply-chain` in both repositories, cut from `main` (`[qb]` 32891c7, `-pfscripts-` 0ff2676). Nothing pushed, nothing deployed.
+
+### 1. Baseline
+
+| Repository | Base | Batch 5 commits |
+|---|---|---|
+| `[qb]` (PFModsFiveM/-qb-) | `main` 32891c7 | fe62cb2, 58f736c, 199cdde, fa08b06, 820b83e, 12d0645, 859c70b |
+| `[pfscripts]` (PFModsFiveM/-pfscripts-) | `main` 0ff2676 | b93222e, 93be14f, 28636c1, f0f445c, 39a9236, df8eb0a, 3aaaf7f, 441edb7, 9bf4b28 |
+
+**Uncommitted work left as it was** (yours, in `[qb]`):
+- `pfm-inventory`: drops, freshness, UI and integrity;
+- `pfm-smallresources` consumables;
+- six spec files;
+- `leonida-id-maker/`.
+
+Batch 5 changes inside those files are also uncommitted. See section 4.
+
+**Source of truth per resource:**
+- **Upstream repositories:** the standalone repositories (pf-government, pf-computer, pf-trucking, pf-mechanicjob, pf-jobsystem) were cloned and compared with the copies in `[pfscripts]`. Every upstream head matches the `[pfscripts]` copy at fa4482d, and `[pfscripts]` has newer commits (batches 2–5) on top. **`[pfscripts]` is authoritative**; the standalone repositories are behind it.
+- **pf-mechanicjob:** its real remote is `pf-advancedmechanicjob`.
+- **`[jobsystem]` folder:** it holds nested git checkouts of pf-jobs, pf-tablet, pf-mechanicjob, pf-scoreboard and pf-jobsystem. These are on older bases and carry uncommitted edits.
+- **`[custom]` folder:** it holds further copies of pf-mechanicjob and pf-jobsystem.
+- **server.cfg:** it currently ensures `[pfscripts]`, `[custom]` **and** `[jobsystem]`, so the same resource names are started from up to three folders. The server should run only the `[pfscripts]` copies.
+- **Farming:** no farming resource exists in any folder; only `pfm-weed` and `pfm-vineyard` exist. No farming API was invented (see section 11).
+
+**Live `server.cfg` (read only, not changed):**
+- `#ensure pfm-core` and `#ensure [qb]` are still commented out.
+- The `mysql_connection_string` line is commented out; no active connection string is set.
+- `ensure ox_lib` is present, but no `ox_lib` folder exists under `resources/`.
+- `oxmysql` sits at `PF/oxmysql`, outside `resources/`, so the server will not find it.
+- `ensure guard` names a resource that does not exist in any resource folder. Check what it is before enabling anything by that name.
+- `menuv` and `PolyZone` are present in `[standalone]`.
+
+### 2. Report-versus-code discrepancies
+
+| Finding | File / event | State at baseline | Now |
+|---|---|---|---|
+| updateDrop writes client coordinates; nil access on a bad id | `pfm-inventory/server/main.lua`, `qb-inventory:server:updateDrop` | **Confirmed in committed code** (`Drops[dropId].coords = coords`, no checks) | **Fixed only in the uncommitted inventory work**: it needs a string id and that the caller is holding the drop (`holdDrop`, within reach). The server places the bag at the carrier's position and ignores client coordinates. |
+| GetCurrentDrops returns the full drop table | same file, `qb-inventory:server:GetCurrentDrops` | **Already fixed in committed code** (returns `entityId` only) | Unchanged |
+| Other drop paths (open, close, hold, create, move items) | same file: `openDrop`, `closeInventory`, `holdDrop`, `createDrop`, `SetInventoryData` | Confirmed: anyone could close another player's inventory; a held drop could be opened or emptied; non-integer amounts and slots were accepted; a reused network id overwrote the slot | Fixed (uncommitted, inside your inventory work). 7 new regression tests in `inventory_drops_spec` (15 in that file in total). |
+| saveProp trusts client prop data; deleteProp by coordinates for anyone | `pf-computer/server/main.lua`, `pf-computer:server:saveProp` / `deleteProp` | Confirmed | Fixed (b93222e) |
+| supplies:completeOrder and other business/government writes | `pf-computer/server/main.lua` dispatcher | Confirmed: there was no government permission per action, any job grade 0 counted as authorised, fines had no limit, mail was readable across players, the domain price came from the client, and announcements could be created through net events | Fixed (b93222e) |
+| AcceptJob cannot find a contract | `pf-trucking/server.lua`, export `AcceptJob` | Confirmed: it searched the id-keyed table with `ipairs`, so it never matched; it also skipped the claim state | Fixed (28636c1); tested |
+| Fines edit balances directly, uncapped | `pf-government/server/bills.lua` | Confirmed | Ledger, capped (93be14f) |
+| Restaurant revenue / business registration from any client | `pf-government/server/integrations.lua` | Confirmed (net events) | Server-only (93be14f); also in `pf-governmentwebsiteonly` |
+| Two shared-account models | `pfm-banking` | Confirmed (legacy `bank_accounts` 'shared' + JSON users, and IBAN accounts with members) | One model, with migration (fa08b06) |
+| Vehicle spawn callbacks spawn any model anywhere | `pfm-core/server/events.lua` `QBCore:Server:SpawnVehicle` / `CreateVehicle` | Confirmed (found during the audit, not in the report) | Fixed (58f736c) |
+| Restaurant stock in memory, cooking from the cook's pockets, client expiry, client totals | `pf-restaurants/server/*` | Confirmed, as the spec described | Fixed (df8eb0a) |
+| Ledger reconcile on MariaDB | `pfm-banking/server_ledger.lua` | Not in the report: "Illegal mix of collations" on every reconcile (found by real-DB tests) | Migration v4 (fa08b06) |
+| pfm-banking start-up | `server_ledger.lua` | Not in the report: crashed at start because `QBCore.Commands` is nil (found on staging) | 859c70b |
+| Government tax defaults | `pf-government/sql/install.sql`, `server/taxes.lua` | Not in the report: rate columns `DECIMAL(5,2)` cannot hold the 5000 registration fee, so on strict MySQL/MariaDB the tax system started empty (found on staging) | 3aaaf7f |
+| Garbage group tables | `pf-jobs/server/apps/garbage.lua` | Not in the report: fire-and-forget CREATEs raced, so on a fresh database the members table failed its foreign key (found on staging) | 441edb7 |
+
+### 3. Security issues fixed in this batch
+
+All of these are server-side; hiding UI was not counted as a fix.
+
+- **Inventory drops** (uncommitted, see above):
+  - only the opener can close an inventory;
+  - drops must be opened by a valid id and must not be in someone's hands;
+  - a carried drop cannot be opened or moved into;
+  - amounts and slots must be positive integers;
+  - moving items into a drop requires being within reach.
+- **pf-computer**:
+  - **Props:**
+    - the server assigns prop ids and checks the model, the 5 m reach, duplicates within 0.75 m and the heading;
+    - only the owner, or a holder of `pf-computer.admin.all`, can remove a prop, and the server picks the prop;
+    - late joiners now receive the saved props.
+  - **Action dispatcher:**
+    - type checks;
+    - a token-bucket rate limit;
+    - boss-only business writes;
+    - per-action pf-government permissions;
+    - fines limited to 1–50,000.
+  - **Mail and calendar:** they are per player.
+  - **Domains:** bought at the server price through the ledger.
+  - **Job board:** posts are length-bounded and escaped in the UI (stored XSS).
+  - **Delivery points:** need the boss and real coordinates within 25 m.
+  - **Removed:** the unauthenticated `pf-computer:announcements:create` event and the unused direct-debit helper.
+- **pf-government**:
+  - exports `HasPermission`;
+  - fines go through the ledger, keyed by bill, with a cap;
+  - `addRevenue`/`registerBusiness` are server-only.
+- **pf-trucking**:
+  - `AcceptJob`/`CancelContract` use the real claim and cancel code;
+  - cargo loading is checked at the pickup;
+  - a restored contract keeps its driver.
+- **pfm-core vehicle spawns**:
+  - a spawn needs a job vehicle rule (on duty) or a one-time server ticket;
+  - the spawn point must be within 150 m;
+  - there is a 3 s cooldown.
+- **pf-restaurants**:
+  - no client-created stock;
+  - `startFire` is server-only;
+  - menu prices are bounded;
+  - recipes may only use restaurant items;
+  - roles are validated (only the owner can grant owner);
+  - the inspector needs pf-government `licenses`;
+  - repairs are paid by the restaurant's account through the ledger.
+- **Supply chain**:
+  - no client sets a price, payment result, payout or delivery state;
+  - every payout has a fixed per-order ledger key.
+
+### 4. Files and repositories changed
+
+**`[qb]` (committed):**
+- pfm-core: `server/vehicle_spawns.lua` (new), `server/events.lua`, `shared/items.lua` (`supply_crate`), `fxmanifest.lua`.
+- pfm-banking: `server_ledger.lua`, `server_shared_migration.lua` (new), `server.lua`, `config.lua`, `fxmanifest.lua`.
+- `pfm-worldobjects/` (new resource): `server.lua`, `client.lua`, `config.lua`, `fxmanifest.lua`.
+- Vehicle registration in pfm-ambulancejob, -busjob, -garbagejob, -mechanicjob, -newsjob, -policejob, -shops, -taxijob, -towjob and -vehiclesales.
+- tests:
+  - the real-DB runner: `tests/realdb/run.js`, `sqlworker.js`, `lua/real_mysql.lua`;
+  - five `realdb_specs`;
+  - `vehicle_spawns_spec`;
+  - `stores_trucking_ledger_spec`;
+  - `harness.js`, `fivem_mocks.lua`, `fake_db.lua`, `parsecheck.js`, `package.json`.
+
+**`[qb]` (uncommitted, mixed into your own uncommitted work):**
+- `pfm-inventory/server/main.lua`: the drop fixes.
+- `pfm-inventory/server/functions.lua`: the `SaveStash` and `RegisterPerishables` exports.
+- `pfm-inventory/server/freshness.lua`: `RegisterItems`.
+- `tests/specs/inventory_drops_spec.lua`: 7 tests.
+
+**Committed code depends on these uncommitted pieces:**
+- **pfm-worldobjects** needs `SaveStash`.
+- **pf-restaurants** needs `RegisterPerishables` and the freshness module.
+- **Effect:** until your inventory work is committed, a checkout of the branch alone is incomplete.
+
+**`[pfscripts]` (committed):**
+- pf-computer: server (`main.lua`, `gov_announcements_sync.lua`), client, UI script.
+- pf-government: `core.lua`, `bills.lua`, `integrations.lua`, `taxes.lua`, `config.lua`, `sql/install.sql`.
+- pf-governmentwebsiteonly: `integrations.lua`.
+- pf-trucking: `server.lua`, `client.lua`.
+- pf-ambulancejob: `server/main.lua`.
+- pf-stores: `server_orders.lua` (new), `server.lua`, `shared/config.lua`, `fxmanifest.lua`.
+- pf-restaurants:
+  - `server/persistence.lua` (new);
+  - inventory, stations, orders, menu, business, recipes, fire, equipment, hygiene, main, government placeholders;
+  - client interactions and registers;
+  - config, fxmanifest.
+- pf-jobs: `server/apps/garbage.lua`.
+
+### 5. API contracts
+
+**pf-stores order service (`PFOrders`, exports on `pf-stores`):**
+- **`CreateOrder(src, payload)`**:
+  - payload: `{kind, buyerId, cart, method = 'trucking'|'pickup'}`;
+  - returns `{ok = true, data = {orderId, total, subtotal, markup, status, contractId, items, createdAt}}` or `{ok = false, error = <code>}`, for example `not_owner`, `invalid_items`, `bank_unavailable`;
+  - prices come from the buyer kind's catalog;
+  - payment goes to `society:freight_escrow`, or straight to the AI supplier for pickup.
+- **`CancelOrder(src, kind, buyerId, orderId)`**: allowed only from `awaiting_supplier` or `awaiting_delivery`. The refund is paid once; any part of the markup already returned is subtracted.
+- **`CollectOrder(src, kind, buyerId, orderId)`**: the deferred pickup.
+- **`UnpackSupplyOrder(src, orderId)`**: `delivered → unpacked`. The adapter adds the stock; the status is reverted if that fails.
+- **`GetOrder(orderId)`** and **`GetOrderHistory(orderId)`**.
+- **`CanManageOrderBuyer(src, orderId)`**.
+- **`RegisterBuyerKind(kind, adapter)`**:
+  - adapter: `{canManage(src, buyerId), account(buyerId), ensureAccount(buyerId), price(buyerId, cart) -> lines, subtotal, route(buyerId), unpack(order)}`;
+  - pf-stores registers `store`, pf-restaurants registers `restaurant`.
+- **Statuses:**
+  - delivery: `created → paid → awaiting_supplier → awaiting_delivery → assigned → in_transit → delivered → unpacked`;
+  - pickup: `paid → ready → delivered → unpacked`;
+  - plus `cancelled` and `failed`;
+  - every change is a guarded `UPDATE … WHERE status = from` with a history row.
+- **Ledger keys:** `supply:<id>:charge`, the supplier share, the markup split, `freight:supply:<id>` and the refund. One key per payout.
+- **Commands:** `/supplier`, `/supplyoffer`, `/supplystock`, `/supplyorders`, `/supplyaccept`.
+
+**pf-trucking:**
+- **Exports:** `AcceptJob`, `CancelContract`, `GetAvailableJobs`, `SetContractRoute`, `CreateExternalJob` (restores the driver after a restart) and `ReleaseExternalJob` (new).
+- **Server events:** `pf-trucking:server:externalJobClaimed`, `externalJobLoaded`, `externalJobReleased`, `externalJobCompleted` and `started`.
+- **Net event:** `pf-trucking:server:cargoLoaded`, checked against the pickup position.
+
+**pfm-worldobjects:**
+- **Exports:**
+  - `CreateDeliveryObject({model, coords, heading, owner, orderId, contents})` returns an object with a unique `stash_id` of the form `worldobj-<id>`;
+  - `GetObject(id)`.
+- **Net events:** open, unpack, move and sync. Each checks owner and proximity; a move is placed by the server.
+
+**pfm-core:**
+- `RegisterJobVehicles(job, models, {anyDuty?, catalog?})`;
+- `GrantVehicleSpawn(src, model, seconds)`.
+
+**pfm-inventory (uncommitted):**
+- `SaveStash(identifier)` writes a stash to the database now.
+- `RegisterPerishables({item = category})` adds items to the freshness rules.
+
+**pf-government:**
+- `HasPermission(src, perm)`, using pf-government's own staff roles.
+
+**pfm-banking:**
+- `Transfer`, `GetTransaction` and `LedgerAutoKey` are unchanged.
+- The ledger now also takes `Commands` from pfm-core, for `/ledgerreconcile`.
+
+### 6. Database migrations and upgrade
+
+Versioned through `pfm-core/server/migrations.lua`, recorded in `pf_schema_migrations`. Every step is safe to rerun.
+
+| Resource | Version | What it does |
+|---|---|---|
+| pfm-banking | v4 | `pf_transactions` / `pf_ledger_baselines` take the collation of `bank_accounts` |
+| pfm-banking | v5 | `pf_shared_account_migration` (record of moved legacy shared accounts) |
+| pf-stores | v1 | order lifecycle columns, `pf_store_supply_order_events`, `pf_suppliers`, `pf_supplier_offers`, `freight_payout` when missing; maps old statuses (`ordered→ready`, `outsource_posted→awaiting_delivery`, `delivered→unpacked`) |
+| pfm-worldobjects | v1 | `pf_world_objects` (unique `stash_id`, unique `order_id`) |
+| pf-restaurants | v1 | employees, menu, recipes, orders, state, inspections |
+
+**Fixes made outside the migration system:**
+- **pf-government tax columns:** they are widened to `DECIMAL(10,2)` both in `install.sql` and at start-up. The old `DECIMAL(5,2)` made the default tax insert fail on strict MySQL/MariaDB.
+- **pf-jobs garbage tables:** they are now created in order.
+
+**Upgrade steps for the live server (not done; needs your go-ahead):**
+1. Back up the database.
+2. Install `ox_lib`, and move `oxmysql` under `resources/`.
+3. Set the connection string, keeping it out of git.
+4. Remove the duplicate folders from `server.cfg`, plus `pfm-cityhall` and `pf-governmentwebsiteonly` (see section 10).
+5. Commit or deploy the pfm-inventory work together with this branch.
+6. Start the server. Migrations run by themselves.
+7. Legacy shared accounts move once (`Config.MigrateLegacySharedAccounts = true`; set it to false to postpone the move).
+8. Run `/ledgerreconcile` and check that there are no mismatches.
+
+### 7. Automated tests (mocked, fengari)
+
+`node tests/harness.js`:
+- **Result:** **277 passed, 0 failed, 29 spec files**.
+- **Your uncommitted specs:** 76 of these tests are in them (consumables 10, freshness 28, inventory_drops 15 including my 7, inventory_integrity 18, inventory_shop 4, tablet_config_isolation 1).
+- **Committed specs:** the remaining 201 are in 23 files.
+
+What was added for this batch:
+- **stores_trucking_ledger_spec** (44): props, computer dispatcher, AcceptJob/CancelContract.
+- **vehicle_spawns_spec** (6).
+- **The 7 drop tests.**
+- **The mocks:** `GetCoreObject` now honours the filter list, as real pfm-core does.
+
+These tests use a fake database and fake FiveM natives. They prove the Lua logic only.
+
+### 8. Staging FXServer and real-database tests actually performed
+
+**Real database:**
+- **Server:** a throwaway MariaDB 10.4 on 127.0.0.1:3399, with a fresh `pf_rt_*` database per spec.
+- **Command:** `PF_TEST_DB=mysql://root@127.0.0.1:3399 node tests/realdb/run.js`.
+- **Result:** **54 passed, 0 failed, 5 spec files**:
+  - ledger 13;
+  - shared accounts 3;
+  - supply chain 19;
+  - computer orders 3;
+  - restaurants 16.
+- **What they cover:**
+  - migrations on a stock schema with existing balances, plus reruns;
+  - a database-level unique idempotency key;
+  - money moving once per key, with the original result returned;
+  - overdraft;
+  - offline and online players;
+  - crash before or after the debit, and recovery never completing an undebited transfer;
+  - reconciliation, including flagging a direct balance edit;
+  - legacy shared accounts moving once;
+  - the full supply chain (escrow, forged carts, player trucker priority and single claim, AI fallback, suppliers, cancellation, pickup, work-truck fee, restart recovery, pallet persistence with one stash per pallet, sealed crates, exactly-once payouts, reconciliation at the end);
+  - the restaurant flows (stock, all-or-nothing cooking, two cooks with stock for one batch, disconnect refund, freezer vs room freshness, expired food kept, server prices, customer acceptance, tax, refunds once, restart).
+- **Limit:** "concurrent" here means interleaved requests on one Lua state; truly parallel database sessions were not tested.
+
+**Staging FXServer:**
+- **Setup:**
+  - the local FXServer build, `sv_lan`, 127.0.0.1:30150;
+  - a disposable `pf_staging` database with all `[qb]` SQL plus pf-government `install.sql`;
+  - `chat, oxmysql, PolyZone, pfm-core, [qb], pf-government, pf-scoreboard, pf-trucking, pf-computer, pf-jobs, pf-tablet, pf-mechanicjob, pf-stores, pf-restaurants`.
+- **Three runs** of about 100 s each.
+- **Found and fixed:**
+  - pfm-banking start-up crash;
+  - pf-government taxes failing to load;
+  - pf-jobs garbage foreign-key race.
+- **Upgrade path:** tested by giving the server an old narrow tax table. It widened it and loaded 7 taxes.
+- **Final run:**
+  - no script errors;
+  - all migrations applied in order (pfm-banking v1–v5, pf-stores v1, pfm-worldobjects v1, pf-restaurants v1);
+  - pfm-worldobjects restored 0 objects (an empty database);
+  - pf-computer loaded saved props.
+- **Expected failures:** `pfm-adminmenu` (menuv not copied to staging) and `pf-mechanicjob` (no ox_lib).
+- **Other observations:**
+  - pf-scoreboard is a hard dependency of pf-trucking and pf-tablet, so pf-stores needs it too;
+  - pf-government disables its civil services while `pfm-cityhall` runs;
+  - `pfm-inventory/migrate.sql` and `pfm-vehicleshop/vehshop.sql` fail on a fresh database (an old-data migration, and a column added twice). These are harmless for a fresh install but noisy.
+- **Secrets:** the license key was copied into staging without being printed and was deleted afterwards. No credentials appear in logs, commits or this report.
+- **Not performed:** no client connected to staging.
+
+### 9. Remaining runtime checks (not verified)
+
+- **Multiplayer and client behaviour:**
+  - two players opening, carrying and dropping the same drop bag;
+  - two players at the same pallet;
+  - late joiners seeing computers and pallets.
+- **NUI:**
+  - inventory, computer (Order Supplies statuses, job board), restaurant POS bill prompt and kitchen display;
+  - none of these was opened in a game client.
+- **Entity networking:**
+  - pallet entities after a restart;
+  - pallet move placement;
+  - drop routing buckets;
+  - vehicle spawns through the new gate for every job garage. A garage whose model list is not registered will now refuse its spawn. Check every job garage.
+- **Trucking in game:** trailer connect sending `cargoLoaded`, and arriving at the drop.
+- **Live data:** migrations on a copy of the live database (balances, shared accounts, open store orders with old statuses). Only stock schemas with sample data were tested.
+- **Cross-resource adapters:** pf-restaurants registers its buyer adapter through exports with function references; tests ran on one Lua state, so the funcref path across resources is not covered there.
+- **Remaining direct money callers** (audited, not moved):
+  - house purchases, furniture and private sales (pfm-houses);
+  - phone invoices and transfers (pfm-phone);
+  - police fines, bills, cash seizure and robbery (pfm-policejob);
+  - vehicle shop sales (pfm-vehicleshop);
+  - used-car seller pay (pfm-vehiclesales);
+  - shop purchases (pfm-inventory, your uncommitted file);
+  - crypto transfer (pfm-crypto);
+  - armored-truck activation (pfm-truckrobbery);
+  - the paycheck (pfm-core) and the admin give/set commands;
+  - hospital bills and revive fee (pf-ambulancejob);
+  - city hall ID fee (pf-government civil);
+  - MDT fines and bonuses (pf-policemdt-DEV);
+  - rentals (pf-rentals);
+  - the old website-only fine collection (pf-governmentwebsiteonly, which should be removed).
+- **Why these were not moved:**
+  - most are plain player-to-system charges with a check before them;
+  - pfm-houses private sale, pfm-phone transfers and pfm-vehiclesales are player-to-player and should move first, because a crash between the two calls loses or creates money.
+
+### 10. Installation order, dependencies, configuration
+
+**Start order:**
+1. `oxmysql`, `ox_lib`, `PolyZone`, `menuv`;
+2. `pfm-core`;
+3. `[qb]` (including `pfm-banking`, `pfm-inventory`, `pfm-worldobjects`);
+4. `pf-government`;
+5. `pf-scoreboard`;
+6. `pf-trucking`;
+7. `pf-computer`;
+8. `pf-jobs`;
+9. `pf-tablet`;
+10. `pf-mechanicjob`;
+11. `pf-stores`;
+12. `pf-restaurants`.
+
+**Remove from start-up:**
+- `pfm-cityhall`;
+- `pf-governmentwebsiteonly`;
+- the `[jobsystem]` and `[custom]` copies of pf-jobs, pf-tablet, pf-mechanicjob, pf-scoreboard and pf-jobsystem. Keep their folders until the uncommitted edits in the nested `[jobsystem]` checkouts are reviewed.
+
+**New configuration:**
+- `Config.SupplyChain` in pf-stores:
+  - `PlayerSuppliers`;
+  - `SupplierOfferSeconds` 120;
+  - `AIMarkup` 0.15;
+  - `PlayerSupplierShareOfMarkup` 0.5;
+  - `DriverPrioritySeconds` 300;
+  - `DriverMaxSeconds` 3600;
+  - `AIDeliverySeconds` 600;
+  - `PalletModel`;
+  - `CaseSize`.
+- `Config.MigrateLegacySharedAccounts` (pfm-banking).
+- `Config.Bills.MaxFine` (pf-government, 50000) and `Config.Government.MaxFine` (pf-computer, 50000 when unset).
+- pf-restaurants: `GradeRoles`, `Supplies`, `POS` (`MaxMenuPrice`), `Cooking` (`StationRange`, `MinProgressPlain`) and `FreshnessCategories`.
+- ACE `pf-computer.admin.all` for senior admins who may remove any world computer.
+
+### 11. Remaining work, by priority
+
+1. **Commit your pfm-inventory/pfm-smallresources work** (with the drop fixes inside it). Until then the committed `updateDrop` is still exploitable, and pfm-worldobjects and pf-restaurants lack exports they call.
+2. **Fix the live `server.cfg`** on a copy and test it on staging with a copy of the live database:
+   - enable pfm-core and `[qb]`;
+   - set the connection string;
+   - install ox_lib;
+   - move oxmysql;
+   - identify `guard`;
+   - remove the duplicates.
+3. **Run the in-game checks in section 9** with two clients on staging.
+4. **Move the player-to-player money callers to the ledger:** house private sale, phone transfers and invoices, used-car seller pay.
+5. **Then the remaining charges in section 9:** shop purchases, vehicle shop, police, hospital, rentals, MDT.
+6. **Farming:** no resource exists. Supplier stock is currently player inventory. A farming resource would feed `/supplystock` once one is chosen.
+7. **Clean-up:**
+   - retire `pf-governmentwebsiteonly`;
+   - fix `pfm-inventory/migrate.sql` and `vehshop.sql` so they work on fresh databases;
+   - update the standalone repositories from `[pfscripts]` if they are still used.
