@@ -106,7 +106,8 @@ QBCore.Functions.CreateCallback('qb-weapons:server:RepairWeapon', function(sourc
     end
 
     -- Cost always comes from config; the client never supplies an amount
-    if not Player.RemoveMoney('cash', repairCost) then
+    local repairKey = ('pfm-weapons:repair:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+    if not PFPayout.Charge(Player, 'cash', repairCost, { key = repairKey, kind = 'purchase', reason = 'Weapon repair' }) then
         cb(false)
         return
     end
@@ -119,7 +120,7 @@ QBCore.Functions.CreateCallback('qb-weapons:server:RepairWeapon', function(sourc
     }
 
     if not exports['pfm-inventory']:RemoveItem(src, data.name, 1, data.slot, 'qb-weapons:server:RepairWeapon') then
-        Player.AddMoney('cash', repairCost, 'qb-weapons:server:RepairWeapon')
+        PFPayout.Pay(Player, 'cash', repairCost, { key = repairKey .. ':refund', kind = 'refund', reason = 'Weapon repair refunded' })
         Config.WeaponRepairPoints[RepairPoint].IsRepairing = false
         Config.WeaponRepairPoints[RepairPoint].RepairingData = {}
         cb(false)

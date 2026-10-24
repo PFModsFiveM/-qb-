@@ -14,7 +14,7 @@ shared_scripts {
     'config.lua'
 }
 
-server_script 'server/main.lua'
+server_scripts { '@pfm-banking/payouts.lua', 'server/main.lua' }
 
 client_scripts {
     '@PolyZone/client.lua',

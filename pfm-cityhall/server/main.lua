@@ -66,8 +66,10 @@ RegisterNetEvent('qb-cityhall:server:requestId', function(item, hall)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    local itemInfo = Config.Cityhalls[hall].licenses[item]
-    if not Player.RemoveMoney('cash', itemInfo.cost, 'cityhall id') then return TriggerClientEvent('QBCore:Notify', src, ('You don\'t have enough money on you, you need %s cash'):format(itemInfo.cost), 'error') end
+    -- (deprecated: pf-government serves these events; this copy should not be started beside it)
+    local itemInfo = Config.Cityhalls[hall] and Config.Cityhalls[hall].licenses[item]
+    if not itemInfo then return end
+    if not PFPayout.Charge(Player, 'cash', itemInfo.cost, { key = ('pfm-cityhall:id:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'fee', reason = 'City hall ID', quiet = true }) then return TriggerClientEvent('QBCore:Notify', src, ('You don\'t have enough money on you, you need %s cash'):format(itemInfo.cost), 'error') end
     local info = {}
     if item == 'id_card' then
         info.citizenid = Player.PlayerData.citizenid

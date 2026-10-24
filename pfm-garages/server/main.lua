@@ -305,20 +305,16 @@ RegisterNetEvent('qb-garages:server:PayDepotPrice', function(data)
                 return
             end
 
-            local function creditCityTreasury(amount)
-                if GetResourceState('pf-government') ~= 'started' then return end
-                pcall(function()
-                    exports['pf-government']:DepositToTreasury(amount, 'impound', ('Impound release fee (%s)'):format(data.plate))
-                end)
-            end
-
-            if cashBalance >= depotPrice then
-                Player.RemoveMoney('cash', depotPrice, 'paid-depot')
-                creditCityTreasury(depotPrice)
-                TriggerClientEvent('qb-garages:client:takeOutGarage', src, data)
-            elseif bankBalance >= depotPrice then
-                Player.RemoveMoney('bank', depotPrice, 'paid-depot')
-                creditCityTreasury(depotPrice)
+            -- cash, then bank, through the pfm-banking ledger; the city treasury is credited only for a
+            -- fee that was paid (the balance used to be read before this lookup and the payment result
+            -- was not checked)
+            local key = ('pfm-garages:depot:%s:%s'):format(tostring(data.plate), PFPayout.NewId())
+            if PFPayout.Charge(Player, { 'cash', 'bank' }, depotPrice, { key = key, kind = 'fee', reason = 'Impound release ' .. tostring(data.plate) }) then
+                if GetResourceState('pf-government') == 'started' then
+                    pcall(function()
+                        exports['pf-government']:DepositToTreasury(depotPrice, 'impound', ('Impound release fee (%s)'):format(data.plate), Player.PlayerData.citizenid, key .. ':treasury')
+                    end)
+                end
                 TriggerClientEvent('qb-garages:client:takeOutGarage', src, data)
             else
                 TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_enough'), 'error')

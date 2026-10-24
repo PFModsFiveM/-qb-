@@ -44,9 +44,9 @@ RegisterNetEvent('qb-carwash:server:washCar', function()
 
     if not Player then return end
 
-    if Player.RemoveMoney('cash', Config.CarWash.defaultPrice, 'car-washed') then
-        TriggerClientEvent('qb-carwash:client:washCar', src)
-    elseif Player.RemoveMoney('bank', Config.CarWash.defaultPrice, 'car-washed') then
+    if PFPayout.Charge(Player, { 'cash', 'bank' }, Config.CarWash.defaultPrice, {
+        key = ('pfm-smallresources:carwash:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Car wash',
+    }) then
         TriggerClientEvent('qb-carwash:client:washCar', src)
     else
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.dont_have_enough_money'), 'error')

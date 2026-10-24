@@ -6,5 +6,5 @@ description 'Allows players to rob specific trucks for money and items'
 version '1.5.0'
 
 shared_script 'config.lua'
-server_script 'server/main.lua'
+server_scripts { '@pfm-banking/payouts.lua', 'server/main.lua' }
 client_script 'client/main.lua'

@@ -48,15 +48,14 @@ QBCore.Functions.CreateCallback('qb-fuel:server:refillVehicle', function(src, cb
     local taxRate = GetFuelTaxRate and GetFuelTaxRate() or 0
     local finalPrice = math.floor(subtotal * (1 + taxRate) + 0.5)
 
-    if Player.PlayerData.money[Config.MoneyType] >= finalPrice then
-        local paid = Player.RemoveMoney(Config.MoneyType, finalPrice, 'refuel-vehicle')
-        if paid and taxRate > 0 then
-            CollectFuelTax(subtotal, Player.PlayerData.citizenid)
-        end
-        cb(paid)
-    else
-        cb(false)
+    -- paid through the pfm-banking ledger; the tax inside the price goes to pf-government by its
+    -- exact amount under the same key
+    local key = ('pfm-fuel:refuel:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+    local paid = finalPrice > 0 and PFPayout.Charge(Player, Config.MoneyType, finalPrice, { key = key, kind = 'purchase', reason = 'Fuel' }) and true or false
+    if paid and taxRate > 0 then
+        CollectFuelTax(subtotal, Player.PlayerData.citizenid, finalPrice - subtotal, key)
     end
+    cb(paid)
 end)
 
 RegisterServerEvent('qb-fuel:server:buyJerryCan', function()
@@ -64,7 +63,7 @@ RegisterServerEvent('qb-fuel:server:buyJerryCan', function()
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
 
-    if Player.RemoveMoney(Config.MoneyType, Config.JerryCanCost, 'buy-jerry-can') then
+    if PFPayout.Charge(Player, Config.MoneyType, Config.JerryCanCost, { key = ('pfm-fuel:jerrycan:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Jerry can' }) then
         Player.AddItem('weapon_petrolcan', 1, nil, { fuel = Config.JerryCanLitre, ammo = Config.JerryCanLitre })
     end
 end)
@@ -77,7 +76,7 @@ RegisterServerEvent('qb-fuel:server:refillJerryCan', function()
     local jerryCan = Player.GetItemByName('weapon_petrolcan')
     if not jerryCan then return Player.Notify(Lang:t('error.no_jerrycan'), 'error') end
 
-    if Player.RemoveMoney(Config.MoneyType, Config.JerryCanRefillCost, 'refill-jerry-can') then
+    if PFPayout.Charge(Player, Config.MoneyType, Config.JerryCanRefillCost, { key = ('pfm-fuel:refill:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Jerry can refill' }) then
         jerryCan.info.fuel = Config.JerryCanLitre
         jerryCan.info.ammo = Config.JerryCanLitre
         Player.RemoveItem('weapon_petrolcan', 1, jerryCan.slot)

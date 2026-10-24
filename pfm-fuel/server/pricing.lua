@@ -65,10 +65,14 @@ function GetFuelTaxRate()
     return rate
 end
 
-function CollectFuelTax(subtotal, citizenid)
+--- Hands the tax already inside the pump price to pf-government by its exact amount (keyed by the
+--- purchase), so the treasury gets what the driver paid, once.
+function CollectFuelTax(subtotal, citizenid, tax, key)
     if subtotal <= 0 or not Config.FuelSalesTax or GetResourceState('pf-government') ~= 'started' then return 0 end
+    tax = tonumber(tax) or 0
+    if tax <= 0 then return 0 end
     local ok, value = pcall(function()
-        return exports['pf-government']:CollectTax(subtotal, 'sales', 'player', citizenid, 'fuel-pump')
+        return exports['pf-government']:CollectTaxAmount(tax, 'sales', 'player', citizenid, 'fuel-pump', key and (key .. ':tax') or nil, subtotal)
     end)
     if not ok then return 0 end
     return tonumber(value) or 0

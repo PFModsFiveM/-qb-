@@ -12,7 +12,7 @@ shared_scripts {
     'locales/*.lua',
     'config.lua'
 }
-server_script 'server/*.lua'
+server_scripts { '@pfm-banking/payouts.lua', 'server/*.lua' }
 client_scripts {
     '@PolyZone/client.lua',
     '@PolyZone/BoxZone.lua',

@@ -20,6 +20,7 @@ client_scripts {
 }
 
 server_scripts {
+    '@pfm-banking/payouts.lua',
     'server/main.lua',
     'server/jamming.lua',
 }

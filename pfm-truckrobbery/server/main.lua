@@ -29,7 +29,7 @@ RegisterServerEvent('AttackTransport:akceptujto', function()
 				end
 			end
 			if copsOnDuty >= Config.ActivePolice then
-				if not xPlayer.Functions.RemoveMoney('bank', Config.ActivationCost, 'armored-truck') then return end
+				if not PFPayout.Charge(xPlayer, 'bank', Config.ActivationCost, { key = ('pfm-truckrobbery:activate:%s:%s'):format(xPlayer.PlayerData.citizenid, PFPayout.NewId()), kind = 'fee', reason = 'Armored truck job' }) then return end
 				missionCounter = missionCounter + 1
 				Mission = { id = missionCounter, spawn = math.random(1, #Config.VehicleSpawn) }
 				MissionPlayer = _source
