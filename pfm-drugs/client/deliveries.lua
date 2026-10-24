@@ -383,10 +383,6 @@ RegisterNetEvent('qb-drugs:client:RefreshDealers', function(DealerData)
     InitZones()
 end)
 
-RegisterNetEvent('qb-drugs:client:updateDealerItems', function(itemData, amount)
-    TriggerServerEvent('qb-drugs:server:updateDealerItems', itemData, amount, currentDealer)
-end)
-
 RegisterNetEvent('qb-drugs:client:setDealerItems', function(itemData, amount, dealer)
     Config.Dealers[dealer]['products'][itemData.slot].amount = Config.Dealers[dealer]['products'][itemData.slot].amount - amount
 end)

@@ -514,6 +514,49 @@ The full suite is **192 passed, 0 failed**.
 ### Remaining work for this service
 
 - Two account systems still exist for player-shared accounts: the legacy shared rows in `bank_accounts` (old `openAccount` UI, `society:<name>`) and `bank_accounts_v2` (IBAN UI, `acct:<id>`). Both are on the ledger now, but they should be merged into one. That needs a data migration of existing legacy shared accounts plus a UI decision, so it is not done.
-- Make `pf-computer:server:supplies:completeOrder` server-only.
+- ~~Make `pf-computer:server:supplies:completeOrder` server-only.~~ Done in batch 3.
 - Move the remaining direct money callers (robberies' rewards, other job payouts) onto `Transfer` with keys.
 - pf-trucking `AcceptJob` export (pf-computer path) looks up jobs with `ipairs` over an id-keyed table, so it never finds a job. Not a money issue, but that path is broken.
+
+## Batch 3 — 2026-10-24: Reward and payout events (P0 security sweep)
+
+An audit of every server event that hands out money or items found that most of them trusted the client to say "I did the work". The pattern used to fix them is the same everywhere: the server records the starting step itself (with the player's position, items and time), and the reward needs that record, the player in the right place, and enough time for the real activity. Each reward clears its record before paying, so it pays once. Nothing here was committed.
+
+### Exploits found and fixed
+
+| Resource | What a cheating client could do | What the server now requires |
+|---|---|---|
+| pfm-houserobbery | Open any house and loot it with a bare event | A lockpick attempt at the door (tools checked, police on duty), 3–60 s of minigame, only players who entered can search, each piece once |
+| pfm-bankrobbery | Open vaults, lockers and power stations by event; Pacific payout tiers were wrong | Hack kit or card used at the panel and removed server-side, hack/drill time, thermite used at that station, alarm raised by the server; tiers fixed |
+| pfm-streetraces | Create races with fake coords, win any race, keep stakes on disconnect | Races built by the server, entrant at the start, winner at the finish after a plausible time; stakes, refunds and pot through the ledger with keys |
+| pfm-drugs (deliveries, corner selling) | Pick any drop point, pay without delivering, sell to own ped/players at any price | Drop point from the config, at the drop after the drive time, items removed before pay; real NPC buyers once per 30 min, price capped by the server |
+| pfm-weed | Plant without a house key, harvest any plant, unlimited seeds | House key and seed removed by the server, plant ready and nearby, row deleted before harvest |
+| pfm-crafting | Craft without a bench | Player's own placed bench nearby; amount capped |
+| pfm-crypto | Exchange without the stick, reboot the exchange, inflate transfers | At the exchange, stick removed before pay, server-owned reboot, transfers checked and atomic |
+| pfm-inventory | Snowball item spawning; drop list leaked contents | Only removal remains; drops list sends entity ids only |
+| pfm-garbagejob | Refund a deposit never paid; collect the last stop forever | Deposit recorded only when taken; every stop paid once, route closes after the last. Also fixed a crash: `PayForStop` called `applyStreakBonus` before it existed |
+| pfm-towjob | Tow any car (own truck too) and get paid; rent any vehicle model | Mission car near its tow spot, once per car, delivered car checked at the drop-off and deleted by the server; only config trucks; deposit back at the depot |
+| pfm-taxijob | Parked at a drop-off, paid every 30 s | A passenger picked up at a pickup point (`qb-taxi:server:PickupNpc`), paid once at a drop-off at least 150 m away after the drive |
+| pfm-busjob | Parked at a stop, paid every 10 s | Each payment from a different stop at least 100 m and a drive away from the last paid one (shortest real gap between stops is 155 m) |
+| pfm-recyclejob | Standing at the drop point, paid every 5 s | A package picked up at a shelf (`qb-recyclejob:server:pickupPackage`), handed in once after 4 s; price-list callback no longer hangs |
+| pfm-vineyard | Pick one vine every 3 s; wine and juice without waiting | A new vine for each pick (the client no longer repeats a vine), 6 s per pick; wine after `Config.wineTimer`, juice after 14 s |
+| pfm-jewelery | Pick any case and claim; police count from a skippable callback; any client could start the store timeout; lag races permabanned | Smash started by the server (at the case, whitelisted weapon, police on duty now), reward after the weapon's smash time; timeout started by the server; no bans on this path |
+| pfm-truckrobbery | Claim the cash right after accepting; fee not checked; an old timer ended a newer mission | Server picks the spawn point, the client reports the truck spawned there, payout at the truck after bomb time; fee must be taken; timers tied to a mission id |
+| pfm-storerobbery | Brute-force the 4-digit keypad (no limit); padlock after 10 s | 3 wrong codes lock that safe for the character for 10 min (reconnecting does not reset it); padlock needs 20 s |
+| pfm-diving | Sell coral from anywhere; paid even if removal failed | At a coral buyer, paid only for what was removed |
+| pfm-scrapyard | Scrap owned cars (the owner check ran only on the client) | Plate checked against `player_vehicles` on the server; the server deletes the car |
+| pfm-hotdogjob | Second stand charged a deposit that never came back; sale check banned on client coords then paid anyway | No second deposit; a mismatched position is ignored, not banned |
+| pf-computer | Anyone could save or delete computer props; anyone could complete supply orders | Staff ACE for props (model checked, list capped); `supplies:completeOrder` is server-only |
+
+### Not changed (noted)
+- `QBCore:Server:SpawnVehicle` (pfm-core `server/events.lua`) still spawns any model a client asks for. Many resources use it; locking it down needs a per-resource allow-list.
+- pfm-diving's oxygen refill is client-side state only, so a server check would protect nothing.
+- Job payouts still use `AddMoney` directly, not ledger `Transfer` (only street races moved in this batch).
+
+### Tests actually run
+New specs: `robbery_spec` (10), `streetraces_spec` (5), `taxi_spec` (3), `bus_spec` (2), `recycle_spec` (3), `vineyard_spec` (2), `jewelery_spec` (3), `truckrobbery_spec` (2), `storerobbery_spec` (2), `scrapyard_spec` (2), `garbage_spec` (3), plus pf-computer prop tests in `stores_trucking_ledger_spec`. Mock additions: ACE checks, `GetHashKey`/`joaat`, vehicles and plates, `DropPlayer`, `RegisterServerEvent`, `Mock.fireEvent`, vector `.xyz`; `Mock.callCallback` now returns every value (it returned only the first).
+
+Full suite: **239 passed, 0 failed** (22 spec files). Every changed Lua file (62) parses. Weed, crafting, crypto, drugs, tow and hotdog have no specs yet.
+
+### Not verified
+None of this was tried on a live server. The client-side changes (new events sent at pickup/spawn, the scrapyard and tow clients no longer deleting vehicles, the vineyard picking a new vine) need a play-through of each job.

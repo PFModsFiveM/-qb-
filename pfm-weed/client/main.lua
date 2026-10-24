@@ -204,8 +204,8 @@ RegisterNetEvent('qb-weed:client:placePlant', function(type, item)
         LocalPlayer.state:set('inv_busy', false, true)
     }, {}, {}, function() -- Done
         ClearPedTasks(ped)
+        -- the server uses up the seed when it places the plant
         TriggerServerEvent('qb-weed:server:placePlant', json.encode(plantData['plantCoords']), type, currentHouse)
-        TriggerServerEvent('qb-weed:server:removeSeed', item.slot, item.name)
     end, function() -- Cancel
         ClearPedTasks(ped)
         QBCore.Functions.Notify(Lang:t('error.process_canceled'), 'error')

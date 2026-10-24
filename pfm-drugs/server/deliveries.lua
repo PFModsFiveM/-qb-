@@ -30,23 +30,36 @@ QBCore.Functions.CreateCallback('qb-drugs:server:RequestConfig', function(_, cb)
     cb(Config.Dealers)
 end)
 
--- Events
-RegisterNetEvent('qb-drugs:server:updateDealerItems', function(itemData, amount, dealer)
-    local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player or type(itemData) ~= 'table' then return end
-    if not Config.Dealers[dealer] or not Config.Dealers[dealer]['products'][itemData.slot] then return end
-    amount = math.floor(tonumber(amount) or 0)
-    if amount < 1 or amount > 150 then return end
-    if Config.Dealers[dealer]['products'][itemData.slot].amount - 1 >= 0 then
-        Config.Dealers[dealer]['products'][itemData.slot].amount = Config.Dealers[dealer]['products'][itemData.slot].amount - amount
-        TriggerClientEvent('qb-drugs:client:setDealerItems', -1, itemData, amount, dealer)
-    else
-        exports['pfm-inventory']:RemoveItem(src, itemData.name, amount, false, 'qb-drugs:server:updateDealerItems')
-        Player.AddMoney('cash', amount * Config.Dealers[dealer]['products'][itemData.slot].price, 'qb-drugs:server:updateDealerItems')
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.item_unavailable'), 'error')
+-- A delivery is fronted by a dealer and paid on hand-over at the drop point. The server records
+-- where and when it started; the hand-over must happen at that drop point, after a believable trip,
+-- and pays only for product the server actually takes back. (Before, the client could collect the
+-- bricks anywhere and report an "on time" delivery from the same spot ten seconds later.)
+local DEALER_RANGE = 5.0
+local DROP_RANGE = 6.0
+local MAX_TRIP_SPEED = 45.0          -- m/s
+local MIN_TRIP_SECONDS = 20
+local ON_TIME_SECONDS = 15 * 60      -- the client timer (300 s) starts when the mail is opened
+
+local function DistanceTo(src, c)
+    local p = GetEntityCoords(GetPlayerPed(src))
+    return #(vector3(p.x, p.y, p.z) - vector3(c.x, c.y, c.z))
+end
+
+-- The configured delivery location the client picked (it chooses among them; the server checks it).
+local function DeliveryLocationIndex(coords)
+    if type(coords) ~= 'table' and type(coords) ~= 'vector3' then return nil end
+    local x, y = tonumber(coords.x), tonumber(coords.y)
+    if not x or not y then return nil end
+    for i, loc in ipairs(Config.DeliveryLocations) do
+        if math.abs(loc.coords.x - x) < 0.5 and math.abs(loc.coords.y - y) < 0.5 then return i end
     end
-end)
+    return nil
+end
+
+-- Events
+
+-- 'qb-drugs:server:updateDealerItems' was removed: nothing on the server ever asked a client to send
+-- it, and it paid cash for items it failed to remove (dealer stock drained, then free money).
 
 RegisterNetEvent('qb-drugs:server:giveDeliveryItems', function(deliveryData)
     local src = source
@@ -55,13 +68,23 @@ RegisterNetEvent('qb-drugs:server:giveDeliveryItems', function(deliveryData)
     if onCooldown(src, 'giveDelivery', 10000) then return end
     local itemCfg = Config.DeliveryItems[deliveryData.item]
     if not itemCfg then return end
+    -- picked up from a real dealer, with the reputation this product needs
+    local dealer = Config.Dealers[deliveryData.dealer]
+    if not dealer or DistanceTo(src, dealer.coords) > DEALER_RANGE then return end
+    if (Player.GetRep('dealer') or 0) < (itemCfg.minrep or 0) then return end
+    local locIdx = DeliveryLocationIndex(deliveryData.coords)
+    if not locIdx then return end
     local item = itemCfg.item
     local amount = math.floor(tonumber(deliveryData.amount) or 0)
-    if amount < 1 or amount > 5 then return end -- client requests 1-3
+    if amount < 1 or amount > 3 then return end -- the client requests 1-3
     local cid = Player.PlayerData.citizenid
     -- one active delivery at a time (stops free-brick farming); stale ones expire after 2h
     if pendingDeliveries[cid] and os.time() < pendingDeliveries[cid].startedAt + 7200 then return end
-    pendingDeliveries[cid] = { item = deliveryData.item, amount = amount, startedAt = os.time() }
+    local trip = DistanceTo(src, Config.DeliveryLocations[locIdx].coords)
+    pendingDeliveries[cid] = {
+        item = deliveryData.item, amount = amount, startedAt = os.time(), location = locIdx,
+        earliest = os.time() + math.max(MIN_TRIP_SECONDS, trip / MAX_TRIP_SPEED),
+    }
     exports['pfm-inventory']:AddItem(src, item, amount, false, false, 'qb-drugs:server:giveDeliveryItems')
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'add')
 end)
@@ -77,7 +100,12 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
     local cid = Player.PlayerData.citizenid
     local pending = pendingDeliveries[cid]
     if not pending or pending.item ~= deliveryData.item then return end
+    -- handed over at the agreed drop point, not sooner than the trip takes
+    if DistanceTo(src, Config.DeliveryLocations[pending.location].coords) > DROP_RANGE then return end
+    if os.time() < pending.earliest then return end
     pendingDeliveries[cid] = nil
+    -- "on time" is decided here; the client can only make it late
+    inTime = inTime == true and os.time() <= pending.startedAt + ON_TIME_SECONDS
     local item = itemCfg.item
     local itemAmount = pending.amount
     local payout = itemCfg.payout * itemAmount -- recomputed from config; client-sent itemData is ignored
@@ -85,7 +113,7 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
     local invItem = Player.GetItemByName(item)
     if inTime then
         if invItem and invItem.amount >= itemAmount then -- on time correct amount
-            exports['pfm-inventory']:RemoveItem(src, item, itemAmount, false, 'qb-drugs:server:successDelivery')
+            if not exports['pfm-inventory']:RemoveItem(src, item, itemAmount, false, 'qb-drugs:server:successDelivery') then return end
             if copsOnline > 0 then
                 local copModifier = copsOnline * Config.PoliceDeliveryModifier
                 if Config.UseMarkedBills then
@@ -111,11 +139,13 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.order_not_right'), 'error') -- on time incorrect amount
             if invItem then
-                local newItemAmount = invItem.amount
+                -- paid for what is handed over, never more than the order
+                local newItemAmount = math.min(invItem.amount, itemAmount)
                 local modifiedPayout = itemCfg.payout * newItemAmount
-                exports['pfm-inventory']:RemoveItem(src, item, newItemAmount, false, 'qb-drugs:server:successDelivery')
-                TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
-                Player.AddMoney('cash', math.floor(modifiedPayout / Config.WrongAmountFee), 'qb-drugs:server:successDelivery')
+                if exports['pfm-inventory']:RemoveItem(src, item, newItemAmount, false, 'qb-drugs:server:successDelivery') then
+                    TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
+                    Player.AddMoney('cash', math.floor(modifiedPayout / Config.WrongAmountFee), 'qb-drugs:server:successDelivery')
+                end
             end
             SetTimeout(math.random(5000, 10000), function()
                 TriggerClientEvent('qb-drugs:client:sendDeliveryMail', src, 'bad', deliveryData)
@@ -125,7 +155,7 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
     else
         if invItem and invItem.amount >= itemAmount then -- late correct amount
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.too_late'), 'error')
-            exports['pfm-inventory']:RemoveItem(src, item, itemAmount, false, 'qb-drugs:server:successDelivery')
+            if not exports['pfm-inventory']:RemoveItem(src, item, itemAmount, false, 'qb-drugs:server:successDelivery') then return end
             Player.AddMoney('cash', math.floor(payout / Config.OverdueDeliveryFee), 'qb-drugs:server:successDelivery')
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
             SetTimeout(math.random(5000, 10000), function()
@@ -134,10 +164,11 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
             end)
         else
             if invItem then -- late incorrect amount
-                local newItemAmount = invItem.amount
+                -- removes exactly what it pays for (it used to remove the full order, fail, and pay anyway)
+                local newItemAmount = math.min(invItem.amount, itemAmount)
                 local modifiedPayout = itemCfg.payout * newItemAmount
                 TriggerClientEvent('QBCore:Notify', src, Lang:t('error.too_late'), 'error')
-                exports['pfm-inventory']:RemoveItem(src, item, itemAmount, false, 'qb-drugs:server:successDelivery')
+                if not exports['pfm-inventory']:RemoveItem(src, item, newItemAmount, false, 'qb-drugs:server:successDelivery') then return end
                 Player.AddMoney('cash', math.floor(modifiedPayout / Config.OverdueDeliveryFee), 'qb-drugs:server:successDelivery')
                 TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
                 SetTimeout(math.random(5000, 10000), function()
@@ -166,14 +197,17 @@ RegisterNetEvent('qb-drugs:server:dealerShop', function(currentDealer)
             repItems[#repItems + 1] = dealerData['products'][k]
         end
     end
+    -- one shop per player: the item list depends on this player's reputation (a shared shop name let
+    -- whoever opened it last decide what everyone could buy)
+    local shopName = ('%s:%d'):format(dealerData.name, src)
     exports['pfm-inventory']:CreateShop({
-        name = dealerData.name,
+        name = shopName,
         label = dealerData.name,
         slots = #repItems,
         coords = dealerData.coords,
         items = repItems,
     })
-    exports['pfm-inventory']:OpenShop(src, dealerData.name)
+    exports['pfm-inventory']:OpenShop(src, shopName)
 end)
 
 -- Commands

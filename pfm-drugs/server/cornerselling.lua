@@ -17,13 +17,22 @@ AddEventHandler('playerDropped', function()
     eventCooldowns[source] = nil
 end)
 
--- Validate the client-reported customer ped: it must exist server-side and be near the seller
+-- Customers who already bought: [netId] = os.time(). A ped buys once (for a while), so one ped
+-- cannot be sold to over and over.
+local servedCustomers = {}
+local CUSTOMER_MEMORY = 30 * 60
+
+-- Validate the client-reported customer ped: it must exist server-side, be an NPC (not the seller or
+-- another player) and be near the seller
 local function validCustomer(src, customerNetId)
     if not Config.ValidateCustomerPed then return true end
     local netId = tonumber(customerNetId)
     if not netId or netId == 0 then return false end
     local pedEntity = NetworkGetEntityFromNetworkId(netId)
     if not pedEntity or pedEntity == 0 or not DoesEntityExist(pedEntity) then return false end
+    if pedEntity == GetPlayerPed(src) or (IsPedAPlayer and IsPedAPlayer(pedEntity)) then return false end
+    local served = servedCustomers[netId]
+    if served and os.time() - served < CUSTOMER_MEMORY then return false end
     local dist = #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(pedEntity))
     return dist <= (Config.MaxCustomerDistance or 10.0)
 end
@@ -80,16 +89,18 @@ RegisterNetEvent('qb-drugs:server:sellCornerDrugs', function(drugType, amount, p
     amount = math.floor(tonumber(amount) or 0)
     if amount < 1 or amount > 15 then return end -- client never offers more than 15 bags
     if not validCustomer(src, customerNetId) then return end
-    -- never trust the client-sent price: cap it at the configured max for this drug
+    if QBCore.Functions.GetDutyCount('police') < (Config.MinimumDrugSalePolice or 0) then return end
     local ddata = Config.DrugsPrice[item]
     if not ddata then return end
-    price = math.floor(tonumber(price) or 0)
-    if price < 1 then return end
-    local maxPrice = ddata.max * amount
-    if price > maxPrice then price = maxPrice end
+    -- the client's offer can only lower the price; the server rolls what this customer pays
+    local offered = math.floor(tonumber(price) or 0)
+    if offered < 1 then return end
+    price = math.min(offered, math.random(ddata.min or 1, ddata.max) * amount)
     local hasItem = Player.GetItemByName(item)
     if hasItem and hasItem.amount >= amount then
         if not exports['pfm-inventory']:RemoveItem(src, item, amount, false, 'qb-drugs:server:sellCornerDrugs') then return end
+        local netId = tonumber(customerNetId)
+        if netId then servedCustomers[netId] = os.time() end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.offer_accepted'), 'success')
         Player.AddMoney('cash', price, 'qb-drugs:server:sellCornerDrugs')
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')

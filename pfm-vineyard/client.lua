@@ -77,7 +77,8 @@ local function nextTask()
 	if tasking then
 		return
 	end
-	random = math.random(#grapeLocations)
+	local last = random
+	repeat random = math.random(#grapeLocations) until random ~= last -- a new vine each time
 	tasking = true
 	CreateBlip()
 end

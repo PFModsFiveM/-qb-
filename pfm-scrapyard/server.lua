@@ -74,7 +74,17 @@ RegisterNetEvent('qb-scrapyard:server:ScrapVehicle', function(listKey)
     if not vehicleKey then return end
 
     local currentVehicle = Config.CurrentVehicles[vehicleKey]
-    if currentVehicle ~= nil and GetHashKey(currentVehicle) == model then
+    if currentVehicle ~= nil and (GetHashKey(currentVehicle) & 0xFFFFFFFF) == (model & 0xFFFFFFFF) then
+        -- owned cars can't be scrapped (the owner check used to run only on the client)
+        local plate = (GetVehicleNumberPlateText(vehicle) or ''):gsub('^%s+', ''):gsub('%s+$', '')
+        if plate == '' or MySQL.scalar.await('SELECT `plate` FROM `player_vehicles` WHERE `plate` = ?', { plate }) then
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.smash_own'), 'error')
+            return
+        end
+        -- claim the list slot and remove the car here before handing out parts
+        Config.CurrentVehicles[vehicleKey] = nil
+        TriggerClientEvent('qb-scapyard:client:setNewVehicles', -1, Config.CurrentVehicles)
+        if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
         for _ = 1, math.random(2, 4), 1 do
             local item = Config.Items[math.random(1, #Config.Items)]
             exports['pfm-inventory']:AddItem(src, item, math.random(25, 45), false, false, 'qb-scrapyard:server:ScrapVehicle')
@@ -88,8 +98,6 @@ RegisterNetEvent('qb-scrapyard:server:ScrapVehicle', function(listKey)
             exports['pfm-inventory']:AddItem(src, 'rubber', random, false, false, 'qb-scrapyard:server:ScrapVehicle')
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['rubber'], 'add')
         end
-        Config.CurrentVehicles[vehicleKey] = nil
-        TriggerClientEvent('qb-scapyard:client:setNewVehicles', -1, Config.CurrentVehicles)
     end
 end)
 

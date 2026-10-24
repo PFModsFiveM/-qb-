@@ -100,7 +100,7 @@ local function OpenCraftingMenu(benchType)
     local PlayerData = QBCore.Functions.GetPlayerData()
     local xpType = benchType == 'item_bench' and Config.item_bench.xpType or Config.attachment_bench.xpType
     local recipes = benchType == 'item_bench' and Config.item_bench.recipes or Config.attachment_bench.recipes
-    local currentXP = PlayerData.metadata[xpType] or 0
+    local currentXP = (PlayerData.metadata.rep and PlayerData.metadata.rep[xpType]) or 0
 
     QBCore.Functions.TriggerCallback('crafting:getPlayerInventory', function(inventory)
         local craftableItems = {}

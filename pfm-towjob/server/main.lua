@@ -14,10 +14,32 @@ AddEventHandler('playerDropped', function()
     Sessions[source] = nil
 end)
 
+-- Mission vehicles already towed once: [netId] = true. A car can be hooked once.
+local hookedVehicles = {}
+
+local function nearCoords(a, c, range)
+    return #(vector3(a.x, a.y, a.z) - vector3(c.x, c.y, c.z)) <= range
+end
+
+-- The towed vehicle must be one of the mission's tow-spot cars, near its spot when hooked.
+local function IsMissionVehicle(vehicle)
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then return false end
+    local model, pos = GetEntityModel(vehicle), GetEntityCoords(vehicle)
+    for _, spot in pairs(Config.Locations['towspots']) do
+        -- compared as unsigned 32-bit hashes (model hashes can come back signed or unsigned)
+        if (model & 0xFFFFFFFF) == (joaat(spot.model) & 0xFFFFFFFF) and nearCoords(pos, spot.coords, 40.0) then return true end
+    end
+    return false
+end
+
 RegisterNetEvent('qb-tow:server:DoBail', function(bool, vehInfo)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
     if bool then
+        -- only the configured tow trucks can be rented (vehInfo is passed on to the spawn)
+        if type(vehInfo) ~= 'string' or not Config.Vehicles[vehInfo] then return end
+        if Bail[Player.PlayerData.citizenid] then return end -- one truck at a time
         if Player.PlayerData.money.cash >= Config.BailPrice then
             Bail[Player.PlayerData.citizenid] = Config.BailPrice
             Player.Functions.RemoveMoney('cash', Config.BailPrice, 'tow-paid-bail')
@@ -32,6 +54,8 @@ RegisterNetEvent('qb-tow:server:DoBail', function(bool, vehInfo)
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_deposit', { value = Config.BailPrice }), 'error')
         end
     else
+        -- the deposit comes back when the truck is returned at the depot
+        if not nearCoords(GetEntityCoords(GetPlayerPed(src)), Config.Locations['vehicle'].coords, 25.0) then return end
         if Bail[Player.PlayerData.citizenid] ~= nil then
             Player.Functions.AddMoney('bank', Bail[Player.PlayerData.citizenid], 'tow-bail-paid')
             Bail[Player.PlayerData.citizenid] = nil
@@ -53,31 +77,38 @@ RegisterNetEvent('qb-tow:server:nano', function(vehNetID)
     if Player.PlayerData.job.name ~= 'tow' or dist > 11.0 then
         return DropPlayer(src, Lang:t('info.skick'))
     end
-    -- Job session: hooking a mission vehicle registers it; the drop is credited server-side on delivery
+    -- Only a mission car counts (it used to accept any vehicle id, including the player's own truck),
+    -- one hook at a time, and each car once.
     Sessions[src] = Sessions[src] or { drops = 0 }
+    if Sessions[src].pendingHook then return end
+    if targetVehicle == playerVehicle or hookedVehicles[vehNetID] or not IsMissionVehicle(targetVehicle) then return end
+    hookedVehicles[vehNetID] = true
     Sessions[src].pendingHook = vehNetID
     Sessions[src].hookTime = os.time()
-    local chance = math.random(1, 100)
-    if chance < 26 then
-        exports['pfm-inventory']:AddItem(src, 'cryptostick', 1, false, false, 'qb-tow:server:nano')
-        TriggerClientEvent('qb-inventory:client:ItemBox', src, QBCore.Shared.Items['cryptostick'], 'add')
-    end
 end)
 
--- Drop-off confirmation: credited server-side with proximity and timing checks
+-- Drop-off confirmation: the hooked car must really be at the drop-off. The server checks it there and
+-- removes it; only then the drop counts (and the cryptostick roll happens, no longer on hooking).
 RegisterNetEvent('qb-tow:server:vehicleDropped', function()
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if not Player or Player.PlayerData.job.name ~= 'tow' then return end
     local session = Sessions[src]
     if not session or not session.pendingHook then return end
-    local playerCoords = GetEntityCoords(GetPlayerPed(src))
     local dropoff = Config.Locations['dropoff'].coords
-    if #(playerCoords - vector3(dropoff.x, dropoff.y, dropoff.z)) > 30.0 then return end
+    if not nearCoords(GetEntityCoords(GetPlayerPed(src)), dropoff, 30.0) then return end
     if (os.time() - (session.hookTime or 0)) < (Config.MinDeliverySeconds or 15) then return end
+    local vehicle = NetworkGetEntityFromNetworkId(session.pendingHook)
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then return end
+    if not nearCoords(GetEntityCoords(vehicle), dropoff, 30.0) then return end
+    DeleteEntity(vehicle)
     session.pendingHook = nil
     if session.drops < (Config.MaxDropsPerSession or 50) then
         session.drops = session.drops + 1
+        if math.random(1, 100) < 26 then
+            exports['pfm-inventory']:AddItem(src, 'cryptostick', 1, false, false, 'qb-tow:server:vehicleDropped')
+            TriggerClientEvent('qb-inventory:client:ItemBox', src, QBCore.Shared.Items['cryptostick'], 'add')
+        end
     end
 end)
 

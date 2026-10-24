@@ -4,6 +4,9 @@ local grapePickupState = {}
 local wineRewardState = {}
 local grapeJuiceRewardState = {}
 local grapePickupMaxDistance = 5.0
+local MIN_PICK_MS = 6000              -- the picking bar takes 6-8 s
+local MIN_JUICE_SECONDS = 14          -- the juice bar takes 15-20 s
+local lastVine = {}                   -- [src] = vine index picked last; the next pick must be another vine
 
 local grapeLocations = {
     vector3(-1875.41, 2100.37, 138.86),
@@ -41,7 +44,7 @@ local function playerIsNearGrapeLocation(src)
     local playerCoords = GetEntityCoords(ped)
     for i = 1, #grapeLocations do
         if #(playerCoords - grapeLocations[i]) <= grapePickupMaxDistance then
-            return true
+            return i
         end
     end
     return false
@@ -53,16 +56,18 @@ RegisterNetEvent('qb-vineyard:server:getGrapes', function()
     if not playerHasVineyardJob(Player) then
         return
     end
-    if not playerIsNearGrapeLocation(src) then
-        return
+    local vine = playerIsNearGrapeLocation(src)
+    if not vine or vine == lastVine[src] then
+        return -- one vine could be picked every 3 s forever; the job sends you to a new vine each time
     end
 
     local now = GetGameTimer()
     local lastPickup = grapePickupState[src] or 0
-    if now - lastPickup < 3000 then
+    if now - lastPickup < MIN_PICK_MS then
         return
     end
     grapePickupState[src] = now
+    lastVine[src] = vine
 
     local amount = math.random(Config.GrapeAmount.min, Config.GrapeAmount.max)
     exports['pfm-inventory']:AddItem(src, 'grape', amount, false, false, 'qb-vineyard:server:getGrapes')
@@ -80,7 +85,7 @@ QBCore.Functions.CreateCallback('qb-vineyard:server:loadIngredients', function(s
             if grape.amount >= 23 then
                 exports['pfm-inventory']:RemoveItem(src, 'grapejuice', 23, false, 'qb-vineyard:server:loadIngredients')
                 TriggerClientEvent('qb-inventory:client:ItemBox', source, sharedItems['grapejuice'], 'remove')
-                wineRewardState[src] = true
+                wineRewardState[src] = os.time() -- the wine is ready after Config.wineTimer
                 cb(true)
             else
                 TriggerClientEvent('QBCore:Notify', source, Lang:t('error.invalid_items'), 'error')
@@ -107,7 +112,7 @@ QBCore.Functions.CreateCallback('qb-vineyard:server:grapeJuice', function(source
             if grape.amount >= 16 then
                 exports['pfm-inventory']:RemoveItem(src, 'grape', 16, false, 'qb-vineyard:server:grapeJuice')
                 TriggerClientEvent('qb-inventory:client:ItemBox', source, sharedItems['grape'], 'remove')
-                grapeJuiceRewardState[src] = true
+                grapeJuiceRewardState[src] = os.time()
                 cb(true)
             else
                 TriggerClientEvent('QBCore:Notify', source, Lang:t('error.invalid_items'), 'error')
@@ -129,7 +134,7 @@ RegisterNetEvent('qb-vineyard:server:receiveWine', function()
     if not playerHasVineyardJob(Player) then
         return
     end
-    if not wineRewardState[src] then
+    if not wineRewardState[src] or os.time() - wineRewardState[src] < (Config.wineTimer or 180) - 5 then
         return
     end
     wineRewardState[src] = nil
@@ -145,7 +150,7 @@ RegisterNetEvent('qb-vineyard:server:receiveGrapeJuice', function()
     if not playerHasVineyardJob(Player) then
         return
     end
-    if not grapeJuiceRewardState[src] then
+    if not grapeJuiceRewardState[src] or os.time() - grapeJuiceRewardState[src] < MIN_JUICE_SECONDS then
         return
     end
     grapeJuiceRewardState[src] = nil
@@ -158,6 +163,7 @@ end)
 AddEventHandler('playerDropped', function()
     local src = source
     grapePickupState[src] = nil
+    lastVine[src] = nil
     wineRewardState[src] = nil
     grapeJuiceRewardState[src] = nil
 end)

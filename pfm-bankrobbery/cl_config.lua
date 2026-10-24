@@ -52,8 +52,5 @@ function Config.ShowRequiredItems(items, show)
     TriggerEvent('qb-inventory:client:requiredItems', items, show)
 end
 
-Config.MinimumPaletoPolice = 0
-Config.MinimumPacificPolice = 0
-Config.MinimumFleecaPolice = 0
-Config.MinimumThermitePolice = 0
+-- Config.Minimum*Police now live in sh_config.lua so the server enforces them too
 Config.OutlawCooldown = 5 -- The amount of minutes it takes for the cops to be able to be called again after they were called

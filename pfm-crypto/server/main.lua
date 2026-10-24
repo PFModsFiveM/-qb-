@@ -223,50 +223,71 @@ RegisterServerEvent('qb-crypto:server:FetchWorth', function()
     end
 end)
 
+-- The exchange terminal. Exchanges happen at it, and only while it is online; its reboot after a
+-- failed exchange is run by the server (clients used to set the reboot state for everyone, and could
+-- exchange from anywhere).
+local EXCHANGE_RANGE = 3.0
+local REBOOT_SECONDS = 120
+
+local function atExchange(src)
+    local p = GetEntityCoords(GetPlayerPed(src))
+    return #(vector3(p.x, p.y, p.z) - Crypto.Exchange.coords) <= EXCHANGE_RANGE
+end
+
+local function StartReboot()
+    if Crypto.Exchange.RebootInfo.state then return end
+    Crypto.Exchange.RebootInfo.state = true
+    Crypto.Exchange.RebootInfo.percentage = 0
+    TriggerClientEvent('qb-crypto:client:SyncReboot', -1)
+    CreateThread(function()
+        local step = REBOOT_SECONDS * 10 -- ms per percent
+        while Crypto.Exchange.RebootInfo.percentage < 100 do
+            Wait(step)
+            Crypto.Exchange.RebootInfo.percentage = Crypto.Exchange.RebootInfo.percentage + 1
+        end
+        Crypto.Exchange.RebootInfo.state = false
+        Crypto.Exchange.RebootInfo.percentage = 0
+        TriggerClientEvent('qb-crypto:client:GetRebootState', -1, Crypto.Exchange.RebootInfo)
+    end)
+end
+
 RegisterServerEvent('qb-crypto:server:ExchangeFail', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if onCooldown(src, 'exchange', 5000) then return end
-    local ItemData = Player.GetItemByName('cryptostick')
-    if ItemData ~= nil then
-        exports['pfm-inventory']:RemoveItem(src, 'cryptostick', 1, false, 'qb-crypto:server:ExchangeFail')
+    if not atExchange(src) or Crypto.Exchange.RebootInfo.state then return end
+    if exports['pfm-inventory']:RemoveItem(src, 'cryptostick', 1, false, 'qb-crypto:server:ExchangeFail') then
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['cryptostick'], 'remove')
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.cryptostick_malfunctioned'), 'error')
+        StartReboot()
     end
 end)
 
-RegisterServerEvent('qb-crypto:server:Rebooting', function(state, percentage)
-    if type(state) ~= 'boolean' then return end
-    percentage = tonumber(percentage)
-    if not percentage or percentage < 0 or percentage > 100 then return end
-    Crypto.Exchange.RebootInfo.state = state
-    Crypto.Exchange.RebootInfo.percentage = percentage
-end)
+-- Clients still report reboot progress; the server keeps its own state and ignores these.
+RegisterServerEvent('qb-crypto:server:Rebooting', function() end)
+RegisterServerEvent('qb-crypto:server:SyncReboot', function() end)
 
 RegisterServerEvent('qb-crypto:server:GetRebootState', function()
     local src = source
     TriggerClientEvent('qb-crypto:client:GetRebootState', src, Crypto.Exchange.RebootInfo)
 end)
 
-RegisterServerEvent('qb-crypto:server:SyncReboot', function()
-    TriggerClientEvent('qb-crypto:client:SyncReboot', -1)
-end)
-
-RegisterServerEvent('qb-crypto:server:ExchangeSuccess', function(LuckChance)
+RegisterServerEvent('qb-crypto:server:ExchangeSuccess', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if onCooldown(src, 'exchange', 5000) then return end
+    if not atExchange(src) or Crypto.Exchange.RebootInfo.state then return end
     local ItemData = Player.GetItemByName('cryptostick')
     if ItemData ~= nil then
-        local LuckyNumber = math.random(1, 10)
         local DeelNumber = 1000000
         local Amount = (math.random(611111, 1599999) / DeelNumber)
-        if LuckChance == LuckyNumber then
+        if math.random(1, 10) == 1 then -- the lucky roll is the server's own
             Amount = (math.random(1599999, 2599999) / DeelNumber)
         end
-        exports['pfm-inventory']:RemoveItem(src, 'cryptostick', 1, false, 'qb-crypto:server:ExchangeSuccess')
+        -- the stick is used up before the coins are credited
+        if not exports['pfm-inventory']:RemoveItem(src, 'cryptostick', 1, false, 'qb-crypto:server:ExchangeSuccess') then return end
         Player.AddMoney('crypto', Amount, 'qb-crypto:server:ExchangeSuccess')
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.you_have_exchanged_your_cryptostick_for', { amount = Amount }), 'success', 3500)
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['cryptostick'], 'remove')
@@ -303,7 +324,9 @@ QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, c
     local Player = exports['pfm-core']:GetPlayer(source)
     local coins = sanitizeCoins(data and data.Coins)
     if not Player or not coins then return cb(false) end
-    local total_price = math.floor(coins * tonumber(Crypto.Worth['qbit']))
+    if onCooldown(source, 'buy', 1000) then return cb(false) end
+    -- rounded up: rounding down let tiny buys cost less than they were worth, over and over
+    local total_price = math.ceil(coins * tonumber(Crypto.Worth['qbit']))
     if total_price > 0 and Player.PlayerData.money.bank >= total_price then
         local CryptoData = {
             History = Crypto.History['qbit'],
@@ -311,7 +334,7 @@ QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, c
             Portfolio = Player.PlayerData.money.crypto + coins,
             WalletId = Player.PlayerData.metadata['walletid'],
         }
-        Player.RemoveMoney('bank', total_price, 'bought crypto')
+        if not Player.RemoveMoney('bank', total_price, 'bought crypto') then return cb(false) end
         TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
         Player.AddMoney('crypto', coins, 'bought crypto')
         cb(CryptoData)
@@ -343,6 +366,8 @@ QBCore.Functions.CreateCallback('qb-crypto:server:SellCrypto', function(source, 
 end)
 
 QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(source, cb, data)
+    if type(data) ~= 'table' then return cb('notvalid') end
+    if onCooldown(source, 'transfer', 2000) then return cb('notvalid') end
     local newCoin = tostring(data.Coins)
     local newWalletId = tostring(data.WalletId)
     for _, v in pairs(bannedCharacters) do
@@ -353,9 +378,10 @@ QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(sour
     data.Coins = sanitizeCoins(newCoin)
     local Player = exports['pfm-core']:GetPlayer(source)
     if not Player or not data.Coins then return cb('notvalid') end
+    if data.WalletId == '' or #data.WalletId > 64 or data.WalletId == Player.PlayerData.metadata['walletid'] then return cb('notvalid') end
     if Player.PlayerData.money.crypto >= tonumber(data.Coins) then
-        local query = '%"walletid":"' .. data.WalletId .. '"%'
-        local result = MySQL.query.await('SELECT * FROM `players` WHERE `metadata` LIKE ?', { query })
+        -- exact wallet match (a LIKE pattern let '_' and '%' match other people's wallets)
+        local result = MySQL.query.await("SELECT * FROM `players` WHERE JSON_UNQUOTE(JSON_EXTRACT(`metadata`, '$.walletid')) = ? LIMIT 1", { data.WalletId })
         if result[1] ~= nil then
             local CryptoData = {
                 History = Crypto.History['qbit'],
@@ -363,7 +389,7 @@ QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(sour
                 Portfolio = Player.PlayerData.money.crypto - tonumber(data.Coins),
                 WalletId = Player.PlayerData.metadata['walletid'],
             }
-            Player.RemoveMoney('crypto', tonumber(data.Coins), 'transfer crypto')
+            if not Player.RemoveMoney('crypto', tonumber(data.Coins), 'transfer crypto') then return cb('notenough') end
             TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, 'You have ' .. tonumber(data.Coins) .. " Qbit('s) transferred!", 'Debit')
             local Target = QBCore.Functions.GetPlayerByCitizenId(result[1].citizenid)
 
@@ -371,9 +397,10 @@ QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(sour
                 Target.Functions.AddMoney('crypto', tonumber(data.Coins), 'transfer crypto')
                 TriggerClientEvent('qb-phone:client:AddTransaction', Target.PlayerData.source, Player, data, 'There are ' .. tonumber(data.Coins) .. " Qbit('s) credited!", 'Credit')
             else
-                local MoneyData = json.decode(result[1].money)
-                MoneyData.crypto = MoneyData.crypto + tonumber(data.Coins)
-                MySQL.update('UPDATE players SET money = ? WHERE citizenid = ?', { json.encode(MoneyData), result[1].citizenid })
+                -- one atomic update (read-then-write could lose coins if the player logged in meanwhile)
+                MySQL.update([[UPDATE players SET money = JSON_SET(money, '$.crypto',
+                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(money, '$.crypto')) AS DECIMAL(20,6)), 0) + ?) WHERE citizenid = ?]],
+                    { tonumber(data.Coins), result[1].citizenid })
             end
             cb(CryptoData)
         else

@@ -216,11 +216,11 @@ function MissionNotification()
 end
 ---
 --
-RegisterNetEvent('AttackTransport:Pozwolwykonac', function()
+RegisterNetEvent('AttackTransport:Pozwolwykonac', function(spawnIndex)
 	MissionNotification()
 	ClearPedTasks(dealer)
 	TaskWanderStandard(dealer, 100,100)
-	local DrawCoord = math.random(1,5)
+	local DrawCoord = spawnIndex or math.random(1,5) -- the server picks the spawn point
 	VehicleCoords = Config.VehicleSpawn[DrawCoord]
 
 	local spawned = false
@@ -239,6 +239,7 @@ RegisterNetEvent('AttackTransport:Pozwolwykonac', function()
 				ClearAreaOfVehicles(VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 15.0, false, false, false, false, false)
 				transport = CreateVehicle(`stockade`, VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 52.0, true, true)
 				SetEntityAsMissionEntity(transport)
+				TriggerServerEvent('AttackTransport:truckSpawned', NetworkGetNetworkIdFromEntity(transport))
 				TruckBlip = AddBlipForEntity(transport)
 				SetBlipSprite(TruckBlip, 57)
 				SetBlipColour(TruckBlip, 1)

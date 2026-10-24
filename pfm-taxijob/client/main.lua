@@ -487,6 +487,7 @@ RegisterNetEvent('qb-taxi:client:DoTaxiNpc', function()
                                     end
                                     GetDeliveryLocation()
                                     NpcData.NpcTaken = true
+                                    TriggerServerEvent('qb-taxi:server:PickupNpc', NpcData.CurrentNpc) -- the server starts the fare
                                 end
                             end
                         end
@@ -783,6 +784,7 @@ function callNpcPoly()
                     end
                     GetDeliveryLocation()
                     NpcData.NpcTaken = true
+                    TriggerServerEvent('qb-taxi:server:PickupNpc', NpcData.CurrentNpc) -- the server starts the fare
                     createNpcDelieveryLocation()
                     zone:destroy()
                 end

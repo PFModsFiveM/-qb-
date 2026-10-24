@@ -9,16 +9,35 @@ local function applyStreakBonus(streak, amount)
     return math.floor(amount * (1.0 + mult) + 0.5)
 end
 
+-- The drop-off point the player is at, or nil.
 function NearTaxi(src)
     local ped = GetPlayerPed(src)
     local coords = GetEntityCoords(ped)
     for _, v in pairs(Config.NPCLocations.DeliverLocations) do
         local dist = #(coords - vector3(v.x, v.y, v.z))
         if dist < 20 then
-            return true
+            return v
         end
     end
 end
+
+-- A fare starts when the server sees the passenger picked up at a pickup point and ends with one
+-- payment at a drop-off point a real drive away. (Payment used to need only standing near any
+-- drop-off point, so a parked cab earned a fare every 30 seconds.)
+local PICKUP_RANGE = 15.0
+local MIN_FARE_DISTANCE = 150.0
+local MAX_FARE_SPEED = 45.0 -- m/s
+
+RegisterNetEvent('qb-taxi:server:PickupNpc', function(npcIndex)
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or Player.PlayerData.job.name ~= Config.jobRequired or not Sessions[src] then return end
+    local pickup = Config.NPCLocations.TakeLocations[tonumber(npcIndex) or 0]
+    if not pickup then return end
+    local coords = GetEntityCoords(GetPlayerPed(src))
+    if #(coords - vector3(pickup.x, pickup.y, pickup.z)) > PICKUP_RANGE then return end
+    Sessions[src].fare = { from = vector3(pickup.x, pickup.y, pickup.z), at = os.time() }
+end)
 
 -- Job session: started when a cab is taken out at the depot, cleared when it is parked or the player drops
 RegisterNetEvent('qb-taxi:server:StartShift', function()
@@ -53,7 +72,15 @@ RegisterNetEvent('qb-taxi:server:NpcPay', function(_, hasReceivedBonus)
             DropPlayer(src, 'Attempting To Exploit')
             return
         end
-        if NearTaxi(src) then
+        local dropoff = NearTaxi(src)
+        local fare = Sessions[src].fare
+        if dropoff and not fare then
+            return -- no passenger on board: nothing to pay (an honest client can get here after a restart)
+        end
+        if dropoff then
+            local drive = #(vector3(dropoff.x, dropoff.y, dropoff.z) - fare.from)
+            if drive < MIN_FARE_DISTANCE or now - fare.at < drive / MAX_FARE_SPEED then return end
+            Sessions[src].fare = nil -- one payment per passenger
             LastNpcPay[src] = now
             local payment = math.random(65, 105)
             local randomAmount = math.random(1, 5)

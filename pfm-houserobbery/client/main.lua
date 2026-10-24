@@ -163,6 +163,8 @@ RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
                 loadAnimDict('mp_missheist_countrybank@nervous')
                 TaskPlayAnim(PlayerPedId(), 'mp_missheist_countrybank@nervous', 'nervous_idle', 8.0, 8.0, -1, 49, 0.0, false, false, false)
                 alertCops()
+                -- the server only lets us in after it has seen the attempt start at this door
+                TriggerServerEvent('qb-houserobbery:server:startLockpick', closestHouse)
                 if usingAdvanced then
                     local success = exports['pfm-minigames']:Skillbar()
                     if success then

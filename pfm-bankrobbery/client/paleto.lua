@@ -35,8 +35,8 @@ RegisterNetEvent('qb-bankrobbery:UseBankcardA', function()
                         disableCombat = true,
                     }, {}, {}, {}, function() -- Done
                         StopAnimTask(ped, 'anim@gangops@facility@servers@', 'hotwire', 1.0)
+                        -- the server uses up the security card when it opens the bank
                         TriggerServerEvent('qb-bankrobbery:server:setBankState', 'paleto')
-                        TriggerServerEvent('qb-bankrobbery:server:removeBankCard', '01')
                         Config.DoorlockAction(4, false)
                         if copsCalled or not Config.BigBanks['paleto']['alarm'] then return end
                         TriggerServerEvent('qb-bankrobbery:server:callCops', 'paleto', 0, pos)

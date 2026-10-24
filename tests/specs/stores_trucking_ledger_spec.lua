@@ -742,3 +742,36 @@ describe('pf-computer company accounts are the job bank account', function()
         assert_eq(bank('mechanic'), 880)
         Mock.exportsByResource['pf-mechanicjob'] = nil    end)
 end)
+describe('pf-computer staff-only events', function()
+    local function spawned() return Mock.clientEventsNamed('pf-computer:client:spawnProp') end
+    local prop = { model = 'prop_laptop_01a', x = 10.0, y = 20.0, z = 30.0, heading = 90.0 }
+
+    it('a player without staff permission cannot place or delete computers', function()
+        Mock.aces = {}
+        Mock.fireNet('pf-computer:server:saveProp', SHOPPER, prop)
+        assert_eq(#spawned(), 0)
+        Mock.aces = { [OWNER] = { admin = true } }
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, prop)
+        assert_eq(#spawned(), 1)
+        Mock.aces = {}
+        Mock.reset()
+        Mock.fireNet('pf-computer:server:deleteProp', SHOPPER, vector3(10.0, 20.0, 30.0))
+        assert_eq(#Mock.clientEventsNamed('pf-computer:client:deleteProp'), 0)
+        Mock.aces = { [OWNER] = { admin = true } }
+        Mock.fireNet('pf-computer:server:deleteProp', OWNER, vector3(10.0, 20.0, 30.0))
+        assert_eq(#Mock.clientEventsNamed('pf-computer:client:deleteProp'), 1)
+        Mock.aces = {}
+    end)
+    it('staff can only place computer models, at real coordinates', function()
+        Mock.aces = { [OWNER] = { admin = true } }
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, { model = 'prop_big_cargo_ship', x = 1.0, y = 1.0, z = 1.0 })
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, { model = 'prop_laptop_01a', x = 0 / 0, y = 1.0, z = 1.0 })
+        Mock.fireNet('pf-computer:server:saveProp', OWNER, 'not a table')
+        assert_eq(#spawned(), 0)
+        Mock.aces = {}
+    end)
+    it('clients can no longer mark job supply orders as picked up', function()
+        assert_eq(Mock.netHandlers['pf-computer:server:supplies:completeOrder'], nil)
+        assert_true(Mock.eventHandlers['pf-computer:server:supplies:completeOrder'] ~= nil)
+    end)
+end)

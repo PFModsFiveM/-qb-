@@ -178,10 +178,11 @@ local function CreateZone(type, number)
 end
 
 local function deliverVehicle(vehicle)
-    DeleteVehicle(vehicle)
+    -- the server checks the car is at the drop-off and removes it
+    DetachEntity(vehicle, true, true)
+    TriggerServerEvent('qb-tow:server:vehicleDropped')
     RemoveBlip(CurrentBlip2)
     JobsDone = JobsDone + 1
-    TriggerServerEvent('qb-tow:server:vehicleDropped')
     VehicleSpawned = false
     QBCore.Functions.Notify(Lang:t("mission.delivered_vehicle"), "success")
     QBCore.Functions.Notify(Lang:t("mission.get_new_vehicle"))

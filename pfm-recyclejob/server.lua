@@ -31,8 +31,26 @@ local function onCooldown(src, key, ms)
     t[key] = now
     return false
 end
+-- Packages being carried: [src] = time picked up. A hand-in needs one (it used to need only standing
+-- at the drop point, so the reward event could be fired every 5 seconds without working).
+local carrying = {}
+local PICKUP_RANGE = 4.0
+local MIN_CARRY_SECONDS = 4      -- the walk plus the unpacking bar take longer than this
+local MAX_CARRY_SECONDS = 600
+
 AddEventHandler('playerDropped', function()
     eventCooldowns[source] = nil
+    carrying[source] = nil
+end)
+
+RegisterNetEvent('qb-recyclejob:server:pickupPackage', function(index)
+    local src = source
+    if not exports['pfm-core']:GetPlayer(src) then return end
+    local spot = Config.PickupLocations[tonumber(index) or 0]
+    if not spot or carrying[src] then return end
+    local coords = GetEntityCoords(GetPlayerPed(src))
+    if #(coords - vector3(spot.loc.x, spot.loc.y, spot.loc.z)) > PICKUP_RANGE then return end
+    carrying[src] = os.time()
 end)
 
 
@@ -106,7 +124,7 @@ end
 
 QBCore.Functions.CreateCallback('qb-recyclejob:server:getPriceList', function(source, cb)
     local src = source
-    if not isClose(src, 'sell') then return false end
+    if not isClose(src, 'sell') then return cb({}) end
     cb(Sales)
 end)
 
@@ -177,9 +195,14 @@ RegisterNetEvent('qb-recyclejob:server:getItem', function()
         end
         return
     end
+    local pickedAt = carrying[src]
+    local held = pickedAt and (os.time() - pickedAt) or -1
+    if held < MIN_CARRY_SECONDS or held > MAX_CARRY_SECONDS then
+        if held > MAX_CARRY_SECONDS then carrying[src] = nil end
+        return
+    end
+    carrying[src] = nil -- one reward per package
     local itemAmountRecieved = math.random(1, maxRecieved)
-
-    if not isClose(src, 'turnIn') then return end
 
     repeat
         Wait(1)

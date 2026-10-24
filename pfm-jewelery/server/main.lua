@@ -2,8 +2,6 @@ local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local sharedItems = exports['pfm-core']:GetShared('Items')
 local timeOut = false
 
-local cachedPoliceAmount = {}
-local flags = {}
 
 -- Per-source event cooldowns (anti-spam); cleared on disconnect
 local eventCooldowns = {}
@@ -31,7 +29,6 @@ QBCore.Functions.CreateCallback('qb-jewellery:server:getCops', function(source, 
             amount = amount + 1
         end
     end
-    cachedPoliceAmount[source] = amount
     cb(amount)
 end)
 
@@ -40,22 +37,6 @@ QBCore.Functions.CreateCallback('qb-jewellery:server:getVitrineState', function(
 end)
 
 -- Functions
-
-local function exploitBan(id, reason)
-    MySQL.insert('INSERT INTO bans (name, license, discord, ip, reason, expire, bannedby) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        {
-            GetPlayerName(id),
-            QBCore.Functions.GetIdentifier(id, 'license'),
-            QBCore.Functions.GetIdentifier(id, 'discord'),
-            QBCore.Functions.GetIdentifier(id, 'ip'),
-            reason,
-            2147483647,
-            'qb-jewelery'
-        })
-    TriggerEvent('qb-log:server:CreateLog', 'jewelery', 'Player Banned', 'red',
-        string.format('%s was banned by %s for %s', GetPlayerName(id), 'qb-jewelery', reason), true)
-    DropPlayer(id, 'You were permanently banned by the server for: Exploiting')
-end
 
 local function getRewardBasedOnProbability(table)
     local random, probability = math.random(), 0
@@ -72,87 +53,116 @@ end
 
 -- Events
 
+-- Smashes in progress: [src] = { vitrine, at, seconds }. The server starts a smash (case free, player
+-- next to it with a whitelisted weapon, enough police on duty right now) and pays only for that case,
+-- after the smash time. The client used to pick the case and report the reward on its own, and the
+-- police count came from a callback it could skip or replay.
+local smashes = {}
+local SMASH_RANGE = 3.0
+local SMASH_GRACE = 60 -- seconds after the smash time the reward can still be claimed
+
+local function onDutyCops()
+    local amount = 0
+    for _, v in pairs(QBCore.Functions.GetQBPlayers()) do
+        if (v.PlayerData.job.name == 'police' or v.PlayerData.job.type == 'leo') and v.PlayerData.job.onduty then
+            amount = amount + 1
+        end
+    end
+    return amount
+end
+
+local function weaponSmashTime(src)
+    local weapon = GetSelectedPedWeapon(GetPlayerPed(src))
+    if not weapon then return nil end
+    for hash, data in pairs(Config.WhitelistedWeapons) do
+        if (hash & 0xFFFFFFFF) == (weapon & 0xFFFFFFFF) then return data.timeOut end
+    end
+end
+
+local function setVitrine(k, key, value)
+    Config.Locations[k][key] = value
+    TriggerClientEvent('qb-jewellery:client:setVitrineState', -1, key, value, k)
+end
+
+-- The store resets Config.Timeout after the first case is smashed. Started here only (it was a net
+-- event any client could fire).
+local function startTimeout()
+    if timeOut then return end
+    timeOut = true
+    TriggerEvent('qb-scoreboard:server:SetActivityBusy', 'jewellery', true)
+    Citizen.CreateThread(function()
+        Citizen.Wait(Config.Timeout)
+        for k, _ in pairs(Config.Locations) do
+            Config.Locations[k]['isOpened'] = false
+            TriggerClientEvent('qb-jewellery:client:setVitrineState', -1, 'isOpened', false, k)
+        end
+        TriggerClientEvent('qb-jewellery:client:setAlertState', -1, false)
+        TriggerEvent('qb-scoreboard:server:SetActivityBusy', 'jewellery', false)
+        timeOut = false
+    end)
+end
+
 RegisterNetEvent('qb-jewellery:server:setVitrineState', function(stateType, state, k)
     local src = source
     if onCooldown(src, 'vitrineState', 500) then return end
-    if stateType == 'isBusy' and type(state) == 'boolean' and Config.Locations[k] then
-        Config.Locations[k][stateType] = state
-        TriggerClientEvent('qb-jewellery:client:setVitrineState', -1, stateType, state, k)
+    if stateType ~= 'isBusy' or type(state) ~= 'boolean' then return end
+    local vitrine = Config.Locations[k]
+    if not vitrine then return end
+    if not state then
+        -- only the player smashing this case can cancel it
+        if smashes[src] and smashes[src].vitrine == k then
+            smashes[src] = nil
+            setVitrine(k, 'isBusy', false)
+        end
+        return
     end
+    if smashes[src] or vitrine.isOpened or vitrine.isBusy then return end
+    if not exports['pfm-core']:GetPlayer(src) then return end
+    if #(GetEntityCoords(GetPlayerPed(src)) - vitrine.coords) > SMASH_RANGE then return end
+    local smashTime = weaponSmashTime(src)
+    if not smashTime then return end
+    if onDutyCops() < Config.RequiredCops then return end
+    smashes[src] = { vitrine = k, at = os.time(), seconds = math.floor(smashTime / 1000) }
+    setVitrine(k, 'isBusy', true)
 end)
 
 RegisterNetEvent('qb-jewellery:server:vitrineReward', function(vitrineIndex)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    -- smashing a vitrine takes several seconds client-side
     if onCooldown(src, 'vitrineReward', 3000) then return end
-    local cheating = false
-    if Config.Locations[vitrineIndex] == nil or Config.Locations[vitrineIndex].isOpened ~= false then
-        exploitBan(src, 'Trying to trigger an exploitable event \"qb-jewellery:server:vitrineReward\"')
+    local smash = smashes[src]
+    -- No ban here: a case opened by someone else a moment earlier, or a lagging client, lands here too.
+    if not smash or smash.vitrine ~= vitrineIndex then return end
+    local vitrine = Config.Locations[vitrineIndex]
+    local elapsed = os.time() - smash.at
+    if elapsed < smash.seconds - 1 then return end -- too early: the smash keeps going
+    smashes[src] = nil
+    if elapsed > smash.seconds + SMASH_GRACE or vitrine.isOpened then
+        setVitrine(vitrineIndex, 'isBusy', false)
         return
     end
-    if cachedPoliceAmount[source] == nil then
-        DropPlayer(src, 'Exploiting')
+    if #(GetEntityCoords(GetPlayerPed(src)) - vitrine.coords) > SMASH_RANGE + 2.0 then
+        setVitrine(vitrineIndex, 'isBusy', false)
         return
     end
-    local plrPed = GetPlayerPed(src)
-    local plrCoords = GetEntityCoords(plrPed)
-    local vitrineCoords = Config.Locations[vitrineIndex].coords
-    if cachedPoliceAmount[source] >= Config.RequiredCops then
-        if plrPed then
-            local dist = #(plrCoords - vitrineCoords)
-            if dist <= 25.0 then
-                Config.Locations[vitrineIndex]['isOpened'] = true
-                Config.Locations[vitrineIndex]['isBusy'] = false
-                TriggerClientEvent('qb-jewellery:client:setVitrineState', -1, 'isOpened', true, vitrineIndex)
-                TriggerClientEvent('qb-jewellery:client:setVitrineState', -1, 'isBusy', false, vitrineIndex)
-                local item = getRewardBasedOnProbability(Config.VitrineRewards)
-                local amount = math.random(Config.VitrineRewards[item]['amount']['min'], Config.VitrineRewards[item]['amount']['max'])
-                if exports['pfm-inventory']:AddItem(src, Config.VitrineRewards[item]['item'], amount, false, false, 'qb-jewellery:server:vitrineReward') then
-                    TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[Config.VitrineRewards[item]['item']], 'add')
-                else
-                    TriggerClientEvent('QBCore:Notify', src, Lang:t('error.to_much'), 'error')
-                end
-            else
-                cheating = true
-            end
-        end
+    setVitrine(vitrineIndex, 'isOpened', true)
+    setVitrine(vitrineIndex, 'isBusy', false)
+    startTimeout()
+    local item = getRewardBasedOnProbability(Config.VitrineRewards)
+    local amount = math.random(Config.VitrineRewards[item]['amount']['min'], Config.VitrineRewards[item]['amount']['max'])
+    if exports['pfm-inventory']:AddItem(src, Config.VitrineRewards[item]['item'], amount, false, false, 'qb-jewellery:server:vitrineReward') then
+        TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[Config.VitrineRewards[item]['item']], 'add')
     else
-        cheating = true
-    end
-    if cheating then
-        local license = Player.PlayerData.license
-        if flags[license] then
-            flags[license] = flags[license] + 1
-        else
-            flags[license] = 1
-        end
-        if flags[license] >= 3 then
-            -- upstream bug: src was missing, so the ban inserted garbage and never dropped the player
-            exploitBan(src, 'Getting flagged many times from exploiting the \"qb-jewellery:server:vitrineReward\" event')
-        else
-            DropPlayer(src, 'Exploiting')
-        end
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.to_much'), 'error')
     end
 end)
 
-RegisterNetEvent('qb-jewellery:server:setTimeout', function()
-    local src = source
-    if onCooldown(src, 'setTimeout', 5000) then return end
-    if not timeOut then
-        timeOut = true
-        TriggerEvent('qb-scoreboard:server:SetActivityBusy', 'jewellery', true)
-        Citizen.CreateThread(function()
-            Citizen.Wait(Config.Timeout)
+-- Kept so older clients don't error; the timeout now starts on the first paid smash (startTimeout).
+RegisterNetEvent('qb-jewellery:server:setTimeout', function() end)
 
-            for k, _ in pairs(Config.Locations) do
-                Config.Locations[k]['isOpened'] = false
-                TriggerClientEvent('qb-jewellery:client:setVitrineState', -1, 'isOpened', false, k)
-                TriggerClientEvent('qb-jewellery:client:setAlertState', -1, false)
-                TriggerEvent('qb-scoreboard:server:SetActivityBusy', 'jewellery', false)
-            end
-            timeOut = false
-        end)
-    end
+AddEventHandler('playerDropped', function()
+    local smash = smashes[source]
+    smashes[source] = nil
+    if smash and Config.Locations[smash.vitrine] then setVitrine(smash.vitrine, 'isBusy', false) end
 end)

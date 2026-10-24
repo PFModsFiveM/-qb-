@@ -3,8 +3,15 @@ local sharedItems = exports['pfm-core']:GetShared('Items')
 local Routes = {}
 local SrcToCid = {}
 
+-- Truck deposits held between routes when the driver keeps working: [citizenid] = amount
+local HeldDeposits = {}
+
 local function CanPay(Player)
     return Player.PlayerData.money['bank'] >= Config.TruckPrice
+end
+
+local function OnGarbageJob(Player)
+    return Player and Player.PlayerData.job and Player.PlayerData.job.name == Config.Jobname
 end
 
 local function applyStreakBonus(streak, amount)
@@ -14,16 +21,33 @@ local function applyStreakBonus(streak, amount)
     return math.floor(amount * (1.0 + mult) + 0.5)
 end
 
+-- Pay for the bags at one stop (the streak bonus applies).
+local function PayForStop(route, stopNum)
+    local bagAmount = math.min(route.stops[stopNum].bags, Config.MaxBagsPerStop)
+    local totalNewPay = 0
+    for _ = 1, bagAmount do
+        totalNewPay = totalNewPay + math.random(Config.BagLowerWorth, Config.BagUpperWorth)
+    end
+    totalNewPay = applyStreakBonus(route.streak, totalNewPay)
+    route.actualPay = math.ceil(route.actualPay + totalNewPay)
+    route.stopsCompleted = tonumber(route.stopsCompleted) + 1
+    route.streak = route.streak + 1
+end
+
 QBCore.Functions.CreateCallback('qb-garbagejob:server:NewShift', function(source, cb, continue)
     local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then cb(false, 0, 0, 0) return end
+    if not Player or not OnGarbageJob(Player) then cb(false, 0, 0, 0) return end
     local CitizenId = Player.PlayerData.citizenid
     local shouldContinue = false
     local nextStop = 0
     local totalNumberOfStops = 0
     local bagNum = 0
+    -- "continue" means the driver already has the truck and a deposit held from the last route; the
+    -- deposit itself is tracked here (the client's word used to skip it and still get it refunded)
+    local held = HeldDeposits[CitizenId]
+    HeldDeposits[CitizenId] = nil
 
-    if CanPay(Player) or continue then
+    if CanPay(Player) or (continue and held) then
         math.randomseed(os.time())
         local MaxStops = math.random(Config.MinStops, #Config.Locations['trashcan'])
         local allStops = {}
@@ -39,7 +63,8 @@ QBCore.Functions.CreateCallback('qb-garbagejob:server:NewShift', function(source
             currentStop = 1,
             started = true,
             currentDistance = 0,
-            depositPay = Config.TruckPrice,
+            -- refunded at the end only if it was actually paid (payDeposit) or carried over
+            depositPay = (continue and held) or 0,
             actualPay = 0,
             stopsCompleted = 0,
             totalNumberOfStops = #allStops,
@@ -58,16 +83,23 @@ QBCore.Functions.CreateCallback('qb-garbagejob:server:NewShift', function(source
     cb(shouldContinue, nextStop, bagNum, totalNumberOfStops)
 end)
 
+-- The client pays the truck deposit once the truck has spawned. It is recorded on the route only when
+-- the money was really taken, so only a paid deposit is ever refunded.
 RegisterNetEvent('qb-garbagejob:server:payDeposit', function()
     local Player = exports['pfm-core']:GetPlayer(source)
+    if not Player then return end
+    local route = Routes[Player.PlayerData.citizenid]
+    if not route or route.depositPay > 0 then return end
     if not Player.RemoveMoney('bank', Config.TruckPrice, 'garbage-deposit') then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.not_enough', { value = Config.TruckPrice }), 'error')
+        return
     end
+    route.depositPay = Config.TruckPrice
 end)
 
 QBCore.Functions.CreateCallback('qb-garbagejob:server:NextStop', function(source, cb, currentStop, currentStopNum, _)
     local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then cb(false, 0, 0) return end
+    if not Player or not OnGarbageJob(Player) then cb(false, 0, 0) return end
     local CitizenId = Player.PlayerData.citizenid
     local route = Routes[CitizenId]
     local newStop = 0
@@ -105,26 +137,16 @@ QBCore.Functions.CreateCallback('qb-garbagejob:server:NextStop', function(source
             TriggerClientEvent('QBCore:Notify', source, Lang:t('info.found_crypto'))
         end
 
+        -- every stop, the last one included, is paid once; afterwards the route accepts no more stops
+        -- (the last stop used to stay open, so it could be "collected" again and again for cryptosticks)
+        PayForStop(route, currentStopNum)
+        route.currentStop = currentStopNum + 1
         if currentStopNum >= #route.stops then
-            route.stopsCompleted = tonumber(route.stopsCompleted) + 1
-            route.streak = route.streak + 1
             newStop = currentStop
         else
             newStop = route.stops[currentStopNum + 1].stop
             newBagAmount = route.stops[currentStopNum + 1].bags
             shouldContinue = true
-            local bagAmount = math.min(route.stops[currentStopNum].bags, Config.MaxBagsPerStop)
-            local totalNewPay = 0
-
-            for _ = 1, bagAmount do
-                totalNewPay = totalNewPay + math.random(Config.BagLowerWorth, Config.BagUpperWorth)
-            end
-
-            totalNewPay = applyStreakBonus(route.streak, totalNewPay)
-            route.actualPay = math.ceil(route.actualPay + totalNewPay)
-            route.stopsCompleted = tonumber(route.stopsCompleted) + 1
-            route.streak = route.streak + 1
-            route.currentStop = currentStopNum + 1
         end
     else
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.too_far'), 'error')
@@ -153,11 +175,13 @@ RegisterNetEvent('qb-garbagejob:server:PayShift', function(continue)
     end
     if Routes[CitizenId] ~= nil then
         local depositPay = Routes[CitizenId].depositPay
-        if tonumber(Routes[CitizenId].stopsCompleted) < tonumber(Routes[CitizenId].totalNumberOfStops) then
+        if tonumber(Routes[CitizenId].stopsCompleted) < tonumber(Routes[CitizenId].totalNumberOfStops) and not continue then
             depositPay = 0
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.early_finish', { completed = Routes[CitizenId].stopsCompleted, total = Routes[CitizenId].totalNumberOfStops }), 'error')
         end
         if continue then
+            -- the driver keeps the truck: the deposit stays held for the next route instead of refunding
+            if depositPay > 0 then HeldDeposits[CitizenId] = depositPay end
             depositPay = 0
         end
         local totalToPay = depositPay + Routes[CitizenId].actualPay

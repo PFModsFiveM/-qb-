@@ -129,6 +129,7 @@ local function pickUp()
         flags = 16
     }, {}, {}, function()
         isBusy = false
+        TriggerServerEvent('qb-recyclejob:server:pickupPackage', packageCoords) -- the server records the package
         SetEntityDrawOutline(props[packageCoords], false)
         packageCoords = nil
         PickupPackage()

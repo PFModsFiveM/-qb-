@@ -8,6 +8,20 @@ local lootedLockers = {}     -- [type .. bankId .. lockerId] = true (one claim p
 local stationCooldowns = {}  -- [src] = os.time()
 local copsCallCooldown = {}  -- [src] = os.time()
 
+-- Every step that leads to loot is recorded here when the server sees it happen; the next step
+-- requires it. (These used to be separate client events: a cheater skipped the items, hacks,
+-- drills and police minimums and sent only the final "open" / "opened" events.)
+local hackAttempts = {}      -- [src] = { bank = bankId, at = os.time() }  electronic kit + trojan used at a panel
+local pacificDoorOpened = false -- security card 02 used at the Pacific door this robbery
+local lockerJobs = {}        -- [src] = { bank, locker, at }   drilling / cracking started
+local thermiteUsed = {}      -- [src] = { station = key or nil, at }
+local alarmRaised = {}       -- [bankId] = os.time() of the last alarm
+
+local HACK_MIN_SECONDS, HACK_MAX_SECONDS = 2, 120
+local LOCKER_MIN_SECONDS = { small = 25, big = 16 } -- the progress bars run 27-37 s and 18-30 s
+local LOCKER_MAX_SECONDS = 180
+local THERMITE_MAX_SECONDS = 60
+
 local function GetCopCount()
     local amount = 0
     local players = QBCore.Functions.GetQBPlayers()
@@ -41,7 +55,53 @@ end
 AddEventHandler('playerDropped', function()
     stationCooldowns[source] = nil
     copsCallCooldown[source] = nil
+    hackAttempts[source] = nil
+    lockerJobs[source] = nil
+    thermiteUsed[source] = nil
 end)
+
+local function PlayerCoords(src)
+    return GetEntityCoords(GetPlayerPed(src))
+end
+
+local function HasItem(src, item)
+    return exports['pfm-inventory']:GetItemByName(src, item) ~= nil
+end
+
+local function BankPanelCoords(bankId)
+    if bankId == 'paleto' then return Config.BigBanks['paleto']['coords'] end
+    if bankId == 'pacific' then return Config.BigBanks['pacific']['coords'][2] end
+    return Config.SmallBanks[bankId] and Config.SmallBanks[bankId]['coords'] or nil
+end
+
+-- The bank whose hacking panel the player stands at (Fleeca banks and the Pacific vault panel).
+local function BankAtPanel(src)
+    local pos = PlayerCoords(src)
+    for bankId in pairs(Config.SmallBanks) do
+        if #(pos - Config.SmallBanks[bankId]['coords']) <= 2.5 then return bankId end
+    end
+    if #(pos - Config.BigBanks['pacific']['coords'][2]) <= 2.5 then return 'pacific' end
+    return nil
+end
+
+local function MinimumPolice(bankId)
+    if bankId == 'paleto' then return Config.MinimumPaletoPolice or 0 end
+    if bankId == 'pacific' then return Config.MinimumPacificPolice or 0 end
+    return Config.MinimumFleecaPolice or 0
+end
+
+-- Alerts police from the server when a bank opens, unless the robber's client already did (alarmed
+-- banks only). A cheater who skips the client alert no longer robs in silence.
+local function RaiseAlarm(bankId)
+    local typ = (bankId == 'paleto' or bankId == 'pacific') and bankId or 'small'
+    local bank = typ == 'small' and Config.SmallBanks[bankId] or Config.BigBanks[bankId]
+    if not bank or not bank['alarm'] then return end
+    local now = os.time()
+    if alarmRaised[bankId] and now - alarmRaised[bankId] < 120 then return end
+    alarmRaised[bankId] = now
+    local c = BankPanelCoords(bankId)
+    TriggerClientEvent('qb-bankrobbery:client:robberyCall', -1, typ, vector3(c.x, c.y, c.z))
+end
 
 -- Functions
 
@@ -162,62 +222,89 @@ end
 -- Events
 
 RegisterNetEvent('qb-bankrobbery:server:setBankState', function(bankId)
+    local src = source
     if robberyBusy then return end
+    local panel = BankPanelCoords(bankId)
+    if not panel then return end
+    local bank = (bankId == 'paleto' or bankId == 'pacific') and Config.BigBanks[bankId] or Config.SmallBanks[bankId]
+    if bank['isOpened'] or #(PlayerCoords(src) - panel) > 2.5 then
+        return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:setBankState', extraInfo = ' (' .. tostring(bankId) .. ') ', source = src }))
+    end
+    if GetCopCount() < MinimumPolice(bankId) then return end
+
     if bankId == 'paleto' then
-        if Config.BigBanks['paleto']['isOpened'] or #(GetEntityCoords(GetPlayerPed(source)) - Config.BigBanks['paleto']['coords']) > 2.5 then
-            return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:setBankState', extraInfo = ' (paleto) ', source = source }))
-        end
-        Config.BigBanks['paleto']['isOpened'] = true
-        TriggerEvent('qb-bankrobbery:server:setTimeout')
-    elseif bankId == 'pacific' then
-        if Config.BigBanks['pacific']['isOpened'] or #(GetEntityCoords(GetPlayerPed(source)) - Config.BigBanks['pacific']['coords'][2]) > 2.5 then
-            return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:setBankState', extraInfo = ' (pacific) ', source = source }))
-        end
-        Config.BigBanks['pacific']['isOpened'] = true
+        -- the keycard is used here, on the server (it used to be removed by a later client event)
+        if not exports['pfm-inventory']:RemoveItem(src, 'security_card_01', 1, false, 'qb-bankrobbery:server:setBankState') then return end
+        TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['security_card_01'], 'remove')
+    else
+        -- Fleeca and the Pacific vault open only after a hack this player started at this panel
+        local hack = hackAttempts[src]
+        hackAttempts[src] = nil -- single use
+        if not hack or hack.bank ~= bankId then return end
+        local elapsed = os.time() - hack.at
+        if elapsed < HACK_MIN_SECONDS or elapsed > HACK_MAX_SECONDS then return end
+        if bankId == 'pacific' and not pacificDoorOpened then return end
+    end
+
+    bank['isOpened'] = true
+    if bankId == 'paleto' or bankId == 'pacific' then
         TriggerEvent('qb-bankrobbery:server:setTimeout')
     else
-        if not Config.SmallBanks[bankId] then return end
-        if Config.SmallBanks[bankId]['isOpened'] or #(GetEntityCoords(GetPlayerPed(source)) - Config.SmallBanks[bankId]['coords']) > 2.5 then
-            return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:setBankState', extraInfo = ' (smallbank ' .. tostring(bankId) .. ') ', source = source }))
-        end
-        Config.SmallBanks[bankId]['isOpened'] = true
         TriggerEvent('qb-bankrobbery:server:SetSmallBankTimeout', bankId)
     end
     TriggerClientEvent('qb-bankrobbery:client:setBankState', -1, bankId)
     robberyBusy = true
+    RaiseAlarm(bankId)
     Config.OnRobberyStart(bankId)
 end)
 
-RegisterNetEvent('qb-bankrobbery:server:setLockerState', function(bankId, lockerId, state, bool)
-    -- whitelist: clients may only flip the two flow flags on a real locker of an opened bank
-    if state ~= 'isBusy' and state ~= 'isOpened' then return end
-    if type(bool) ~= 'boolean' then return end
+local function LockerOf(bankId, lockerId)
     local bankType = Config.BigBanks[bankId] and 'BigBanks' or 'SmallBanks'
     local bank = Config[bankType][bankId]
-    if not bank or not bank['lockers'] or not bank['lockers'][lockerId] then return end
-    if not bank['isOpened'] then return end
-    local extraInfo = (' (%s' .. tostring(bankId) .. ') '):format(bankType == 'SmallBanks' and 'smallbank' or '')
-    if #(GetEntityCoords(GetPlayerPed(source)) - bank['lockers'][lockerId]['coords']) > 2.5 then
-        return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:setLockerState', extraInfo = extraInfo, source = source }))
+    if not bank or not bank['lockers'] or not bank['lockers'][lockerId] then return nil end
+    return bank, bank['lockers'][lockerId], bankType == 'BigBanks'
+end
+
+RegisterNetEvent('qb-bankrobbery:server:setLockerState', function(bankId, lockerId, state, bool)
+    local src = source
+    -- Clients may only mark a locker busy / not busy. Opening it is decided by the server when the
+    -- drilling or cracking it started has had time to finish (recieveItem).
+    if state ~= 'isBusy' or type(bool) ~= 'boolean' then return end
+    local bank, locker, isBig = LockerOf(bankId, lockerId)
+    if not bank or not bank['isOpened'] or locker['isOpened'] then return end
+    if #(PlayerCoords(src) - locker['coords']) > 2.5 then
+        return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:setLockerState', extraInfo = ' (' .. tostring(bankId) .. ') ', source = src }))
     end
-    bank['lockers'][lockerId][state] = bool
-    TriggerClientEvent('qb-bankrobbery:client:setLockerState', -1, bankId, lockerId, state, bool)
+    if bool then
+        if locker['isBusy'] then return end
+        if isBig and not HasItem(src, 'drill') then return end
+        lockerJobs[src] = { bank = bankId, locker = lockerId, at = os.time() }
+    end
+    locker['isBusy'] = bool
+    TriggerClientEvent('qb-bankrobbery:client:setLockerState', -1, bankId, lockerId, 'isBusy', bool)
 end)
 
--- one validated claim per locker per robbery: the bank must be open, the locker
--- must have been drilled open, and nobody may have emptied it already
+-- one validated claim per locker per robbery: the bank must be open, this player must have worked on
+-- the locker long enough, and nobody may have emptied it already
 local function ClaimLocker(src, lootType, bankId, lockerId)
     if lootType == 'paleto' and bankId ~= 'paleto' then return false end
     if lootType == 'pacific' and bankId ~= 'pacific' then return false end
-    local bankType = (lootType == 'small') and 'SmallBanks' or 'BigBanks'
-    local bank = Config[bankType][bankId]
-    if not bank or not bank['lockers'] or not bank['lockers'][lockerId] then return false end
-    if not bank['isOpened'] then return false end
-    if not bank['lockers'][lockerId]['isOpened'] then return false end
+    if lootType == 'small' and (bankId == 'paleto' or bankId == 'pacific') then return false end
+    local bank, locker, isBig = LockerOf(bankId, lockerId)
+    if not bank or not bank['isOpened'] then return false end
+    local job = lockerJobs[src]
+    if not job or job.bank ~= bankId or job.locker ~= lockerId then return false end
+    local elapsed = os.time() - job.at
+    if elapsed < (isBig and LOCKER_MIN_SECONDS.big or LOCKER_MIN_SECONDS.small) or elapsed > LOCKER_MAX_SECONDS then return false end
     local key = lootType .. ':' .. tostring(bankId) .. ':' .. tostring(lockerId)
     if lootedLockers[key] then return false end
-    if #(GetEntityCoords(GetPlayerPed(src)) - bank['lockers'][lockerId]['coords']) > 2.5 then return false end
+    if #(PlayerCoords(src) - locker['coords']) > 2.5 then return false end
+    lockerJobs[src] = nil
     lootedLockers[key] = true
+    locker['isOpened'] = true
+    locker['isBusy'] = false
+    TriggerClientEvent('qb-bankrobbery:client:setLockerState', -1, bankId, lockerId, 'isOpened', true)
+    TriggerClientEvent('qb-bankrobbery:client:setLockerState', -1, bankId, lockerId, 'isBusy', false)
     return true
 end
 
@@ -291,7 +378,8 @@ RegisterNetEvent('qb-bankrobbery:server:recieveItem', function(type, bankId, loc
         local odd2 = math.random(1, 100)
         local tierChance = math.random(1, 100)
         local tier
-        if tierChance < 10 then tier = 1 elseif tierChance >= 25 and tierChance < 50 then tier = 2 elseif tierChance >= 50 and tierChance < 95 then tier = 3 else tier = 4 end
+        -- (rolls of 10-24 used to fall through every branch, erroring after the locker was claimed)
+        if tierChance < 25 then tier = 1 elseif tierChance < 50 then tier = 2 elseif tierChance < 95 then tier = 3 else tier = 4 end
         if WeaponChance ~= odd1 or WeaponChance ~= odd2 then
             if tier ~= 4 then
                 if Config.RewardTypes[itemType].type == 'item' then
@@ -350,6 +438,7 @@ AddEventHandler('qb-bankrobbery:server:setTimeout', function()
             TriggerClientEvent('qb-bankrobbery:client:ClearTimeoutDoors', -1)
             Config.BigBanks['paleto']['isOpened'] = false
             Config.BigBanks['pacific']['isOpened'] = false
+            pacificDoorOpened = false
             ClearLootedForPrefix('paleto:')
             ClearLootedForPrefix('pacific:')
             timeOut = false
@@ -406,12 +495,18 @@ end)
 
 RegisterNetEvent('qb-bankrobbery:server:SetStationStatus', function(key, isHit)
     local src = source
-    if type(isHit) ~= 'boolean' then return end
-    if not Config.PowerStations[key] then return end
+    -- players can only blow a station; restoring power is the server's job (blackout timer)
+    if isHit ~= true then return end
+    if not Config.PowerStations[key] or Config.PowerStations[key].hit then return end
     -- must actually be standing at that power station, and no spamming
     if #(GetEntityCoords(GetPlayerPed(src)) - Config.PowerStations[key].coords) > 15.0 then return end
     local now = os.time()
     if stationCooldowns[src] and now - stationCooldowns[src] < 10 then return end
+    -- a thermite charge must just have been used at this station by this player
+    local used = thermiteUsed[src]
+    thermiteUsed[src] = nil
+    if not used or used.station ~= key or now - used.at > THERMITE_MAX_SECONDS then return end
+    if GetCopCount() < (Config.MinimumThermitePolice or 0) then return end
     stationCooldowns[src] = now
     Config.PowerStations[key].hit = isHit
     TriggerClientEvent('qb-bankrobbery:client:SetStationStatus', -1, key, isHit)
@@ -431,23 +526,34 @@ RegisterNetEvent('qb-bankrobbery:server:SetStationStatus', function(key, isHit)
     end
 end)
 
+-- The client plugs the electronic kit + trojan USB into a bank panel. Both are used up here, and
+-- the hack this starts is what lets setBankState open that bank.
 RegisterNetEvent('qb-bankrobbery:server:removeElectronicKit', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    exports['pfm-inventory']:RemoveItem(src, 'electronickit', 1, false, 'qb-bankrobbery:server:removeElectronicKit')
+    local bankId = BankAtPanel(src)
+    if not bankId or robberyBusy then return end
+    if not HasItem(src, 'electronickit') or not HasItem(src, 'trojan_usb') then return end
+    if not exports['pfm-inventory']:RemoveItem(src, 'electronickit', 1, false, 'qb-bankrobbery:server:removeElectronicKit') then return end
+    if not exports['pfm-inventory']:RemoveItem(src, 'trojan_usb', 1, false, 'qb-bankrobbery:server:removeElectronicKit') then return end
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['electronickit'], 'remove')
-    exports['pfm-inventory']:RemoveItem(src, 'trojan_usb', 1, false, 'qb-bankrobbery:server:removeElectronicKit')
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['trojan_usb'], 'remove')
+    hackAttempts[src] = { bank = bankId, at = os.time() }
 end)
 
+-- Security card 02 opens the Pacific front door (step one of the Pacific robbery). Card 01 (Paleto)
+-- is used inside setBankState.
 RegisterNetEvent('qb-bankrobbery:server:removeBankCard', function(number)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    if number ~= '01' and number ~= '02' then return end
-    exports['pfm-inventory']:RemoveItem(src, 'security_card_' .. number, 1, false, 'qb-bankrobbery:server:removeBankCard')
-    TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['security_card_' .. number], 'remove')
+    if number ~= '02' then return end
+    if robberyBusy or #(PlayerCoords(src) - Config.BigBanks['pacific']['coords'][1]) > 3.0 then return end
+    if GetCopCount() < (Config.MinimumPacificPolice or 0) then return end
+    if not exports['pfm-inventory']:RemoveItem(src, 'security_card_02', 1, false, 'qb-bankrobbery:server:removeBankCard') then return end
+    TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['security_card_02'], 'remove')
+    pacificDoorOpened = true
 end)
 
 RegisterNetEvent('thermite:StartServerFire', function(coords, maxChildren, isGasFire)
@@ -465,7 +571,12 @@ RegisterNetEvent('thermite:StartServerFire', function(coords, maxChildren, isGas
     end
 end)
 
+-- Clears thermite fires for everyone; rate-limited, since it used to be a free griefing tool.
+local lastStopFires = 0
 RegisterNetEvent('thermite:StopFires', function()
+    local now = os.time()
+    if now - lastStopFires < 30 then return end
+    lastStopFires = now
     TriggerClientEvent('thermite:StopFires', -1)
 end)
 
@@ -484,6 +595,12 @@ QBCore.Functions.CreateCallback('thermite:server:check', function(source, cb)
     if not Player then return cb(false) end
     if exports['pfm-inventory']:RemoveItem(source, 'thermite', 1, false, 'thermite:server:check') then
         TriggerClientEvent('qb-inventory:client:ItemBox', source, sharedItems['thermite'], 'remove')
+        -- remember where the charge was used: a power station counts as blown only right after this
+        local pos, station = PlayerCoords(source), nil
+        for key, v in pairs(Config.PowerStations) do
+            if #(pos - v.coords) <= 15.0 then station = key break end
+        end
+        thermiteUsed[source] = { station = station, at = os.time() }
         cb(true)
     else
         cb(false)

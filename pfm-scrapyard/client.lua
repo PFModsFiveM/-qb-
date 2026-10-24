@@ -165,9 +165,8 @@ function ScrapVehicle()
                                 disableMouse = false,
                                 disableCombat = true,
                             }, {}, {}, {}, function() -- Done
+                                -- the server checks the car and removes it
                                 TriggerServerEvent('qb-scrapyard:server:ScrapVehicle', GetVehicleKey(GetEntityModel(vehicle)))
-                                SetEntityAsMissionEntity(vehicle, true, true)
-                                DeleteVehicle(vehicle)
                                 isBusy = false
                             end, function() -- Cancel
                                 isBusy = false

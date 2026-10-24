@@ -69,13 +69,22 @@ RegisterNetEvent('qb-diving:server:SellCorals', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
+    -- sold only at a coral buyer (it used to work from anywhere), and paid only for what was removed
+    local pCoords = GetEntityCoords(GetPlayerPed(src))
+    local atBuyer = false
+    for _, loc in pairs(Config.SellLocations) do
+        if #(pCoords - loc.coords.xyz) <= 5.0 then atBuyer = true break end
+    end
+    if not atBuyer then return end
     local availableCorals = hasCoral(src)
     if availableCorals then
         for _, v in pairs(availableCorals) do
             local item = Player.GetItemByName(v.item)
             local price = item.amount * v.price
             local reward = getItemPrice(item.amount, price)
-            exports['pfm-inventory']:RemoveItem(src, item.name, item.amount, false, 'qb-diving:server:SellCorals')
+            if not exports['pfm-inventory']:RemoveItem(src, item.name, item.amount, false, 'qb-diving:server:SellCorals') then
+                return
+            end
             Player.AddMoney('cash', reward, 'qb-diving:server:SellCorals')
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item.name], 'remove')
         end

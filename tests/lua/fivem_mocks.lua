@@ -102,6 +102,17 @@ json.decode = function(s)
     return nil
 end
 
+-- FiveM's Lua adds table.type: 'empty', 'array' or 'hash'
+table.type = table.type or function(t)
+    if type(t) ~= 'table' then return nil end
+    if next(t) == nil then return 'empty' end
+    local n = #t
+    for k in pairs(t) do
+        if type(k) ~= 'number' or k < 1 or k > n or k % 1 ~= 0 then return 'hash' end
+    end
+    return 'array'
+end
+
 -- ── time ──────────────────────────────────────────────────────────
 local realTime = os.time
 os.time = function(t) if t then return realTime(t) end return Mock.clock end
@@ -109,6 +120,7 @@ function GetGameTimer() Mock.gameTimer = Mock.gameTimer + 1; return Mock.gameTim
 
 -- ── events / threads ──────────────────────────────────────────────
 function RegisterNetEvent(name, fn) if fn then Mock.netHandlers[name] = fn end end
+RegisterServerEvent = RegisterNetEvent
 function AddEventHandler(name, fn) Mock.eventHandlers[name] = fn end
 function TriggerClientEvent(name, target, ...) Mock.clientEvents[#Mock.clientEvents + 1] = { name = name, target = target, args = { ... } } end
 function TriggerEvent(name, ...)
@@ -126,9 +138,36 @@ function GetCurrentResourceName() return 'pfm-inventory' end
 function GetConvar(_, default) return default end
 function GetResourceState() return 'missing' end
 function GetPlayerName(id) return 'Player' .. tostring(id) end
+-- ACE permissions: Mock.aces[src] = { ['admin'] = true, ... }
+Mock.aces = {}
+function IsPlayerAceAllowed(src, ace) return Mock.aces[tonumber(src)] ~= nil and Mock.aces[tonumber(src)][ace] == true end
+-- FiveM's model-name hash (Jenkins one-at-a-time, lower-cased, signed 32-bit like GetHashKey)
+function GetHashKey(s)
+    s = tostring(s):lower()
+    local h = 0
+    for i = 1, #s do
+        h = (h + s:byte(i)) & 0xFFFFFFFF
+        h = (h + (h << 10)) & 0xFFFFFFFF
+        h = h ~ (h >> 6)
+    end
+    h = (h + (h << 3)) & 0xFFFFFFFF
+    h = h ~ (h >> 11)
+    h = (h + (h << 15)) & 0xFFFFFFFF
+    if h >= 0x80000000 then h = h - 0x100000000 end
+    return h
+end
 function GetPlayerPed(id) return id end
+function joaat(s) return GetHashKey(s) & 0xFFFFFFFF end
+-- vehicles and models: Mock.models[entity] = hash, Mock.vehicleOf[ped] = vehicle, Mock.plates[vehicle] = text
+Mock.models, Mock.vehicleOf, Mock.plates, Mock.deleted = {}, {}, {}, {}
+function GetEntityModel(e) return Mock.models[e] or 0 end
+function GetVehiclePedIsIn(ped) return Mock.vehicleOf[ped] or 0 end
+function GetPedInVehicleSeat(veh, seat) for ped, v in pairs(Mock.vehicleOf) do if v == veh and seat == -1 then return ped end end return 0 end
+function GetVehicleNumberPlateText(veh) return Mock.plates[veh] end
 function GetSelectedPedWeapon() return 0 end
 function RemoveWeaponFromPed() end
+Mock.dropped = {}
+function DropPlayer(src, reason) Mock.dropped[#Mock.dropped + 1] = { src = src, reason = reason } end
 Mock.coords = {}
 function GetEntityCoords(ped) return Mock.coords[ped] or vector3(0, 0, 0) end
 Mock.nextNetId = 100
@@ -136,7 +175,7 @@ function CreateObjectNoOffset() Mock.nextNetId = Mock.nextNetId + 1; return Mock
 function NetworkGetNetworkIdFromEntity(e) return e end
 function NetworkGetEntityFromNetworkId(n) return n end
 function DoesEntityExist() return true end
-function DeleteEntity() end
+function DeleteEntity(e) Mock.deleted[#Mock.deleted + 1] = e end
 function SetEntityRoutingBucket() end
 function GetPlayerRoutingBucket() return 0 end
 function TaskPlayAnim() end
@@ -147,13 +186,24 @@ function Mock.callCallback(name, src, ...)
     assert(fn, 'no callback registered for ' .. name)
     local result
     fn(src, function(...) result = { ... } end, ...)
-    return result and table.unpack(result)
+    if not result then return nil end
+    return table.unpack(result)
 end
 
 --- Invokes a registered net event as if `src` triggered it from a client.
 function Mock.fireNet(name, src, ...)
     local handler = Mock.netHandlers[name]
     assert(handler, 'no net handler registered for ' .. name)
+    source = src
+    local ok, err = pcall(handler, ...)
+    source = nil
+    if not ok then error(err, 2) end
+end
+
+--- Invokes a server-side event handler (AddEventHandler) as if `src` caused it, e.g. playerDropped.
+function Mock.fireEvent(name, src, ...)
+    local handler = Mock.eventHandlers[name]
+    assert(handler, 'no event handler registered for ' .. name)
     source = src
     local ok, err = pcall(handler, ...)
     source = nil
@@ -168,6 +218,7 @@ end
 
 -- ── vectors ───────────────────────────────────────────────────────
 local vecMeta = {}
+vecMeta.__index = function(v, k) if k == 'xyz' then return vector3(v.x, v.y, v.z) elseif k == 'xy' then return vector2(v.x, v.y) end end
 vecMeta.__sub = function(a, b) return vector3(a.x - b.x, a.y - b.y, (a.z or 0) - (b.z or 0)) end
 vecMeta.__add = function(a, b) return vector3(a.x + b.x, a.y + b.y, (a.z or 0) + (b.z or 0)) end
 vecMeta.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + (a.z or 0) * (a.z or 0)) end

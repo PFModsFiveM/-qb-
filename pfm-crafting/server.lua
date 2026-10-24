@@ -6,12 +6,31 @@ local sharedItems = exports['pfm-core']:GetShared('Items')
 local function IncreasePlayerXP(source, xpGain, xpType)
     local Player = exports['pfm-core']:GetPlayer(source)
     if Player then
-        local currentXP = Player.GetRep(xpType)
-        local newXP = currentXP + xpGain
-        Player.AddRep(xpType, newXP)
+        -- AddRep adds to the current value (it used to be handed the new total, so XP snowballed)
+        Player.AddRep(xpType, xpGain)
         TriggerClientEvent('QBCore:Notify', source, string.format(Lang:t('notifications.xpGain'), xpGain, xpType), 'success')
     end
 end
+
+-- Benches are placed and picked up through the server: a player gets a bench item back only for
+-- the bench they placed, where they placed it, and crafts only at that bench. (Picking up used to
+-- hand back any item name the client sent - weapons, gold, marked bills - with no limit.)
+local placedBenches = {}   -- [src] = { type, coords }
+local BENCH_RANGE = 4.0
+local MAX_CRAFT_AMOUNT = 50
+
+local function isBenchType(benchType)
+    return type(benchType) == 'string' and type(Config[benchType]) == 'table' and Config[benchType].object ~= nil
+end
+
+local function nearBench(src, bench)
+    local p = GetEntityCoords(GetPlayerPed(src))
+    return #(vector3(p.x, p.y, p.z) - bench.coords) <= BENCH_RANGE
+end
+
+AddEventHandler('playerDropped', function()
+    placedBenches[source] = nil
+end)
 
 -- Callbacks
 
@@ -34,19 +53,27 @@ RegisterServerEvent('qb-crafting:server:removeMaterials', function(itemName, amo
     end
 end)
 
+-- The player sets a bench down: the bench item is used up and the spot is remembered.
 RegisterNetEvent('qb-crafting:server:removeCraftingTable', function(benchType)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player then return end
-    exports['pfm-inventory']:RemoveItem(src, benchType, 1, false, 'qb-crafting:server:removeCraftingTable')
+    if not Player or not isBenchType(benchType) then return end
+    if placedBenches[src] then return end -- one bench out at a time
+    if not exports['pfm-inventory']:RemoveItem(src, benchType, 1, false, 'qb-crafting:server:removeCraftingTable') then return end
+    local p = GetEntityCoords(GetPlayerPed(src))
+    placedBenches[src] = { type = benchType, coords = vector3(p.x, p.y, p.z) }
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[benchType], 'remove')
     TriggerClientEvent('QBCore:Notify', src, Lang:t('notifications.tablePlace'), 'success')
 end)
 
+-- The player picks their bench back up.
 RegisterNetEvent('qb-crafting:server:addCraftingTable', function(benchType)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
+    local bench = placedBenches[src]
+    if not bench or bench.type ~= benchType or not nearBench(src, bench) then return end
+    placedBenches[src] = nil
     if not exports['pfm-inventory']:AddItem(src, benchType, 1, false, false, 'qb-crafting:server:addCraftingTable') then return end
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[benchType], 'add')
 end)
@@ -58,9 +85,12 @@ RegisterNetEvent('qb-crafting:server:receiveItem', function(benchType, craftedIt
 
     local benchConfig = Config[benchType]
     if not benchConfig or type(benchConfig.recipes) ~= 'table' then return end
+    -- crafting happens at the player's own bench
+    local bench = placedBenches[src]
+    if not bench or bench.type ~= benchType or not nearBench(src, bench) then return end
 
-    amountToCraft = tonumber(amountToCraft)
-    if not amountToCraft or amountToCraft <= 0 then return end
+    amountToCraft = math.floor(tonumber(amountToCraft) or 0)
+    if amountToCraft <= 0 or amountToCraft > MAX_CRAFT_AMOUNT then return end
 
     local recipe
     for _, configuredRecipe in pairs(benchConfig.recipes) do
@@ -72,7 +102,9 @@ RegisterNetEvent('qb-crafting:server:receiveItem', function(benchType, craftedIt
     if not recipe then return end
 
     local xpType = benchConfig.xpType or 'craftingrep'
-    local currentXP = Player.PlayerData and Player.PlayerData.metadata and Player.PlayerData.metadata[xpType] or 0
+    -- XP is kept under metadata.rep (it used to read metadata[xpType], which is always empty, so every
+    -- recipe that needs XP was uncraftable)
+    local currentXP = Player.GetRep(xpType) or 0
     if (recipe.xpRequired or 0) > currentXP then return end
 
     for _, requiredItem in ipairs(recipe.requiredItems or {}) do

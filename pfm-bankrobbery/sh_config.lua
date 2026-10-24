@@ -541,3 +541,10 @@ Config.BigBanks = {
         }
     }
 }
+
+-- Police on duty needed to start each part of a robbery. Shared so the server checks them as well
+-- as the client (they used to be client-only, so a cheater ignored them).
+Config.MinimumPaletoPolice = 0
+Config.MinimumPacificPolice = 0
+Config.MinimumFleecaPolice = 0
+Config.MinimumThermitePolice = 0

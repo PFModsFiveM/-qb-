@@ -338,18 +338,24 @@ RegisterNetEvent('qb-inventory:server:updateDrop', function(dropId, coords)
     end
 end)
 
+-- Only 'remove' is used (pfm-weapons, when a snowball is thrown). The 'add' branch was reachable only
+-- by a modified client and created snowball weapons from nothing.
 RegisterNetEvent('qb-inventory:server:snowball', function(action)
-    if action == 'add' then
-        AddItem(source, 'weapon_snowball', 1, false, false, 'qb-inventory:server:snowball')
-    elseif action == 'remove' then
+    if action == 'remove' then
         RemoveItem(source, 'weapon_snowball', 1, false, 'qb-inventory:server:snowball')
     end
 end)
 
 -- Callbacks
 
+-- Clients only need each drop's bag entity to put an "open bag" prompt on it. The full drop table
+-- (every item, its metadata and who is holding it, across the whole map) used to be sent instead.
 QBCore.Functions.CreateCallback('qb-inventory:server:GetCurrentDrops', function(_, cb)
-    cb(Drops)
+    local out = {}
+    for id, drop in pairs(Drops) do
+        out[id] = { entityId = drop.entityId }
+    end
+    cb(out)
 end)
 
 QBCore.Functions.CreateCallback('qb-inventory:server:createDrop', function(source, cb, item)

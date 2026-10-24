@@ -33,8 +33,9 @@ QBCore.Functions.CreateCallback('qb-hotdogjob:server:HasMoney', function(source,
     local Player = exports['pfm-core']:GetPlayer(source)
     if not Player then cb(false) return end
 
+    if Bail[Player.PlayerData.citizenid] then cb(true) return end -- already has a stand; don't charge twice
     if Player.PlayerData.money.bank >= Config.StandDeposit then
-        Player.RemoveMoney('bank', Config.StandDeposit, 'hot dog deposit')
+        if not Player.RemoveMoney('bank', Config.StandDeposit, 'hot dog deposit') then cb(false) return end
         Bail[Player.PlayerData.citizenid] = true
         Sessions[source] = { startedAt = os.time(), streak = 0, lastSale = 0 }
         SrcToCid[source] = Player.PlayerData.citizenid
@@ -66,7 +67,9 @@ RegisterNetEvent('qb-hotdogjob:server:Sell', function(coords, amount, price)
     local pCoords = GetEntityCoords(GetPlayerPed(src))
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    if #(pCoords - coords) > 4 then exports['pfm-core']:ExploitBan(src, 'hotdog job') end
+    -- the customer position comes from the client: a mismatch is ignored, not banned (it used to ban
+    -- and then still pay the sale)
+    if type(coords) ~= 'vector3' or #(pCoords - coords) > 4 then return end
 
     -- Session validation: must have an active stand (deposit paid, not returned)
     local session = Sessions[src]

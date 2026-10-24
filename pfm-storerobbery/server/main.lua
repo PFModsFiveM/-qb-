@@ -7,6 +7,13 @@ local activeRegisters = {} -- [register] = { src, at }
 local safeAttempts = {}    -- [safe] = { src, at }      (padlock minigame claims)
 local safeUnlocked = {}    -- [safe] = src              (keypad code entered correctly)
 local copsCallCooldown = {} -- [src] = os.time()
+-- Keypad guesses: 3 wrong codes lock that safe for the player for 10 minutes (the 4-digit code could
+-- be brute-forced before: 9000 guesses, no limit).
+local keypadFails = {}      -- [citizenid] = { [safe] = { count, lockedUntil } }
+local MAX_KEYPAD_FAILS = 3
+local KEYPAD_LOCKOUT = 600
+-- The padlock dial needs well over 20 s to turn through the combination by hand.
+local MIN_PADLOCK_SECONDS = 20
 
 CreateThread(function()
     while true do
@@ -156,9 +163,27 @@ QBCore.Functions.CreateCallback('qb-storerobbery:server:isCombinationRight', fun
         cb(false)
         return
     end
+    local now = os.time()
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then cb(false) return end
+    local cid = Player.PlayerData.citizenid -- by character, so reconnecting doesn't reset the lockout
+    keypadFails[cid] = keypadFails[cid] or {}
+    local fails = keypadFails[cid][safe] or { count = 0, lockedUntil = 0 }
+    if now < fails.lockedUntil then
+        TriggerClientEvent('QBCore:Notify', src, 'The keypad is locked out. Try again later.', 'error')
+        cb(false)
+        return
+    end
     local correct = tonumber(guess) ~= nil and tonumber(guess) == SafeCodes[safe]
     if correct then
         safeUnlocked[safe] = src
+        keypadFails[cid][safe] = nil
+    else
+        fails.count = fails.count + 1
+        if fails.count >= MAX_KEYPAD_FAILS then
+            fails = { count = 0, lockedUntil = now + KEYPAD_LOCKOUT }
+        end
+        keypadFails[cid][safe] = fails
     end
     cb(correct)
 end)
@@ -198,7 +223,7 @@ RegisterNetEvent('qb-storerobbery:server:SafeReward', function(safe)
     -- or an active padlock attempt old enough for the minigame to have run
     local attempt = safeAttempts[safe]
     local allowed = safeUnlocked[safe] == src
-        or (attempt and attempt.src == src and os.time() - attempt.at >= 10)
+        or (attempt and attempt.src == src and os.time() - attempt.at >= MIN_PADLOCK_SECONDS)
     if not allowed then return end
 
     MarkSafeRobbed(safe)
