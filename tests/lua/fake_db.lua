@@ -382,6 +382,7 @@ local v2patterns = {
 local patterns = {
     { 'CREATE TABLE IF NOT EXISTS', function() return 0 end },
     { 'ALTER TABLE', function() return 0 end },
+    { 'SELECT TABLE_COLLATION FROM information_schema.TABLES', function() return nil end },
     { 'SELECT version FROM pf_schema_migrations', function(p)
         local out = {}
         for key in pairs(FakeDB.migrations) do

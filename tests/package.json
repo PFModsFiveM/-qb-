@@ -6,6 +6,7 @@
     "test": "node harness.js"
   },
   "dependencies": {
-    "fengari": "0.1.4"
+    "fengari": "0.1.4",
+    "mysql2": "3.11.3"
   }
 }
