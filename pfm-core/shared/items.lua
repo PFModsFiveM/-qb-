@@ -233,6 +233,7 @@ QBCore.Shared.Items = {
     tosti                        = { name = 'tosti', label = 'Grilled Cheese Sandwich', weight = 200, type = 'item', image = 'tosti.png', unique = false, useable = true, shouldClose = true, description = 'Nice to eat' },
     twerks_candy                 = { name = 'twerks_candy', label = 'Twerks', weight = 100, type = 'item', image = 'twerks_candy.png', unique = false, useable = true, shouldClose = true, description = 'Some delicious candy :O' },
     snikkel_candy                = { name = 'snikkel_candy', label = 'Snikkel', weight = 100, type = 'item', image = 'snikkel_candy.png', unique = false, useable = true, shouldClose = true, description = 'Some delicious candy :O' },
+    supply_crate                 = { name = 'supply_crate', label = 'Supply Crate', weight = 5000, type = 'item', image = 'cardboard_box.png', unique = true, useable = false, shouldClose = false, description = 'Sealed business supplies from a delivery' },
     sandwich                     = { name = 'sandwich', label = 'Sandwich', weight = 200, type = 'item', image = 'sandwich.png', unique = false, useable = true, shouldClose = true, description = 'Nice bread for your stomach' },
 
     -- Drink ITEMS
