@@ -138,6 +138,7 @@ function GetCurrentResourceName() return 'pfm-inventory' end
 function GetConvar(_, default) return default end
 function GetResourceState() return 'missing' end
 function GetPlayerName(id) return 'Player' .. tostring(id) end
+function GetPlayerIdentifier(id, idx) return (idx == 0 or idx == nil) and ("license:" .. tostring(id)) or nil end
 -- ACE permissions: Mock.aces[src] = { ['admin'] = true, ... }
 Mock.aces = {}
 function IsPlayerAceAllowed(src, ace) return Mock.aces[tonumber(src)] ~= nil and Mock.aces[tonumber(src)][ace] == true end
@@ -316,6 +317,10 @@ Mock.exportsByResource['pfm-core'] = {
     GetCoreObject = function() return QBCoreMock end,
     GrantVehicleSpawn = function(_, src, model) Mock.vehicleGrants[#Mock.vehicleGrants + 1] = { src = src, model = model } return true end,
     RegisterJobVehicles = function() return true end,
+    AddItems = function(_, items)
+        for name, def in pairs(items or {}) do QBCoreMock.Shared.Items[name] = QBCoreMock.Shared.Items[name] or def end
+        return true
+    end,
     GetPlayer = function(_, id) return Mock.players[id] end,
     GetShared = function(_, key) return QBCoreMock.Shared[key] end,
     GetPlayerByCitizenId = function(_, cid)
