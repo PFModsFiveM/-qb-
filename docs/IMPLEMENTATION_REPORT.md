@@ -1032,3 +1032,36 @@ Your pfm-inventory and pfm-smallresources work, together with the drop fixes and
 - 1d6615f: pf-tablet config test.
 
 Where sections 2, 4 and 11 say "uncommitted", read "committed in these commits". The branch now runs on its own, and the `updateDrop` exploit is closed in committed code. Mocked suite: 277 passed, 0 failed. `leonida-id-maker/` stays untracked.
+
+### Batch 5b — player-to-player money on the ledger (priority 4)
+
+All three resources now include `@pfm-banking/payouts.lua`. Every payment has a fixed key, and a player-to-player move is a single ledger `Transfer`, so a crash cannot lose or create money.
+
+| Resource | Commit | Moved to the ledger | Exploits fixed on the way |
+|---|---|---|---|
+| pfm-houses | 16cf380 | <ul><li>house purchase (paid before handover; per-house lock)</li><li>private sale: price + tax in one debit, then seller and tax paid, uncollected tax refunded</li><li>sell to the state (paid before the house is given up)</li><li>agency commission</li><li>furniture</li></ul> | <ul><li>`buyFurniture` took the price from the client (0 or negative bought anything)</li><li>`savedecorations` let any client rewrite any house's furniture, with any model, for every player, without buying it</li><li>`lockHouse` let anyone lock or unlock any house</li><li>`SetRamState` / `SetHouseRammed` were open to everyone</li><li>the ram state was sent to an event nobody listened to</li><li>two quick `/sellhouse` paid twice</li></ul> |
+| pfm-phone | 9385305 | <ul><li>bank app transfer and `TransferMoney` event (one function)</li><li>invoice payment, business credit and commission</li></ul> | <ul><li>`PayInvoice` took amount, business and biller from the client</li><li>the commission was paid before the bill</li><li>`TransferMoney` matched receivers with `LIKE '%<number>%'`</li><li>an offline receiver's money record was rewritten from a stale copy</li></ul> |
+| pfm-vehiclesales | ba1f232 | <ul><li>used-car purchase (charge, then an atomic listing claim, refund if lost)</li><li>seller pay (online or offline)</li><li>vehicle tax with refund</li><li>sell-back</li></ul> | <ul><li>the purchase never checked `RemoveMoney`</li><li>two buyers could both get one car</li><li>an offline seller's money record was rewritten</li></ul> |
+
+**Tests (mocked):**
+- New specs: `houses_spec` (13), `phone_bank_spec` (8), `vehiclesales_spec` (6).
+- Run against the pre-change code, 10, 6 and 3 of them fail. The ones that still pass cover behaviour the old code already got right.
+- Full suite: **304 passed, 0 failed, 32 spec files**.
+- Not run on the real database or staging.
+
+**Not verified in game:**
+- The furniture purchase now sends the model and the house instead of a price (`client/decorate.lua`).
+- Decorations saved by older clients with entity handles are cleaned on the next save.
+- Furniture already in a house is kept and can still be moved. Furniture paid for but never placed is remembered only until restart.
+- Police raids now need `job.type == 'leo'` and on duty at the door.
+
+**Still direct (unchanged):**
+- `pfm-policejob` fines, bills, cash seizure and robbery;
+- `pfm-vehicleshop`;
+- `pfm-inventory` shop purchases;
+- `pfm-crypto`, `pfm-truckrobbery`;
+- the `pfm-core` paycheck and admin commands;
+- `pf-ambulancejob`, `pf-government` civil fees;
+- `pf-policemdt-DEV`, `pf-rentals`.
+
+**Found, not fixed:** `qb-houses:server:BillingEmail` in pfm-phone lets a client send fake "bill paid" mails to a job.
