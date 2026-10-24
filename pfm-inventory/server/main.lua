@@ -569,24 +569,21 @@ local function getSalesTaxBreakdown(subtotal)
     }
 end
 
-local function collectSalesTax(source, shop, subtotal)
-    if GetResourceState('pf-government') ~= 'started' then
-        return 0
+--- Hands the sales tax the buyer already paid (inside the total) to pf-government, keyed by the
+--- purchase; whatever the government does not take goes back to the buyer.
+local function collectSalesTax(citizenid, shop, subtotal, tax, key)
+    local collected = 0
+    if tax > 0 and GetResourceState('pf-government') == 'started' then
+        local ok, value = pcall(function()
+            return exports['pf-government']:CollectTaxAmount(tax, 'sales', 'citizen', citizenid, ('shop:%s'):format(tostring(shop or 'unknown')), key .. ':tax', subtotal)
+        end)
+        collected = ok and (tonumber(value) or 0) or 0
     end
-
-    local Player = exports['pfm-core']:GetPlayer(source)
-    local citizenid = Player and Player.PlayerData and Player.PlayerData.citizenid or 'unknown'
-    local collectedBy = ('shop:%s'):format(tostring(shop or 'unknown'))
-
-    local ok, value = pcall(function()
-        return exports['pf-government']:CollectTax(subtotal, 'sales', 'citizen', citizenid, collectedBy)
-    end)
-
-    if not ok then
-        return 0
+    local uncollected = roundCurrency(tax - collected)
+    if uncollected > 0 then
+        PFPayout.Pay(citizenid, 'cash', uncollected, { key = key .. ':tax-refund', kind = 'refund', reason = 'Uncollected sales tax', quiet = true })
     end
-
-    return tonumber(value) or 0
+    return collected
 end
 -- [PF custom] end ----------------------------------------------------------
 
@@ -671,8 +668,15 @@ QBCore.Functions.CreateCallback('qb-inventory:server:attemptPurchase', function(
     local hookData = buildHookData('ItemBought', shopType, shop, itemInfo.slot, amount, source)
     if TriggerHook('ItemBought', shopType, hookData) == false then cb(false) return end
 
-    local removed = Player.Functions.RemoveMoney('cash', total, 'shop-purchase')
-    if removed == false then
+    -- The stock is reserved before the payment (the payment waits on the bank, and two purchases at
+    -- once could both pass the stock check above), and given back if the purchase does not complete.
+    -- The cash is paid through the pfm-banking ledger into system:pfm-inventory under a fixed key.
+    local stock = shopInfo.items[itemInfo.slot]
+    stock.amount -= amount
+    local cid = Player.PlayerData.citizenid
+    local key = ('pfm-inventory:shop:%s:%s:%s'):format(shop, cid, PFPayout.NewId())
+    if total > 0 and not PFPayout.Charge(source, 'cash', total, { key = key, kind = 'purchase', reason = 'Shop purchase: ' .. itemInfo.name }) then
+        stock.amount += amount
         TriggerClientEvent('QBCore:Notify', source, 'Payment failed.', 'error')
         cb(false)
         return
@@ -680,15 +684,14 @@ QBCore.Functions.CreateCallback('qb-inventory:server:attemptPurchase', function(
 
     local added = AddItem(source, itemInfo.name, amount, nil, itemInfo.info, 'shop-purchase')
     if not added then
-        Player.Functions.AddMoney('cash', total, 'shop-purchase-refund')
+        stock.amount += amount
+        if total > 0 then PFPayout.Pay(cid, 'cash', total, { key = key .. ':refund', kind = 'refund', reason = 'Shop purchase refunded' }) end
         TriggerClientEvent('QBCore:Notify', source, 'Could not add item. Payment refunded.', 'error')
         cb(false)
         return
     end
 
-    collectSalesTax(source, shop, subtotal)
-
-    shopInfo.items[itemInfo.slot].amount -= amount
+    collectSalesTax(cid, shop, subtotal, tax, key)
     TriggerEvent('qb-shops:server:UpdateShopItems', shop, itemInfo, amount)
     TriggerListener('ItemBought', shopType, hookData)
 

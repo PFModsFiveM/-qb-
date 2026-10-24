@@ -23,6 +23,7 @@ client_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    '@pfm-banking/payouts.lua', -- shop purchases are paid through the bank ledger (PFPayout)
     'server/freshness.lua',
     'server/main.lua',
     'server/functions.lua',

@@ -1,12 +1,10 @@
--- Shop purchases: the server's shop record is authoritative, never the client's item table.
-load_resource('tests/lua/fivem_mocks.lua')
-Config = nil
-load_resource('pfm-inventory/config/config.lua')
-load_resource('pfm-inventory/config/freshness.lua')
-load_resource('pfm-inventory/server/freshness.lua')
-load_resource('pfm-inventory/server/main.lua')
-load_resource('pfm-inventory/server/functions.lua')
-load_resource('pfm-inventory/server/hooks.lua')
+-- Shop purchases: the server's shop record is authoritative, never the client's item table, and the
+-- cash is paid through the ledger with the stock reserved first.
+load_resource('tests/lua/ledger_env.lua')
+LedgerEnv.load('pfm-inventory', {
+    'pfm-inventory/config/config.lua', 'pfm-inventory/config/freshness.lua', 'pfm-inventory/server/freshness.lua',
+    'pfm-inventory/server/main.lua', 'pfm-inventory/server/functions.lua', 'pfm-inventory/server/hooks.lua',
+})
 
 local SRC = 1
 local BUY = 'qb-inventory:server:attemptPurchase'
@@ -17,6 +15,7 @@ end
 
 BeforeEach = function()
     Mock.reset()
+    LedgerEnv.reset()
     Mock.players = {}
     local p = Mock.newPlayer(SRC)
     p.PlayerData.money.cash = 1000
@@ -45,9 +44,26 @@ describe('attemptPurchase', function()
         assert_true(s.info.fresh.batch ~= 'EVIL')
         assert_eq(s.info.fresh.life, 12 * 3600)
     end)
-    it('charges the correct total', function()
+    it('charges the correct total, once, through the ledger', function()
         Mock.callCallback(BUY, SRC, { shop = 'shop-247', amount = 3, item = { name = 'sandwich', slot = 1 } })
         assert_eq(Mock.players[SRC].PlayerData.money.cash, 1000 - 15)
+        assert_eq(#LedgerEnv.paid('pfm-inventory:shop:247:'), 1)
+        assert_eq(RegisteredShops['247'].items[1].amount, 47)
+    end)
+    it('a failed payment leaves the stock as it was', function()
+        Mock.players[SRC].PlayerData.money.cash = 2
+        assert_false(Mock.callCallback(BUY, SRC, { shop = 'shop-247', amount = 3, item = { name = 'sandwich', slot = 1 } }))
+        assert_eq(RegisteredShops['247'].items[1].amount, 50)
+        assert_eq(Mock.players[SRC].PlayerData.money.cash, 2)
+    end)
+    it('the bank being down charges nothing and keeps the stock', function()
+        local state = GetResourceState
+        GetResourceState = function(name) if name == 'pfm-banking' then return 'stopped' end return state(name) end
+        local ok = Mock.callCallback(BUY, SRC, { shop = 'shop-247', amount = 3, item = { name = 'sandwich', slot = 1 } })
+        GetResourceState = state
+        assert_false(ok)
+        assert_eq(RegisteredShops['247'].items[1].amount, 50)
+        assert_eq(Mock.players[SRC].PlayerData.money.cash, 1000)
     end)
     it('rejects malformed requests without crashing or charging', function()
         assert_false(Mock.callCallback(BUY, SRC, nil))
