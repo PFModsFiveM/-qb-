@@ -276,7 +276,7 @@ RegisterNUICallback('buySelectedObject', function(data, cb)
 			peanut = false
 		end
 		cb('ok')
-	end, data.price)
+	end, SelObjHash, ClosestHouse) -- the server prices the model itself
 end)
 
 RegisterNUICallback('setupMyObjects', function(_, cb)
