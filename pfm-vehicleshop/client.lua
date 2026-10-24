@@ -1020,3 +1020,17 @@ RegisterNetEvent('qb-vehicleshop:client:ReplaceDeletedVehicle', function(shopNam
         end
     end
 end)
+-- A dealer sale or a paid vehicle transfer waiting for this player's answer (the server only
+-- charges after it is accepted)
+RegisterNetEvent('qb-vehicleshop:client:confirmPurchase', function(offer)
+    if type(offer) ~= 'table' then return end
+    local detail = ('$%s'):format(tostring(offer.amount))
+    if offer.kind == 'finance' then
+        detail = ('$%s down, then %s payments of $%s'):format(tostring(offer.amount), tostring(offer.payments), tostring(offer.perPayment))
+    end
+    exports['pfm-menu']:openMenu({
+        { header = tostring(offer.label), txt = detail .. ' - offered by ' .. tostring(offer.seller), isMenuHeader = true },
+        { header = 'Accept and pay', params = { isServer = true, event = 'qb-vehicleshop:server:answerPurchase', args = true } },
+        { header = 'Decline', params = { isServer = true, event = 'qb-vehicleshop:server:answerPurchase', args = false } },
+    })
+end)
