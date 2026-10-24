@@ -13,6 +13,8 @@ local Translations = {
         cancel = "Washing canceled..."
     },
     consumables = {
+        tastes_off = "This tastes off...",
+        food_poisoning = "Your stomach turns - that food was bad.",
         eat_progress = "Eating...",
         drink_progress = "Drinking...",
         liqour_progress = "Drinking liquor...",

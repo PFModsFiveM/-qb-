@@ -186,6 +186,20 @@ RegisterNetEvent('consumables:client:Drink', function(itemName)
     end)
 end)
 
+-- Triggered only by the server after its own illness roll for stale or spoiled food.
+RegisterNetEvent('consumables:client:FoodPoisoning', function()
+    local ped = PlayerPedId()
+    QBCore.Functions.Notify(Lang:t('consumables.food_poisoning'), 'error', 6000)
+    RequestAnimDict('oddjobs@taxi@tie')
+    local timeout = GetGameTimer() + 2000
+    while not HasAnimDictLoaded('oddjobs@taxi@tie') and GetGameTimer() < timeout do Wait(10) end
+    if HasAnimDictLoaded('oddjobs@taxi@tie') then
+        TaskPlayAnim(ped, 'oddjobs@taxi@tie', 'vomit_outside', 8.0, -8.0, 5000, 0, 0, false, false, false)
+    end
+    SetEntityHealth(ped, math.max(101, GetEntityHealth(ped) - 15))
+    TriggerServerEvent('hud:server:GainStress', math.random(3, 6))
+end)
+
 RegisterNetEvent('consumables:client:DrinkAlcohol', function(itemName)
     QBCore.Functions.Progressbar('drink_alcohol', Lang:t('consumables.liqour_progress'), math.random(3000, 6000), false, true, {
         disableMovement = false,

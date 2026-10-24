@@ -33,23 +33,67 @@ local function getMaxReplenish()
     return maxValue
 end
 
--- Validates a client-reported new hunger/thirst total against the current metadata value:
--- numeric, within 0..100, and not raised by more than the largest configured replenish
-local function validateNeedAmount(current, amount)
-    amount = tonumber(amount)
-    if not amount then return nil end
-    current = tonumber(current) or 0
-    local maxGain = Config.MaxReplenish or getMaxReplenish()
-    if amount > current + maxGain then amount = current + maxGain end
-    if amount > 100 then amount = 100 end
+----------- / server-issued consumption grants
+-- Hunger and thirst only rise after the server itself consumed a real item for this player.
+-- The client's reported total is ignored; the gain comes from config, scaled by freshness.
+
+local needGrants = {}          -- [src] = { hunger = grant, thirst = grant, alcohol = { item, expires, grant } }
+local GRANT_SECONDS = 30       -- the client progress bars take at most ~6s
+
+AddEventHandler('playerDropped', function()
+    needGrants[source] = nil
+end)
+
+local NO_EFFECT = { benefit = 1.0, illness = 0 }
+
+local function foodEffects(item)
+    if type(item) ~= 'table' or GetResourceState('pfm-inventory') ~= 'started' then return NO_EFFECT end
+    local ok, fx = pcall(function() return exports['pfm-inventory']:GetFreshness(item.name, item.info) end)
+    if ok and type(fx) == 'table' then return fx end
+    return NO_EFFECT
+end
+
+local function buildGrant(src, base, item)
+    local fx = foodEffects(item)
+    local cap = Config.MaxReplenish or getMaxReplenish()
+    local amount = math.floor((tonumber(base) or 0) * (tonumber(fx.benefit) or 1.0) + 0.5)
+    if amount > cap then amount = cap end
     if amount < 0 then amount = 0 end
-    return amount
+    local illness = tonumber(fx.illness) or 0
+    if fx.state == 'stale' or fx.state == 'spoiled' then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('consumables.tastes_off'), 'error')
+    end
+    return { amount = amount, expires = os.time() + GRANT_SECONDS, ill = illness > 0 and math.random(100) <= illness }
+end
+
+local function issueGrant(src, need, grant)
+    needGrants[src] = needGrants[src] or {}
+    needGrants[src][need] = grant
+end
+
+--- Applies and consumes a pending grant. Returns the new value, or nil when there is none.
+local function applyGrant(src, Player, need)
+    local grants = needGrants[src]
+    local grant = grants and grants[need]
+    if not grant then return nil end
+    grants[need] = nil
+    if os.time() > grant.expires then return nil end
+    local current = tonumber(Player.PlayerData.metadata[need]) or 0
+    local value = current + grant.amount
+    if value > 100 then value = 100 end
+    Player.SetMetaData(need, value)
+    if grant.ill then TriggerClientEvent('consumables:client:FoodPoisoning', src) end
+    return value
 end
 
 ----------- / alcohol
 
 for k, _ in pairs(Config.Consumables.alcohol) do
     QBCore.Functions.CreateUseableItem(k, function(source, item)
+        -- the bottle is removed when the client finishes drinking (drinkAlcohol); the thirst
+        -- grant only becomes valid once that removal succeeds
+        needGrants[source] = needGrants[source] or {}
+        needGrants[source].alcohol = { item = item.name, expires = os.time() + GRANT_SECONDS, grant = buildGrant(source, Config.Consumables.alcohol[item.name], item) }
         TriggerClientEvent('consumables:client:DrinkAlcohol', source, item.name)
     end)
 end
@@ -58,7 +102,9 @@ end
 
 for k, _ in pairs(Config.Consumables.eat) do
     QBCore.Functions.CreateUseableItem(k, function(source, item)
+        local grant = buildGrant(source, Config.Consumables.eat[item.name], item)
         if not exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-smallresources:consumables:eat') then return end
+        issueGrant(source, 'hunger', grant)
         TriggerClientEvent('consumables:client:Eat', source, item.name)
     end)
 end
@@ -66,7 +112,9 @@ end
 ----------- / Drink
 for k, _ in pairs(Config.Consumables.drink) do
     QBCore.Functions.CreateUseableItem(k, function(source, item)
+        local grant = buildGrant(source, Config.Consumables.drink[item.name], item)
         if not exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-smallresources:consumables:drink') then return end
+        issueGrant(source, 'thirst', grant)
         TriggerClientEvent('consumables:client:Drink', source, item.name)
     end)
 end
@@ -254,7 +302,12 @@ RegisterNetEvent('consumables:server:drinkAlcohol', function(item)
     end
 
     if not foundItem then return end
-    exports['pfm-inventory']:RemoveItem(source, foundItem, 1, false, 'consumables:server:drinkAlcohol')
+    local pending = needGrants[source] and needGrants[source].alcohol
+    if not pending or pending.item ~= foundItem or os.time() > pending.expires then return end
+    needGrants[source].alcohol = nil
+    if exports['pfm-inventory']:RemoveItem(source, foundItem, 1, false, 'consumables:server:drinkAlcohol') then
+        issueGrant(source, 'thirst', pending.grant)
+    end
 end)
 
 RegisterNetEvent('consumables:server:UseFirework', function(item)
@@ -274,26 +327,23 @@ RegisterNetEvent('consumables:server:UseFirework', function(item)
     exports['pfm-inventory']:RemoveItem(source, foundItem, 1, false, 'consumables:server:UseFirework')
 end)
 
-RegisterNetEvent('consumables:server:addThirst', function(amount)
+-- The client still sends its computed total for compatibility; it is ignored.
+RegisterNetEvent('consumables:server:addThirst', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    if IsOnUseCooldown(src, 'addThirst') then return end
-    amount = validateNeedAmount(Player.PlayerData.metadata.thirst, amount)
-    if not amount then return end
-    Player.SetMetaData('thirst', amount)
-    TriggerClientEvent('hud:client:UpdateNeeds', src, Player.PlayerData.metadata.hunger, amount)
+    local value = applyGrant(src, Player, 'thirst')
+    if not value then return end
+    TriggerClientEvent('hud:client:UpdateNeeds', src, Player.PlayerData.metadata.hunger, value)
 end)
 
-RegisterNetEvent('consumables:server:addHunger', function(amount)
+RegisterNetEvent('consumables:server:addHunger', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    if IsOnUseCooldown(src, 'addHunger') then return end
-    amount = validateNeedAmount(Player.PlayerData.metadata.hunger, amount)
-    if not amount then return end
-    Player.SetMetaData('hunger', amount)
-    TriggerClientEvent('hud:client:UpdateNeeds', src, amount, Player.PlayerData.metadata.thirst)
+    local value = applyGrant(src, Player, 'hunger')
+    if not value then return end
+    TriggerClientEvent('hud:client:UpdateNeeds', src, value, Player.PlayerData.metadata.thirst)
 end)
 
 QBCore.Functions.CreateCallback('consumables:itemdata', function(_, cb, itemName)
