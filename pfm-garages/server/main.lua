@@ -242,6 +242,18 @@ end)
 
 -- Events
 
+-- Saves a parked car's mods. This used to go to pfm-mechanicjob ('qb-mechanicjob:server:SaveVehicleProps'),
+-- which is no longer installed (pf-mechanicjob is the mechanic job). Only the car's owner can save,
+-- and only to their own car's row.
+RegisterNetEvent('qb-garages:server:SaveVehicleProps', function(vehicleProps)
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(vehicleProps) ~= 'table' or type(vehicleProps.plate) ~= 'string' then return end
+    local encoded = json.encode(vehicleProps)
+    if #encoded > 65535 then return end
+    MySQL.update('UPDATE player_vehicles SET mods = ? WHERE plate = ? AND citizenid = ?', { encoded, vehicleProps.plate, Player.PlayerData.citizenid })
+end)
+
 RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, engine, body)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
