@@ -117,6 +117,11 @@ end
 local realTime = os.time
 os.time = function(t) if t then return realTime(t) end return Mock.clock end
 function GetGameTimer() Mock.gameTimer = Mock.gameTimer + 1; return Mock.gameTimer end
+-- FiveM commands registered with RegisterCommand (name -> handler)
+Mock.rawCommands = {}
+function RegisterCommand(name, fn) Mock.rawCommands[name] = fn end
+function ExecuteCommand() end
+function WasEventCanceled() return false end
 
 -- ── events / threads ──────────────────────────────────────────────
 function RegisterNetEvent(name, fn) if fn then Mock.netHandlers[name] = fn end end

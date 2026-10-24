@@ -1,11 +1,10 @@
 -- pfm-truckrobbery: the payout needs the mission's own truck, the player at it, and time for the attack.
-load_resource('tests/lua/fivem_mocks.lua')
+load_resource('tests/lua/ledger_env.lua') -- the activation fee goes through the ledger
 Inv = {}
 Mock.exportsByResource['pfm-inventory'] = { AddItem = function(_, src, item, n) Inv[item] = (Inv[item] or 0) + (n or 1) return true end }
 setmetatable(QBCoreMock.Shared.Items, { __index = function(_, k) return { name = k, label = k } end })
 QBCoreMock.Functions.GetPlayers = function() local out = {} for id in pairs(Mock.players) do out[#out + 1] = id end return out end
-load_resource('pfm-truckrobbery/config.lua')
-load_resource('pfm-truckrobbery/server/main.lua')
+LedgerEnv.load('pfm-truckrobbery', { 'pfm-truckrobbery/config.lua', 'pfm-truckrobbery/server/main.lua' })
 -- the mission timer waits: keep it paused inside a coroutine
 function Wait() if coroutine.isyieldable() then coroutine.yield() end end
 
@@ -20,6 +19,7 @@ end
 
 BeforeEach = function()
     Mock.reset()
+    LedgerEnv.reset()
     Mock.clock = Mock.clock + 100000
     Mock.players, Mock.coords, Inv = {}, {}, {}
     local p = Mock.newPlayer(R)
@@ -28,10 +28,14 @@ BeforeEach = function()
     Mock.newPlayer(COP).PlayerData.job = { name = 'police', type = 'leo', onduty = true }
 end
 
+
 describe('armored truck', function()
     it('the payout needs the truck, the player at it, and time', function()
         local spawn = accept()
         assert_true(spawn ~= nil)
+        -- the activation fee was charged once, through the ledger
+        assert_eq(Mock.players[R].PlayerData.money.bank, 100000 - Config.ActivationCost)
+        assert_eq(#LedgerEnv.paid('pfm-truckrobbery:activate:'), 1)
         Mock.fireNet('AttackTransport:graczZrobilnapad', R, 20000)       -- right after accepting
         assert_eq(Inv.markedbills, nil)
         local s = Config.VehicleSpawn[spawn]
@@ -56,3 +60,4 @@ describe('armored truck', function()
         assert_eq(Inv.markedbills, nil)
     end)
 end)
+

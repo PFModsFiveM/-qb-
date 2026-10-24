@@ -223,10 +223,35 @@ end, 'admin')
 
 -- Money
 
+-- Admin money changes for bank and cash go through the pfm-banking ledger (from/to system:admin,
+-- keyed), so they are journaled and do not show up as unexplained balance edits in reconciliation.
+-- Other money types (e.g. crypto), or a server without pfm-banking, use the player functions as before.
+local adminMoneyCounter = 0
+local function adminLedgerMove(Player, moneyType, amount, admin)
+    if (moneyType ~= 'bank' and moneyType ~= 'cash') or GetResourceState('pfm-banking') ~= 'started' then return nil end
+    if amount == 0 then return true end
+    adminMoneyCounter = adminMoneyCounter + 1
+    local cid = Player.PlayerData.citizenid
+    local account = ('player:%s:%s'):format(cid, moneyType)
+    local ok, res = pcall(function()
+        return exports['pfm-banking']:Transfer({
+            from = amount > 0 and 'system:admin' or account, to = amount > 0 and account or 'system:admin',
+            amount = math.abs(amount), key = ('admin:%s:%s:%d-%d'):format(tostring(admin), cid, os.time(), adminMoneyCounter),
+            kind = 'adjustment', reason = 'Admin money change', actor = tostring(admin),
+        })
+    end)
+    return ok and type(res) == 'table' and res.ok == true
+end
+
 QBCore.Commands.Add('givemoney', Lang:t('command.givemoney.help'), { { name = Lang:t('command.givemoney.params.id.name'), help = Lang:t('command.givemoney.params.id.help') }, { name = Lang:t('command.givemoney.params.moneytype.name'), help = Lang:t('command.givemoney.params.moneytype.help') }, { name = Lang:t('command.givemoney.params.amount.name'), help = Lang:t('command.givemoney.params.amount.help') } }, true, function(source, args)
     local Player = QBCore.Functions.GetPlayer(tonumber(args[1]))
+    local moneyType, amount = tostring(args[2]), tonumber(args[3])
     if Player then
-        Player.Functions.AddMoney(tostring(args[2]), tonumber(args[3]), 'Admin give money')
+        if not amount or amount ~= amount or amount <= 0 or amount == math.huge then
+            return TriggerClientEvent('QBCore:Notify', source, 'Give a positive amount', 'error')
+        end
+        local done = adminLedgerMove(Player, moneyType, amount, source)
+        if done == nil then Player.Functions.AddMoney(moneyType, amount, 'Admin give money') end
     else
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.not_online'), 'error')
     end
@@ -234,8 +259,15 @@ end, 'admin')
 
 QBCore.Commands.Add('setmoney', Lang:t('command.setmoney.help'), { { name = Lang:t('command.setmoney.params.id.name'), help = Lang:t('command.setmoney.params.id.help') }, { name = Lang:t('command.setmoney.params.moneytype.name'), help = Lang:t('command.setmoney.params.moneytype.help') }, { name = Lang:t('command.setmoney.params.amount.name'), help = Lang:t('command.setmoney.params.amount.help') } }, true, function(source, args)
     local Player = QBCore.Functions.GetPlayer(tonumber(args[1]))
+    local moneyType, amount = tostring(args[2]), tonumber(args[3])
     if Player then
-        Player.Functions.SetMoney(tostring(args[2]), tonumber(args[3]))
+        if not amount or amount ~= amount or amount < 0 or amount == math.huge then
+            return TriggerClientEvent('QBCore:Notify', source, 'Give an amount of 0 or more', 'error')
+        end
+        -- the ledger moves the difference to reach the new balance
+        local current = tonumber(Player.PlayerData.money[moneyType]) or 0
+        local done = adminLedgerMove(Player, moneyType, amount - current, source)
+        if done == nil then Player.Functions.SetMoney(moneyType, amount) end
     else
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.not_online'), 'error')
     end

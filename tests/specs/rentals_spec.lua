@@ -14,7 +14,6 @@ function SetVehicleEngineOn() end
 function NetworkGetNetworkIdFromEntity(e) return e end
 function GetVehicleNumberPlateText() return 'RENT001' end
 Mock.exportsByResource['oxmysql'] = { execute = function() end }
-RegisterCommand = RegisterCommand or function() end
 
 LedgerEnv.load('pf-rentals', { '[pfscripts]/pf-rentals/config.lua', '[pfscripts]/pf-rentals/server/integration.lua' })
 Config.Debug = false
