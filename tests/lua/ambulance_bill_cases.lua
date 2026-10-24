@@ -1,5 +1,5 @@
--- Shared cases for the two ambulance job copies (pfm-ambulancejob in [qb], pf-ambulancejob in
--- [pfscripts]): hospital bills and the revive fee through the ledger.
+-- Hospital bills and the revive fee through the ledger, for pf-ambulancejob ([pfscripts]), the ambulance
+-- job in use (the [qb] pfm-ambulancejob copy was removed).
 --   AmbulanceCases(resourceName, { files... })
 load_resource('tests/lua/ledger_env.lua')
 
