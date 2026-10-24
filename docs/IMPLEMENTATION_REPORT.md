@@ -1208,3 +1208,36 @@ All three resources now include `@pfm-banking/payouts.lua`. Every payment has a 
 
 **Still to look at:**
 - Once ox_lib is installed, `pf-mechanicjob/server/garage_sync.lua` also handles `qb-garages:server:updateVehicleStats` (beside pfm-garages) with no check on who sends it. It updates its cached vehicle state for any plate.
+
+### Ambulance job: pf-ambulancejob kept, pfm-ambulancejob removed
+
+Owner's decision: keep `pf-ambulancejob` ([pfscripts]) and remove the [qb] copy.
+
+**Commits:**
+- **-pfscripts- 65a35c3 (hardening port):** pfm-ambulancejob's `server/main.lua` was pf-ambulancejob's plus the hardening, so the hardened file was ported whole. It adds:
+  - bed ownership and freeing beds on disconnect;
+  - checked hospital and bed lookups;
+  - armor for medics only, 0–100;
+  - wound treatment only by an on-duty medic with a real bandage;
+  - revives by an on-duty medic or a first-aid kit, with off-duty medics refused instead of banned;
+  - a doctor list for medics only;
+  - a `Config.AllowedRevivalResources` list for server-side revive/heal.
+  
+  Ledger bills and the vehicle registration are unchanged.
+- **[qb] f434238 / 7b8ccb7 (removal):** pfm-ambulancejob removed. Nothing referenced it by name, and its exports and events are identical in pf-ambulancejob. Its **CPR and medal features are gone**; pf-ambulancejob never had them.
+
+**Tests:**
+- `pf_ambulance_hardening_spec` (5): all fail on the old pf-ambulancejob code.
+- `pf_ambulance_bills_spec` (5): still passes.
+- Full mocked suite: **364 passed, 0 failed, 44 spec files**.
+- Staging: 97 resources started, pf-ambulancejob among them. There are no overlapping hospital events left. Only ox_lib and kq_wheeldamage fail, as before.
+
+**The injury system is not running, and never has.**
+- Its files (`server/injury_database.lua`, `injury_handler.lua`, `treatment.lua`, `shared/framework.lua`, `client/check_injuries.lua`, `damage_detection.lua`, `injury_handler.lua`, `treatment.lua`) are not listed in `fxmanifest.lua`. The same is true in the `[custom]` copy, where the files are identical.
+- They use 9 config entries that exist nowhere: `Framework`, `AllowedJobs`, `BodyParts`, `Treatments`, `WeaponInjuryTypes`, `DamageTracking`, `CheckInjuries`, `Database`, `Debug`.
+- **To use it:**
+  1. write those settings, including its data tables;
+  2. add the files to the manifest;
+  3. load `sql/pf-ambulancejob-qb.sql`;
+  4. review its 6 server events and callbacks (for example, `pf-ambulancejob:server:revivePlayerEvent` and `applyTreatment` are client-triggerable) before enabling it.
+- Nothing else on the server calls its events.
