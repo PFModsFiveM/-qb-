@@ -334,7 +334,11 @@ QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, c
             Portfolio = Player.PlayerData.money.crypto + coins,
             WalletId = Player.PlayerData.metadata['walletid'],
         }
-        if not Player.RemoveMoney('bank', total_price, 'bought crypto') then return cb(false) end
+        -- the bank side goes through the pfm-banking ledger (coins are their own balance, which the
+        -- ledger does not carry: it only moves bank and cash in cents)
+        if not PFPayout.Charge(Player, 'bank', total_price, {
+            key = ('pfm-crypto:buy:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Bought Qbit',
+        }) then return cb(false) end
         TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
         Player.AddMoney('crypto', coins, 'bought crypto')
         cb(CryptoData)
@@ -355,10 +359,16 @@ QBCore.Functions.CreateCallback('qb-crypto:server:SellCrypto', function(source, 
             Portfolio = Player.PlayerData.money.crypto - coins,
             WalletId = Player.PlayerData.metadata['walletid'],
         }
-        Player.RemoveMoney('crypto', coins, 'sold crypto')
+        if not Player.RemoveMoney('crypto', coins, 'sold crypto') then return cb(false) end
         local amount = math.floor(coins * tonumber(Crypto.Worth['qbit']))
+        -- paid through the ledger; if the bank cannot pay, the coins are given back
+        if amount > 0 and not PFPayout.Pay(Player, 'bank', amount, {
+            key = ('pfm-crypto:sell:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'sale', reason = 'Sold Qbit',
+        }) then
+            Player.AddMoney('crypto', coins, 'sold crypto: bank unavailable')
+            return cb(false)
+        end
         TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, Lang:t('debit.you_have_sold', { dataCoins = coins }), 'Debit')
-        Player.AddMoney('bank', amount, 'sold crypto')
         cb(CryptoData)
     else
         cb(false)

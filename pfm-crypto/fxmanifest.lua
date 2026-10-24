@@ -13,6 +13,7 @@ shared_scripts {
 }
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    '@pfm-banking/payouts.lua',
     'server/main.lua'
 }
 client_script 'client/main.lua'
