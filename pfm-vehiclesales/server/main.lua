@@ -134,10 +134,18 @@ RegisterNetEvent('qb-occasions:server:sellVehicleBack', function(vehData)
             break
         end
     end
+    -- the car is only given up while the bank can pay for it
+    if GetResourceState('pfm-banking') ~= 'started' then
+        TriggerClientEvent('QBCore:Notify', src, 'The bank is not available right now', 'error')
+        return
+    end
     local ownsVehicle = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? and hash = ?', { plate, Player.PlayerData.citizenid, vehData.model })
     if ownsVehicle.affectedRows > 0 then
         local payout = math.floor(tonumber(price * 0.5))
-        Player.AddMoney('bank', payout, 'sold vehicle back')
+        PFPayout.Pay(src, 'bank', payout, {
+            key = ('pfm-vehiclesales:sellback:%s:%s:%s'):format(tostring(plate), Player.PlayerData.citizenid, PFPayout.NewId()),
+            kind = 'sale', reason = 'Vehicle sold back',
+        })
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.sold_car_for_price', { value = payout }), 'success', 5500)
     else
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_your_vehicle'), 'error', 3500)
@@ -167,46 +175,60 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
         local total = math.floor(((subtotal + taxAmount) * 100) + 0.5) / 100
 
         if Player.PlayerData.money.bank >= total then
-            local SellerCitizenId = result[1].seller
-            local SellerData = QBCore.Functions.GetPlayerByCitizenId(SellerCitizenId)
+            local listing = result[1]
+            local SellerCitizenId = listing.seller
+            local buyerCid = Player.PlayerData.citizenid
+            if SellerCitizenId == buyerCid then return end -- your own listing: take it back instead
             local NewPrice = math.ceil((subtotal / 100) * 77)
-            Player.RemoveMoney('bank', total, 'bought vehicle used lot')
+            -- 1) the buyer pays (keyed), 2) the listing is claimed by one DELETE, so of two buyers at
+            -- the same moment only one gets the car and the other is refunded, 3) the seller (online
+            -- or offline) and the tax are paid through the ledger. (RemoveMoney was not checked, both
+            -- buyers could get the car, and an offline seller's money record was rewritten.)
+            local key = ('pfm-vehiclesales:buy:%s:%s:%s'):format(tostring(listing.occasionid), tostring(listing.plate), PFPayout.NewId())
+            if not PFPayout.Charge(src, 'bank', total, { key = key, kind = 'purchase', reason = 'Used vehicle ' .. tostring(listing.plate) }) then
+                TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
+                return
+            end
+            local claimed = MySQL.query.await('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { listing.plate, listing.occasionid })
+            if not claimed or (claimed.affectedRows or 0) < 1 then
+                PFPayout.Pay(buyerCid, 'bank', total, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle already sold' })
+                TriggerClientEvent('QBCore:Notify', src, Lang:t('error.vehicle_does_not_exist'), 'error', 3500)
+                return
+            end
             MySQL.insert(
                 'INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, state) VALUES (?, ?, ?, ?, ?, ?, ?)', {
                     Player.PlayerData.license,
-                    Player.PlayerData.citizenid, result[1]['model'],
-                    GetHashKey(result[1]['model']),
-                    result[1]['mods'],
-                    result[1]['plate'],
+                    buyerCid, listing['model'],
+                    GetHashKey(listing['model']),
+                    listing['mods'],
+                    listing['plate'],
                     0
                 })
-            if SellerData then
-                SellerData.Functions.AddMoney('bank', NewPrice, 'sold vehicle used lot')
-            else
-                local BuyerData = MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { SellerCitizenId })
-                if BuyerData[1] then
-                    local BuyerMoney = json.decode(BuyerData[1].money)
-                    BuyerMoney.bank = BuyerMoney.bank + NewPrice
-                    MySQL.update('UPDATE players SET money = ? WHERE citizenid = ?', { json.encode(BuyerMoney), SellerCitizenId })
-                end
-            end
-            TriggerEvent('qb-log:server:CreateLog', 'vehicleshop', 'bought', 'green', '**' .. GetPlayerName(src) .. '** has bought for ' .. result[1].price .. ' (' .. result[1].plate .. ') from **' .. SellerCitizenId .. '**')
+            PFPayout.Pay(SellerCitizenId, 'bank', NewPrice, { key = key .. ':seller', kind = 'sale', reason = 'Vehicle sold on the used lot', quiet = true })
+            TriggerEvent('qb-log:server:CreateLog', 'vehicleshop', 'bought', 'green', '**' .. GetPlayerName(src) .. '** has bought for ' .. listing.price .. ' (' .. listing.plate .. ') from **' .. SellerCitizenId .. '**')
 
+            -- the tax was paid with the car; whatever the government does not take goes back to the buyer
+            local collected = 0
             if taxAmount > 0 and GetResourceState('pf-government') == 'started' then
-                pcall(function()
-                    exports['pf-government']:CollectTax(subtotal, 'vehicle_purchase', 'citizen', Player.PlayerData.citizenid, 'vehicle_used_lot')
+                local ok, value = pcall(function()
+                    return exports['pf-government']:CollectTaxAmount(taxAmount, 'vehicle_purchase', 'citizen', buyerCid, 'vehicle_used_lot', key .. ':tax', subtotal)
                 end)
+                collected = ok and (tonumber(value) or 0) or 0
+            end
+            local uncollected = math.floor((taxAmount - collected) * 100 + 0.5) / 100
+            if uncollected > 0 then
+                PFPayout.Pay(buyerCid, 'bank', uncollected, { key = key .. ':tax-refund', kind = 'refund', reason = 'Uncollected vehicle tax', quiet = true })
             end
 
-            exports['pfm-core']:GrantVehicleSpawn(src, result[1].model)
-            TriggerClientEvent('qb-occasions:client:BuyFinished', src, result[1])
+            exports['pfm-core']:GrantVehicleSpawn(src, listing.model)
+            TriggerClientEvent('qb-occasions:client:BuyFinished', src, listing)
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
-            MySQL.query('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { result[1].plate, result[1].occasionid })
             TriggerClientEvent('QBCore:Notify', src, ('Vehicle purchase complete. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'success')
+            local shared = sharedVehicles[listing.model]
             exports['pfm-phone']:sendNewMailToOffline(SellerCitizenId, {
                 sender = Lang:t('mail.sender'),
                 subject = Lang:t('mail.subject'),
-                message = Lang:t('mail.message', { value = NewPrice, value2 = sharedVehicles[result[1].model].name })
+                message = Lang:t('mail.message', { value = NewPrice, value2 = shared and shared.name or listing.model })
             })
         else
             TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
