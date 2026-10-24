@@ -18,7 +18,7 @@
 PFLedger = PFLedger or {}
 local L = PFLedger
 
-local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions', 'Shared' })
+local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions', 'Shared', 'Commands' }) -- Commands: /ledgerreconcile
 
 L.STALE_PENDING_SECONDS = 60
 L.STALE_DEBITED_SECONDS = 30

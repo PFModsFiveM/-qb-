@@ -314,7 +314,14 @@ end
 -- ── exports ───────────────────────────────────────────────────────
 Mock.vehicleGrants = {}
 Mock.exportsByResource['pfm-core'] = {
-    GetCoreObject = function() return QBCoreMock end,
+    -- like pfm-core: a filter list returns only those parts (a resource asking for
+    -- {'Functions'} has no QBCore.Commands, exactly as on a real server)
+    GetCoreObject = function(_, filters)
+        if type(filters) ~= 'table' then return QBCoreMock end
+        local out = {}
+        for _, key in ipairs(filters) do out[key] = QBCoreMock[key] end
+        return out
+    end,
     GrantVehicleSpawn = function(_, src, model) Mock.vehicleGrants[#Mock.vehicleGrants + 1] = { src = src, model = model } return true end,
     RegisterJobVehicles = function() return true end,
     AddItems = function(_, items)
