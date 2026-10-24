@@ -1241,3 +1241,57 @@ Owner's decision: keep `pf-ambulancejob` ([pfscripts]) and remove the [qb] copy.
   3. load `sql/pf-ambulancejob-qb.sql`;
   4. review its 6 server events and callbacks (for example, `pf-ambulancejob:server:revivePlayerEvent` and `applyTreatment` are client-triggerable) before enabling it.
 - Nothing else on the server calls its events.
+
+### pf-ambulancejob injury system finished and enabled (-pfscripts- 47d3c4e)
+
+**What was missing:**
+- the files were not in `fxmanifest.lua`;
+- 9 config entries did not exist;
+- `PFAmbulance.Framework` (callbacks) was never defined;
+- the client never reported damage, called a server event that did not exist, mixed server ids with player indexes, and used an undefined `IsPlayerAEMSMember`;
+- `sql/pf-ambulancejob-qb.sql` failed to import at its stored procedures.
+
+**Config** (`config.lua`, section "INJURY SYSTEM"):
+- 8 injury types and 4 severities;
+- body parts mapped from the existing `Config.Bones` labels to 6 zones;
+- weapon classes mapped to injury types, plus overrides (falls, vehicles, electric fence);
+- report and scan limits;
+- 4 field treatments using existing items:
+
+| Treatment | Item | Treats |
+|---|---|---|
+| bandage | `bandage` | lacerations, gunshot wounds |
+| splint | `firstaid` | fractures, blunt trauma |
+| burn_dressing | `ifaks` | burns, electrical burns, blast injuries |
+| oxygen | `ifaks` | respiratory |
+
+Field treatment works up to *severe*; *critical* injuries need the hospital.
+
+**Server rules:**
+- **Injury reports:** about yourself only; every value checked against the config; one report per 2 s; the latest 50 kept per citizen.
+- **Scans** (`getInjuriesAndData`, `getDamageHistory`) and **treatment:** an on-duty medic within 4 m of the patient. Treatment uses up its item, removes what it treats, and logs it with the medic's citizen id. No item is taken when there is nothing it can treat.
+- **Hospital check-in or respawn** clears all injuries.
+- **Tables:** a versioned migration (`pf-ambulancejob` v1), no longer a client-triggerable net event. The treatment-log foreign key is `ON DELETE SET NULL`.
+- **Removed:** `revivePlayerEvent` (a revive without the hospital checks) and the unused `injuryScanComplete`.
+
+**Client:**
+- **Damage reports:** sent on the game's damage event, with the attacker's weapon and the real bone hit.
+- **`/checkinjuries [id]`:** shows the result in pf-emsmdt if it runs, otherwise in a pfm-menu list.
+- **`/treat [id] [treatment]`:** applies a treatment.
+
+**SQL file:**
+- Removed the three stored procedures. They used `DELIMITER`, so the import failed under oxmysql and most tools; one read a column that does not exist; nothing called them.
+- All 9 tables load. The file is only needed for pf-emsmdt's extra tables (patient care reports, vitals, medications, MCI).
+
+**Tests:**
+- `ambulance_injuries_realdb_spec` (14, MariaDB): migration and foreign key, report validation, rate limit and cap, scan rules, treatment rules, item use, critical-needs-hospital, hospital clearing, removed events.
+- `ambulance_injury_helpers_spec` (4).
+- Suites: mocked **368 passed** (45 files), real database **69 passed** (6 files, including the injury spec), all green.
+- Staging: 97 resources started and `pf-ambulancejob v1 applied`, with no new errors.
+
+**Not verified in game:**
+- the damage event's weapon and bone values on a live client;
+- the progress bars and animations;
+- the pfm-menu list.
+
+pf-emsmdt (in `[custom]`, not started) was not tested with this.
