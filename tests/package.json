@@ -1,0 +1,11 @@
+{
+  "name": "pf-framework-tests",
+  "private": true,
+  "description": "Executable Lua tests for the PF framework, run on the fengari Lua VM with FiveM mocks",
+  "scripts": {
+    "test": "node harness.js"
+  },
+  "dependencies": {
+    "fengari": "0.1.4"
+  }
+}

@@ -23,6 +23,8 @@ client_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    '@pfm-core/server/migrations.lua',
+    'server_ledger.lua',
     'server.lua',
     'server_finance.lua',
     'server_accounts.lua'

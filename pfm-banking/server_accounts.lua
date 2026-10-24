@@ -1,60 +1,10 @@
--- qb-banking multi-account module: shared/business accounts, members, debit cards, IBAN transfers
+-- qb-banking multi-account module: shared/business accounts, members, debit cards, IBAN transfers.
+-- Tables are created by the pfm-banking ledger migration (server_ledger.lua, v2). Every balance change
+-- goes through PFLedger.Transfer: account refs are acct:<id> for these accounts and
+-- player:<citizenid>:bank for personal balances. bank_transactions is the per-account history shown
+-- in the UI; pf_transactions is the authoritative record.
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
-
--- ── schema ───────────────────────────────────────────────────────────
-MySQL.ready(function()
-    MySQL.query([[CREATE TABLE IF NOT EXISTS bank_accounts_v2 (
-        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        iban VARCHAR(24) NOT NULL UNIQUE,
-        label VARCHAR(50) NOT NULL,
-        type ENUM('shared','business') NOT NULL,
-        owner VARCHAR(50) NOT NULL,
-        balance BIGINT NOT NULL DEFAULT 0,
-        color VARCHAR(16) NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_owner (owner)
-    )]])
-    MySQL.query([[CREATE TABLE IF NOT EXISTS bank_account_members (
-        account_id INT NOT NULL,
-        citizenid VARCHAR(50) NOT NULL,
-        name VARCHAR(80) NOT NULL DEFAULT '',
-        can_withdraw TINYINT NOT NULL DEFAULT 0,
-        can_deposit TINYINT NOT NULL DEFAULT 1,
-        can_cards TINYINT NOT NULL DEFAULT 0,
-        can_manage TINYINT NOT NULL DEFAULT 0,
-        PRIMARY KEY (account_id, citizenid)
-    )]])
-    MySQL.query([[CREATE TABLE IF NOT EXISTS bank_account_cards (
-        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        account_id INT NULL,
-        citizenid VARCHAR(50) NOT NULL,
-        holder_name VARCHAR(80) NOT NULL DEFAULT '',
-        number VARCHAR(20) NOT NULL,
-        cvv VARCHAR(4) NOT NULL,
-        exp VARCHAR(5) NOT NULL,
-        design VARCHAR(16) NOT NULL DEFAULT 'classic',
-        locked TINYINT NOT NULL DEFAULT 0,
-        cancelled TINYINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_holder (citizenid),
-        INDEX idx_account (account_id)
-    )]])
-    MySQL.query([[CREATE TABLE IF NOT EXISTS bank_transactions (
-        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        account_ref VARCHAR(32) NOT NULL,
-        actor VARCHAR(50) NOT NULL,
-        actor_name VARCHAR(80) NOT NULL DEFAULT '',
-        type ENUM('deposit','withdraw','transfer_in','transfer_out','fee') NOT NULL,
-        amount BIGINT NOT NULL,
-        note VARCHAR(120) NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_ref (account_ref, id)
-    )]])
-    MySQL.query([[CREATE TABLE IF NOT EXISTS bank_personal_iban (
-        citizenid VARCHAR(50) NOT NULL PRIMARY KEY,
-        iban VARCHAR(24) NOT NULL UNIQUE
-    )]])
-end)
+local L = PFLedger
 
 -- ── helpers ──────────────────────────────────────────────────────────
 local function getPlayer(src)
@@ -148,20 +98,14 @@ local function perm(p, key)
     return p and (p.isOwner or (tonumber(p[key]) or 0) == 1) or false
 end
 
--- credit a target player's bank balance whether they are online or not; returns success
-local function creditPlayerBank(citizenid, amount, reason)
-    local Target = QBCore.Functions.GetPlayerByCitizenId(citizenid)
-    if Target then
-        Target.Functions.AddMoney('bank', amount, reason)
-        return true
-    end
-    local Offline = QBCore.Functions.GetOfflinePlayerByCitizenId and QBCore.Functions.GetOfflinePlayerByCitizenId(citizenid)
-    if Offline and Offline.Functions then
-        Offline.Functions.AddMoney('bank', amount, reason)
-        Offline.Functions.Save()
-        return true
-    end
-    return false
+local function personalRef(citizenid) return 'player:' .. citizenid .. ':bank' end
+local function accountRef(id) return 'acct:' .. id end
+
+-- Runs a money callback under the player's lock so a double-click cannot run it twice at once.
+local function locked(citizenid, cb, fn)
+    local status = L.WithLock('bank:' .. citizenid, fn)
+    if status == 'busy' then cb({ success = false, message = 'Please wait for your last transaction' })
+    elseif status == 'error' then cb({ success = false, message = 'Error' }) end
 end
 
 -- ── snapshot callback ────────────────────────────────────────────────
@@ -225,34 +169,48 @@ QBCore.Functions.CreateCallback('qb-banking:server:createAccount', function(sour
     local accType = data.type == 'business' and 'business' or (data.type == 'shared' and 'shared' or nil)
     if not accType then return cb({ success = false, message = 'Invalid account type' }) end
 
-    local owned = MySQL.scalar.await('SELECT COUNT(*) FROM bank_accounts_v2 WHERE owner = ?', { citizenid }) or 0
-    if owned >= (Config.MaxOwnedAccounts or 3) then
-        return cb({ success = false, message = ('You already own the maximum of %d accounts'):format(Config.MaxOwnedAccounts or 3) })
-    end
+    locked(citizenid, cb, function()
+        local owned = MySQL.scalar.await('SELECT COUNT(*) FROM bank_accounts_v2 WHERE owner = ?', { citizenid }) or 0
+        if owned >= (Config.MaxOwnedAccounts or 3) then
+            return cb({ success = false, message = ('You already own the maximum of %d accounts'):format(Config.MaxOwnedAccounts or 3) })
+        end
 
-    local fee = Config.AccountCreationFee or 500
-    if Player.PlayerData.money.bank < fee then
-        return cb({ success = false, message = ('You need $%d in your bank for the creation fee'):format(fee) })
-    end
+        local iban = generateIban()
+        if not iban then return cb({ success = false, message = 'Could not allocate an account number, try again' }) end
 
-    local iban = generateIban()
-    if not iban then return cb({ success = false, message = 'Could not allocate an account number, try again' }) end
+        local fee = tonumber(Config.AccountCreationFee or 500) or 0
+        local feeTx
+        if fee > 0 then
+            feeTx = L.Transfer({
+                from = personalRef(citizenid), to = 'system:bank_fees', amount = fee,
+                key = L.AutoKey('acctfee'), kind = 'fee', reason = 'Account creation fee', actor = citizenid,
+            })
+            if not feeTx.ok then
+                local msg = feeTx.error == 'insufficient_funds' and ('You need $%d in your bank for the creation fee'):format(fee) or L.Message(feeTx.error)
+                return cb({ success = false, message = msg })
+            end
+        end
 
-    if not Player.Functions.RemoveMoney('bank', fee, 'account-creation-fee') then
-        return cb({ success = false, message = 'Could not charge the creation fee' })
-    end
-
-    local accountId = MySQL.insert.await('INSERT INTO bank_accounts_v2 (iban, label, type, owner) VALUES (?, ?, ?, ?)', { iban, label, accType, citizenid })
-    if not accountId then
-        Player.Functions.AddMoney('bank', fee, 'account-creation-refund')
-        return cb({ success = false, message = 'Error creating the account' })
-    end
-    MySQL.insert('INSERT INTO bank_account_members (account_id, citizenid, name, can_withdraw, can_deposit, can_cards, can_manage) VALUES (?, ?, ?, 1, 1, 1, 1)', {
-        accountId, citizenid, playerName(Player),
-    })
-    logTx('personal:' .. citizenid, citizenid, playerName(Player), 'fee', fee, 'Account creation fee (' .. label .. ')')
-    TriggerEvent('qb-log:server:CreateLog', 'banking', 'Account Created', 'green', ('**%s** opened %s account **%s** (%s)'):format(GetPlayerName(source), accType, label, iban))
-    cb({ success = true, message = ('Account "%s" created — %s'):format(label, iban), accountId = accountId, iban = iban })
+        local accountId = MySQL.insert.await('INSERT INTO bank_accounts_v2 (iban, label, type, owner) VALUES (?, ?, ?, ?)', { iban, label, accType, citizenid })
+        if not accountId then
+            if feeTx then
+                L.Transfer({
+                    from = 'system:bank_fees', to = personalRef(citizenid), amount = fee,
+                    key = 'refund:' .. feeTx.txId, kind = 'refund', reason = 'Account creation refund', actor = citizenid,
+                })
+            end
+            return cb({ success = false, message = 'Error creating the account' })
+        end
+        MySQL.insert.await(L.SQL.ensureBaseline, { accountRef(accountId), 0 })
+        MySQL.insert('INSERT INTO bank_account_members (account_id, citizenid, name, can_withdraw, can_deposit, can_cards, can_manage) VALUES (?, ?, ?, 1, 1, 1, 1)', {
+            accountId, citizenid, playerName(Player),
+        })
+        if fee > 0 then
+            logTx('personal:' .. citizenid, citizenid, playerName(Player), 'fee', fee, 'Account creation fee (' .. label .. ')')
+        end
+        TriggerEvent('qb-log:server:CreateLog', 'banking', 'Account Created', 'green', ('**%s** opened %s account **%s** (%s)'):format(GetPlayerName(source), accType, label, iban))
+        cb({ success = true, message = ('Account "%s" created — %s'):format(label, iban), accountId = accountId, iban = iban })
+    end)
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:accountRename', function(source, cb, data)
@@ -285,10 +243,11 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountDelete', function(sour
     data = data or {}
     local account, perms = getAccountAccess(data.accountId, citizenid)
     if not account or not perms or not perms.isOwner then return cb({ success = false, message = 'Only the owner can close an account' }) end
-    if (tonumber(account.balance) or 0) ~= 0 then return cb({ success = false, message = 'The account must be empty first' }) end
+    -- the balance check is part of the DELETE, so a deposit landing in between cannot be destroyed
+    local deleted = MySQL.update.await('DELETE FROM bank_accounts_v2 WHERE id = ? AND balance = 0', { account.id })
+    if not deleted or deleted < 1 then return cb({ success = false, message = 'The account must be empty first' }) end
     MySQL.update.await('UPDATE bank_account_cards SET cancelled = 1 WHERE account_id = ?', { account.id })
     MySQL.update.await('DELETE FROM bank_account_members WHERE account_id = ?', { account.id })
-    MySQL.update.await('DELETE FROM bank_accounts_v2 WHERE id = ?', { account.id })
     TriggerEvent('qb-log:server:CreateLog', 'banking', 'Account Closed', 'red', ('**%s** closed account **%s** (%s)'):format(GetPlayerName(source), account.label, account.iban))
     cb({ success = true, message = 'Account closed' })
 end)
@@ -302,19 +261,20 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountDeposit', function(sou
     if not amount then return cb({ success = false, message = 'Invalid amount' }) end
     local account, perms = getAccountAccess(data.accountId, citizenid)
     if not account or not perm(perms, 'can_deposit') then return cb({ success = false, message = 'No permission' }) end
-    if Player.PlayerData.money.bank < amount then return cb({ success = false, message = 'Insufficient bank balance' }) end
-    if not Player.Functions.RemoveMoney('bank', amount, 'account-deposit:' .. account.iban) then
-        return cb({ success = false, message = 'Insufficient bank balance' })
-    end
-    local updated = MySQL.update.await('UPDATE bank_accounts_v2 SET balance = balance + ? WHERE id = ?', { amount, account.id })
-    if not updated or updated < 1 then
-        Player.Functions.AddMoney('bank', amount, 'account-deposit-refund')
-        return cb({ success = false, message = 'Error — deposit refunded' })
-    end
-    local name = playerName(Player)
-    logTx('personal:' .. citizenid, citizenid, name, 'withdraw', amount, 'Deposit to ' .. account.label)
-    logTx('acc:' .. account.id, citizenid, name, 'deposit', amount, 'Deposit')
-    cb({ success = true, message = ('Deposited $%s into %s'):format(amount, account.label) })
+    locked(citizenid, cb, function()
+        local res = L.Transfer({
+            from = personalRef(citizenid), to = accountRef(account.id), amount = amount,
+            key = L.AutoKey('acctdep'), kind = 'deposit', reason = 'Deposit to ' .. account.iban, actor = citizenid,
+        })
+        if not res.ok then
+            local msg = res.error == 'insufficient_funds' and 'Insufficient bank balance' or L.Message(res.error)
+            return cb({ success = false, message = msg })
+        end
+        local name = playerName(Player)
+        logTx('personal:' .. citizenid, citizenid, name, 'withdraw', amount, 'Deposit to ' .. account.label)
+        logTx('acc:' .. account.id, citizenid, name, 'deposit', amount, 'Deposit')
+        cb({ success = true, message = ('Deposited $%s into %s'):format(amount, account.label), txId = res.txId })
+    end)
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:accountWithdraw', function(source, cb, data)
@@ -325,13 +285,20 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountWithdraw', function(so
     if not amount then return cb({ success = false, message = 'Invalid amount' }) end
     local account, perms = getAccountAccess(data.accountId, citizenid)
     if not account or not perm(perms, 'can_withdraw') then return cb({ success = false, message = 'No permission' }) end
-    local updated = MySQL.update.await('UPDATE bank_accounts_v2 SET balance = balance - ? WHERE id = ? AND balance >= ?', { amount, account.id, amount })
-    if not updated or updated < 1 then return cb({ success = false, message = 'Insufficient account balance' }) end
-    Player.Functions.AddMoney('bank', amount, 'account-withdraw:' .. account.iban)
-    local name = playerName(Player)
-    logTx('acc:' .. account.id, citizenid, name, 'withdraw', amount, 'Withdrawal')
-    logTx('personal:' .. citizenid, citizenid, name, 'deposit', amount, 'Withdrawal from ' .. account.label)
-    cb({ success = true, message = ('Withdrew $%s from %s'):format(amount, account.label) })
+    locked(citizenid, cb, function()
+        local res = L.Transfer({
+            from = accountRef(account.id), to = personalRef(citizenid), amount = amount,
+            key = L.AutoKey('acctwd'), kind = 'withdraw', reason = 'Withdrawal from ' .. account.iban, actor = citizenid,
+        })
+        if not res.ok then
+            local msg = res.error == 'insufficient_funds' and 'Insufficient account balance' or L.Message(res.error)
+            return cb({ success = false, message = msg })
+        end
+        local name = playerName(Player)
+        logTx('acc:' .. account.id, citizenid, name, 'withdraw', amount, 'Withdrawal')
+        logTx('personal:' .. citizenid, citizenid, name, 'deposit', amount, 'Withdrawal from ' .. account.label)
+        cb({ success = true, message = ('Withdrew $%s from %s'):format(amount, account.label), txId = res.txId })
+    end)
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:accountTransfer', function(source, cb, data)
@@ -353,55 +320,59 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountTransfer', function(so
         if not destCitizen then return cb({ success = false, message = 'No account found for that IBAN' }) end
     end
 
-    -- debit source
+    -- resolve and authorise the source (no money moved yet)
     local fromRef = data.fromRef
-    local sourceRefStr, sourceLabel
+    local fromLedger, sourceRefStr, sourceLabel
     if fromRef == 'personal' then
         if destCitizen == citizenid then return cb({ success = false, message = 'That is your own account' }) end
-        if Player.PlayerData.money.bank < amount then return cb({ success = false, message = 'Insufficient bank balance' }) end
-        if not Player.Functions.RemoveMoney('bank', amount, 'bank-transfer:' .. toIban) then
-            return cb({ success = false, message = 'Insufficient bank balance' })
-        end
+        fromLedger = personalRef(citizenid)
         sourceRefStr = 'personal:' .. citizenid
         sourceLabel = name
     else
         local account, perms = getAccountAccess(fromRef, citizenid)
         if not account or not perm(perms, 'can_withdraw') then return cb({ success = false, message = 'No permission' }) end
         if destAccount and destAccount.id == account.id then return cb({ success = false, message = 'That is the same account' }) end
-        local updated = MySQL.update.await('UPDATE bank_accounts_v2 SET balance = balance - ? WHERE id = ? AND balance >= ?', { amount, account.id, amount })
-        if not updated or updated < 1 then return cb({ success = false, message = 'Insufficient account balance' }) end
+        fromLedger = accountRef(account.id)
         sourceRefStr = 'acc:' .. account.id
         sourceLabel = account.label
     end
 
-    -- credit destination
-    local destRefStr, destLabel
+    local toLedger, destRefStr, destLabel
     if destAccount then
-        MySQL.update.await('UPDATE bank_accounts_v2 SET balance = balance + ? WHERE id = ?', { amount, destAccount.id })
+        toLedger = accountRef(destAccount.id)
         destRefStr = 'acc:' .. destAccount.id
         destLabel = destAccount.label
     else
-        if not creditPlayerBank(destCitizen, amount, 'bank-transfer-in') then
-            -- refund the source
-            if fromRef == 'personal' then
-                Player.Functions.AddMoney('bank', amount, 'transfer-refund')
-            else
-                MySQL.update.await('UPDATE bank_accounts_v2 SET balance = balance + ? WHERE id = ?', { amount, tonumber(fromRef) })
-            end
-            return cb({ success = false, message = 'Recipient could not be credited — transfer refunded' })
-        end
+        toLedger = personalRef(destCitizen)
         destRefStr = 'personal:' .. destCitizen
         destLabel = toIban
-        local Target = QBCore.Functions.GetPlayerByCitizenId(destCitizen)
-        if Target and Target.PlayerData.source then
-            TriggerClientEvent('QBCore:Notify', Target.PlayerData.source, ('You received a transfer of $%s'):format(amount), 'success')
-        end
     end
 
-    logTx(sourceRefStr, citizenid, name, 'transfer_out', amount, note or ('To ' .. toIban))
-    logTx(destRefStr, citizenid, name, 'transfer_in', amount, note or ('From ' .. sourceLabel))
-    TriggerEvent('qb-log:server:CreateLog', 'banking', 'Transfer', 'green', ('**%s** transferred $%s from %s to %s'):format(GetPlayerName(source), amount, sourceLabel, destLabel))
-    cb({ success = true, message = ('Transferred $%s to %s'):format(amount, toIban) })
+    locked(citizenid, cb, function()
+        -- one ledger transfer: the recipient may be offline; if they cannot be credited the source is refunded
+        local res = L.Transfer({
+            from = fromLedger, to = toLedger, amount = amount,
+            key = L.AutoKey('ibantx'), kind = 'transfer', reason = 'Transfer to ' .. toIban, actor = citizenid,
+            metadata = note and { note = note } or nil,
+        })
+        if not res.ok then
+            local msg
+            if res.state == 'compensated' then msg = 'Recipient could not be credited — transfer refunded'
+            elseif res.error == 'insufficient_funds' then msg = fromRef == 'personal' and 'Insufficient bank balance' or 'Insufficient account balance'
+            else msg = L.Message(res.error) end
+            return cb({ success = false, message = msg })
+        end
+        if destCitizen then
+            local Target = QBCore.Functions.GetPlayerByCitizenId(destCitizen)
+            if Target and Target.PlayerData.source then
+                TriggerClientEvent('QBCore:Notify', Target.PlayerData.source, ('You received a transfer of $%s'):format(amount), 'success')
+            end
+        end
+        logTx(sourceRefStr, citizenid, name, 'transfer_out', amount, note or ('To ' .. toIban))
+        logTx(destRefStr, citizenid, name, 'transfer_in', amount, note or ('From ' .. sourceLabel))
+        TriggerEvent('qb-log:server:CreateLog', 'banking', 'Transfer', 'green', ('**%s** transferred $%s from %s to %s'):format(GetPlayerName(source), amount, sourceLabel, destLabel))
+        cb({ success = true, message = ('Transferred $%s to %s'):format(amount, toIban), txId = res.txId })
+    end)
 end)
 
 -- ── members & permissions ────────────────────────────────────────────

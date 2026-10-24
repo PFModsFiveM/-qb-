@@ -405,6 +405,48 @@ function QBCore.Functions.CreateVehicle(source, model, vehtype, coords, warp)
     return veh
 end
 
+--- Pays one wage through the pfm-banking ledger. A funded job pays from its society account
+--- (refused when the account cannot cover it); an unfunded job (balance 0) is paid by the state,
+--- as before. The idempotency key covers one pay window, so a restart or a duplicate timer
+--- cannot pay the same wage twice.
+function PayPaycheck(Player, payment)
+    local src = Player.PlayerData.source
+    local citizenid = Player.PlayerData.citizenid
+    local jobName = Player.PlayerData.job.name
+    local window = math.floor(os.time() / math.max(60, (QBCore.Config.Money.PayCheckTimeOut or 10) * 60))
+    local key = ('paycheck:%s:%d'):format(citizenid, window)
+
+    if GetResourceState('pfm-banking') ~= 'started' then
+        if QBCore.Config.Money.PayCheckSociety then return end -- cannot charge the employer: fail closed
+        if Player.Functions.AddMoney('bank', payment, 'paycheck') then
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('info.received_paycheck', { value = payment }))
+        end
+        return
+    end
+
+    local from = 'system:paycheck'
+    if QBCore.Config.Money.PayCheckSociety and (tonumber(exports['pfm-banking']:GetAccountBalance(jobName)) or 0) ~= 0 then
+        from = 'society:' .. jobName
+    end
+    local res = exports['pfm-banking']:Transfer({
+        from = from,
+        to = 'player:' .. citizenid .. ':bank',
+        amount = payment,
+        key = key,
+        kind = 'wage',
+        reason = 'Employee Paycheck',
+        actor = citizenid,
+        metadata = { job = jobName },
+    })
+    if res and res.ok then
+        if not res.duplicate then
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('info.received_paycheck', { value = payment }))
+        end
+    elseif res and res.error == 'insufficient_funds' then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.company_too_poor'), 'error')
+    end
+end
+
 function PaycheckInterval()
     if not next(QBCore.Players) then
         SetTimeout(QBCore.Config.Money.PayCheckTimeOut * (60 * 1000), PaycheckInterval) -- Prevent paychecks from stopping forever once 0 players
@@ -418,24 +460,7 @@ function PaycheckInterval()
                 local payment = gradeData and gradeData.payment
                 if not payment then payment = Player.PlayerData.job.payment end
                 if Player.PlayerData.job and payment > 0 and (QBCore.Shared.Jobs[Player.PlayerData.job.name].offDutyPay or Player.PlayerData.job.onduty) then
-                    if QBCore.Config.Money.PayCheckSociety then
-                        local account = exports['pfm-banking']:GetAccountBalance(Player.PlayerData.job.name)
-                        if account ~= 0 then
-                            if account < payment then
-                                TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('error.company_too_poor'), 'error')
-                            else
-                                Player.Functions.AddMoney('bank', payment, 'paycheck')
-                                exports['pfm-banking']:RemoveMoney(Player.PlayerData.job.name, payment, 'Employee Paycheck')
-                                TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('info.received_paycheck', { value = payment }))
-                            end
-                        else
-                            Player.Functions.AddMoney('bank', payment, 'paycheck')
-                            TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('info.received_paycheck', { value = payment }))
-                        end
-                    else
-                        Player.Functions.AddMoney('bank', payment, 'paycheck')
-                        TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('info.received_paycheck', { value = payment }))
-                    end
+                    PayPaycheck(Player, payment)
                 end
                 Wait(50)
             end

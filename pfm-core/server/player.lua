@@ -184,11 +184,20 @@ function Player:GetRep(rep)
     return self.PlayerData.metadata['rep'][rep] or 0
 end
 
+-- Money amounts must be real, finite, non-negative numbers: NaN passes `< 0` checks and would
+-- otherwise corrupt a balance permanently.
+local function validMoneyAmount(amount)
+    amount = tonumber(amount)
+    if not amount or amount ~= amount or amount == math.huge or amount < 0 then return nil end
+    return amount
+end
+
 function Player:AddMoney(moneytype, amount, reason)
     reason    = reason or 'unknown'
+    if type(moneytype) ~= 'string' then return false end
     moneytype = moneytype:lower()
-    amount    = tonumber(amount)
-    if not amount or amount < 0 then return end
+    amount    = validMoneyAmount(amount)
+    if not amount then return false end
     if not self.PlayerData.money[moneytype] then return false end
     self.PlayerData.money[moneytype] = self.PlayerData.money[moneytype] + amount
     if not self.Offline then
@@ -210,9 +219,10 @@ end
 
 function Player:RemoveMoney(moneytype, amount, reason)
     reason    = reason or 'unknown'
+    if type(moneytype) ~= 'string' then return false end
     moneytype = moneytype:lower()
-    amount    = tonumber(amount)
-    if not amount or amount < 0 then return end
+    amount    = validMoneyAmount(amount)
+    if not amount then return false end
     if not self.PlayerData.money[moneytype] then return false end
     for _, mtype in pairs(QBCore.Config.Money.DontAllowMinus) do
         if mtype == moneytype and (self.PlayerData.money[moneytype] - amount) < 0 then
@@ -243,9 +253,10 @@ end
 
 function Player:SetMoney(moneytype, amount, reason)
     reason    = reason or 'unknown'
+    if type(moneytype) ~= 'string' then return false end
     moneytype = moneytype:lower()
-    amount    = tonumber(amount)
-    if not amount or amount < 0 then return false end
+    amount    = validMoneyAmount(amount)
+    if not amount then return false end
     if not self.PlayerData.money[moneytype] then return false end
     local difference = amount - self.PlayerData.money[moneytype]
     self.PlayerData.money[moneytype] = amount

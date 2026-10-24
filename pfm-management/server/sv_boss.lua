@@ -183,8 +183,9 @@ QBCore.Functions.CreateCallback('qb-bossmenu:getplayers', function(source, cb)
 	cb(players)
 end)
 
--- [PF compat] pf-mechanicjob ([jobsystem]) triggers this to deposit society money.
-RegisterNetEvent('qb-bossmenu:server:addMoney', function(society, amount)
+-- [PF compat] pf-mechanicjob triggers this server-side (TriggerEvent) to deposit society money.
+-- Server-local on purpose: as a net event any client could mint money into any society.
+AddEventHandler('qb-bossmenu:server:addMoney', function(society, amount)
     if type(society) ~= 'string' or type(amount) ~= 'number' or amount <= 0 then return end
     exports['pfm-banking']:AddMoney(society, amount, 'society-deposit')
 end)

@@ -1,6 +1,52 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions', 'Commands', 'Shared' })
 local Accounts = {}
 local Statements = {}
+BankingAccounts = Accounts -- shared with server_ledger.lua, which refreshes balances after each transfer
+
+-- Whether a player may move money out of a society/shared account: the boss of that exact job or
+-- gang, or the owner/listed user of a shared account.
+local function canUseAccount(Player, account)
+    if not Player or not account then return false end
+    local pd = Player.PlayerData
+    if account.account_type == 'job' then
+        return pd.job ~= nil and pd.job.name == account.account_name and pd.job.isboss == true
+    elseif account.account_type == 'gang' then
+        return pd.gang ~= nil and pd.gang.name == account.account_name and pd.gang.isboss == true
+    elseif account.account_type == 'shared' then
+        if account.citizenid == pd.citizenid then return true end
+        local ok, users = pcall(json.decode, account.users or '[]')
+        if ok and type(users) == 'table' then
+            for _, cid in ipairs(users) do
+                if cid == pd.citizenid then return true end
+            end
+        end
+    end
+    return false
+end
+
+-- Records a statement line for a society/shared account (history shown in the bank UI).
+local function appendAccountStatement(accountName, amount, reason, statementType)
+    reason = tostring(reason or ''):sub(1, 50)
+    if not Statements[accountName] then Statements[accountName] = {} end
+    Statements[accountName][#Statements[accountName] + 1] = {
+        amount = amount, reason = reason, date = os.time() * 1000, statement_type = statementType,
+    }
+    MySQL.insert('INSERT INTO bank_statements (account_name, amount, reason, statement_type) VALUES (?, ?, ?, ?)', { accountName, amount, reason, statementType })
+end
+
+-- Maps a ledger result to the message shown in the bank UI.
+local function ledgerError(res)
+    if res and res.error == 'insufficient_funds' then return Lang:t('error.money') end
+    if res and res.error == 'unknown_account' then return Lang:t('error.account') end
+    return Lang:t('error.error')
+end
+
+local function bankTransfer(src, citizenid, from, to, amount, kind, reason)
+    return PFLedger.Transfer({
+        from = from, to = to, amount = amount, kind = kind, reason = reason,
+        key = PFLedger.AutoKey('bank:' .. tostring(src)), actor = citizenid,
+    })
+end
 
 -- Functions
 
@@ -39,29 +85,34 @@ local function CreatePlayerAccount(playerId, accountName, accountBalance, accoun
     }
 
     local insertSuccess = MySQL.insert.await('INSERT INTO bank_accounts (citizenid, account_name, account_balance, account_type, users) VALUES (?, ?, ?, ?, ?)', { citizenid, accountName, accountBalance, 'shared', accountUsers })
+    if insertSuccess then
+        pcall(MySQL.insert.await, 'INSERT IGNORE INTO pf_ledger_baselines (account, balance) VALUES (?, ?)', { 'society:' .. accountName, tonumber(accountBalance) or 0 })
+    end
     return insertSuccess
 end
 exports('CreatePlayerAccount', CreatePlayerAccount)
 
-local function CreateJobAccount(accountName, accountBalance)
-    Accounts[accountName] = {
-        account_name = accountName,
-        account_balance = accountBalance,
-        account_type = 'job'
-    }
-    local insertSuccess = MySQL.insert.await('INSERT INTO bank_accounts (account_name, account_balance, account_type) VALUES (?, ?, ?)', { accountName, accountBalance, 'job' })
+-- Creates a society account. A starting balance is money entering the economy, so it is recorded as
+-- the account's reconciliation baseline.
+local function createSocietyAccount(accountName, accountBalance, accountType)
+    if type(accountName) ~= 'string' or accountName == '' or Accounts[accountName] then return false end
+    accountBalance = tonumber(accountBalance) or 0
+    if accountBalance ~= accountBalance or accountBalance < 0 then accountBalance = 0 end
+    local insertSuccess = MySQL.insert.await('INSERT IGNORE INTO bank_accounts (account_name, account_balance, account_type) VALUES (?, ?, ?)', { accountName, accountBalance, accountType })
+    if insertSuccess then
+        pcall(MySQL.insert.await, 'INSERT IGNORE INTO pf_ledger_baselines (account, balance) VALUES (?, ?)', { 'society:' .. accountName, accountBalance })
+        Accounts[accountName] = { account_name = accountName, account_balance = accountBalance, account_type = accountType }
+    end
     return insertSuccess
+end
+
+local function CreateJobAccount(accountName, accountBalance)
+    return createSocietyAccount(accountName, accountBalance, 'job')
 end
 exports('CreateJobAccount', CreateJobAccount)
 
 local function CreateGangAccount(accountName, accountBalance)
-    Accounts[accountName] = {
-        account_name = accountName,
-        account_balance = accountBalance,
-        account_type = 'gang'
-    }
-    local insertSuccess = MySQL.insert.await('INSERT INTO bank_accounts (account_name, account_balance, account_type) VALUES (?, ?, ?)', { accountName, accountBalance, 'gang' })
-    return insertSuccess
+    return createSocietyAccount(accountName, accountBalance, 'gang')
 end
 exports('CreateGangAccount', CreateGangAccount)
 
@@ -92,46 +143,42 @@ local function CreateBankStatement(playerId, account, amount, reason, statementT
 end
 exports('CreateBankStatement', CreateBankStatement)
 
-local function AddMoney(accountName, amount, reason)
-    if not reason then reason = 'External Deposit' end
-    local newStatement = {
+--- Adds money to a society account from outside the economy (NPC payments, fines, sales).
+--- Goes through the ledger: validated amount, unknown accounts refused (known jobs/gangs are
+--- created on demand), recorded with a transaction id. Pass `key` to make retries safe.
+--- @return boolean ok, table result { ok, txId, state, error, duplicate }
+local function AddMoney(accountName, amount, reason, key)
+    if type(accountName) ~= 'string' then return false, { ok = false, error = 'invalid_account' } end
+    reason = reason or 'External Deposit'
+    local res = PFLedger.Transfer({
+        from = 'system:' .. (GetInvokingResource() or GetCurrentResourceName()),
+        to = 'society:' .. accountName,
         amount = amount,
+        key = key or PFLedger.AutoKey('deposit'),
+        kind = 'deposit',
         reason = reason,
-        date = os.time() * 1000,
-        statement_type = 'deposit'
-    }
-    if Accounts[accountName] then
-        local accountToUpdate = Accounts[accountName]
-        accountToUpdate.account_balance = accountToUpdate.account_balance + amount
-        if not Statements[accountName] then Statements[accountName] = {} end
-        Statements[accountName][#Statements[accountName] + 1] = newStatement
-        MySQL.insert.await('INSERT INTO bank_statements (account_name, amount, reason, statement_type) VALUES (?, ?, ?, ?)', { accountName, amount, reason, 'deposit' })
-        local updateSuccess = MySQL.update.await('UPDATE bank_accounts SET account_balance = account_balance + ? WHERE account_name = ?', { amount, accountName })
-        return updateSuccess
-    end
-    return false
+    })
+    if res.ok and not res.duplicate then appendAccountStatement(accountName, PFLedger.Amount(amount), reason, 'deposit') end
+    return res.ok, res
 end
 exports('AddMoney', AddMoney)
 exports('AddGangMoney', AddMoney)
 
-local function RemoveMoney(accountName, amount, reason)
-    if not reason then reason = 'External Withdrawal' end
-    local newStatement = {
+--- Removes money from a society account to outside the economy. Refuses to overdraw.
+--- @return boolean ok, table result
+local function RemoveMoney(accountName, amount, reason, key)
+    if type(accountName) ~= 'string' then return false, { ok = false, error = 'invalid_account' } end
+    reason = reason or 'External Withdrawal'
+    local res = PFLedger.Transfer({
+        from = 'society:' .. accountName,
+        to = 'system:' .. (GetInvokingResource() or GetCurrentResourceName()),
         amount = amount,
+        key = key or PFLedger.AutoKey('withdraw'),
+        kind = 'withdraw',
         reason = reason,
-        date = os.time() * 1000,
-        statement_type = 'withdraw'
-    }
-    if Accounts[accountName] then
-        local accountToUpdate = Accounts[accountName]
-        accountToUpdate.account_balance = accountToUpdate.account_balance - amount
-        if not Statements[accountName] then Statements[accountName] = {} end
-        Statements[accountName][#Statements[accountName] + 1] = newStatement
-        MySQL.insert.await('INSERT INTO bank_statements (account_name, amount, reason, statement_type) VALUES (?, ?, ?, ?)', { accountName, amount, reason, 'withdraw' })
-        local updateSuccess = MySQL.update.await('UPDATE bank_accounts SET account_balance = account_balance - ? WHERE account_name = ?', { amount, accountName })
-        return updateSuccess
-    end
-    return false
+    })
+    if res.ok and not res.duplicate then appendAccountStatement(accountName, PFLedger.Amount(amount), reason, 'withdraw') end
+    return res.ok, res
 end
 exports('RemoveMoney', RemoveMoney)
 exports('RemoveGangMoney', RemoveMoney)
@@ -212,127 +259,126 @@ QBCore.Functions.CreateCallback('qb-banking:server:withdraw', function(source, c
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
     local accountName = data.accountName
-    local withdrawAmount = tonumber(data.amount)
-    local reason = (data.reason ~= '' and data.reason) or 'Bank Withdrawal'
+    local withdrawAmount = PFLedger.Amount(data.amount)
+    if not withdrawAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
+    local reason = (type(data.reason) == 'string' and data.reason ~= '' and data.reason:sub(1, 50)) or 'Bank Withdrawal'
     if accountName == 'checking' then
-        local accountBalance = Player.PlayerData.money.bank
-        if accountBalance < withdrawAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        Player.RemoveMoney('bank', withdrawAmount, 'bank withdrawal')
-        Player.AddMoney('cash', withdrawAmount, 'bank withdrawal')
-        if not CreateBankStatement(src, 'checking', withdrawAmount, reason, 'withdraw', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.withdraw') })
+        local res = bankTransfer(src, citizenid, 'player:' .. citizenid .. ':bank', 'player:' .. citizenid .. ':cash', withdrawAmount, 'withdraw', reason)
+        if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+        CreateBankStatement(src, 'checking', withdrawAmount, reason, 'withdraw', 'player')
+        return cb({ success = true, message = Lang:t('success.withdraw') })
     end
-    if Accounts[accountName] then
-        local job = Player.PlayerData.job
-        local gang = Player.PlayerData.gang
-        if Accounts[accountName].account_type == 'job' and job.name ~= accountName and not job.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        if Accounts[accountName].account_type == 'gang' and gang.name ~= accountName and not gang.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        local accountBalance = GetAccountBalance(accountName)
-        if accountBalance < withdrawAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        if not RemoveMoney(accountName, withdrawAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        Player.AddMoney('cash', withdrawAmount, 'bank account: ' .. accountName .. ' withdrawal')
-        if not CreateBankStatement(src, accountName, withdrawAmount, reason, 'withdraw', Accounts[accountName].account_type) then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.withdraw') })
-    end
+    local account = Accounts[accountName]
+    if not account then return cb({ success = false, message = Lang:t('error.account') }) end
+    if not canUseAccount(Player, account) then return cb({ success = false, message = Lang:t('error.access') }) end
+    local res = bankTransfer(src, citizenid, 'society:' .. accountName, 'player:' .. citizenid .. ':cash', withdrawAmount, 'withdraw', reason)
+    if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+    appendAccountStatement(accountName, withdrawAmount, reason, 'withdraw')
+    cb({ success = true, message = Lang:t('success.withdraw') })
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:deposit', function(source, cb, data)
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
     local accountName = data.accountName
-    local depositAmount = tonumber(data.amount)
-    local reason = (data.reason ~= '' and data.reason) or 'Bank Deposit'
+    local depositAmount = PFLedger.Amount(data.amount)
+    if not depositAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
+    local reason = (type(data.reason) == 'string' and data.reason ~= '' and data.reason:sub(1, 50)) or 'Bank Deposit'
     if accountName == 'checking' then
-        local accountBalance = Player.PlayerData.money.cash
-        if accountBalance < depositAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        Player.RemoveMoney('cash', depositAmount, 'bank deposit')
-        Player.AddMoney('bank', depositAmount, 'bank deposit')
-        if not CreateBankStatement(src, 'checking', depositAmount, reason, 'deposit', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.deposit') })
+        local res = bankTransfer(src, citizenid, 'player:' .. citizenid .. ':cash', 'player:' .. citizenid .. ':bank', depositAmount, 'deposit', reason)
+        if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+        CreateBankStatement(src, 'checking', depositAmount, reason, 'deposit', 'player')
+        return cb({ success = true, message = Lang:t('success.deposit') })
     end
-    if Accounts[accountName] then
-        local job = Player.PlayerData.job
-        local gang = Player.PlayerData.gang
-        if Accounts[accountName].account_type == 'job' and job.name ~= accountName and not job.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        if Accounts[accountName].account_type == 'gang' and gang.name ~= accountName and not gang.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        if Player.PlayerData.money.cash < depositAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        Player.RemoveMoney('cash', depositAmount, 'bank account: ' .. accountName .. ' deposit')
-        if not AddMoney(accountName, depositAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.deposit') })
-    end
+    local account = Accounts[accountName]
+    if not account then return cb({ success = false, message = Lang:t('error.account') }) end
+    if not canUseAccount(Player, account) then return cb({ success = false, message = Lang:t('error.access') }) end
+    local res = bankTransfer(src, citizenid, 'player:' .. citizenid .. ':cash', 'society:' .. accountName, depositAmount, 'deposit', reason)
+    if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+    appendAccountStatement(accountName, depositAmount, reason, 'deposit')
+    cb({ success = true, message = Lang:t('success.deposit') })
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:internalTransfer', function(source, cb, data)
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
-    local job = Player.PlayerData.job
-    local gang = Player.PlayerData.gang
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
     local fromAccountName = data.fromAccountName
     local toAccountName = data.toAccountName
-    local transferAmount = tonumber(data.amount)
-    local reason = (data.reason ~= '' and data.reason) or 'Internal transfer'
+    local transferAmount = PFLedger.Amount(data.amount)
+    if not transferAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
+    local reason = (type(data.reason) == 'string' and data.reason ~= '' and data.reason:sub(1, 50)) or 'Internal transfer'
+    if fromAccountName == toAccountName then return cb({ success = false, message = Lang:t('error.error') }) end
+
+    local fromRef, toRef
     if fromAccountName == 'checking' then
-        if Player.PlayerData.money.bank < transferAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        Player.RemoveMoney('bank', transferAmount, reason)
-        if toAccountName == 'checking' then
-            Player.AddMoney('bank', transferAmount, reason)
-        else
-            if not AddMoney(toAccountName, transferAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        end
-        if not CreateBankStatement(src, 'checking', transferAmount, reason, 'withdraw', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.transfer') })
-    elseif toAccountName == 'checking' then
-        if Accounts[fromAccountName].account_type == 'job' and job.name ~= fromAccountName and not job.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        if Accounts[fromAccountName].account_type == 'gang' and gang.name ~= fromAccountName and not gang.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        local fromAccountBalance = GetAccountBalance(fromAccountName)
-        if fromAccountBalance < transferAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        if not RemoveMoney(fromAccountName, transferAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        Player.AddMoney('bank', transferAmount, reason)
-        if not CreateBankStatement(src, 'checking', transferAmount, reason, 'deposit', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.transfer') })
+        fromRef = 'player:' .. citizenid .. ':bank'
     else
-        if Accounts[fromAccountName].account_type == 'job' and job.name ~= fromAccountName and not job.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        if Accounts[fromAccountName].account_type == 'gang' and gang.name ~= fromAccountName and not gang.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        local fromAccountBalance = GetAccountBalance(fromAccountName)
-        if fromAccountBalance < transferAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        if not RemoveMoney(fromAccountName, transferAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        if not AddMoney(toAccountName, transferAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.transfer') })
+        local account = Accounts[fromAccountName]
+        if not account then return cb({ success = false, message = Lang:t('error.account') }) end
+        if not canUseAccount(Player, account) then return cb({ success = false, message = Lang:t('error.access') }) end
+        fromRef = 'society:' .. fromAccountName
     end
+    if toAccountName == 'checking' then
+        toRef = 'player:' .. citizenid .. ':bank'
+    else
+        if not Accounts[toAccountName] then return cb({ success = false, message = Lang:t('error.account') }) end
+        toRef = 'society:' .. toAccountName
+    end
+
+    local res = bankTransfer(src, citizenid, fromRef, toRef, transferAmount, 'transfer', reason)
+    if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+    if fromAccountName == 'checking' then
+        CreateBankStatement(src, 'checking', transferAmount, reason, 'withdraw', 'player')
+    else
+        appendAccountStatement(fromAccountName, transferAmount, reason, 'withdraw')
+    end
+    if toAccountName == 'checking' then
+        CreateBankStatement(src, 'checking', transferAmount, reason, 'deposit', 'player')
+    else
+        appendAccountStatement(toAccountName, transferAmount, reason, 'deposit')
+    end
+    cb({ success = true, message = Lang:t('success.transfer') })
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:externalTransfer', function(source, cb, data)
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
-    local job = Player.PlayerData.job
-    local gang = Player.PlayerData.gang
-    local toAccountName = data.toAccountNumber
-    local toPlayer = exports['pfm-core']:GetPlayerByCitizenId(toAccountName)
-    if not toPlayer then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' or type(data.toAccountNumber) ~= 'string' then return cb({ success = false, message = Lang:t('error.error') }) end
+    local toCitizenId = data.toAccountNumber
+    if toCitizenId == citizenid or not toCitizenId:match('^[%w]+$') then return cb({ success = false, message = Lang:t('error.error') }) end
     local fromAccountName = data.fromAccountName
-    local transferAmount = tonumber(data.amount)
-    local reason = (data.reason ~= '' and data.reason) or 'External transfer'
+    local transferAmount = PFLedger.Amount(data.amount)
+    if not transferAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
+    local reason = (type(data.reason) == 'string' and data.reason ~= '' and data.reason:sub(1, 50)) or 'External transfer'
+
+    local fromRef
     if fromAccountName == 'checking' then
-        if Player.PlayerData.money.bank < transferAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        Player.RemoveMoney('bank', transferAmount, reason)
-        toPlayer.AddMoney('bank', transferAmount, reason)
-        if not CreateBankStatement(src, 'checking', transferAmount, reason, 'withdraw', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        if not CreateBankStatement(toPlayer.PlayerData.source, 'checking', transferAmount, reason, 'deposit', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.transfer') })
+        fromRef = 'player:' .. citizenid .. ':bank'
     else
-        if Accounts[fromAccountName].account_type == 'job' and job.name ~= fromAccountName and not job.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        if Accounts[fromAccountName].account_type == 'gang' and gang.name ~= fromAccountName and not gang.isboss then return cb({ success = false, message = Lang:t('error.access') }) end
-        local fromAccountBalance = GetAccountBalance(fromAccountName)
-        if fromAccountBalance < transferAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-        if not RemoveMoney(fromAccountName, transferAmount) then return cb({ success = false, message = Lang:t('error.error') }) end
-        toPlayer.AddMoney('bank', transferAmount, reason)
-        if not CreateBankStatement(toPlayer.PlayerData.source, 'checking', transferAmount, reason, 'deposit', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
-        cb({ success = true, message = Lang:t('success.transfer') })
+        local account = Accounts[fromAccountName]
+        if not account then return cb({ success = false, message = Lang:t('error.account') }) end
+        if not canUseAccount(Player, account) then return cb({ success = false, message = Lang:t('error.access') }) end
+        fromRef = 'society:' .. fromAccountName
     end
+
+    -- the recipient may be offline: the ledger credits offline players atomically
+    local res = bankTransfer(src, citizenid, fromRef, 'player:' .. toCitizenId .. ':bank', transferAmount, 'transfer', reason)
+    if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+    if fromAccountName == 'checking' then
+        CreateBankStatement(src, 'checking', transferAmount, reason, 'withdraw', 'player')
+    else
+        appendAccountStatement(fromAccountName, transferAmount, reason, 'withdraw')
+    end
+    local toPlayer = exports['pfm-core']:GetPlayerByCitizenId(toCitizenId)
+    if toPlayer then CreateBankStatement(toPlayer.PlayerData.source, 'checking', transferAmount, reason, 'deposit', 'player') end
+    cb({ success = true, message = Lang:t('success.transfer') })
 end)
 
 QBCore.Functions.CreateCallback('qb-banking:server:orderCard', function(source, cb, data)
@@ -356,14 +402,28 @@ QBCore.Functions.CreateCallback('qb-banking:server:openAccount', function(source
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
     local accountName = data.accountName
-    local initialAmount = tonumber(data.amount)
+    if type(accountName) ~= 'string' or not accountName:match('^[%w_%-]+$') or #accountName > 50 or accountName == 'checking' then
+        return cb({ success = false, message = Lang:t('error.error') })
+    end
+    if Accounts[accountName] then return cb({ success = false, message = Lang:t('error.error') }) end
+    local initialAmount = 0
+    if data.amount ~= nil and data.amount ~= '' and tonumber(data.amount) ~= 0 then
+        initialAmount = PFLedger.Amount(data.amount)
+        if not initialAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
+    end
     if GetNumberOfAccounts(citizenid) >= Config.maxAccounts then return cb({ success = false, message = Lang:t('error.accounts') }) end
     if Player.PlayerData.money.bank < initialAmount then return cb({ success = false, message = Lang:t('error.money') }) end
-    Player.RemoveMoney('bank', initialAmount, 'Opened account ' .. accountName)
-    if not CreatePlayerAccount(src, accountName, initialAmount, json.encode({})) then return cb({ success = false, message = Lang:t('error.error') }) end
-    if not CreateBankStatement(src, accountName, initialAmount, 'Initial deposit', 'deposit', 'shared') then return cb({ success = false, message = Lang:t('error.error') }) end
-    if not CreateBankStatement(src, 'checking', initialAmount, 'Initial deposit for ' .. accountName, 'withdraw', 'player') then return cb({ success = false, message = Lang:t('error.error') }) end
+    -- the account opens empty; the initial deposit is a normal ledger transfer
+    if not CreatePlayerAccount(src, accountName, 0, json.encode({})) then return cb({ success = false, message = Lang:t('error.error') }) end
+    pcall(MySQL.insert.await, 'INSERT IGNORE INTO pf_ledger_baselines (account, balance) VALUES (?, 0)', { 'society:' .. accountName })
+    if initialAmount > 0 then
+        local res = bankTransfer(src, citizenid, 'player:' .. citizenid .. ':bank', 'society:' .. accountName, initialAmount, 'deposit', 'Initial deposit')
+        if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+        CreateBankStatement(src, accountName, initialAmount, 'Initial deposit', 'deposit', 'shared')
+        CreateBankStatement(src, 'checking', initialAmount, 'Initial deposit for ' .. accountName, 'withdraw', 'player')
+    end
     TriggerEvent('qb-log:server:CreateLog', 'banking', 'Account Opened', 'green', string.format('**%s** opened account **%s** with an initial deposit of **$%s**', GetPlayerName(src), accountName, initialAmount))
     cb({ success = true, message = Lang:t('success.account') })
 end)
@@ -372,15 +432,21 @@ QBCore.Functions.CreateCallback('qb-banking:server:renameAccount', function(sour
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
     local oldName = data.oldName
     local newName = data.newName
+    if type(newName) ~= 'string' or not newName:match('^[%w_%-]+$') or #newName > 50 or newName == 'checking' then return cb({ success = false, message = Lang:t('error.error') }) end
     if not Accounts[oldName] then return cb({ success = false, message = Lang:t('error.error') }) end
+    if Accounts[newName] then return cb({ success = false, message = Lang:t('error.error') }) end
     if Accounts[oldName].citizenid ~= citizenid then return cb({ success = false, message = Lang:t('error.access') }) end
+    local result = MySQL.update.await('UPDATE bank_accounts SET account_name = ? WHERE account_name = ? AND citizenid = ?', { newName, oldName, citizenid })
+    if not result or result < 1 then return cb({ success = false, message = Lang:t('error.error') }) end
     Accounts[newName] = Accounts[oldName]
     Accounts[newName].account_name = newName
     Accounts[oldName] = nil
-    local result = MySQL.update.await('UPDATE bank_accounts SET account_name = ? WHERE account_name = ? AND citizenid = ?', { newName, oldName, citizenid })
-    if not result then return cb({ success = false, message = Lang:t('error.error') }) end
+    -- ledger history stays under the old name; reconciliation restarts from the current balance
+    pcall(MySQL.query.await, 'DELETE FROM pf_ledger_baselines WHERE account = ?', { 'society:' .. oldName })
+    pcall(MySQL.insert.await, 'REPLACE INTO pf_ledger_baselines (account, balance) SELECT CONCAT(\'society:\', account_name), account_balance FROM bank_accounts WHERE account_name = ?', { newName })
     TriggerEvent('qb-log:server:CreateLog', 'banking', 'Account Renamed', 'red', string.format('**%s** renamed **%s** to **%s**', GetPlayerName(src), oldName, newName))
     cb({ success = true, message = Lang:t('success.rename') })
 end)
@@ -389,12 +455,21 @@ QBCore.Functions.CreateCallback('qb-banking:server:deleteAccount', function(sour
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
     local accountName = data.accountName
     if not Accounts[accountName] then return cb({ success = false, message = Lang:t('error.error') }) end
     if Accounts[accountName].citizenid ~= citizenid then return cb({ success = false, message = Lang:t('error.access') }) end
-    Accounts[accountName] = nil
-    local result = MySQL.rawExecute.await('DELETE FROM bank_accounts WHERE account_name = ? AND citizenid = ?', { accountName, citizenid })
+    -- closing an account pays any remaining balance back to the owner instead of destroying it
+    local remaining = tonumber(GetAccountBalance(accountName)) or 0
+    if remaining > 0 then
+        local res = bankTransfer(src, citizenid, 'society:' .. accountName, 'player:' .. citizenid .. ':bank', remaining, 'close_account', 'Account closed: ' .. accountName)
+        if not res.ok then return cb({ success = false, message = ledgerError(res) }) end
+        CreateBankStatement(src, 'checking', remaining, 'Closed ' .. accountName, 'deposit', 'player')
+    end
+    local result = MySQL.rawExecute.await('DELETE FROM bank_accounts WHERE account_name = ? AND citizenid = ? AND account_balance = 0', { accountName, citizenid })
     if not result then return cb({ success = false, message = Lang:t('error.error') }) end
+    Accounts[accountName] = nil
+    pcall(MySQL.query.await, 'DELETE FROM pf_ledger_baselines WHERE account = ?', { 'society:' .. accountName })
     TriggerEvent('qb-log:server:CreateLog', 'banking', 'Account Deleted', 'red', string.format('**%s** deleted account **%s**', GetPlayerName(src), accountName))
     cb({ success = true, message = Lang:t('success.delete') })
 end)
@@ -461,6 +536,8 @@ end)
 -- Threads
 
 CreateThread(function()
+    -- the ledger migration widens bank_accounts and creates the baseline table first
+    while not PFLedger.ready and not PFLedger.failed do Wait(100) end
     local accounts = MySQL.query.await('SELECT * FROM bank_accounts')
 
     for _, account in ipairs(accounts) do
@@ -500,13 +577,12 @@ QBCore.Commands.Add('givecash', 'Give Cash', { { name = 'id', help = 'Player ID'
     if not target then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.noUser'), 'error') end
     local targetPed = GetPlayerPed(tonumber(args[1]))
     local targetCoords = GetEntityCoords(targetPed)
-    local amount = tonumber(args[2])
+    local amount = PFLedger.Amount(args[2])
     if not amount then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.amount'), 'error') end
-    if amount <= 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.amount'), 'error') end
+    if target.PlayerData.source == src then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.noUser'), 'error') end
     if #(playerCoords - targetCoords) > 5 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.toofar'), 'error') end
-    if Player.PlayerData.money.cash < amount then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.money'), 'error') end
-    Player.RemoveMoney('cash', amount, 'cash transfer')
-    target.AddMoney('cash', amount, 'cash transfer')
+    local res = bankTransfer(src, Player.PlayerData.citizenid, 'player:' .. Player.PlayerData.citizenid .. ':cash', 'player:' .. target.PlayerData.citizenid .. ':cash', amount, 'cash_transfer', 'cash transfer')
+    if not res.ok then return TriggerClientEvent('QBCore:Notify', src, ledgerError(res), 'error') end
     TriggerClientEvent('QBCore:Notify', src, string.format(Lang:t('success.give'), amount), 'success')
     TriggerClientEvent('QBCore:Notify', target.PlayerData.source, string.format(Lang:t('success.receive'), amount), 'success')
 end)
