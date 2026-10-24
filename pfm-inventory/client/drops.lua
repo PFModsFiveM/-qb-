@@ -75,6 +75,7 @@ RegisterNetEvent('qb-inventory:client:setupDropTarget', function(dropId)
                         Config.ItemDropObjectOffset[2].z,
                         true, true, false, true, 1, true
                     )
+                    TriggerServerEvent('qb-inventory:server:holdDrop', newDropId)
                     bagObject = bag
                     HoldingDrop = true
                     heldDrop = newDropId

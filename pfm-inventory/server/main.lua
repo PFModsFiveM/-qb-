@@ -14,6 +14,31 @@ Events = {
     ShopOpened = { hooks = {}, listeners = {} },
 }
 
+--- JSON round-trips turn sparse slot tables into string keys ("5") or re-index them. Rebuilds the
+--- table keyed by each item's own slot number; an item whose slot collides goes to a free slot.
+function NormalizeSlots(items)
+    local out, leftovers = {}, {}
+    if type(items) ~= 'table' then return out end
+    for key, item in pairs(items) do
+        if type(item) == 'table' and type(item.name) == 'string' then
+            local slot = tonumber(item.slot) or tonumber(key)
+            if slot and out[slot] == nil then
+                item.slot = slot
+                out[slot] = item
+            else
+                leftovers[#leftovers + 1] = item
+            end
+        end
+    end
+    local nextSlot = 1
+    for _, item in ipairs(leftovers) do
+        while out[nextSlot] do nextSlot = nextSlot + 1 end
+        item.slot = nextSlot
+        out[nextSlot] = item
+    end
+    return out
+end
+
 CreateThread(function()
     MySQL.query('SELECT * FROM inventories', {}, function(result)
         if result and #result > 0 then
@@ -21,7 +46,7 @@ CreateThread(function()
                 local inventory = result[i]
                 local cacheKey = inventory.identifier
                 Inventories[cacheKey] = {
-                    items = json.decode(inventory.items) or {},
+                    items = NormalizeSlots(json.decode(inventory.items) or {}),
                     isOpen = false
                 }
             end
@@ -43,6 +68,11 @@ CreateThread(function()
     end
 end)
 
+-- Players may pick a drop bag up and carry it. The server records who holds which bag, so a
+-- drop can only be re-positioned by the player carrying it, to where that player really is.
+DropHolders = {}
+local DROP_REACH = 3.0
+
 -- Handlers
 
 AddEventHandler('playerDropped', function()
@@ -58,6 +88,9 @@ AddEventHandler('playerDropped', function()
         end
     end
     InventoryViewers[src] = nil
+    for dropId, holder in pairs(DropHolders or {}) do
+        if holder == src then DropHolders[dropId] = nil end
+    end
     for targetId, viewer in pairs(InventoryViewers) do
         if viewer == src then
             InventoryViewers[targetId] = nil
@@ -213,19 +246,24 @@ RegisterNetEvent('qb-inventory:server:openVending', function(data)
     OpenShop(src, 'vending')
 end)
 
+-- Only the player who has a container open can close it. (Any client could close any drop, stash
+-- or searched player before, so another player could open a container someone else was using.)
 RegisterNetEvent('qb-inventory:server:closeInventory', function(inventory)
     local src = source
     local QBPlayer = QBCore.Functions.GetPlayer(src)
     if not QBPlayer then return end
     Player(source).state.inv_busy = false
+    if type(inventory) ~= 'string' then return end
     if inventory:find('shop%-') then return end
     if inventory:find('^otherplayer%-') then
         local targetId = tonumber(inventory:match('^otherplayer%-(.+)'))
+        if not targetId or InventoryViewers[targetId] ~= src then return end
         InventoryViewers[targetId] = nil
         Player(targetId).state.inv_busy = false
         return
     end
     if Drops[inventory] then
+        if Drops[inventory].isOpen ~= src then return end
         Drops[inventory].isOpen = false
         if #Drops[inventory].items == 0 and not Drops[inventory].isOpen then -- if no listeed items in the drop on close
             TriggerClientEvent('qb-inventory:client:removeDropTarget', -1, Drops[inventory].entityId)
@@ -236,14 +274,15 @@ RegisterNetEvent('qb-inventory:server:closeInventory', function(inventory)
         end
         return
     end
-    if not Inventories[inventory] then return end
+    if not Inventories[inventory] or Inventories[inventory].isOpen ~= src then return end
     Inventories[inventory].isOpen = false
     SaveInventoryItems(inventory)
 end)
 
 RegisterNetEvent('qb-inventory:server:useItem', function(item)
     local src = source
-    local itemData = GetItemBySlot(src, item.slot)
+    if type(item) ~= 'table' then return end
+    local itemData = GetItemBySlot(src, tonumber(item.slot))
     if not itemData then return end
     local itemInfo = QBCore.Shared.Items[itemData.name]
     if itemData.type == 'weapon' then
@@ -314,9 +353,11 @@ RegisterNetEvent('qb-inventory:server:openDrop', function(dropId)
     if not Player then return end
     local playerPed = GetPlayerPed(src)
     local playerCoords = GetEntityCoords(playerPed)
+    if type(dropId) ~= 'string' then return end
     local drop = Drops[dropId]
     if not drop then return end
     if drop.isOpen then return end
+    if DropHolders[dropId] then return end -- being carried: its stored position is stale
     local distance = #(playerCoords - drop.coords)
     if distance > 2.5 then return end
     local formattedInventory = {
@@ -324,17 +365,38 @@ RegisterNetEvent('qb-inventory:server:openDrop', function(dropId)
         label = dropId,
         maxweight = drop.maxweight,
         slots = drop.slots,
-        inventory = drop.items
+        inventory = ItemsForClient(dropId, drop.items)
     }
     drop.isOpen = src
-    TriggerClientEvent('qb-inventory:client:openInventory', source, Player.PlayerData.items, formattedInventory)
+    TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(src, Player.PlayerData.items, Player), formattedInventory)
 end)
 
-RegisterNetEvent('qb-inventory:server:updateDrop', function(dropId, coords)
-    Drops[dropId].coords = coords
-    local entity = NetworkGetEntityFromNetworkId(Drops[dropId].entityId)
+-- (DropHolders and DROP_REACH are declared near the top of this file.)
+
+RegisterNetEvent('qb-inventory:server:holdDrop', function(dropId)
+    local src = source
+    local drop = type(dropId) == 'string' and Drops[dropId]
+    if not drop then return end
+    if DropHolders[dropId] and DropHolders[dropId] ~= src then return end
+    if drop.isOpen then return end -- someone is looking inside it
+    for id, holder in pairs(DropHolders) do
+        if holder == src and id ~= dropId then return end -- one bag at a time
+    end
+    local playerCoords = GetEntityCoords(GetPlayerPed(src))
+    if #(playerCoords - drop.coords) > DROP_REACH then return end
+    DropHolders[dropId] = src
+end)
+
+RegisterNetEvent('qb-inventory:server:updateDrop', function(dropId)
+    local src = source
+    local drop = type(dropId) == 'string' and Drops[dropId]
+    if not drop or DropHolders[dropId] ~= src then return end
+    DropHolders[dropId] = nil
+    -- the client's coordinates are ignored: the bag lands where the server sees the carrier
+    drop.coords = GetEntityCoords(GetPlayerPed(src))
+    local entity = NetworkGetEntityFromNetworkId(drop.entityId)
     if DoesEntityExist(entity) then
-        SetEntityRoutingBucket(entity, GetPlayerRoutingBucket(source))
+        SetEntityRoutingBucket(entity, GetPlayerRoutingBucket(src))
     end
 end)
 
@@ -365,18 +427,53 @@ QBCore.Functions.CreateCallback('qb-inventory:server:createDrop', function(sourc
         cb(false)
         return
     end
+    if type(item) ~= 'table' then cb(false) return end
+    local fromSlot = tonumber(item.fromSlot)
+    local amount = tonumber(item.amount)
+    if not fromSlot or not amount or amount ~= amount or amount < 1 then cb(false) return end
+    amount = math.floor(amount)
+
+    -- The dropped item is rebuilt from the server's own copy. The client only chooses the slot
+    -- and amount; its name, info, weight and label are never trusted.
+    local serverItem
+    for _, invItem in pairs(Player.PlayerData.items) do
+        if type(invItem) == 'table' and invItem.slot == fromSlot then serverItem = invItem break end
+    end
+    if not serverItem or serverItem.amount < amount then cb(false) return end
+
     local playerPed = GetPlayerPed(src)
     local playerCoords = GetEntityCoords(playerPed)
-    local hookData = buildHookData('ItemDropped', src, Player, playerCoords, item.fromSlot, item.amount)
+    local hookData = buildHookData('ItemDropped', src, Player, playerCoords, fromSlot, amount)
     if not hookData.item then cb(false) return end
     if TriggerHook('ItemDropped', hookData.item.type, hookData) == false then cb(false) return end
-    if RemoveItem(src, item.name, item.amount, item.fromSlot, 'dropped item') then
+
+    local droppedInfo = PFFreshness.CopyInfo(type(serverItem.info) == 'table' and serverItem.info or {})
+    item = {
+        name = serverItem.name,
+        label = serverItem.label,
+        amount = amount,
+        info = droppedInfo,
+        weight = serverItem.weight,
+        type = serverItem.type,
+        unique = serverItem.unique,
+        useable = serverItem.useable,
+        image = serverItem.image,
+        shouldClose = serverItem.shouldClose,
+        combinable = serverItem.combinable,
+        description = serverItem.description,
+        slot = 1,
+    }
+
+    if RemoveItem(src, item.name, amount, fromSlot, 'dropped item') then
         if item.type == 'weapon' then checkWeapon(src, item) end
         TaskPlayAnim(playerPed, 'pickup_object', 'pickup_low', 8.0, -8.0, 2000, 0, 0, false, false, false)
         local bag = CreateObjectNoOffset(Config.ItemDropObject, playerCoords.x + 0.5, playerCoords.y + 0.5, playerCoords.z, true, true, false)
         SetEntityRoutingBucket(bag, GetPlayerRoutingBucket(src))
         local dropId = NetworkGetNetworkIdFromEntity(bag)
         local newDropId = 'drop-' .. dropId
+        if PFFreshness.IsPerishable(item.name) then
+            item.info = PFFreshness.Prepare(item.name, item.info, PFFreshness.StorageFor(newDropId), PFFreshness.now())
+        end
         local itemsTable = setmetatable({ item }, {
             __len = function(t)
                 local length = 0
@@ -400,7 +497,13 @@ QBCore.Functions.CreateCallback('qb-inventory:server:createDrop', function(sourc
             }
             TriggerClientEvent('qb-inventory:client:setupDropTarget', -1, dropId)
         else
-            table.insert(Drops[newDropId].items, item)
+            -- a reused network id: put the item in the first free slot of that drop
+            local used = {}
+            for _, existing in pairs(Drops[newDropId].items) do used[existing.slot] = true end
+            local slot = 1
+            while used[slot] do slot = slot + 1 end
+            item.slot = slot
+            Drops[newDropId].items[slot] = item
         end
         RefreshInventorySnapshot(hookData, 'sourceInventory', src)
         TriggerListener('ItemDropped', hookData.item.type, hookData)
@@ -488,12 +591,14 @@ end
 -- [PF custom] end ----------------------------------------------------------
 
 QBCore.Functions.CreateCallback('qb-inventory:server:attemptPurchase', function(source, cb, data)
+    if type(data) ~= 'table' or type(data.item) ~= 'table' or type(data.shop) ~= 'string' then cb(false) return end
     local itemInfo = data.item
     local amount = tonumber(data.amount) or 0
     local shop = string.gsub(data.shop, 'shop%-', '')
     local Player = QBCore.Functions.GetPlayer(source)
 
-    if amount < 1 then cb(false) return end
+    if amount ~= amount or amount < 1 then cb(false) return end
+    amount = math.floor(amount)
 
     if not Player then
         cb(false)
@@ -516,10 +621,15 @@ QBCore.Functions.CreateCallback('qb-inventory:server:attemptPurchase', function(
         end
     end
 
-    if shopInfo.items[itemInfo.slot].name ~= itemInfo.name then -- Check if item name passed is the same as the item in that slot
+    local shopSlot = tonumber(itemInfo.slot)
+    local shopItem = shopSlot and shopInfo.items[shopSlot]
+    if not shopItem or shopItem.name ~= itemInfo.name then -- Check if item name passed is the same as the item in that slot
         cb(false)
         return
     end
+    -- From here on only the shop's own server-side record is used; the client's item table
+    -- (including its info) is never trusted.
+    itemInfo = { name = shopItem.name, slot = shopSlot, info = shopItem.info }
 
     if amount > shopInfo.items[itemInfo.slot].amount or shopInfo.items[itemInfo.slot].amount <= 0 then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('notify.notenoughstock'), 'error')
@@ -721,6 +831,26 @@ local function getIdentifier(inventoryId, src)
     end
 end
 
+-- Two stacks merge only when the result keeps every item's state: same item, neither unique,
+-- and (for perishables) the same batch at matching freshness.
+local function canMerge(fromItem, toItem)
+    if fromItem.name ~= toItem.name then return false end
+    if fromItem.unique or toItem.unique then return false end
+    local shared = QBCore.Shared.Items[fromItem.name:lower()]
+    if shared and shared.unique then return false end
+    return PFFreshness.CanStack(fromItem.name, fromItem.info, toItem.info, PFFreshness.now())
+end
+
+-- Puts items back after a move step failed part-way, preferring their original slot.
+local function restoreItem(identifier, name, amount, slot, info)
+    if AddItem(identifier, name, amount, slot, info, 'move rollback', true) then return true end
+    if AddItem(identifier, name, amount, nil, info, 'move rollback', true) then return true end
+    print(('[pfm-inventory] CRITICAL: could not restore %dx %s to %s after a failed move'):format(amount, name, tostring(identifier)))
+    TriggerEvent('qb-log:server:CreateLog', 'playerinventory', 'Move rollback failed', 'red',
+        ('**Inventory:** %s\n**Item:** %s\n**Amount:** %d'):format(tostring(identifier), name, amount))
+    return false
+end
+
 RegisterNetEvent('qb-inventory:server:SetInventoryData', function(fromInventory, toInventory, fromSlot, toSlot, fromAmount, toAmount)
     if type(fromInventory) ~= 'string' or type(toInventory) ~= 'string' then return end
     if toInventory:find('shop%-') then return end
@@ -730,7 +860,18 @@ RegisterNetEvent('qb-inventory:server:SetInventoryData', function(fromInventory,
 
     fromSlot, toSlot, fromAmount, toAmount = tonumber(fromSlot), tonumber(toSlot), tonumber(fromAmount), tonumber(toAmount)
     if not fromSlot or not toSlot or not fromAmount or not toAmount or fromAmount < 0 or toAmount < 0 then return end
+    -- whole numbers only (NaN and fractions used to pass these checks)
+    if toAmount ~= math.floor(toAmount) or fromAmount ~= math.floor(fromAmount) or toAmount < 1 then return end
+    if fromSlot ~= math.floor(fromSlot) or toSlot ~= math.floor(toSlot) then return end
     if not isOpenFor(fromInventory, src) or not isOpenFor(toInventory, src) then return end
+    -- an open drop can only be used from beside it
+    for _, inv in ipairs({ fromInventory, toInventory }) do
+        local drop = inv:find('^drop%-') and Drops[inv]
+        if drop then
+            if DropHolders[inv] then return end
+            if #(GetEntityCoords(GetPlayerPed(src)) - drop.coords) > DROP_REACH + 1.0 then return end
+        end
+    end
 
     local fromItem = getItem(fromInventory, src, fromSlot)
     local toItem = getItem(toInventory, src, toSlot)
@@ -744,47 +885,69 @@ RegisterNetEvent('qb-inventory:server:SetInventoryData', function(fromInventory,
 
         local hookData = buildHookData('ItemMoved', fromInventory, toInventory, fromId, toId, fromSlot, toSlot, toAmount, Player)
         local moveType, succeeded
+        local function resync()
+            TriggerClientEvent('qb-inventory:client:updateInventory', src, fromInventory, toInventory, hookData.fromInventory?.items, hookData.toInventory?.items, fromSlot)
+        end
 
-        if toItem and fromItem.name == toItem.name then
+        -- Every step removes before it adds; whenever an add fails, the removed items are put back.
+        local fromName, fromInfo = fromItem.name, PFFreshness.CopyInfo(fromItem.info)
+
+        if toItem and canMerge(fromItem, toItem) then
             moveType = 'stacked'
-            if TriggerHook('ItemMoved', moveType, hookData) == false then TriggerClientEvent('qb-inventory:client:updateInventory', src, fromInventory, toInventory, hookData.fromInventory?.items, hookData.toInventory?.items, fromSlot) return end
+            if TriggerHook('ItemMoved', moveType, hookData) == false then resync() return end
 
-            if RemoveItem(fromId, fromItem.name, toAmount, fromSlot, 'stacked item', true) then
-                succeeded = AddItem(toId, toItem.name, toAmount, toSlot, toItem.info, 'stacked item', true)
+            if RemoveItem(fromId, fromName, toAmount, fromSlot, 'stacked item', true) then
+                succeeded = AddItem(toId, fromName, toAmount, toSlot, fromInfo, 'stacked item', true)
+                if not succeeded then restoreItem(fromId, fromName, toAmount, fromSlot, fromInfo) end
             end
         elseif not toItem and toAmount < fromAmount then
             moveType = 'split'
-            if TriggerHook('ItemMoved', moveType, hookData) == false then TriggerClientEvent('qb-inventory:client:updateInventory', src, fromInventory, toInventory, hookData.fromInventory?.items, hookData.toInventory?.items, fromSlot) return end
+            if TriggerHook('ItemMoved', moveType, hookData) == false then resync() return end
 
-            if RemoveItem(fromId, fromItem.name, toAmount, fromSlot, 'split item', true) then
-                succeeded = AddItem(toId, fromItem.name, toAmount, toSlot, fromItem.info, 'split item', true)
+            if RemoveItem(fromId, fromName, toAmount, fromSlot, 'split item', true) then
+                succeeded = AddItem(toId, fromName, toAmount, toSlot, fromInfo, 'split item', true)
+                if not succeeded then restoreItem(fromId, fromName, toAmount, fromSlot, fromInfo) end
             end
         else
             if toItem then
                 moveType = 'swapped'
                 local fromItemAmount = fromItem.amount
                 local toItemAmount = toItem.amount
-                if TriggerHook('ItemMoved', moveType, hookData) == false then TriggerClientEvent('qb-inventory:client:updateInventory', src, fromInventory, toInventory, hookData.fromInventory?.items, hookData.toInventory?.items, fromSlot) return end
+                local toName, toInfo = toItem.name, PFFreshness.CopyInfo(toItem.info)
+                if TriggerHook('ItemMoved', moveType, hookData) == false then resync() return end
 
-                if RemoveItem(fromId, fromItem.name, fromItemAmount, fromSlot, 'swapped item', true) and RemoveItem(toId, toItem.name, toItemAmount, toSlot, 'swapped item', true) then
-                    local fromAdded = AddItem(toId, fromItem.name, fromItemAmount, toSlot, fromItem.info, 'swapped item', true)
-                    local toAdded = AddItem(fromId, toItem.name, toItemAmount, fromSlot, toItem.info, 'swapped item', true)
+                local removedFrom = RemoveItem(fromId, fromName, fromItemAmount, fromSlot, 'swapped item', true)
+                local removedTo = removedFrom and RemoveItem(toId, toName, toItemAmount, toSlot, 'swapped item', true)
+                if removedFrom and removedTo then
+                    local fromAdded = AddItem(toId, fromName, fromItemAmount, toSlot, fromInfo, 'swapped item', true)
+                    local toAdded = AddItem(fromId, toName, toItemAmount, fromSlot, toInfo, 'swapped item', true)
                     succeeded = fromAdded and toAdded
+                    if not succeeded then
+                        if fromAdded then RemoveItem(toId, fromName, fromItemAmount, toSlot, 'swap rollback', true) end
+                        if toAdded then RemoveItem(fromId, toName, toItemAmount, fromSlot, 'swap rollback', true) end
+                        restoreItem(fromId, fromName, fromItemAmount, fromSlot, fromInfo)
+                        restoreItem(toId, toName, toItemAmount, toSlot, toInfo)
+                    end
+                elseif removedFrom then
+                    restoreItem(fromId, fromName, fromItemAmount, fromSlot, fromInfo)
                 end
             else
                 moveType = 'moved'
-                if TriggerHook('ItemMoved', moveType, hookData) == false then TriggerClientEvent('qb-inventory:client:updateInventory', src, fromInventory, toInventory, hookData.fromInventory?.items, hookData.toInventory?.items, fromSlot) return end
+                if TriggerHook('ItemMoved', moveType, hookData) == false then resync() return end
 
-                if RemoveItem(fromId, fromItem.name, toAmount, fromSlot, 'moved item', true) then
-                    succeeded = AddItem(toId, fromItem.name, toAmount, toSlot, fromItem.info, 'moved item', true)
+                if RemoveItem(fromId, fromName, toAmount, fromSlot, 'moved item', true) then
+                    succeeded = AddItem(toId, fromName, toAmount, toSlot, fromInfo, 'moved item', true)
+                    if not succeeded then restoreItem(fromId, fromName, toAmount, fromSlot, fromInfo) end
                 end
             end
         end
 
+        RefreshInventorySnapshot(hookData, 'fromInventory', fromId)
+        RefreshInventorySnapshot(hookData, 'toInventory', toId)
         if succeeded then
-            RefreshInventorySnapshot(hookData, 'fromInventory', fromId)
-            RefreshInventorySnapshot(hookData, 'toInventory', toId)
             TriggerListener('ItemMoved', moveType, hookData)
+        else
+            resync()
         end
     end
 end)

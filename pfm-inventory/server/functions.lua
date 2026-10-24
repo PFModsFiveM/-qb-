@@ -18,13 +18,66 @@ local function ResolveInventory(identifier, data)
     return inventory
 end
 
+-- Slots are looked up by each item's own `slot` field: inventories restored from JSON can be
+-- keyed by strings ("5") or sequential indexes, so the table key is not a reliable slot number.
+local function FindItemAtSlot(items, slot)
+    for key, item in pairs(items) do
+        if type(item) == 'table' and item.slot == slot then
+            return item, key
+        end
+    end
+    return nil, nil
+end
+
 local function GetFirstFreeSlot(items, maxSlots)
+    local occupied = {}
+    for key, item in pairs(items) do
+        if type(item) == 'table' then occupied[tonumber(item.slot) or tonumber(key) or -1] = true end
+    end
     for i = 1, maxSlots do
-        if items[i] == nil then
+        if not occupied[i] then
             return i
         end
     end
     return nil
+end
+
+-- First existing stack that an incoming item may merge into, honouring batch-aware freshness rules.
+local function FindStackSlot(items, itemName, info, now)
+    local best
+    for _, item in pairs(items) do
+        if type(item) == 'table' and item.name == itemName and not item.unique
+            and PFFreshness.CanStack(itemName, info, item.info, now)
+            and (not best or item.slot < best.slot) then
+            best = item
+        end
+    end
+    if best then return best.slot, best end
+    return nil, nil
+end
+
+--- Backfills freshness on legacy perishables (persisting the change) and returns copies of
+--- the items carrying display-only freshness for the client.
+--- @param identifier string|number The inventory the items belong to.
+--- @param items table The stored items table.
+--- @param player table|nil The owning player object, so backfilled player items are synced.
+function ItemsForClient(identifier, items, player)
+    if type(items) ~= 'table' then return items end
+    local now = PFFreshness.now()
+    if PFFreshness.EnsureItems(items, identifier, now) then
+        if player then
+            player.SetPlayerData('items', items)
+        elseif Inventories[identifier] then
+            SaveInventoryItems(identifier)
+        end
+    end
+    return PFFreshness.DecorateForClient(items, now)
+end
+
+local function ValidAmount(amount)
+    amount = tonumber(amount)
+    if not amount or amount ~= amount or amount == math.huge or amount < 1 then return nil end
+    return math.floor(amount)
 end
 
 local function SetupShopItems(shopItems)
@@ -550,7 +603,8 @@ function OpenInventoryById(source, targetId)
     Wait(1500)
     InventoryViewers[tonumber(targetId)] = source
     Player(targetId).state.inv_busy = true
-    TriggerClientEvent('qb-inventory:client:openInventory', source, playerItems, formattedInventory)
+    formattedInventory.inventory = ItemsForClient(tonumber(targetId), targetItems, TargetPlayer)
+    TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, playerItems, QBPlayer), formattedInventory)
     TriggerListener('InventoryOpened', 'player', hookData)
 end
 
@@ -567,6 +621,12 @@ function ClearStash(identifier)
 end
 
 exports('ClearStash', ClearStash)
+
+--- Writes a stash's current contents to the database now (stashes are otherwise saved when closed).
+--- Used by resources that fill a stash on the server, such as delivery pallets.
+exports('SaveStash', function(identifier)
+    if type(identifier) == 'string' and Inventories[identifier] then SaveInventoryItems(identifier) end
+end)
 
 --- @param shopData table The data of the shop to create.
 function CreateShop(shopData)
@@ -627,7 +687,7 @@ function OpenShop(source, name)
         slots = #RegisteredShops[name].items,
         inventory = RegisteredShops[name].items
     }
-    TriggerClientEvent('qb-inventory:client:openInventory', source, Player.PlayerData.items, formattedInventory)
+    TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, Player.PlayerData.items, Player), formattedInventory)
     TriggerListener('ShopOpened', GetInventoryType(name), hookData)
 end
 
@@ -645,7 +705,7 @@ function OpenInventory(source, identifier, data)
         local hookData = buildHookData('InventoryOpened', source, QBPlayer)
         if TriggerHook('InventoryOpened', nil, hookData) == false then return end
         Player(source).state.inv_busy = true
-        TriggerClientEvent('qb-inventory:client:openInventory', source, QBPlayer.PlayerData.items)
+        TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, QBPlayer.PlayerData.items, QBPlayer))
         TriggerListener('InventoryOpened', nil, hookData)
         return
     end
@@ -672,9 +732,9 @@ function OpenInventory(source, identifier, data)
         label = inventory.label,
         maxweight = inventory.maxweight,
         slots = inventory.slots,
-        inventory = inventory.items
+        inventory = ItemsForClient(identifier, inventory.items)
     }
-    TriggerClientEvent('qb-inventory:client:openInventory', source, QBPlayer.PlayerData.items, formattedInventory)
+    TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, QBPlayer.PlayerData.items, QBPlayer), formattedInventory)
     TriggerListener('InventoryOpened', GetInventoryType(identifier), hookData)
 end
 
@@ -719,6 +779,10 @@ exports('RemoveInventory', RemoveInventory)
 --- @param isInternalMove boolean (optional) Internal parameter suppresses the ItemAdded hook.
 --- @return boolean Returns true if the item was successfully added, false otherwise.
 function AddItem(identifier, item, amount, slot, info, reason, isInternalMove)
+    if type(item) ~= 'string' then
+        print('AddItem: Invalid item')
+        return false
+    end
     local itemInfo = QBCore.Shared.Items[item:lower()]
     if not itemInfo then
         print('AddItem: Invalid item')
@@ -731,20 +795,43 @@ function AddItem(identifier, item, amount, slot, info, reason, isInternalMove)
         return false
     end
 
+    if amount == nil then amount = 1 end
+    amount = ValidAmount(amount)
+    if not amount then
+        print('AddItem: Invalid amount')
+        return false
+    end
     local totalWeight = GetTotalWeight(inventory)
-    amount = tonumber(amount) or 1
     if totalWeight + (itemInfo.weight * amount) > inventoryWeight then
         print('AddItem: Not enough weight available')
         return false
     end
 
+    -- A private copy: callers must never share one info table between two stacks.
+    info = PFFreshness.CopyInfo(type(info) == 'table' and info or {})
+    local now = PFFreshness.now()
+    if PFFreshness.IsPerishable(item) then
+        info = PFFreshness.Prepare(item, info, PFFreshness.StorageFor(identifier), now)
+    end
+
+    slot = tonumber(slot)
+    local currentItem
+    if slot then
+        currentItem = FindItemAtSlot(inventory, slot)
+        if currentItem and (currentItem.name ~= item or itemInfo.unique or currentItem.unique
+            or not PFFreshness.CanStack(item, info, currentItem.info, now)) then
+            print(('AddItem: Slot %s holds an item this cannot stack with'):format(slot))
+            return false
+        end
+    elseif not itemInfo.unique then
+        slot, currentItem = FindStackSlot(inventory, item, info, now)
+    end
+
     -- pre-commit hook data
-    if not itemInfo.unique then slot = slot or GetFirstSlotByItem(inventory, item) end
-    local currentItem = slot and inventory[slot]
     local pendingItem = {
         name = item,
         amount = amount,
-        info = info or {},
+        info = info,
         label = itemInfo.label,
         description = itemInfo.description or '',
         weight = itemInfo.weight,
@@ -782,9 +869,12 @@ function AddItem(identifier, item, amount, slot, info, reason, isInternalMove)
             if currentItem then currentItem.info = mutatedInfo end
         end
     end
-    if currentItem and not currentItem.unique then
+    if currentItem then
+        if PFFreshness.IsPerishable(item) and type(currentItem.info) == 'table' and type(currentItem.info.fresh) == 'table'
+            and type(pendingItem.info) == 'table' and type(pendingItem.info.fresh) == 'table' then
+            PFFreshness.MergeInto(currentItem.info.fresh, pendingItem.info.fresh, now)
+        end
         currentItem.amount = currentItem.amount + amount
-        inventory[slot] = currentItem
     else
         inventory[slot] = pendingItem
     end
@@ -820,8 +910,14 @@ exports('AddItem', AddItem)
 --- @param isInternalMove boolean (optional) Internal parameter suppresses the ItemAdded hook.
 --- @return boolean - Returns true if the item was successfully removed, false otherwise.
 function RemoveItem(identifier, item, amount, slot, reason, isInternalMove)
-    if not QBCore.Shared.Items[item:lower()] then
+    if type(item) ~= 'string' or not QBCore.Shared.Items[item:lower()] then
         print('RemoveItem: Invalid item')
+        return false
+    end
+    if amount == nil then amount = 1 end
+    amount = ValidAmount(amount)
+    if not amount then
+        print('RemoveItem: Invalid amount')
         return false
     end
 
@@ -855,7 +951,6 @@ function RemoveItem(identifier, item, amount, slot, reason, isInternalMove)
         return false
     end
 
-    amount = tonumber(amount)
     if inventoryItem.amount < amount then
         print('RemoveItem: Not enough items in slot')
         return false
@@ -907,6 +1002,41 @@ function RemoveItem(identifier, item, amount, slot, reason, isInternalMove)
 end
 
 exports('RemoveItem', RemoveItem)
+
+-- ── Freshness API (server-to-server) ───────────────────────────────────────────
+
+--- Consumption effects of an item at its current freshness, or nil for non-perishables.
+--- @param itemName string
+--- @param info table|nil The item's stored info (a server copy).
+--- @return table|nil { state, label, pct, benefit, illness }
+function GetFreshness(itemName, info)
+    if not PFFreshness.IsPerishable(itemName) then return nil end
+    local fresh = type(info) == 'table' and info.fresh
+    if type(fresh) ~= 'table' then return PFFreshness.EffectsFor(100) end
+    return PFFreshness.EffectsFor(PFFreshness.Percent(fresh, PFFreshness.now()))
+end
+
+exports('GetFreshness', GetFreshness)
+exports('IsPerishable', function(itemName) return PFFreshness.IsPerishable(itemName) end)
+exports('RegisterPerishables', function(map) return PFFreshness.RegisterItems(map) end)
+
+--- Sets the storage condition of an inventory (a business fridge failing, a door left open...).
+--- Shelf life already used is settled at the old condition before the new one applies.
+--- Pass nil to return the inventory to its configured default.
+--- @param identifier string
+--- @param storage string|nil A key of Config.Freshness.Storage.
+--- @return boolean
+function SetStorageCondition(identifier, storage)
+    if type(identifier) ~= 'string' then return false end
+    if not PFFreshness.SetStorageOverride(identifier, storage) then return false end
+    local inventory = Inventories[identifier]
+    if inventory and PFFreshness.EnsureItems(inventory.items, identifier, PFFreshness.now()) and not inventory.isOpen then
+        SaveInventoryItems(identifier)
+    end
+    return true
+end
+
+exports('SetStorageCondition', SetStorageCondition)
 
 --- Registers a hook that can cancel the associated event by returning false.
 --- @param hookType 'ItemMoved'|'ItemDropped'|'ItemUsed'|'ItemBought'|'ItemAdded'|'ItemRemoved'|'InventoryOpened'|'ShopOpened' - The event type to hook into.
