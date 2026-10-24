@@ -1130,3 +1130,58 @@ All three resources now include `@pfm-banking/payouts.lua`. Every payment has a 
 **Duplicates to resolve before going live:**
 - pfm-ambulancejob ([qb]) and pf-ambulancejob ([pfscripts]) register the same `hospital:server:*` events. Started together, every bill and revive runs twice. Both are fixed, but only one should run.
 - The same applies to pfm-cityhall and pf-government civil services; pf-government already disables its civil services while pfm-cityhall runs.
+
+### Staging run without duplicate resources (2026-10-24)
+
+**Config:** `docs/staging/server.staging.cfg`.
+- **Order:** the live start order and settings: cfx defaults, oxmysql, pfm-core, `[qb]`, `[standalone]`, `[voice]`, ox_lib, `[pfscripts]`.
+- **Removed:**
+  - `pf-ambulancejob` ([pfscripts]); `pfm-ambulancejob` ([qb]) runs instead;
+  - `pfm-cityhall`;
+  - `pf-governmentwebsiteonly`;
+  - the `[jobsystem]` and `[custom]` copies.
+- **Not started:** `guard` (no such resource on disk), the map packs and `[scripts]` (map and editing tools).
+- **Setup:**
+  - fresh copies of both repos;
+  - a backdoor signature sweep first (clean);
+  - a throwaway MariaDB with 28 of 31 install SQL files loaded. The 3 failures are `pfm-inventory/migrate.sql` and `vehshop.sql` (known), and `pf-garageuionly` (an index another resource already created).
+- **Not touched:** the live `server.cfg`.
+- **License key:** copied into staging without being printed, and deleted afterwards.
+
+**Ambulance choice:**
+- `pfm-ambulancejob` has the security hardening: duty checks, bed ownership and limits on who may trigger revives. It also has CPR and a medal.
+- `pf-ambulancejob` has an injury system instead (damage detection, injury checks, treatments, its own SQL), with none of that hardening.
+- The injury features are lost until they are ported onto `pfm-ambulancejob`.
+
+**Run 1:** 99 resources started.
+
+| Problem | Cause | Fixed |
+|---|---|---|
+| illenium-appearance and qb-radio: "No such export GetCoreObject in resource pfm-core" | my staging config started `[standalone]` before pfm-core (the live order is right) | config order |
+| `pf-stores` "Unknown column 'unpacked_at'" | pf-trucking's start event made pf-stores recover contracts before its own migration ran | 2ad13de (+ real-DB test) |
+| `pf-elevator`: "attempt to call a nil value (SetEntityDynamic)" | client-only natives in the server script; the elevator never spawned | 60faa09 |
+
+**Run 2:** 99 resources started; every migration applied (pfm-banking v1–v5, pf-stores v1, pfm-worldobjects v1, pf-restaurants v1).
+- Started: pf-government (with civil services, since pfm-cityhall is gone), pf-policemdt-DEV, screenshot-basic, the elevator (entity spawned), pfm-ambulancejob and every other money resource changed in this batch.
+- Remaining failures:
+  - `ox_lib` is not on disk. As a result `pf-mechanicjob` does not start and `illenium-appearance` errors ("global 'lib'").
+  - `kq_wheeldamage`: "You lack the required entitlement". This is an escrowed asset licensed to the live server, so it is expected on staging.
+  - `pf-tabletuionly` and `pf-garageuionly` have no fxmanifest. They are UI-only folders and are skipped.
+
+**Overlaps still running side by side.** These were outside the requested list; found by the log and `docs/staging/event_collisions.py`:
+
+| Pair | Effect | Suggested |
+|---|---|---|
+| `pf-hud` + `pfm-hud` | both handle `hud:server:GainStress`/`RelieveStress`, so stress changes are applied **twice** | run only pf-hud (the active HUD), or remove pfm-hud's stress handlers |
+| `pf-scoreboard` + `pfm-scoreboard` | no shared server events; two scoreboards on the client | keep pf-scoreboard (pf-trucking, pf-tablet and pf-stores depend on it) |
+| `pf-mechanicjob` + `pfm-mechanicjob` | both start once ox_lib exists; pf-mechanicjob also handles `qb-garages:server:updateVehicleStats` beside pfm-garages | decide one mechanic job |
+| `pf-jobsystem` + `pf-jobs`/`pf-tablet` | no shared server events | check whether pf-jobsystem is still needed |
+
+`QBCore:ToggleDuty` in pf-jobs and pf-tablet only refreshes their screens, which is harmless.
+
+**Bug found, not fixed (gameplay, needs its own test):**
+- `pf-jobs/server/apps/gruppe6.lua` listens to `qb-inventory:server:SetInventoryData` as `(src, fromInv, toInv)`, but the inventory sends `(fromInventory, toInventory, fromSlot, ...)`.
+- Bags taken out of a Gruppe6 pickup stash are therefore never counted while `Config.Gruppe6.ServerSideStash = false` (the current setting).
+- Fix: read `fromInventory, toInventory` and use `source`.
+
+**Still not verified:** no game client connected to staging.
