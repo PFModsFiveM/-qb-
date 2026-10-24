@@ -14,6 +14,7 @@ client_script 'client/main.lua'
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    '@pfm-banking/payouts.lua',
     'server/main.lua'
 }
 

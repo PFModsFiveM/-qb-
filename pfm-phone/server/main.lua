@@ -9,7 +9,6 @@ local Adverts = {}
 local GeneratedPlates = {}
 local WebHook = ''
 local FivemerrApiToken = ''
-local bannedCharacters = { '%', '$', ';' }
 local TWData = {}
 
 -- Functions
@@ -47,6 +46,43 @@ end
 local function Round(value, numDecimalPlaces)
     local mult = 10 ^ (numDecimalPlaces or 0)
     return math.floor(value * mult + 0.5) / mult
+end
+
+-- Bank transfers between players go through the pfm-banking ledger (PFPayout, '@pfm-banking/payouts.lua'):
+-- one Transfer debits the sender and credits the receiver (online or offline) under one key, and is
+-- recovered if the server stops in between. RemoveMoney + AddMoney / a players.money rewrite could
+-- lose or create money, and overwrote an offline receiver's balance with a stale copy.
+
+--- Finds the player whose bank account number is exactly `iban` (letters and digits only; the old
+--- lookup used LIKE '%<iban>%', so a partial number matched some other player's account).
+local function FindAccountHolder(iban)
+    iban = tostring(iban or '')
+    if iban == '' or #iban > 32 or not iban:match('^%w+$') then return nil end
+    local result = MySQL.query.await('SELECT citizenid FROM players WHERE charinfo LIKE ?', { '%"account":"' .. iban .. '"%' })
+    if result and result[1] and not result[2] then return result[1].citizenid end
+    return nil
+end
+
+--- Moves `amount` from the source player's bank to the holder of `iban`. Returns ok, error.
+local function BankTransfer(src, iban, amount)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    amount = IsValidAmount(amount)
+    if not Player or not amount then return false, 'invalid' end
+    local cid = Player.PlayerData.citizenid
+    local receiver = FindAccountHolder(iban)
+    if not receiver then return false, 'no_account' end
+    if receiver == cid then return false, 'self' end
+    local res = PFPayout.Transfer({
+        from = ('player:%s:bank'):format(cid), to = ('player:%s:bank'):format(receiver), amount = amount,
+        key = ('pfm-phone:transfer:%s:%s'):format(cid, PFPayout.NewId()), kind = 'transfer',
+        reason = 'Phone bank transfer', actor = cid,
+    })
+    if not res.ok then return false, res.error end
+    local Receiver = QBCore.Functions.GetPlayerByCitizenId(receiver)
+    if Receiver and Receiver.Functions.GetItemByName('phone') then
+        TriggerClientEvent('qb-phone:client:TransferMoney', Receiver.PlayerData.source, amount, Receiver.PlayerData.money.bank)
+    end
+    return true
 end
 
 local function GetOnlineStatus(number)
@@ -317,42 +353,43 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetPhoneData', function(source,
     end
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, cb, society, amount, invoiceId, sendercitizenid)
+-- Paying a bill: the amount, the business and the biller come from the stored invoice. (They came
+-- from the client, so a bill could be paid with $1, to any business, with the commission sent to
+-- any player; the commission was also paid before the payment was checked.) Every step is keyed by
+-- the invoice id, so paying the same bill twice moves money once.
+QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, cb, _, _, invoiceId)
     local Ply = exports['pfm-core']:GetPlayer(source)
-    local SenderPly = QBCore.Functions.GetPlayerByCitizenId(sendercitizenid)
-    local invoiceMailData = nil
-    if Ply then
-        local exists = MySQL.query.await('select count(1) as count FROM phone_invoices WHERE id = ? and citizenid = ?', { invoiceId, Ply.PlayerData.citizenid })
+    invoiceId = tonumber(invoiceId)
+    if not Ply or not invoiceId then return cb(false) end
+    local cid = Ply.PlayerData.citizenid
+    local rows = MySQL.query.await('SELECT * FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
+    local invoice = rows and rows[1]
+    local amount = invoice and IsValidAmount(invoice.amount)
+    local society = invoice and tostring(invoice.society or '')
+    if not amount or society == '' then return cb(false) end
 
-        if exists[1] and exists[1]['count'] == 1 then
-            if SenderPly and Config.BillingCommissions[society] then
-                local commission = Round(amount * Config.BillingCommissions[society])
-                SenderPly.Functions.AddMoney('bank', commission)
-                invoiceMailData = {
-                    sender = 'Billing Department',
-                    subject = 'Commission Received',
-                    message = string.format('You received a commission check of $%s when %s %s paid a bill of $%s.', commission, Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
-                }
-            elseif not SenderPly and Config.BillingCommissions[society] then
-                invoiceMailData = {
-                    sender = 'Billing Department',
-                    subject = 'Bill Paid',
-                    message = string.format('%s %s paid a bill of $%s', Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
-                }
-            end
-            if Ply.Functions.RemoveMoney('bank', amount, 'paid-invoice') then
-                MySQL.query('DELETE FROM phone_invoices WHERE id = ? and citizenid = ?', { invoiceId, Ply.PlayerData.citizenid })
-                if invoiceMailData then
-                    exports['pfm-phone']:sendNewMailToOffline(sendercitizenid, invoiceMailData)
-                end
-                TriggerEvent('qb-phone:server:paidInvoice', source, invoiceId)
-                exports['pfm-banking']:AddMoney(society, amount, 'Phone invoice')
-                cb(true)
-                return
-            end
-        end
+    local key = 'pfm-phone:invoice:' .. invoiceId
+    if not PFPayout.Charge(source, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society }) then
+        return cb(false)
     end
-    cb(false)
+    MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
+    local ok = PFPayout.PaySociety(society, amount, { key = key .. ':society', reason = 'Phone invoice' })
+    if not ok then print(('^1[pfm-phone]^7 invoice %d: payment to %s not credited yet (key %s:society)'):format(invoiceId, society, key)) end
+
+    local rate = Config.BillingCommissions[society]
+    if rate and invoice.sendercitizenid and invoice.sendercitizenid ~= '' then
+        local commission = Round(amount * rate)
+        if commission > 0 then
+            PFPayout.Pay(invoice.sendercitizenid, 'bank', commission, { key = key .. ':commission', kind = 'wage', reason = 'Billing commission', quiet = true })
+        end
+        exports['pfm-phone']:sendNewMailToOffline(invoice.sendercitizenid, {
+            sender = 'Billing Department',
+            subject = 'Commission Received',
+            message = string.format('You received a commission check of $%s when %s %s paid a bill of $%s.', commission, Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
+        })
+    end
+    TriggerEvent('qb-phone:server:paidInvoice', source, invoiceId)
+    cb(true)
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:DeclineInvoice', function(source, cb, _, _, invoiceId)
@@ -577,38 +614,9 @@ QBCore.Functions.CreateCallback('qb-phone:server:HasPhone', function(source, cb)
     end
 end)
 
+-- The bank app's transfer (it does the transfer; the name is historical)
 QBCore.Functions.CreateCallback('qb-phone:server:CanTransferMoney', function(source, cb, amount, iban)
-    -- strip bad characters from bank transfers
-    local newAmount = tostring(amount)
-    local newiban = tostring(iban)
-    for _, v in pairs(bannedCharacters) do
-        newAmount = string.gsub(newAmount, '%' .. v, '')
-        newiban = string.gsub(newiban, '%' .. v, '')
-    end
-    iban = newiban
-    amount = IsValidAmount(newAmount)
-    if not amount then return cb(false) end
-
-    local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then return cb(false) end
-    if (Player.PlayerData.money.bank - amount) >= 0 then
-        local query = '%"account":"' .. iban .. '"%'
-        local result = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ?', { query })
-        if result[1] ~= nil then
-            local Reciever = QBCore.Functions.GetPlayerByCitizenId(result[1].citizenid)
-            if not Player.RemoveMoney('bank', amount, 'phone-bank-transfer') then return cb(false) end
-            if Reciever ~= nil then
-                Reciever.Functions.AddMoney('bank', amount)
-            else
-                local RecieverMoney = json.decode(result[1].money)
-                RecieverMoney.bank = (RecieverMoney.bank + amount)
-                MySQL.update('UPDATE players SET money = ? WHERE citizenid = ?', { json.encode(RecieverMoney), result[1].citizenid })
-            end
-            cb(true)
-        else
-            cb(false)
-        end
-    end
+    cb((BankTransfer(source, iban, amount)))
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetCurrentLawyers', function(_, cb)
@@ -936,39 +944,12 @@ end)
 
 RegisterNetEvent('qb-phone:server:TransferMoney', function(iban, amount)
     local src = source
-    local sender = exports['pfm-core']:GetPlayer(src)
-    if not sender then return end
-
-    amount = IsValidAmount(amount)
-    if not amount or sender.PlayerData.money.bank < amount then
-        TriggerClientEvent('QBCore:Notify', src, 'Invalid transfer amount!', 'error')
-        return
-    end
-    if type(iban) ~= 'string' and type(iban) ~= 'number' then return end
-
-    local query = '%' .. iban .. '%'
-    local result = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ?', { query })
-    if result[1] ~= nil then
-        local reciever = QBCore.Functions.GetPlayerByCitizenId(result[1].citizenid)
-
-        if reciever ~= nil then
-            local PhoneItem = reciever.Functions.GetItemByName('phone')
-            if not sender.Functions.RemoveMoney('bank', amount, 'phone-transfered-to-' .. reciever.PlayerData.citizenid) then return end
-            reciever.Functions.AddMoney('bank', amount, 'phone-transfered-from-' .. sender.PlayerData.citizenid)
-
-            if PhoneItem ~= nil then
-                TriggerClientEvent('qb-phone:client:TransferMoney', reciever.PlayerData.source, amount,
-                    reciever.PlayerData.money.bank)
-            end
-        else
-            if not sender.Functions.RemoveMoney('bank', amount, 'phone-transfered') then return end
-            local moneyInfo = json.decode(result[1].money)
-            moneyInfo.bank = Round(moneyInfo.bank + amount)
-            MySQL.update('UPDATE players SET money = ? WHERE citizenid = ?',
-                { json.encode(moneyInfo), result[1].citizenid })
-        end
-    else
-        TriggerClientEvent('QBCore:Notify', src, "This account number doesn't exist!", 'error')
+    local ok, err = BankTransfer(src, iban, amount)
+    if not ok then
+        local text = err == 'no_account' and "This account number doesn't exist!"
+            or err == 'insufficient_funds' and 'Not enough money in your bank account'
+            or 'Invalid transfer!'
+        TriggerClientEvent('QBCore:Notify', src, text, 'error')
     end
 end)
 
