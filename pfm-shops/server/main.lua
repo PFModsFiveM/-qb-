@@ -54,6 +54,9 @@ local function saveShopInv(shop, products)
     SaveResourceFile(GetCurrentResourceName(), Config.ShopsInvJsonFile, json.encode(shopinv), -1)
 end
 
+-- Deliveries counted by the server for each driver's payslip: [citizenid] = { id, drops }
+DeliveryRounds = {}
+
 local function deliveryPay(source, shop)
     local Player = exports['pfm-core']:GetPlayer(source)
     if not Player then return end
@@ -62,7 +65,12 @@ local function deliveryPay(source, shop)
     local deliverCoords = Config.Locations[shop].delivery
     local distance = #(playerCoords - vector3(deliverCoords.x, deliverCoords.y, deliverCoords.z))
     if distance > 10 then return end
-    Player.AddMoney('bank', Config.DeliveryPrice, 'qb-shops:deliveryPay')
+    local key = ('pfm-shops:delivery:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+    if not PFPayout.Pay(Player, 'bank', Config.DeliveryPrice, { key = key, reason = 'qb-shops:deliveryPay' }) then return false end
+    -- counted for the round's payslip (the payslip used to take the drop count from the client)
+    local cid = Player.PlayerData.citizenid
+    DeliveryRounds[cid] = DeliveryRounds[cid] or { id = PFPayout.NewId(), drops = 0 }
+    DeliveryRounds[cid].drops = DeliveryRounds[cid].drops + 1
     if math.random(100) <= 10 then exports['pfm-inventory']:AddItem(source, Config.RewardItem, 1, false, false, 'qb-shops:deliveryPay') end
 end
 
@@ -107,20 +115,22 @@ RegisterNetEvent('qb-shops:server:DoBail', function(bool)
     if not Player then return end
     if onCooldown(src, 'bail', 5000) then return end
     if bool then
-        if Player.RemoveMoney('cash', Config.TruckDeposit, 'tow-received-bail') then
-            Bail[Player.PlayerData.citizenid] = Config.TruckDeposit
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('success.paid_with_cash', { value = Config.TruckDeposit }), 'success')
-            TriggerClientEvent('qb-shops:client:SpawnVehicle', src)
-        elseif Player.RemoveMoney('bank', Config.TruckDeposit, 'tow-received-bail') then
-            Bail[Player.PlayerData.citizenid] = Config.TruckDeposit
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('success.paid_with_bank', { value = Config.TruckDeposit }), 'success')
+        if Bail[Player.PlayerData.citizenid] then return end -- one truck at a time
+        -- the deposit goes through the bank ledger; its refund uses the same bail id
+        local bailId = PFPayout.NewId()
+        local paidFrom = PFPayout.Charge(Player, { 'cash', 'bank' }, Config.TruckDeposit,
+            { key = ('pfm-shops:bail:%s'):format(bailId), reason = 'tow-received-bail' })
+        if paidFrom then
+            Bail[Player.PlayerData.citizenid] = { amount = Config.TruckDeposit, id = bailId }
+            TriggerClientEvent('QBCore:Notify', src, Lang:t(paidFrom == 'cash' and 'success.paid_with_cash' or 'success.paid_with_bank', { value = Config.TruckDeposit }), 'success')
             TriggerClientEvent('qb-shops:client:SpawnVehicle', src)
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_deposit', { value = Config.TruckDeposit }), 'error')
         end
     else
-        if Bail[Player.PlayerData.citizenid] then
-            Player.AddMoney('cash', Bail[Player.PlayerData.citizenid], 'trucker-bail-paid')
+        local bail = Bail[Player.PlayerData.citizenid]
+        if bail then
+            if not PFPayout.Pay(Player, 'cash', bail.amount, { key = ('pfm-shops:bail:%s:refund'):format(bail.id), reason = 'trucker-bail-paid', kind = 'refund' }) then return end
             Bail[Player.PlayerData.citizenid] = nil
             TriggerClientEvent('QBCore:Notify', src, Lang:t('success.refund_to_cash', { value = Config.TruckDeposit }), 'success')
         end
@@ -137,12 +147,14 @@ RegisterNetEvent('qb-shops:server:PaySlip', function(drops)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if onCooldown(src, 'payslip', 60000) then return end -- a delivery round takes minutes
-    -- never trust the client-sent drop count: clamp to the configured maximum
-    local completedDrops = math.floor(tonumber(drops) or 0)
+    -- only drops the server counted in deliveryPay are paid; the client's number can only lower it
+    local round = DeliveryRounds[Player.PlayerData.citizenid]
+    if not round or round.drops < 1 then return end
+    local completedDrops = math.min(round.drops, math.floor(tonumber(drops) or round.drops), Config.MaxDeliveries)
     if completedDrops < 1 then return end
-    if completedDrops > Config.MaxDeliveries then completedDrops = Config.MaxDeliveries end
     local payment = Config.DeliveryPrice * completedDrops
-    Player.AddMoney('bank', payment, 'trucker-salary')
+    if not PFPayout.Pay(Player, 'bank', payment, { key = ('pfm-shops:payslip:%s'):format(round.id), reason = 'trucker-salary' }) then return end
+    DeliveryRounds[Player.PlayerData.citizenid] = nil
     Player.AddRep('delivery', completedDrops)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.you_earned', { value = payment }), 'success')
 end)

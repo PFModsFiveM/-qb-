@@ -180,11 +180,13 @@ RegisterNetEvent('qb-vineyard:server:sellItems', function()
 
     local total = 0
     local soldAny = false
+    local removed = {}
     for itemName, price in pairs(Config.Sell.prices or {}) do
         local item = Player.GetItemByName(itemName)
-        if item and item.amount and item.amount > 0 then
-            exports['pfm-inventory']:RemoveItem(src, itemName, item.amount, false, 'qb-vineyard:server:sellItems')
+        if item and item.amount and item.amount > 0
+            and exports['pfm-inventory']:RemoveItem(src, itemName, item.amount, false, 'qb-vineyard:server:sellItems') then
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[itemName], 'remove')
+            removed[#removed + 1] = { name = itemName, amount = item.amount }
             total = total + (item.amount * price)
             soldAny = true
         end
@@ -195,6 +197,13 @@ RegisterNetEvent('qb-vineyard:server:sellItems', function()
         return
     end
 
-    Player.Functions.AddMoney('cash', total, 'qb-vineyard:sellItems')
+    -- paid through the bank ledger; if the bank is down the goods are handed back
+    local key = ('pfm-vineyard:sell:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+    if not PFPayout.Pay(Player, 'cash', total, { key = key, reason = 'qb-vineyard:sellItems', kind = 'sale' }) then
+        for _, r in ipairs(removed) do
+            exports['pfm-inventory']:AddItem(src, r.name, r.amount, false, false, 'qb-vineyard:sale-refund')
+        end
+        return
+    end
     TriggerClientEvent('QBCore:Notify', src, ('Sold goods for $%s'):format(total), 'success')
 end)

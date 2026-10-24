@@ -1,8 +1,7 @@
 -- pfm-garbagejob: only a paid deposit is refunded, and each stop (the last one too) pays once.
-load_resource('tests/lua/fivem_mocks.lua')
+load_resource('tests/lua/ledger_env.lua')
 Mock.exportsByResource['pfm-inventory'] = { AddItem = function() return true end }
-load_resource('pfm-garbagejob/config.lua')
-load_resource('pfm-garbagejob/server/main.lua')
+LedgerEnv.load('pfm-garbagejob', { 'pfm-garbagejob/config.lua', 'pfm-garbagejob/server/main.lua' })
 
 local W = 1
 local function bank() return Mock.players[W].PlayerData.money.bank end
@@ -24,6 +23,7 @@ end
 
 BeforeEach = function()
     Mock.reset()
+    LedgerEnv.reset()
     Mock.clock = Mock.clock + 10000
     Mock.players, Mock.coords = {}, {}
     local p = Mock.newPlayer(W)
@@ -50,6 +50,10 @@ describe('garbage job', function()
         assert_false(again)
         payslip(false)
         assert_true(bank() > 1000)
+        assert_eq(#LedgerEnv.paid('pfm-garbagejob:'), 3)        -- deposit, pay, deposit refund
+        local after = bank()
+        payslip(false)                                          -- the route is closed
+        assert_eq(bank(), after)
     end)
     it('"continue" without a held deposit gets no free deposit', function()
         Mock.players[W].PlayerData.money.bank = 0

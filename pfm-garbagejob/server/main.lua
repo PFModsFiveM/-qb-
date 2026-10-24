@@ -59,6 +59,7 @@ QBCore.Functions.CreateCallback('qb-garbagejob:server:NewShift', function(source
         end
 
         Routes[CitizenId] = {
+            id = PFPayout.NewId(), -- builds this route's ledger keys
             stops = allStops,
             currentStop = 1,
             started = true,
@@ -90,7 +91,7 @@ RegisterNetEvent('qb-garbagejob:server:payDeposit', function()
     if not Player then return end
     local route = Routes[Player.PlayerData.citizenid]
     if not route or route.depositPay > 0 then return end
-    if not Player.RemoveMoney('bank', Config.TruckPrice, 'garbage-deposit') then
+    if not PFPayout.Charge(Player, 'bank', Config.TruckPrice, { key = ('pfm-garbagejob:%s:deposit'):format(route.id), reason = 'garbage-deposit' }) then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.not_enough', { value = Config.TruckPrice }), 'error')
         return
     end
@@ -173,24 +174,30 @@ RegisterNetEvent('qb-garbagejob:server:PayShift', function(continue)
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.too_far'), 'error')
         return
     end
-    if Routes[CitizenId] ~= nil then
-        local depositPay = Routes[CitizenId].depositPay
-        if tonumber(Routes[CitizenId].stopsCompleted) < tonumber(Routes[CitizenId].totalNumberOfStops) and not continue then
+    local route = Routes[CitizenId]
+    if route ~= nil then
+        local depositPay = route.depositPay
+        if tonumber(route.stopsCompleted) < tonumber(route.totalNumberOfStops) and not continue then
             depositPay = 0
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.early_finish', { completed = Routes[CitizenId].stopsCompleted, total = Routes[CitizenId].totalNumberOfStops }), 'error')
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.early_finish', { completed = route.stopsCompleted, total = route.totalNumberOfStops }), 'error')
         end
+        local heldOver = 0
         if continue then
             -- the driver keeps the truck: the deposit stays held for the next route instead of refunding
-            if depositPay > 0 then HeldDeposits[CitizenId] = depositPay end
+            heldOver = depositPay
             depositPay = 0
         end
-        local totalToPay = depositPay + Routes[CitizenId].actualPay
+        local totalToPay = depositPay + route.actualPay
         local payoutDeposit = Lang:t('info.payout_deposit', { value = depositPay })
         if depositPay == 0 then
             payoutDeposit = ''
         end
 
-        Player.AddMoney('bank', totalToPay, 'garbage-payslip')
+        -- paid through the bank ledger with this route's keys; the route stays open until both went
+        -- through, and a retry reuses the keys, so nothing is paid twice
+        if route.actualPay > 0 and not PFPayout.Pay(Player, 'bank', route.actualPay, { key = ('pfm-garbagejob:%s:pay'):format(route.id), reason = 'garbage-payslip' }) then return end
+        if depositPay > 0 and not PFPayout.Pay(Player, 'bank', depositPay, { key = ('pfm-garbagejob:%s:deposit-refund'):format(route.id), reason = 'garbage-deposit-refund', kind = 'refund' }) then return end
+        if heldOver > 0 then HeldDeposits[CitizenId] = heldOver end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.pay_slip', { total = totalToPay, deposit = payoutDeposit }), 'success')
         Routes[CitizenId] = nil
         SrcToCid[src] = nil

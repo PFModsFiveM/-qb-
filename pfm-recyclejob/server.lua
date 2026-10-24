@@ -156,7 +156,12 @@ local function sellMaterials(src, item, amount)
         price = Sales[item] * amount
     end
     if Player.RemoveItem(item, amount) then
-        Player.AddMoney('cash', price)
+        -- paid through the bank ledger; if the bank is down the materials are handed back
+        local key = ('pfm-recyclejob:sell:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+        if not PFPayout.Pay(Player, 'cash', price, { key = key, reason = 'recycle-materials-sold', kind = 'sale' }) then
+            Player.AddItem(item, amount)
+            return
+        end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.sold', { amount = amount, item = sharedItems[item].label, price = price }), 'success')
         adjustStock(item, 'add', amount)
     else

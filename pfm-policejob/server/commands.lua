@@ -320,7 +320,12 @@ QBCore.Commands.Add('paytow', Lang:t('commands.paytow'), { { name = 'id', help =
         local OtherPlayer = exports['pfm-core']:GetPlayer(playerId)
         if OtherPlayer then
             if OtherPlayer.PlayerData.job.name == 'tow' then
-                OtherPlayer.Functions.AddMoney('bank', 500, 'police-tow-paid')
+                -- paid from the officer's department account through the ledger (it used to create the money)
+                local key = ('pfm-policejob:paytow:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+                if not PFPayout.Pay(OtherPlayer, 'bank', 500, { key = key, from = 'society:' .. Player.PlayerData.job.name, reason = 'police-tow-paid', quiet = true }) then
+                    TriggerClientEvent('QBCore:Notify', src, 'The department account could not pay this.', 'error')
+                    return
+                end
                 TriggerClientEvent('QBCore:Notify', OtherPlayer.PlayerData.source, Lang:t('success.tow_paid'), 'success')
                 TriggerClientEvent('QBCore:Notify', src, Lang:t('info.tow_driver_paid'))
             else
@@ -340,7 +345,12 @@ QBCore.Commands.Add('paylawyer', Lang:t('commands.paylawyer'), { { name = 'id', 
         local OtherPlayer = exports['pfm-core']:GetPlayer(playerId)
         if not OtherPlayer then return end
         if OtherPlayer.PlayerData.job.name == 'lawyer' then
-            OtherPlayer.Functions.AddMoney('bank', 500, 'police-lawyer-paid')
+            -- paid from the payer's department account through the ledger (it used to create the money)
+            local key = ('pfm-policejob:paylawyer:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+            if not PFPayout.Pay(OtherPlayer, 'bank', 500, { key = key, from = 'society:' .. Player.PlayerData.job.name, reason = 'police-lawyer-paid', quiet = true }) then
+                TriggerClientEvent('QBCore:Notify', src, 'The department account could not pay this.', 'error')
+                return
+            end
             TriggerClientEvent('QBCore:Notify', OtherPlayer.PlayerData.source, Lang:t('success.tow_paid'), 'success')
             TriggerClientEvent('QBCore:Notify', src, Lang:t('info.paid_lawyer'))
         else

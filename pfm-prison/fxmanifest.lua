@@ -24,4 +24,7 @@ client_scripts {
     'client/prisonbreak.lua'
 }
 
-server_script 'server/main.lua'
+server_scripts {
+    '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
+    'server/main.lua'
+}

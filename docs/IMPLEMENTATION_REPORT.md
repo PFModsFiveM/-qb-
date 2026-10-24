@@ -560,3 +560,89 @@ Full suite: **239 passed, 0 failed** (22 spec files). Every changed Lua file (62
 
 ### Not verified
 None of this was tried on a live server. The client-side changes (new events sent at pickup/spawn, the scrapyard and tow clients no longer deleting vehicles, the vineyard picking a new vine) need a play-through of each job.
+
+## Batch 4 — 2026-10-24: Job payouts on the ledger
+
+Job pay, NPC sales, and job deposits and refunds no longer change player money directly. Each one is a ledger `Transfer` between the player and the job's own system account (`system:<resource>`), so it is journaled in `pf_transactions` with a stable idempotency key. Nothing here was committed.
+
+### The helper
+`pfm-banking/payouts.lua` is included by each job through `server_script '@pfm-banking/payouts.lua'` (pfm-banking does not load it itself). It defines `PFPayout`:
+- `Pay(who, 'cash'|'bank', amount, { key, reason, kind, from })` pays a player. A key that already paid is not paid again.
+- `Charge(who, {'cash','bank'}, amount, { key, ... })` takes a deposit or fee. Each account tried gets its own key.
+- `PaySociety(name, amount, { key, ... })` goes through pfm-banking's `AddMoney`, so the society statement is written too.
+- `NewId()` makes the id for a shift, route, stand or bail that the keys are built from.
+
+All of them fail closed. When pfm-banking isn't started or the ledger isn't ready, nothing moves and the player is told the payment was not made.
+
+### What moved ([qb])
+| Resource | Payment | Key | If the payment fails |
+|---|---|---|---|
+| pfm-taxijob | fare (cash, or `society:taxi` with `Config.Management`) | `pfm-taxijob:<shift>:fare:<n>` | fare stays open; a retry uses the same key |
+| pfm-busjob | each stop | `pfm-busjob:<shift>:stop:<n>` | the stop is not counted |
+| pfm-towjob | deposit, refund, salary | `pfm-towjob:bail:<id>`, `…:refund`, `pfm-towjob:<session>:salary` | the session and its drops stay |
+| pfm-garbagejob | deposit, pay, deposit refund | `pfm-garbagejob:<route>:deposit / :pay / :deposit-refund` | the route stays open; a retry reuses the keys |
+| pfm-hotdogjob | stand deposit, refund, each sale | `pfm-hotdogjob:stand:<id>`, `…:refund`, `…:sale:<n>` | the hot dogs are handed back |
+| pfm-recyclejob, pfm-diving, pfm-vineyard, pfm-pawnshop | NPC sales | `<resource>:…:<citizenid>:<sale id>` | the items are handed back |
+| pfm-drugs | deliveries (one key per delivery, whichever branch pays), corner sales | `pfm-drugs:delivery:<id>`, `pfm-drugs:corner:<cid>:<id>` | the drugs are handed back |
+| pfm-shops | each delivery, truck deposit and refund, payslip | `pfm-shops:delivery:…`, `pfm-shops:bail:<id>`, `pfm-shops:payslip:<round>` | the drop is not counted, or the deposit/round stays |
+| pfm-prison | jail money | `pfm-prison:jailmoney:<cid>:<id>` | not paid |
+| pfm-policejob | `/paytow`, `/paylawyer` | `pfm-policejob:paytow / paylawyer:<officer>:<id>` | the officer is told |
+
+### What moved ([pfscripts])
+| Resource | Payment | Key | If the payment fails |
+|---|---|---|---|
+| pf-jobs bus | route fare | `pf-jobs:bus:<payoutId>:<cid>` | the route stays; a retry uses the same key |
+| pf-jobs garbage | solo and crew pay | `pf-jobs:garbage:<routeId>:<cid>`, one per member | the session stays; a retry pays only whoever was missed |
+| pf-jobs Gruppe6 (both files) | contract pay, solo and group | `pf-jobs:gruppe6:<payoutId>:<cid>` | the contract stays (bags handed back) |
+| pf-jobs taxi | fare, rental charge, spawn-failure refunds, deposit refund | `pf-jobs:taxi:ride:<rideId>:<cid>`, `pf-jobs:taxi:rental:<id>:<cid>` (`:refund`, `:deposit`) | the ride or rental record stays; refunds now go back to the account that was charged |
+| pf-mechanicjob work orders (callback and event) | order pay | `pf-mechanicjob:workorder:<payoutId>:<cid>` | the order stays accepted; a repeat gives no XP |
+| pf-mechanicjob roadside | reward | `pf-mechanicjob:roadside:<cid>:<plate>` | no XP or success message |
+
+Payouts of 0 skip the payment call.
+
+### Exploits fixed on the way
+- **pfm-shops payslip.** It paid `DeliveryPrice` for each drop the client claimed (capped at `MaxDeliveries`), once a minute, on top of the pay for each delivery. Now it pays only for drops the server counted, once per round.
+- **`/paytow` and `/paylawyer`** created $500 every time. They are now paid from the payer's department account (`society:<job>`), and the payment is refused when that account is short. A judge paying a lawyer needs a `judge` bank account.
+- **Deposits.** The tow and shops trucks and the hot dog stand can't be rented twice at once. A second deposit used to be taken without being refunded.
+
+### Batch 4b: the four pf-jobs and pf-mechanicjob problems, fixed
+- **Duplicate taxi rental handler** (`pf-jobs/server/apps/taxi.lua`). FiveM runs every handler of an event, so a second `pf-taxi:server:rentVehicle` took another $120 cash (or a client-chosen amount) on every rental. It also overwrote the rental record and lost the deposit refund.
+  - The second handler is removed.
+  - `returnRentalVehicle` (the depot E key) now uses the same return code as the tablet, so the deposit refund and damage check apply to both.
+  - A retried refund keeps the damage result.
+  - The client records the rental on `vehicleSpawned`; the removed handler used to do that.
+- **Taxi fares from client data.**
+  - The fare uses the server's own pickup-to-destination distance; the client's `distanceMiles` is ignored.
+  - `ridePickedUp` counts only within 30 m of the pickup point.
+  - `completeRide` needs the passenger on board, the driver within 40 m of the destination, and at least max(15 s, distance ÷ 45 m/s) since pickup.
+  - Collisions are the higher of the client's count and the server's own count; the penalty is clamped to 0–1.
+  - The unused legacy `startRide` / `completeRideLegacy` events were removed. `startRide` built a ride from client coordinates and distance.
+- **Bus fares from client data** (`pf-jobs/server/apps/bus.lua`; bus is still disabled in the config).
+  - Stops count once each, in order, within 25 m of the stop.
+  - The route pays only after every stop, and no sooner than max(60 s, route distance ÷ 30 m/s).
+  - Level and "on time" are decided by the server; the client's vehicle health and rating are clamped and can only lower the pay.
+  - One route at a time.
+- **Roadside service** (`pf-mechanicjob/server/advanced_systems.lua`).
+  - The client reports the car it spawned (`startRoadside`). The server records the call, for mechanics only, with a cooldown between calls (`CooldownSeconds`, 180).
+  - Payment needs that car, repaired according to the server's own health readings (≥ 900), the mechanic within 15 m, and `MinRepairSeconds` (20) since the start.
+  - The key is the call id, so each call pays once.
+  - The client keeps reporting until the server confirms (`roadsideDone`), so a quick repair is paid once the minimum time passes.
+- **Client-built mechanic invoice** (`pf-mechanicjob/server/main.lua`). The old `pos:requestCharge` / `pos:customerPay` handlers are removed. No client or tablet page called them, but a modified client could name any payer, seller and total. Charging stays on `register_pos.lua`, which prices bills from the shop's list and needs the customer to accept.
+  - The tablet's leftover NUI callbacks (`pf_mech:pos:chargePlayer` / `customerPay`) still fire events that have no server handler. They were dead before too.
+- **Tests:** `pfjobs_payouts_spec` now has 10 tests (rides and routes must be driven; the client distance is ignored; one rental handler; the depot return refunds). New `mechanic_roadside_spec` has 6. The full suite is 265 passed, 0 failed, 28 spec files.
+
+### Not moved (deliberately)
+- Player-to-player payments: phone transfers, vehicle and house sales between players, robbing a player, invoices.
+- Payments players make: ambulance and police bills, fines.
+- Crypto: not cash or bank.
+- Item conversions: police money bags. Refunds: shop purchase refunds and weapon repair.
+- Government and housing payouts, and vehicle buy-backs.
+
+### Tests actually run
+- **Converted to the real ledger:** `taxi_spec`, `bus_spec`, `garbage_spec` and `recycle_spec` now run on the fake database via `tests/lua/ledger_env.lua` (new).
+- **New specs:** `tow_spec`, `hotdog_spec`, `shops_delivery_spec` and `police_pay_spec`. They cover single payment, journal rows, the bank being down (nothing paid, items handed back or the fare kept), the payslip using the server's drop count, and `/paytow` drawing from the police account.
+- **pf-jobs:** `pfjobs_payouts_spec` (6) covers the taxi fare, the rental charge and deposit refund, and the bus route, each paid once with a retry after a bank outage. Garbage, Gruppe6 and the mechanic files are only parse-checked.
+- **Full suite:** 255 passed, 0 failed, 27 spec files (this count includes your uncommitted inventory specs). All changed files parse.
+
+### Not verified
+Not run on a live server. Every one of these jobs needs pfm-banking started, with the ledger migrations applied, before it can pay.

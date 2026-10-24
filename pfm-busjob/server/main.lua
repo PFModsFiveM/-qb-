@@ -32,7 +32,7 @@ RegisterNetEvent('qb-busjob:server:StartShift', function()
     if not Player or Player.PlayerData.job.name ~= 'bus' then return end
     local coords = GetEntityCoords(GetPlayerPed(src))
     if #(coords - vector3(Config.Location.x, Config.Location.y, Config.Location.z)) > 30.0 then return end
-    Sessions[src] = { startedAt = os.time(), streak = 0 }
+    Sessions[src] = { id = PFPayout.NewId(), startedAt = os.time(), streak = 0, stops = 0 }
 end)
 
 RegisterNetEvent('qb-busjob:server:EndShift', function()
@@ -64,14 +64,18 @@ RegisterNetEvent('qb-busjob:server:NpcPay', function()
                     return
                 end
             end
-            Sessions[src].lastStop = { index = stopIndex, pos = stopPos, at = now }
             local randomAmount = math.random(1, 5)
             local r1, r2 = math.random(1, 5), math.random(1, 5)
             if randomAmount == r1 or randomAmount == r2 then Payment = Payment + math.random(20, 40) end
             Payment = applyStreakBonus(Sessions[src].streak, Payment)
+            -- paid through the bank ledger, keyed by this shift's stop number; the stop only counts once paid
+            local stopNo = Sessions[src].stops + 1
+            local key = ('pfm-busjob:%s:stop:%d'):format(Sessions[src].id, stopNo)
+            if not PFPayout.Pay(Player, 'cash', Payment, { key = key, reason = 'Bus job' }) then return end
+            Sessions[src].stops = stopNo
+            Sessions[src].lastStop = { index = stopIndex, pos = stopPos, at = now }
             Sessions[src].streak = Sessions[src].streak + 1
             LastNpcPay[src] = now
-            Player.AddMoney('cash', Payment, 'Bus job')
         else
             DropPlayer(src, Lang:t('error.exploit'))
         end

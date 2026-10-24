@@ -35,9 +35,11 @@ QBCore.Functions.CreateCallback('qb-hotdogjob:server:HasMoney', function(source,
 
     if Bail[Player.PlayerData.citizenid] then cb(true) return end -- already has a stand; don't charge twice
     if Player.PlayerData.money.bank >= Config.StandDeposit then
-        if not Player.RemoveMoney('bank', Config.StandDeposit, 'hot dog deposit') then cb(false) return end
-        Bail[Player.PlayerData.citizenid] = true
-        Sessions[source] = { startedAt = os.time(), streak = 0, lastSale = 0 }
+        -- the stand deposit goes through the bank ledger; its refund uses the same stand id
+        local standId = PFPayout.NewId()
+        if not PFPayout.Charge(Player, 'bank', Config.StandDeposit, { key = ('pfm-hotdogjob:stand:%s'):format(standId), reason = 'hot dog deposit' }) then cb(false) return end
+        Bail[Player.PlayerData.citizenid] = { id = standId, amount = Config.StandDeposit }
+        Sessions[source] = { id = standId, startedAt = os.time(), streak = 0, lastSale = 0, sales = 0 }
         SrcToCid[source] = Player.PlayerData.citizenid
         cb(true)
     else
@@ -50,10 +52,11 @@ QBCore.Functions.CreateCallback('qb-hotdogjob:server:BringBack', function(source
     local Player = exports['pfm-core']:GetPlayer(source)
     if not Player then cb(false) return end
 
-    if Bail[Player.PlayerData.citizenid] then
+    local bail = Bail[Player.PlayerData.citizenid]
+    if bail then
+        if not PFPayout.Pay(Player, 'bank', bail.amount, { key = ('pfm-hotdogjob:stand:%s:refund'):format(bail.id), reason = 'hot dog deposit', kind = 'refund' }) then cb(false) return end
         Bail[Player.PlayerData.citizenid] = nil
         Sessions[source] = nil
-        Player.AddMoney('bank', Config.StandDeposit, 'hot dog deposit')
         cb(true)
     else
         cb(false)
@@ -92,11 +95,17 @@ RegisterNetEvent('qb-hotdogjob:server:Sell', function(coords, amount, price)
     local removed = Player.Functions.RemoveItem('hotdog', sellAmount)
     if not removed then return end
 
-    session.lastSale = now
     local payout = applyStreakBonus(session.streak, sellAmount * sellPrice)
+    -- paid through the bank ledger, keyed by the stand's sale number; if the bank is down the
+    -- hot dogs are handed back
+    local saleNo = session.sales + 1
+    if not PFPayout.Pay(Player, 'cash', payout, { key = ('pfm-hotdogjob:stand:%s:sale:%d'):format(session.id, saleNo), reason = 'sold hotdog', kind = 'sale' }) then
+        Player.Functions.AddItem('hotdog', sellAmount)
+        return
+    end
+    session.sales = saleNo
+    session.lastSale = now
     session.streak = session.streak + 1
-
-    Player.AddMoney('cash', payout, 'sold hotdog')
 end)
 
 AddEventHandler('playerDropped', function()

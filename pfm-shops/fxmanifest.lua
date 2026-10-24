@@ -22,6 +22,9 @@ client_scripts {
     'client/deliveries.lua',
 }
 
-server_script 'server/main.lua'
+server_scripts {
+    '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
+    'server/main.lua'
+}
 
 file 'json/shops-inventory.json'

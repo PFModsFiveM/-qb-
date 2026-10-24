@@ -40,15 +40,13 @@ RegisterNetEvent('qb-tow:server:DoBail', function(bool, vehInfo)
         -- only the configured tow trucks can be rented (vehInfo is passed on to the spawn)
         if type(vehInfo) ~= 'string' or not Config.Vehicles[vehInfo] then return end
         if Bail[Player.PlayerData.citizenid] then return end -- one truck at a time
-        if Player.PlayerData.money.cash >= Config.BailPrice then
-            Bail[Player.PlayerData.citizenid] = Config.BailPrice
-            Player.Functions.RemoveMoney('cash', Config.BailPrice, 'tow-paid-bail')
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('success.paid_with_cash', { value = Config.BailPrice }), 'success')
-            TriggerClientEvent('qb-tow:client:SpawnVehicle', src, vehInfo)
-        elseif Player.PlayerData.money.bank >= Config.BailPrice then
-            Bail[Player.PlayerData.citizenid] = Config.BailPrice
-            Player.Functions.RemoveMoney('bank', Config.BailPrice, 'tow-paid-bail')
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('success.paid_with_bank', { value = Config.BailPrice }), 'success')
+        -- the deposit goes through the bank ledger; its refund later uses the same bail id
+        local bailId = PFPayout.NewId()
+        local paidFrom = PFPayout.Charge(Player, { 'cash', 'bank' }, Config.BailPrice,
+            { key = ('pfm-towjob:bail:%s'):format(bailId), reason = 'tow-paid-bail' })
+        if paidFrom then
+            Bail[Player.PlayerData.citizenid] = { amount = Config.BailPrice, id = bailId }
+            TriggerClientEvent('QBCore:Notify', src, Lang:t(paidFrom == 'cash' and 'success.paid_with_cash' or 'success.paid_with_bank', { value = Config.BailPrice }), 'success')
             TriggerClientEvent('qb-tow:client:SpawnVehicle', src, vehInfo)
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_deposit', { value = Config.BailPrice }), 'error')
@@ -56,8 +54,9 @@ RegisterNetEvent('qb-tow:server:DoBail', function(bool, vehInfo)
     else
         -- the deposit comes back when the truck is returned at the depot
         if not nearCoords(GetEntityCoords(GetPlayerPed(src)), Config.Locations['vehicle'].coords, 25.0) then return end
-        if Bail[Player.PlayerData.citizenid] ~= nil then
-            Player.Functions.AddMoney('bank', Bail[Player.PlayerData.citizenid], 'tow-bail-paid')
+        local bail = Bail[Player.PlayerData.citizenid]
+        if bail ~= nil then
+            if not PFPayout.Pay(Player, 'bank', bail.amount, { key = ('pfm-towjob:bail:%s:refund'):format(bail.id), reason = 'tow-bail-paid', kind = 'refund' }) then return end
             Bail[Player.PlayerData.citizenid] = nil
             TriggerClientEvent('QBCore:Notify', src, Lang:t('success.refund_to_cash', { value = Config.BailPrice }), 'success')
         end
@@ -79,7 +78,7 @@ RegisterNetEvent('qb-tow:server:nano', function(vehNetID)
     end
     -- Only a mission car counts (it used to accept any vehicle id, including the player's own truck),
     -- one hook at a time, and each car once.
-    Sessions[src] = Sessions[src] or { drops = 0 }
+    Sessions[src] = Sessions[src] or { id = PFPayout.NewId(), drops = 0 }
     if Sessions[src].pendingHook then return end
     if targetVehicle == playerVehicle or hookedVehicles[vehNetID] or not IsMissionVehicle(targetVehicle) then return end
     hookedVehicles[vehNetID] = true
@@ -146,8 +145,9 @@ RegisterNetEvent('qb-tow:server:11101110', function()
     price = price + bonus
     local taxAmount = math.ceil((price / 100) * PaymentTax)
     local payment = price - taxAmount
+    -- paid through the bank ledger once per tow session; the session (and its drops) stays if it fails
+    if not PFPayout.Pay(Player, 'bank', payment, { key = ('pfm-towjob:%s:salary'):format(session.id), reason = 'tow-salary' }) then return end
     Sessions[src] = nil
-    Player.Functions.AddMoney('bank', payment, 'tow-salary')
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.you_earned', { value = payment }), 'success')
 end)
 

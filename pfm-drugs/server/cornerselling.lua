@@ -99,10 +99,15 @@ RegisterNetEvent('qb-drugs:server:sellCornerDrugs', function(drugType, amount, p
     local hasItem = Player.GetItemByName(item)
     if hasItem and hasItem.amount >= amount then
         if not exports['pfm-inventory']:RemoveItem(src, item, amount, false, 'qb-drugs:server:sellCornerDrugs') then return end
+        -- paid through the bank ledger; if the bank is down the drugs are handed back
+        local key = ('pfm-drugs:corner:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+        if not PFPayout.Pay(Player, 'cash', price, { key = key, reason = 'qb-drugs:server:sellCornerDrugs', kind = 'sale' }) then
+            exports['pfm-inventory']:AddItem(src, item, amount, false, false, 'qb-drugs:corner-refund')
+            return
+        end
         local netId = tonumber(customerNetId)
         if netId then servedCustomers[netId] = os.time() end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.offer_accepted'), 'success')
-        Player.AddMoney('cash', price, 'qb-drugs:server:sellCornerDrugs')
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
         TriggerClientEvent('qb-drugs:client:refreshAvailableDrugs', src, getAvailableDrugs(src))
         -- optional server-side police alert; can't be skipped by a modified client

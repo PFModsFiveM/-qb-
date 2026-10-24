@@ -54,7 +54,8 @@ RegisterNetEvent('prison:server:SaveJailItems', function()
     if (Player.PlayerData.metadata.injail or 0) <= 0 then return end
     if not Player.PlayerData.metadata['jailitems'] or table.type(Player.PlayerData.metadata['jailitems']) == 'empty' then
         Player.SetMetaData('jailitems', Player.PlayerData.items)
-        Player.AddMoney('cash', 80, 'jail money')
+        -- through the bank ledger, once per jailing (the jailitems check above guards the rest)
+        PFPayout.Pay(Player, 'cash', 80, { key = ('pfm-prison:jailmoney:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), reason = 'jail money', quiet = true })
         Wait(2000)
         Player.ClearInventory()
     end

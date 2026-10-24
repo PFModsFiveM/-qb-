@@ -82,12 +82,24 @@ RegisterNetEvent('qb-drugs:server:giveDeliveryItems', function(deliveryData)
     if pendingDeliveries[cid] and os.time() < pendingDeliveries[cid].startedAt + 7200 then return end
     local trip = DistanceTo(src, Config.DeliveryLocations[locIdx].coords)
     pendingDeliveries[cid] = {
+        id = PFPayout.NewId(), -- this delivery's ledger key
         item = deliveryData.item, amount = amount, startedAt = os.time(), location = locIdx,
         earliest = os.time() + math.max(MIN_TRIP_SECONDS, trip / MAX_TRIP_SPEED),
     }
     exports['pfm-inventory']:AddItem(src, item, amount, false, false, 'qb-drugs:server:giveDeliveryItems')
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'add')
 end)
+
+-- Pays a delivery through the bank ledger, once per delivery id. If the bank is down the handed-over
+-- items go back to the player and nothing is paid.
+local function payDelivery(Player, amount, pending, item, handedOver)
+    amount = math.floor(amount)
+    if amount <= 0 then return true end
+    local key = ('pfm-drugs:delivery:%s'):format(pending.id)
+    if PFPayout.Pay(Player, 'cash', amount, { key = key, reason = 'qb-drugs:server:successDelivery', kind = 'sale' }) then return true end
+    exports['pfm-inventory']:AddItem(Player.PlayerData.source, item, handedOver, false, false, 'qb-drugs:delivery-refund')
+    return false
+end
 
 RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTime)
     local src = source
@@ -120,14 +132,14 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
                     local info = { worth = math.floor(payout * copModifier) }
                     exports['pfm-inventory']:AddItem(src, 'markedbills', 1, false, info, 'qb-drugs:server:successDelivery')
                 else
-                    Player.AddMoney('cash', math.floor(payout * copModifier), 'qb-drugs:server:successDelivery')
+                    if not payDelivery(Player, payout * copModifier, pending, item, itemAmount) then return end
                 end
             else
                 if Config.UseMarkedBills then
                     local info = { worth = payout }
                     exports['pfm-inventory']:AddItem(src, 'markedbills', 1, false, info, 'qb-drugs:server:successDelivery')
                 else
-                    Player.AddMoney('cash', payout, 'qb-drugs:server:successDelivery')
+                    if not payDelivery(Player, payout, pending, item, itemAmount) then return end
                 end
             end
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
@@ -144,7 +156,7 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
                 local modifiedPayout = itemCfg.payout * newItemAmount
                 if exports['pfm-inventory']:RemoveItem(src, item, newItemAmount, false, 'qb-drugs:server:successDelivery') then
                     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
-                    Player.AddMoney('cash', math.floor(modifiedPayout / Config.WrongAmountFee), 'qb-drugs:server:successDelivery')
+                    payDelivery(Player, modifiedPayout / Config.WrongAmountFee, pending, item, newItemAmount)
                 end
             end
             SetTimeout(math.random(5000, 10000), function()
@@ -156,7 +168,7 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
         if invItem and invItem.amount >= itemAmount then -- late correct amount
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.too_late'), 'error')
             if not exports['pfm-inventory']:RemoveItem(src, item, itemAmount, false, 'qb-drugs:server:successDelivery') then return end
-            Player.AddMoney('cash', math.floor(payout / Config.OverdueDeliveryFee), 'qb-drugs:server:successDelivery')
+            if not payDelivery(Player, payout / Config.OverdueDeliveryFee, pending, item, itemAmount) then return end
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
             SetTimeout(math.random(5000, 10000), function()
                 TriggerClientEvent('qb-drugs:client:sendDeliveryMail', src, 'late', deliveryData)
@@ -169,7 +181,7 @@ RegisterNetEvent('qb-drugs:server:successDelivery', function(deliveryData, inTim
                 local modifiedPayout = itemCfg.payout * newItemAmount
                 TriggerClientEvent('QBCore:Notify', src, Lang:t('error.too_late'), 'error')
                 if not exports['pfm-inventory']:RemoveItem(src, item, newItemAmount, false, 'qb-drugs:server:successDelivery') then return end
-                Player.AddMoney('cash', math.floor(modifiedPayout / Config.OverdueDeliveryFee), 'qb-drugs:server:successDelivery')
+                if not payDelivery(Player, modifiedPayout / Config.OverdueDeliveryFee, pending, item, newItemAmount) then return end
                 TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
                 SetTimeout(math.random(5000, 10000), function()
                     TriggerClientEvent('qb-drugs:client:sendDeliveryMail', src, 'late', deliveryData)

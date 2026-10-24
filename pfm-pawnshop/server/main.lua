@@ -85,10 +85,12 @@ RegisterNetEvent('qb-pawnshop:server:sellPawnItems', function(itemName, itemAmou
     if itemAmount < 1 or itemAmount > 1000 then return end
     local totalPrice = itemAmount * unitPrice
     if exports['pfm-inventory']:RemoveItem(src, itemName, tonumber(itemAmount), false, 'qb-pawnshop:server:sellPawnItems') then
-        if Config.BankMoney then
-            Player.AddMoney('bank', totalPrice, 'qb-pawnshop:server:sellPawnItems')
-        else
-            Player.AddMoney('cash', totalPrice, 'qb-pawnshop:server:sellPawnItems')
+        -- paid through the bank ledger; if the bank is down the items are handed back
+        local key = ('pfm-pawnshop:sell:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
+        if not PFPayout.Pay(Player, Config.BankMoney and 'bank' or 'cash', totalPrice, { key = key, reason = 'qb-pawnshop:server:sellPawnItems', kind = 'sale' }) then
+            exports['pfm-inventory']:AddItem(src, itemName, itemAmount, false, false, 'qb-pawnshop:sale-refund')
+            TriggerClientEvent('qb-pawnshop:client:openMenu', src)
+            return
         end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.sold', { value = tonumber(itemAmount), value2 = sharedItems[itemName].label, value3 = totalPrice }), 'success')
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[itemName], 'remove')

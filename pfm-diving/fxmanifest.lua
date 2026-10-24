@@ -12,7 +12,10 @@ shared_script {
     'config.lua'
 }
 
-server_script 'server/main.lua'
+server_scripts {
+    '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
+    'server/main.lua'
+}
 
 client_scripts {
     '@PolyZone/client.lua',

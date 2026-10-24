@@ -36,7 +36,8 @@ RegisterNetEvent('qb-taxi:server:PickupNpc', function(npcIndex)
     if not pickup then return end
     local coords = GetEntityCoords(GetPlayerPed(src))
     if #(coords - vector3(pickup.x, pickup.y, pickup.z)) > PICKUP_RANGE then return end
-    Sessions[src].fare = { from = vector3(pickup.x, pickup.y, pickup.z), at = os.time() }
+    Sessions[src].fares = Sessions[src].fares + 1
+    Sessions[src].fare = { n = Sessions[src].fares, from = vector3(pickup.x, pickup.y, pickup.z), at = os.time() }
 end)
 
 -- Job session: started when a cab is taken out at the depot, cleared when it is parked or the player drops
@@ -46,7 +47,7 @@ RegisterNetEvent('qb-taxi:server:StartShift', function()
     if not Player or Player.PlayerData.job.name ~= Config.jobRequired then return end
     local coords = GetEntityCoords(GetPlayerPed(src))
     if #(coords - Config.Location) > 60.0 then return end
-    Sessions[src] = { startedAt = os.time(), streak = 0 }
+    Sessions[src] = { id = PFPayout.NewId(), startedAt = os.time(), streak = 0, fares = 0 }
 end)
 
 RegisterNetEvent('qb-taxi:server:EndShift', function()
@@ -99,13 +100,17 @@ RegisterNetEvent('qb-taxi:server:NpcPay', function(_, hasReceivedBonus)
             end
 
             payment = applyStreakBonus(Sessions[src].streak, payment)
-            Sessions[src].streak = Sessions[src].streak + 1
 
+            -- paid through the bank ledger; the key is this shift's fare number, so it pays once
+            local key = ('pfm-taxijob:%s:fare:%d'):format(Sessions[src].id, fare.n)
+            local paid
             if Config.Management then
-                exports['pfm-banking']:AddMoney('taxi', payment, 'Customer payment')
+                paid = PFPayout.PaySociety('taxi', payment, { key = key, reason = 'Customer payment' })
             else
-                Player.AddMoney('cash', payment, 'Taxi payout')
+                paid = PFPayout.Pay(Player, 'cash', payment, { key = key, reason = 'Taxi payout' })
             end
+            if not paid then Sessions[src].fare = fare return end -- keep the fare: a retry uses the same key
+            Sessions[src].streak = Sessions[src].streak + 1
 
             local chance = math.random(1, 100)
             if chance < 26 then

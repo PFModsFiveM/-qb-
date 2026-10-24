@@ -78,6 +78,7 @@ RegisterNetEvent('qb-diving:server:SellCorals', function()
     if not atBuyer then return end
     local availableCorals = hasCoral(src)
     if availableCorals then
+        local saleId = PFPayout.NewId()
         for _, v in pairs(availableCorals) do
             local item = Player.GetItemByName(v.item)
             local price = item.amount * v.price
@@ -85,7 +86,12 @@ RegisterNetEvent('qb-diving:server:SellCorals', function()
             if not exports['pfm-inventory']:RemoveItem(src, item.name, item.amount, false, 'qb-diving:server:SellCorals') then
                 return
             end
-            Player.AddMoney('cash', reward, 'qb-diving:server:SellCorals')
+            -- paid through the bank ledger; if the bank is down the coral is handed back
+            local key = ('pfm-diving:coral:%s:%s:%s'):format(Player.PlayerData.citizenid, saleId, item.name)
+            if not PFPayout.Pay(Player, 'cash', reward, { key = key, reason = 'qb-diving:server:SellCorals', kind = 'sale' }) then
+                exports['pfm-inventory']:AddItem(src, item.name, item.amount, false, item.info, 'qb-diving:sale-refund')
+                return
+            end
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item.name], 'remove')
         end
     else

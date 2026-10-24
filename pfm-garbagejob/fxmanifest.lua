@@ -21,4 +21,7 @@ client_script {
 	'client/main.lua'
 }
 
-server_script 'server/main.lua'
+server_scripts {
+    '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
+    'server/main.lua'
+}

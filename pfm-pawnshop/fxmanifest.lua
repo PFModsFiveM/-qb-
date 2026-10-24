@@ -14,6 +14,7 @@ shared_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
     'server/main.lua'
 }
 

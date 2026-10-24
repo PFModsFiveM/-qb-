@@ -1,7 +1,6 @@
 -- pfm-recyclejob: a hand-in needs a package the server saw picked up.
-load_resource('tests/lua/fivem_mocks.lua')
-load_resource('pfm-recyclejob/config.lua')
-load_resource('pfm-recyclejob/server.lua')
+load_resource('tests/lua/ledger_env.lua')
+LedgerEnv.load('pfm-recyclejob', { 'pfm-recyclejob/config.lua', 'pfm-recyclejob/server.lua' })
 
 local W = 1
 local got
@@ -10,6 +9,7 @@ local function total() local n = 0 for _, k in pairs(got) do n = n + k end retur
 
 BeforeEach = function()
     Mock.reset()
+    LedgerEnv.reset()
     Mock.clock = Mock.clock + 1000
     Mock.gameTimer = Mock.gameTimer + 60000
     Mock.players, Mock.coords, got = {}, {}, {}

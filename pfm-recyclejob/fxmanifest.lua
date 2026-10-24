@@ -19,4 +19,7 @@ client_script {
   '@PolyZone/CircleZone.lua'
 }
 
-server_script 'server.lua'
+server_scripts {
+    '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
+    'server.lua'
+}
