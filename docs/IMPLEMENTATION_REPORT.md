@@ -1380,3 +1380,66 @@ pf-emsmdt (in `[custom]`, not started) was not tested with this.
 **Found, not fixed:** pf-garageuionly's `server/integration.lua` also queries `player_vehicles.owner`. The resource has no manifest and doesn't run, so nothing breaks today.
 
 **Totals:** mocked **393 passed** (48 files), real database **69 passed**, SQL install check passed. No staging run this time: the changes are server event checks and SQL files, covered by the tests above. Nothing pushed.
+
+## Batch 6 — 2026-10-25: full server-event sweep, farming, parallel ledger test
+
+The working list is now `docs/TASK_LEDGER.md` (statuses, evidence, next task per requirement). This section is the evidence summary.
+
+### Server-event sweep (ledger 0.6)
+- **Scope:** every remotely callable server handler in the started resources, about 1,150 in 70 resources. The work was split into 8 groups audited in parallel (robberies/side jobs, police MDT, police/admin/characters, jobs/tablet, mechanic, business/government, vehicles/phone/houses, core/inventory).
+- **Result:** about 120 abusable handlers fixed. Each fix has a regression test that was run against the previous code and failed there. Commits and per-group open items are in the ledger's "Sweep results" table.
+- **The most serious ones:**
+  - SQL injection: `pfm-management` GetEmployees, `pfm-phone` FetchResult.
+  - Money or items from nothing:
+    - pf-government `bill:pay` charged no one;
+    - loans were created with AddMoney;
+    - free IDs on request;
+    - prison item pay;
+    - Gruppe6 legacy server and deposits;
+    - garbage per-throw pay;
+    - mechanic DPF, parts, NOS bottles and chop salvage;
+    - outfit bags;
+    - weapon ammo to 250;
+    - forged item info on give;
+    - vehicle sale return as any model;
+    - repeat spawns of bought or impounded cars.
+  - Acting on other players:
+    - house transfer to anyone;
+    - any stash, trunk or apartment;
+    - doors with another player's access;
+    - keys to any car;
+    - staff actions on any citizen (management, mechanic, MDT officers).
+  - Police records: about 100 MDT handlers had no job check. Now gated in `server/access.lua`.
+- **Functional bugs found on the way:**
+  - garbage crews were never paid, because the client never sent `returnTruck`;
+  - `GetVehicleNumberPlate` is not a native (pf-mechanicjob engineering);
+  - `AddRecentCall` errored on every call;
+  - officer tables were never created (`ensureTables` nil).
+
+### Ledger under truly parallel database sessions (ledger 1.5)
+- **New test:** `tests/realdb/ledger_parallel.js` runs N processes, each with its own connection, against one database. They send the same and different idempotency keys at once.
+- **Found:** transfers failed with `ledger_write_failed` when two inserts drew the same tx_id. Ids came only from `math.random`, and a clash was reported as a failure. No money moved wrongly; the payments were lost.
+- **Fixed in 34addb5:** ids now include time and a counter, and a clash is retried with a new id.
+- **Result:** 6 workers running at once for about 2.4 s. Every key moved money once, balances are exact and reconciliation is clean.
+
+### Farming (ledger 5.1), new resource `[pfscripts]/pf-farming` (6346780)
+- Persistent plots (`pf_farm_plots`, migration v1). Growth comes from timestamps and only while watered, so it continues offline and across restarts.
+- The server places plots at the player's position; ownership and reach are checked; one harvest per plot.
+- Produce is a normal perishable item. The market pays by freshness and refuses spoiled produce. Seeds and sales go through the ledger.
+- Selling to businesses uses pf-stores' existing player suppliers. Suppliers can now stock food only while it is fresh or good (b94751f), so stale produce can't come back out of a delivery as fresh.
+- Tests: `farming_realdb_spec` (14, real DB) and the supplier freshness test in `supply_chain_realdb_spec`.
+
+### Tests actually run (2026-10-25)
+- **Mocked:** `node harness.js`: **681 passed, 0 failed, 96 spec files**.
+- **Real DB** (throwaway MariaDB 10.4):
+  - `realdb/run.js`: 84 passed in 7 spec files (21 supply chain, 14 farming, 14 injuries, 13 ledger, 16 restaurants, 3 shared accounts, 3 computer orders);
+  - `realdb/ledger_parallel.js 6`: passed;
+  - `realdb/sql_install_check.js`: passed.
+- **Staging FXServer** (`docs/staging/server.staging.cfg`, fresh `pf_staging` database with 29 install SQL files):
+  - 99 resources started, pf-farming migration v1 applied;
+  - no script errors apart from the known ones: ox_lib missing (pf-mechanicjob, illenium-appearance) and the kq_wheeldamage entitlement;
+  - the first run showed missing MDT tables because I had not loaded `pf-policemdt-qb.sql`; with it loaded, the second run was clean.
+- **Not covered:** pf-mechanicjob does not start without ox_lib, so its sweep fixes are covered only by mocked tests. No game client connected.
+
+### Install SQL note
+`pf-government/sql/migration_monthly_budget_infrastructure.sql` is an upgrade from weekly to monthly budgets. It fails on a fresh database (`Unknown column 'weekly_budget'`), which is expected for an upgrade file.
