@@ -105,7 +105,8 @@ The working list for the whole project. Read this first in every session, then `
 | mdt (pf-policemdt-DEV) | done | 9202e1a, d2e9ebd | sentence/jail any online citizen without proximity (design); grade 4+ can reseed roster (permission decision); built-in jail timer is client-side; UI JS not fully XSS-audited (18k lines) |
 | pol (police, prison, management, multichar, apartments, admin) | done | 4d90d39, 2db1416, d5c586f, 53e529c, 3896a3e, e7def91 | handcuff status client-driven (redesign); escape detection distance only; SyncSpikes rebroadcasts client table (police only, capped); /reportr never works (ace compare bug) |
 | jobs (pf-jobs, jobgarages, outfitbag, tablet, scoreboard, elevator, hud) | done | 877aba6, ee43911, 1b8d753, 5f8c5b8, ffb522a | pf-tabletuionly cash register sends a client total to pf-computer DepositSale (P0 if ever loaded; no manifest today); Gruppe6 stop distance unchecked (would break gruppe6_stash_spec positions); a fleet car can still leave its owner's personal garage (needs a state decision); jobgarages no on-duty requirement, min_grade_manage unused; taxi rating from client (P2); group payouts 1.5x each (economy) |
-| core, veh, mech, biz | running | — | — |
+| mech (pf-mechanicjob) | done | c5dc441, 0aa16d9, 1bd4789 | offline hiring by citizen id no longer works; parts fitted before a restart return no item; work-order minimum time tunable; attemptRepair and setLiftState/clutch flow lack job/distance checks (P2); service history readable for any plate (P2); first service:addEntry handler always errors; pf_business_employees roles not split by shop; locations table global; coal/smoke particle relays broadcast client net ids; diagnosticReport/requestTow pass client cost to unhandled events |
+| core, veh, biz | running | — | — |
 
 ## Session log
 
