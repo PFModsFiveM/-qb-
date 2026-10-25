@@ -158,8 +158,18 @@ local function registerStashHook()
     W.hookRegistered = ok
 end
 
+-- open/unpack/move each read the database: one request a second per player is plenty
+local actionAt = {}
+local function throttled(src)
+    local now = GetGameTimer()
+    if actionAt[src] and now - actionAt[src] < 1000 then return true end
+    actionAt[src] = now
+    return false
+end
+
 RegisterNetEvent('pfm-worldobjects:server:open', function(id)
     local src = source
+    if throttled(src) then return end
     local row = W.Get(id)
     if not row or row.state ~= 'sealed' or not near(src, row) or not canManage(src, row) then return end
     ensureStash(row)
@@ -197,6 +207,7 @@ end
 
 RegisterNetEvent('pfm-worldobjects:server:unpack', function(id)
     local src = source
+    if throttled(src) then return end
     local res = W.Unpack(src, id)
     TriggerClientEvent('QBCore:Notify', src, res.ok and 'Delivery unpacked into stock' or ('Cannot unpack: ' .. tostring(res.error)), res.ok and 'success' or 'error')
 end)
@@ -223,6 +234,7 @@ end
 
 RegisterNetEvent('pfm-worldobjects:server:move', function(id)
     local src = source
+    if throttled(src) then return end
     local res = W.Move(src, id)
     if not res.ok then TriggerClientEvent('QBCore:Notify', src, 'Cannot move: ' .. tostring(res.error), 'error') end
 end)
@@ -239,7 +251,7 @@ RegisterNetEvent('pfm-worldobjects:server:sync', function()
     end
     TriggerClientEvent('pfm-worldobjects:client:all', src, out)
 end)
-AddEventHandler('playerDropped', function() syncAt[source] = nil end)
+AddEventHandler('playerDropped', function() syncAt[source] = nil; actionAt[source] = nil end)
 
 -- ── start: migrations, then every sealed object back where it was saved ──────
 

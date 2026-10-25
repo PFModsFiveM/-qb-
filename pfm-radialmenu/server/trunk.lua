@@ -29,12 +29,20 @@ RegisterNetEvent('qb-radialmenu:trunk:server:Door', function(open, plate, door)
 end)
 
 RegisterNetEvent('qb-trunk:server:setTrunkBusy', function(plate, busy)
-    trunkBusy[plate] = busy
+    if type(plate) ~= 'string' or #plate > 16 then return end
+    trunkBusy[plate] = busy == true or nil
 end)
 
+-- Only a player who is already cuffed, dead or down can be put in a trunk (as for being carried off
+-- with police:server:KidnapPlayer); any nearby player could be forced in before.
 RegisterNetEvent('qb-trunk:server:KidnapTrunk', function(target, closestVehicle)
     local src = source
-    if not IsCloseToTarget(src, target) then return end
+    target = tonumber(target)
+    if not target or target == src or not IsCloseToTarget(src, target) then return end
+    local Target = exports['pfm-core']:GetPlayer(target)
+    if not Target then return end
+    local meta = Target.PlayerData.metadata or {}
+    if not (meta['ishandcuffed'] or meta['isdead'] or meta['inlaststand']) then return end
     TriggerClientEvent('qb-trunk:client:KidnapGetIn', target, closestVehicle)
 end)
 

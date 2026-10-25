@@ -54,7 +54,25 @@ local colors = { -- https://www.spycolor.com/
 
 local logQueue = {}
 
+-- Server scripts log anything. A client (pf-ambulancejob's death log) may only send the logs listed
+-- here, with no @everyone and no image, once every few seconds; any client could post anything to any
+-- webhook before, pinging everyone.
+local CLIENT_LOGS = { death = true }
+local CLIENT_LOG_COOLDOWN = 5
+local clientLogAt = {}
+
 RegisterNetEvent('qb-log:server:CreateLog', function(name, title, color, message, tagEveryone, imageUrl)
+    local src = tonumber(source)
+    if src and src > 0 then
+        if type(name) ~= 'string' or not CLIENT_LOGS[name] then return end
+        local now = os.time()
+        if clientLogAt[src] and now - clientLogAt[src] < CLIENT_LOG_COOLDOWN then return end
+        clientLogAt[src] = now
+        title = tostring(title or ''):sub(1, 256)
+        message = tostring(message or ''):sub(1, 2000)
+        if not colors[color] then color = 'default' end
+        tagEveryone, imageUrl = false, nil
+    end
     local tag = tagEveryone or false
 
     if Config.Logging == 'discord' then

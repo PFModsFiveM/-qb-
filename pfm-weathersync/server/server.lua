@@ -189,9 +189,13 @@ local function retrieveTimeFromApi(callback)
 end
 
 -- EVENTS
+-- A client asking for the state gets it itself; only the server resyncs everyone (each request used to
+-- broadcast to every player, so one client could flood all of them).
 RegisterNetEvent('qb-weathersync:server:RequestStateSync', function()
-    TriggerClientEvent('qb-weathersync:client:SyncWeather', -1, CurrentWeather, blackout)
-    TriggerClientEvent('qb-weathersync:client:SyncTime', -1, baseTime, timeOffset, freezeTime)
+    local target = tonumber(source)
+    if not target or target <= 0 then target = -1 end
+    TriggerClientEvent('qb-weathersync:client:SyncWeather', target, CurrentWeather, blackout)
+    TriggerClientEvent('qb-weathersync:client:SyncTime', target, baseTime, timeOffset, freezeTime)
 end)
 
 RegisterNetEvent('qb-weathersync:server:setWeather', function(weather)

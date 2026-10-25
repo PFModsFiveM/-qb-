@@ -29,7 +29,7 @@ local function IsWhitelisted(CitizenId)
         end
     end
     local Player = QBCore.Functions.GetPlayerByCitizenId(CitizenId)
-    local Perms = QBCore.Functions.GetPermission(Player.PlayerData.source)
+    local Perms = Player and QBCore.Functions.GetPermission(Player.PlayerData.source)
     if Perms == 'admin' or Perms == 'god' then
         retval = true
     end
@@ -92,6 +92,21 @@ local function GetRaceId(name)
     return retval
 end
 
+-- Client events name a race; the player must actually be one of its racers (the handlers used to act
+-- on any race id and crashed on unknown ones).
+local function RacerOf(src, RaceId)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(RaceId) ~= 'string' or not Races[RaceId] then return nil end
+    local racer = Races[RaceId].Racers[Player.PlayerData.citizenid]
+    if not racer then return nil end
+    return Player, racer
+end
+
+local MAX_LAPS = 50
+local MAX_CHECKPOINTS = 100
+local START_SLACK = 15 -- seconds of countdown and network delay between StartRace and the racers' clocks
+local MIN_TICKS_PER_SECOND = 5
+
 local function GenerateRaceId()
     local RaceId = 'LR-' .. math.random(1111, 9999)
     while Races[RaceId] ~= nil do
@@ -104,8 +119,23 @@ end
 
 RegisterNetEvent('qb-lapraces:server:FinishPlayer', function(RaceData, TotalTime, TotalLaps, BestLap)
     local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
+    if type(RaceData) ~= 'table' then return end
+    -- Only a racer in a started race finishes it, once, with times the server's clock allows: a time
+    -- shorter than the race has run is refused (records were any number a client sent).
+    local Player, racer = RacerOf(src, RaceData.RaceId)
+    if not Player or not Races[RaceData.RaceId].Started or racer.FinishSent then return end
     local AvailableKey = GetOpenedRaceKey(RaceData.RaceId)
+    if not AvailableKey then return end
+    TotalTime, TotalLaps, BestLap = tonumber(TotalTime), tonumber(TotalLaps), tonumber(BestLap)
+    if not TotalTime or TotalTime ~= TotalTime or TotalTime <= 0 or not TotalLaps or TotalLaps < 0 then return end
+    -- the client's race clock counts UI frames (one per 12 ms or more), so it can only be bounded below:
+    -- at least MIN_TICKS_PER_SECOND for each second the race has run on the server
+    local elapsed = os.time() - (Races[RaceData.RaceId].StartedAt or os.time())
+    if TotalTime < (elapsed - START_SLACK) * MIN_TICKS_PER_SECOND then return end
+    if TotalLaps >= 2 and (not BestLap or BestLap ~= BestLap or BestLap <= 0 or BestLap > TotalTime) then return end
+    racer.FinishSent = true
+    racer.Finished = true
+    RaceData = { RaceId = RaceData.RaceId, RaceName = Races[RaceData.RaceId].RaceName }
     local PlayersFinished = 0
     local AmountOfRacers = 0
     for _, v in pairs(Races[RaceData.RaceId].Racers) do
@@ -212,9 +242,13 @@ end)
 RegisterNetEvent('qb-lapraces:server:JoinRace', function(RaceData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(RaceData) ~= 'table' then return end
     local RaceId = RaceData.RaceId
     local AvailableKey = GetOpenedRaceKey(RaceId)
+    -- only a race that is set up and has not started can be joined
+    if not AvailableKey or not Races[RaceId] or Races[RaceId].Started then return end
     local CurrentRace = GetCurrentRace(Player.PlayerData.citizenid)
+    if CurrentRace == RaceId then return end
     if CurrentRace ~= nil then
         local AmountOfRacers = 0
         local PreviousRaceKey = GetOpenedRaceKey(CurrentRace)
@@ -244,9 +278,9 @@ RegisterNetEvent('qb-lapraces:server:JoinRace', function(RaceData)
     AvailableRaces[AvailableKey].RaceData = Races[RaceId]
     TriggerClientEvent('qb-lapraces:client:JoinRace', src, Races[RaceId], AvailableRaces[AvailableKey].Laps)
     TriggerClientEvent('qb-phone:client:UpdateLapraces', -1)
-    local creatorsource = QBCore.Functions.GetPlayerByCitizenId(AvailableRaces[AvailableKey].SetupCitizenId).PlayerData
-        .source
-    if creatorsource ~= Player.PlayerData.source then
+    local creator = QBCore.Functions.GetPlayerByCitizenId(AvailableRaces[AvailableKey].SetupCitizenId)
+    local creatorsource = creator and creator.PlayerData.source
+    if creatorsource and creatorsource ~= Player.PlayerData.source then
         TriggerClientEvent('qb-phone:client:RaceNotify', creatorsource,
             string.sub(Player.PlayerData.charinfo.firstname, 1, 1) .. '. ' .. Player.PlayerData.charinfo.lastname ..
             ' the race has been joined!')
@@ -256,17 +290,16 @@ end)
 RegisterNetEvent('qb-lapraces:server:LeaveRace', function(RaceData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    local RaceName
-    if RaceData.RaceData ~= nil then
-        RaceName = RaceData.RaceData.RaceName
-    else
-        RaceName = RaceData.RaceName
-    end
-    local RaceId = GetRaceId(RaceName)
-    local AvailableKey = GetOpenedRaceKey(RaceData.RaceId)
-    local creatorsource = QBCore.Functions.GetPlayerByCitizenId(AvailableRaces[AvailableKey].SetupCitizenId).PlayerData
-        .source
-    if creatorsource ~= Player.PlayerData.source then
+    if not Player then return end
+    -- the race left is the one the server has this player in (the client's race name and id could
+    -- name two different races, and unknown ones crashed the handler)
+    local RaceId = GetCurrentRace(Player.PlayerData.citizenid)
+    local AvailableKey = RaceId and GetOpenedRaceKey(RaceId)
+    if not AvailableKey then return end
+    RaceData = { RaceId = RaceId }
+    local creator = QBCore.Functions.GetPlayerByCitizenId(AvailableRaces[AvailableKey].SetupCitizenId)
+    local creatorsource = creator and creator.PlayerData.source
+    if creatorsource and creatorsource ~= Player.PlayerData.source then
         TriggerClientEvent('qb-phone:client:RaceNotify', creatorsource,
             string.sub(Player.PlayerData.charinfo.firstname, 1, 1) .. '. ' .. Player.PlayerData.charinfo.lastname ..
             ' the race has been delivered!')
@@ -340,6 +373,12 @@ end)
 
 RegisterNetEvent('qb-lapraces:server:SetupRace', function(RaceId, Laps)
     local Player = exports['pfm-core']:GetPlayer(source)
+    if not Player or type(RaceId) ~= 'string' then return end
+    -- the server enforces what the phone only showed: setup switched on, one open race per player,
+    -- and a sane lap count (0 = sprint)
+    if not Config.RaceSetupAllowed or HasOpenedRace(Player.PlayerData.citizenid) then return end
+    Laps = tonumber(Laps)
+    if not Laps or Laps ~= math.floor(Laps) or Laps < 0 or Laps > MAX_LAPS then return end
     if Races[RaceId] ~= nil then
         if not Races[RaceId].Waiting then
             if not Races[RaceId].Started then
@@ -384,6 +423,7 @@ end)
 RegisterNetEvent('qb-lapraces:server:CancelRace', function(raceId)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(source)
+    if not Player or type(raceId) ~= 'string' then return end
     local AvailableKey = GetOpenedRaceKey(raceId)
 
     TriggerClientEvent('QBCore:Notify', src, 'Stopping the race: ' .. raceId, 'error')
@@ -410,19 +450,26 @@ RegisterNetEvent('qb-lapraces:server:CancelRace', function(raceId)
     end
 end)
 
+-- The server already sets these states (SetupRace/JoinRace: waiting, StartRace: started); a racer's
+-- client echoing them is accepted, but no client can start or stop a race it is not in, or start one
+-- its creator has not started.
 RegisterNetEvent('qb-lapraces:server:UpdateRaceState', function(RaceId, Started, Waiting)
-    Races[RaceId].Waiting = Waiting
-    Races[RaceId].Started = Started
+    if not RacerOf(source, RaceId) then return end
+    local race = Races[RaceId]
+    if race.Started then return end
+    if Started == false and Waiting == true then race.Waiting = true end
 end)
 
 RegisterNetEvent('qb-lapraces:server:UpdateRacerData', function(RaceId, Checkpoint, Lap, Finished)
     local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
-    local CitizenId = Player.PlayerData.citizenid
+    local Player, racer = RacerOf(src, RaceId)
+    if not Player or not Races[RaceId].Started then return end
+    Checkpoint, Lap = tonumber(Checkpoint), tonumber(Lap)
+    if not Checkpoint or not Lap or Checkpoint < 0 or Checkpoint > MAX_CHECKPOINTS or Lap < 0 or Lap > MAX_LAPS + 1 then return end
 
-    Races[RaceId].Racers[CitizenId].Checkpoint = Checkpoint
-    Races[RaceId].Racers[CitizenId].Lap = Lap
-    Races[RaceId].Racers[CitizenId].Finished = Finished
+    racer.Checkpoint = math.floor(Checkpoint)
+    racer.Lap = math.floor(Lap)
+    racer.Finished = Finished == true
 
     TriggerClientEvent('qb-lapraces:client:UpdateRaceRacerData', -1, RaceId, Races[RaceId])
 end)
@@ -430,12 +477,15 @@ end)
 RegisterNetEvent('qb-lapraces:server:StartRace', function(RaceId)
     local src = source
     local MyPlayer = exports['pfm-core']:GetPlayer(src)
+    if not MyPlayer then return end
     local AvailableKey = GetOpenedRaceKey(RaceId)
 
-    if RaceId ~= nil then
+    if RaceId ~= nil and AvailableKey ~= nil then
         if AvailableRaces[AvailableKey].SetupCitizenId == MyPlayer.PlayerData.citizenid then
+            if AvailableRaces[AvailableKey].RaceData.Started then return end
             AvailableRaces[AvailableKey].RaceData.Started = true
             AvailableRaces[AvailableKey].RaceData.Waiting = false
+            AvailableRaces[AvailableKey].RaceData.StartedAt = os.time()
             for CitizenId, _ in pairs(Races[RaceId].Racers) do
                 local Player = QBCore.Functions.GetPlayerByCitizenId(CitizenId)
                 if Player ~= nil then
@@ -454,9 +504,18 @@ end)
 RegisterNetEvent('qb-lapraces:server:SaveRace', function(RaceData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    -- only whitelisted creators save tracks (anyone could write tracks to the database before), with a
+    -- free name of sane length and a bounded number of checkpoints
+    if not Player or type(RaceData) ~= 'table' or not IsWhitelisted(Player.PlayerData.citizenid) then return end
+    if type(RaceData.RaceName) ~= 'string' or #RaceData.RaceName < 1 or #RaceData.RaceName > 64 or not IsNameAvailable(RaceData.RaceName) then return end
+    if type(RaceData.Checkpoints) ~= 'table' or #RaceData.Checkpoints < 2 or #RaceData.Checkpoints > MAX_CHECKPOINTS then return end
+    local distance = tonumber(RaceData.RaceDistance)
+    if not distance or distance ~= distance or distance < 0 or distance > 1e6 then return end
+    RaceData.RaceDistance = distance
     local RaceId = GenerateRaceId()
     local Checkpoints = {}
-    for k, v in pairs(RaceData.Checkpoints) do
+    for k, v in ipairs(RaceData.Checkpoints) do
+        if type(v) ~= 'table' or type(v.coords) ~= 'table' then return end
         Checkpoints[k] = {
             offset = v.offset,
             coords = v.coords
@@ -476,7 +535,7 @@ RegisterNetEvent('qb-lapraces:server:SaveRace', function(RaceData)
     }
     MySQL.insert('INSERT INTO lapraces (name, checkpoints, creator, distance, raceid) VALUES (?, ?, ?, ?, ?)',
         { RaceData.RaceName, json.encode(Checkpoints), Player.PlayerData.citizenid, RaceData.RaceDistance,
-            GenerateRaceId() })
+            RaceId })
 end)
 
 -- Callbacks
@@ -509,11 +568,14 @@ QBCore.Functions.CreateCallback('qb-lapraces:server:CanRaceSetup', function(_, c
     cb(Config.RaceSetupAllowed)
 end)
 
+-- The phone shows the track creator's name; only that is sent. (The creator's whole players row -
+-- money, inventory, metadata, license - went to any client asking.)
 QBCore.Functions.CreateCallback('qb-lapraces:server:GetTrackData', function(_, cb, RaceId)
-    local result = MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { Races[RaceId].Creator })
-    if result[1] ~= nil then
-        result[1].charinfo = json.decode(result[1].charinfo)
-        cb(Races[RaceId], result[1])
+    if type(RaceId) ~= 'string' or not Races[RaceId] then return cb(nil) end
+    local result = MySQL.query.await('SELECT charinfo FROM players WHERE citizenid = ?', { Races[RaceId].Creator }) or {}
+    local charinfo = result[1] and json.decode(result[1].charinfo or '')
+    if type(charinfo) == 'table' then
+        cb(Races[RaceId], { charinfo = { firstname = charinfo.firstname, lastname = charinfo.lastname } })
     else
         cb(Races[RaceId], {
             charinfo = {

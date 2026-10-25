@@ -94,7 +94,8 @@ RegisterNetEvent('qb-shops:server:RestockShopItems', function(shop)
     TriggerClientEvent('qb-shops:client:SetShopItems', -1, shop, Config.Locations[shop].products)
 end)
 
-RegisterNetEvent('qb-shops:server:UpdateShopItems', function(shop, itemData, amount) -- called from inventory
+-- server-only: pfm-inventory triggers it after a purchase (as a net event any client could empty any shop's stock)
+AddEventHandler('qb-shops:server:UpdateShopItems', function(shop, itemData, amount)
     if not shop or type(itemData) ~= 'table' or not amount then return end
     if not Config.Locations[shop] then return end
     if not usesStock(shop) then return end

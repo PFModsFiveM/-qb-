@@ -107,6 +107,12 @@ RegisterNetEvent('qb-crafting:server:receiveItem', function(benchType, craftedIt
     local currentXP = Player.GetRep(xpType) or 0
     if (recipe.xpRequired or 0) > currentXP then return end
 
+    -- every material is checked before any is taken (a missing second material used to leave the
+    -- first one already removed)
+    for _, requiredItem in ipairs(recipe.requiredItems or {}) do
+        if not exports['pfm-inventory']:HasItem(src, requiredItem.item, requiredItem.amount * amountToCraft) then return end
+    end
+
     for _, requiredItem in ipairs(recipe.requiredItems or {}) do
         local totalRequiredAmount = requiredItem.amount * amountToCraft
         if not exports['pfm-inventory']:RemoveItem(src, requiredItem.item, totalRequiredAmount, false, 'qb-crafting:server:receiveItem') then
