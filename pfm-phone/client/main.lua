@@ -718,7 +718,6 @@ RegisterNUICallback('PayInvoice', function(data, cb)
     QBCore.Functions.TriggerCallback('qb-phone:server:PayInvoice', function(resp)
         cb(resp)
     end, society, amount, invoiceId, senderCitizenId)
-    TriggerServerEvent('qb-phone:server:BillingEmail', data, true)
 end)
 
 RegisterNUICallback('DeclineInvoice', function(data, cb)
@@ -728,7 +727,6 @@ RegisterNUICallback('DeclineInvoice', function(data, cb)
     QBCore.Functions.TriggerCallback('qb-phone:server:DeclineInvoice', function(resp)
         cb(resp)
     end, society, amount, invoiceId)
-    TriggerServerEvent('qb-phone:server:BillingEmail', data, false)
 end)
 
 RegisterNUICallback('EditContact', function(data, cb)
@@ -1723,22 +1721,6 @@ RegisterNetEvent('qb-phone:client:UpdateAdverts', function(Adverts, LastAd)
         action = 'RefreshAdverts',
         Adverts = PhoneData.Adverts
     })
-end)
-
-RegisterNetEvent('qb-phone:client:BillingEmail', function(data, paid, name)
-    if paid then
-        TriggerServerEvent('qb-phone:server:sendNewMail', {
-            sender = 'Billing Department',
-            subject = 'Invoice Paid',
-            message = 'Invoice Has Been Paid From ' .. name .. ' In The Amount Of $' .. data.amount,
-        })
-    else
-        TriggerServerEvent('qb-phone:server:sendNewMail', {
-            sender = 'Billing Department',
-            subject = 'Invoice Declined',
-            message = 'Invoice Has Been Declined From ' .. name .. ' In The Amount Of $' .. data.amount,
-        })
-    end
 end)
 
 RegisterNetEvent('qb-phone:client:CancelCall', function()

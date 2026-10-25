@@ -305,6 +305,12 @@ QBCoreMock = {
             end
         end,
         GetQBPlayers = function() return Mock.players end,
+        GetPlayers = function()
+            local out = {}
+            for src in pairs(Mock.players) do out[#out + 1] = src end
+            table.sort(out)
+            return out
+        end,
         CreateCallback = function(name, fn) Mock.callbacks[name] = fn end,
         CreateUseableItem = function(name, fn) Mock.useables[name] = fn end,
         AddPlayerMethod = function() end,

@@ -223,6 +223,24 @@ local function sendNewMailToOffline(citizenid, mailData)
     end
 end
 exports('sendNewMailToOffline', sendNewMailToOffline)
+
+--- Tells the online members of the billing business that a bill was paid or declined, from the
+--- server's own invoice data. (Clients used to send this through qb-phone:server:BillingEmail with a
+--- business and amount of their choosing, so anyone could mail any job fake "invoice paid" notices.)
+local function notifyBillingSociety(society, payer, amount, paid)
+    if type(society) ~= 'string' or society == '' then return end
+    local name = ('%s %s'):format(payer.PlayerData.charinfo.firstname or '', payer.PlayerData.charinfo.lastname or '')
+    for _, src in pairs(QBCore.Functions.GetPlayers()) do
+        local member = exports['pfm-core']:GetPlayer(src)
+        if member and member.PlayerData.job and member.PlayerData.job.name == society then
+            sendNewMailToOffline(member.PlayerData.citizenid, {
+                sender = 'Billing Department',
+                subject = paid and 'Invoice Paid' or 'Invoice Declined',
+                message = ('Invoice Has Been %s From %s In The Amount Of $%s'):format(paid and 'Paid' or 'Declined', name, tostring(amount)),
+            })
+        end
+    end
+end
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetInvoices', function(source, cb)
@@ -389,16 +407,18 @@ QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, c
         })
     end
     TriggerEvent('qb-phone:server:paidInvoice', source, invoiceId)
+    notifyBillingSociety(society, Ply, amount, true)
     cb(true)
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:DeclineInvoice', function(source, cb, _, _, invoiceId)
     local Ply = exports['pfm-core']:GetPlayer(source)
     if Ply then
-        local exists = MySQL.query.await('select count(1) as count FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, Ply.PlayerData.citizenid, 1 })
+        local rows = MySQL.query.await('SELECT amount, society FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, Ply.PlayerData.citizenid, 1 })
 
-        if exists[1] and exists[1]['count'] == 1 then
+        if rows and rows[1] then
             TriggerEvent('qb-phone:server:declinedInvoice', source, invoiceId)
+            notifyBillingSociety(rows[1].society, Ply, rows[1].amount, false)
             MySQL.query('DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, Ply.PlayerData.citizenid, 1 })
             cb(true)
             return
@@ -849,20 +869,7 @@ RegisterNetEvent('qb-phone:server:CallContact', function(TargetData, CallId, Ano
     end
 end)
 
-RegisterNetEvent('qb-phone:server:BillingEmail', function(data, paid)
-    for _, v in pairs(QBCore.Functions.GetPlayers()) do
-        local target = exports['pfm-core']:GetPlayer(v)
-        if target.PlayerData.job.name == data.society then
-            if paid then
-                local name = '' .. exports['pfm-core']:GetPlayer(source).PlayerData.charinfo.firstname .. ' ' .. exports['pfm-core']:GetPlayer(source).PlayerData.charinfo.lastname .. ''
-                TriggerClientEvent('qb-phone:client:BillingEmail', target.PlayerData.source, data, true, name)
-            else
-                local name = '' .. exports['pfm-core']:GetPlayer(source).PlayerData.charinfo.firstname .. ' ' .. exports['pfm-core']:GetPlayer(source).PlayerData.charinfo.lastname .. ''
-                TriggerClientEvent('qb-phone:client:BillingEmail', target.PlayerData.source, data, false, name)
-            end
-        end
-    end
-end)
+-- (qb-phone:server:BillingEmail removed: the server sends these mails itself, see notifyBillingSociety)
 
 RegisterNetEvent('qb-phone:server:UpdateHashtags', function(Handle, messageData)
     local src = source

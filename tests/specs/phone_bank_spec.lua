@@ -4,8 +4,19 @@ load_resource('tests/lua/ledger_env.lua')
 
 local accounts = {}   -- [account number] = citizenid
 local invoices = {}   -- [id] = row
+local sentMails = {}  -- mails the server itself stored (player_mails inserts)
 
 FakeDB.extraPatterns = {
+    { 'INSERT INTO player_mails', function(p) sentMails[#sentMails + 1] = { cid = p[1], subject = p[3], message = p[4] }; return 1 end },
+    { 'SELECT amount, society FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', function(p)
+        local row = invoices[tonumber(p[1])]
+        return (row and row.citizenid == p[2] and row.candecline == p[3]) and { row } or {}
+    end },
+    { 'select count(1) as count FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', function(p)
+        local row = invoices[tonumber(p[1])]
+        return { { count = (row and row.citizenid == p[2] and row.candecline == p[3]) and 1 or 0 } }
+    end },
+    { 'DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', function(p) invoices[tonumber(p[1])] = nil; return 1 end },
     { 'SELECT citizenid FROM players WHERE charinfo LIKE ?', function(p)
         local wanted = p[1]:match('^%%"account":"(.-)"%%$')
         local out = {}
@@ -56,7 +67,7 @@ BeforeEach = function()
     LedgerEnv.reset()
     Mock.clock = Mock.clock + 1000
     Mock.players, Mock.coords = {}, {}
-    mails = {}
+    mails, sentMails = {}, {}
     accounts = { ['PF100001'] = 'CID1', ['PF100002'] = 'CID2', ['PF200001'] = 'CIDOFF' }
     for src, money in pairs({ [A] = 1000, [B] = 0, [BILLER] = 0 }) do
         local p = Mock.newPlayer(src)
@@ -64,6 +75,8 @@ BeforeEach = function()
         p.Functions.GetItemByName = function(name) return name == 'phone' and { name = 'phone' } or nil end
     end
     FakeDB.players['CIDOFF'] = { money = { cash = 0, bank = 50 } }
+    Mock.players[BILLER].PlayerData.job = { name = 'police' }
+    Mock.players[B].PlayerData.job = { name = 'mechanic' }
     FakeDB.society('police', 0)
     Config.BillingCommissions = { police = 0.10 }
     invoices = { [7] = { id = 7, citizenid = 'CID1', amount = 500, society = 'police', sender = 'Officer', sendercitizenid = 'CID3', candecline = 1 } }
@@ -125,5 +138,43 @@ describe('invoices', function()
     it("someone else's invoice cannot be paid or seen", function()
         assert_eq(Mock.callCallback('qb-phone:server:PayInvoice', B, 'police', 500, 7, 'CID3'), false)
         assert_eq(FakeDB.bank_accounts['police'].account_balance, 0)
+    end)
+end)
+
+local function mailsTo(cid)
+    local out = {}
+    for _, m in ipairs(sentMails) do if m.cid == cid then out[#out + 1] = m end end
+    return out
+end
+
+describe('billing mails to the business', function()
+    it('a client cannot send a business fake "invoice paid" mails', function()
+        -- the old relay mailed every member of the named job whatever amount the client gave
+        if Mock.netHandlers['qb-phone:server:BillingEmail'] then
+            Mock.fireNet('qb-phone:server:BillingEmail', B, { society = 'police', amount = 999999 }, true)
+        end
+        assert_eq(#sentMails, 0)
+        local relayed = 0
+        for _, c in ipairs(Mock.clientEvents or {}) do
+            if c.name == 'qb-phone:client:BillingEmail' then relayed = relayed + 1 end
+        end
+        assert_eq(relayed, 0)
+    end)
+    it('paying a bill mails the online members of the stored business with the stored amount', function()
+        Mock.callCallback('qb-phone:server:PayInvoice', A, 'mechanic', 1, 7, 'CID2')
+        local got = mailsTo('CID3')
+        local paid
+        for _, m in ipairs(got) do if m.subject == 'Invoice Paid' then paid = m end end
+        assert_true(paid ~= nil, 'police member told')
+        assert_true(paid.message:find('$500', 1, true) ~= nil, paid.message)
+        assert_eq(#mailsTo('CID2'), 0)            -- the mechanic named by the client hears nothing
+    end)
+    it('declining a bill mails the business once, and only for a real invoice', function()
+        assert_eq(Mock.callCallback('qb-phone:server:DeclineInvoice', A, nil, nil, 7), true)
+        local got = mailsTo('CID3')
+        assert_eq(#got, 1)
+        assert_eq(got[1].subject, 'Invoice Declined')
+        assert_eq(Mock.callCallback('qb-phone:server:DeclineInvoice', A, nil, nil, 7), false)
+        assert_eq(#mailsTo('CID3'), 1)
     end)
 end)
