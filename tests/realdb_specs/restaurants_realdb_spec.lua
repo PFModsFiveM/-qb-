@@ -220,6 +220,21 @@ describe('deliveries left packed', function()
     end)
 end)
 
+describe('government record', function()
+    it('staff changes update the owner and the employee count', function()
+        local gov = Mock.exportsByResource['pf-government']
+        local counted
+        gov.UpdateBusinessEmployees = function(_, id, n) counted = { id = id, n = n } return true end
+        RestaurantDB.SaveEmployee(BID, 'EMP9', 'cook')
+        assert_eq(counted.id, 'restaurant:' .. BID)
+        local n = tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM pf_restaurant_employees WHERE business_id = ?', { BID }))
+        assert_eq(counted.n, n)
+        RestaurantDB.DeleteEmployee(BID, 'EMP9')
+        assert_eq(counted.n, n - 1)
+        gov.UpdateBusinessEmployees = nil
+    end)
+end)
+
 describe('health inspections', function()
     it('go on the government record with the compliance the rating gives', function()
         local gov = Mock.exportsByResource['pf-government']
