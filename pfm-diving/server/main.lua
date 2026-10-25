@@ -48,19 +48,40 @@ end
 
 -- Events
 
-RegisterNetEvent('qb-diving:server:CallCops', function(coords)
+-- A diver taking coral may tip off the police. The alert is placed where the diver really is, only
+-- at the current dive area, at most once a minute per diver, and the phone alert goes to the officers
+-- only. (It used to send any client-chosen spot to every player, once per officer on duty.)
+local CallCopsCooldown = {}
+local CALL_COPS_SECONDS = 60
+local CALL_COPS_RANGE = 100.0
+
+local function nearCurrentDiveArea(pos)
+    local areaData = Config.CoralLocations[currentDivingArea]
+    if not areaData then return false end
+    for _, c in pairs(areaData.coords.Coral) do
+        if #(pos - c.coords) <= CALL_COPS_RANGE then return true end
+    end
+    return false
+end
+
+RegisterNetEvent('qb-diving:server:CallCops', function()
+    local src = source
+    if not exports['pfm-core']:GetPlayer(src) then return end
+    local now = os.time()
+    if CallCopsCooldown[src] and now - CallCopsCooldown[src] < CALL_COPS_SECONDS then return end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    if not nearCurrentDiveArea(pos) then return end
+    CallCopsCooldown[src] = now
+    local coords = vector3(pos.x, pos.y, pos.z)
+    local msg = Lang:t('info.cop_msg')
     for _, Player in pairs(QBCore.Functions.GetQBPlayers()) do
-        if Player then
-            if Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
-                local msg = Lang:t('info.cop_msg')
-                TriggerClientEvent('qb-diving:client:CallCops', Player.PlayerData.source, coords, msg)
-                local alertData = {
-                    title = Lang:t('info.cop_title'),
-                    coords = coords,
-                    description = msg
-                }
-                TriggerClientEvent('qb-phone:client:addPoliceAlert', -1, alertData)
-            end
+        if Player and Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
+            TriggerClientEvent('qb-diving:client:CallCops', Player.PlayerData.source, coords, msg)
+            TriggerClientEvent('qb-phone:client:addPoliceAlert', Player.PlayerData.source, {
+                title = Lang:t('info.cop_title'),
+                coords = coords,
+                description = msg
+            })
         end
     end
 end)
@@ -124,6 +145,12 @@ RegisterNetEvent('qb-diving:server:TakeCoral', function(area, coral, _)
     local ItemData = sharedItems[rewardItem]
     if not ItemData then return end
 
+    -- Claim the coral before handing anything out: the grant loop below waits between items, and a
+    -- second request for the same coral used to get past the PickedUp check meanwhile.
+    coralData.PickedUp = true
+    areaData.TotalCoral = areaData.TotalCoral - 1
+    TriggerClientEvent('qb-diving:client:UpdateCoral', -1, area, coral, true)
+
     if amount > 1 then
         for _ = 1, amount, 1 do
             exports['pfm-inventory']:AddItem(src, ItemData['name'], 1, false, false, 'qb-diving:server:TakeCoral')
@@ -135,28 +162,26 @@ RegisterNetEvent('qb-diving:server:TakeCoral', function(area, coral, _)
         TriggerClientEvent('qb-inventory:client:ItemBox', src, ItemData, 'add')
     end
 
-    if (Config.CoralLocations[area].TotalCoral - 1) == 0 then
-        for _, v in pairs(Config.CoralLocations[currentDivingArea].coords.Coral) do
+    -- the last coral of the area moves the dive to a new area (once: only the request that took it)
+    if areaData.TotalCoral <= 0 and area == currentDivingArea then
+        for _, v in pairs(areaData.coords.Coral) do
             v.PickedUp = false
         end
 
-        Config.CoralLocations[currentDivingArea].TotalCoral = Config.CoralLocations[currentDivingArea].DefaultCoral
+        areaData.TotalCoral = areaData.DefaultCoral
         local newLocation = math.random(1, #Config.CoralLocations)
-        while newLocation == currentDivingArea do
+        while newLocation == currentDivingArea and #Config.CoralLocations > 1 do
             Wait(0)
             newLocation = math.random(1, #Config.CoralLocations)
         end
         currentDivingArea = newLocation
         TriggerClientEvent('qb-diving:client:NewLocations', -1)
-    else
-        Config.CoralLocations[area].coords.Coral[coral].PickedUp = true
-        Config.CoralLocations[area].TotalCoral = Config.CoralLocations[area].TotalCoral - 1
     end
-    TriggerClientEvent('qb-diving:client:UpdateCoral', -1, area, coral, true)
 end)
 
 AddEventHandler('playerDropped', function()
     LastPickup[source] = nil
+    CallCopsCooldown[source] = nil
 end)
 
 RegisterNetEvent('qb-diving:server:removeItemAfterFill', function()
