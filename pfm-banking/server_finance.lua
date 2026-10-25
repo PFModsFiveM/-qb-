@@ -260,7 +260,7 @@ end
 QBCore.Functions.CreateCallback('qb-banking:server:orderCreditCard', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
-    local product = getCardProduct(data.cardId)
+    local product = type(data) == 'table' and getCardProduct(data.cardId) or nil
     if not product then return cb({ success = false, message = 'Unknown card' }) end
 
     local score = GetCreditScore(citizenid)

@@ -386,6 +386,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:orderCard', function(source, 
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.pin') }) end
     local cardNumber = math.random(1000000000000000, 9999999999999999)
     local pinNumber = tonumber(data.pin)
     if not pinNumber then return cb({ success = false, message = Lang:t('error.pin') }) end
@@ -483,6 +484,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:addUser', function(source, cb
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' or type(data.userName) ~= 'string' or not data.userName:match('^%w+$') or #data.userName > 50 then return cb({ success = false, message = Lang:t('error.user') }) end
     local userToAdd = data.userName
     local accountName = data.accountName
     if not Accounts[accountName] then return cb({ success = false, message = Lang:t('error.account') }) end
@@ -505,6 +507,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:removeUser', function(source,
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    if type(data) ~= 'table' or type(data.userName) ~= 'string' then return cb({ success = false, message = Lang:t('error.noUser') }) end
     local userToRemove = data.userName
     local accountName = data.accountName
     if not Accounts[accountName] then return cb({ success = false, message = Lang:t('error.account') }) end

@@ -291,7 +291,7 @@ RegisterServerEvent('qb-crypto:server:ExchangeSuccess', function()
         Player.AddMoney('crypto', Amount, 'qb-crypto:server:ExchangeSuccess')
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.you_have_exchanged_your_cryptostick_for', { amount = Amount }), 'success', 3500)
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['cryptostick'], 'remove')
-        TriggerClientEvent('qb-phone:client:AddTransaction', src, Player, {}, Lang:t('credit.there_are_amount_credited', { amount = Amount }), 'Credit')
+        TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, Lang:t('credit.there_are_amount_credited', { amount = Amount }), 'Credit')
     end
 end)
 
@@ -310,6 +310,7 @@ end)
 
 QBCore.Functions.CreateCallback('qb-crypto:server:GetCryptoData', function(source, cb, name)
     local Player = exports['pfm-core']:GetPlayer(source)
+    if not Player then return cb(nil) end
     local CryptoData = {
         History = Crypto.History[name],
         Worth = Crypto.Worth[name],
@@ -339,7 +340,7 @@ QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, c
         if not PFPayout.Charge(Player, 'bank', total_price, {
             key = ('pfm-crypto:buy:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Bought Qbit',
         }) then return cb(false) end
-        TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
+        TriggerClientEvent('qb-phone:client:AddTransaction', source, nil, nil, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
         Player.AddMoney('crypto', coins, 'bought crypto')
         cb(CryptoData)
     else
@@ -368,7 +369,7 @@ QBCore.Functions.CreateCallback('qb-crypto:server:SellCrypto', function(source, 
             Player.AddMoney('crypto', coins, 'sold crypto: bank unavailable')
             return cb(false)
         end
-        TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, Lang:t('debit.you_have_sold', { dataCoins = coins }), 'Debit')
+        TriggerClientEvent('qb-phone:client:AddTransaction', source, nil, nil, Lang:t('debit.you_have_sold', { dataCoins = coins }), 'Debit')
         cb(CryptoData)
     else
         cb(false)
@@ -400,12 +401,14 @@ QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(sour
                 WalletId = Player.PlayerData.metadata['walletid'],
             }
             if not Player.RemoveMoney('crypto', tonumber(data.Coins), 'transfer crypto') then return cb('notenough') end
-            TriggerClientEvent('qb-phone:client:AddTransaction', source, Player, data, 'You have ' .. tonumber(data.Coins) .. " Qbit('s) transferred!", 'Debit')
+            TriggerClientEvent('qb-phone:client:AddTransaction', source, nil, nil, 'You have ' .. tonumber(data.Coins) .. " Qbit('s) transferred!", 'Debit')
             local Target = QBCore.Functions.GetPlayerByCitizenId(result[1].citizenid)
 
             if Target ~= nil then
                 Target.Functions.AddMoney('crypto', tonumber(data.Coins), 'transfer crypto')
-                TriggerClientEvent('qb-phone:client:AddTransaction', Target.PlayerData.source, Player, data, 'There are ' .. tonumber(data.Coins) .. " Qbit('s) credited!", 'Credit')
+                -- the phone only reads the message and title (the sender's whole player object, with
+                -- their money, items and personal data, used to be sent to the receiver)
+                TriggerClientEvent('qb-phone:client:AddTransaction', Target.PlayerData.source, nil, nil, 'There are ' .. tonumber(data.Coins) .. " Qbit('s) credited!", 'Credit')
             else
                 -- one atomic update (read-then-write could lose coins if the player logged in meanwhile)
                 MySQL.update([[UPDATE players SET money = JSON_SET(money, '$.crypto',
