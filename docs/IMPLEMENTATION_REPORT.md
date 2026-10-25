@@ -1502,3 +1502,18 @@ The working list is now `docs/TASK_LEDGER.md` (statuses, evidence, next task per
   - mocked 689 passed;
   - real database 103 passed in 9 files;
   - staging: 99 resources, only the known ox_lib and kq_wheeldamage failures.
+
+**Decisions applied (2026-10-25):**
+- **Business licenses:** record-only. Not required to trade; no change.
+- **Government transfers drive ownership (b5d22d2):** `business:updateOwner` changes the real owner first, then the record.
+  - Stores: pf-stores `SetStoreOwnerFromGovernment` (empty = for sale).
+  - Restaurants: pf-restaurants `SetOwnerFromGovernment` (the old owner leaves the staff).
+  - Both exports accept pf-government only and need an existing character.
+  - Mechanic shops are job-owned and are refused.
+  - Tests (real DB): government_business (3), restaurants (1), supply_chain (1).
+- **No more auto-bans (e86e9e8):** pfm-pawnshop and pfm-recyclejob refuse and log a request from too far away. Previously one miss (pawnshop) or three (recycling) banned permanently. Tests: `recycle_spec`, `pawnshop_distance_spec` (both fail on the old code).
+- **Store prices:** left to you: every purchasable store in `pf-stores/shared/config.lua` still has price 0.
+- **Totals:**
+  - mocked 691 passed;
+  - real database 108 passed in 9 files;
+  - staging 99 resources, known failures only.
