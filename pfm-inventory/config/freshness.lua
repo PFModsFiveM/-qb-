@@ -65,6 +65,8 @@ Config.Freshness = {
     DeliveryGraceSeconds = 1800,
     DeliveryGraceStorage = 'normal',
     DeliveryStorage = 'outdoor',
+    -- Ground drops use the 'sunlight' rate in these weathers between these game hours
+    Sunlight = { Weathers = { EXTRASUNNY = true, CLEAR = true }, FromHour = 11, ToHour = 16 },
 
     -- Freshness bands, highest first. Spoiled food is never deleted; it stays usable with penalties.
     States = {

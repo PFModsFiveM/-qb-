@@ -962,3 +962,17 @@ RegisterNetEvent('qb-inventory:server:SetInventoryData', function(fromInventory,
         end
     end
 end)
+
+-- Food dropped on the ground spoils faster in the midday sun (pfm-weathersync weather and clock).
+CreateThread(function()
+    while true do
+        Wait(300000)
+        local sunny = false
+        if GetResourceState('pfm-weathersync') == 'started' then
+            local okW, weather = pcall(function() return exports['pfm-weathersync']:getWeatherState() end)
+            local okT, hour = pcall(function() return exports['pfm-weathersync']:getTime() end)
+            sunny = okW and okT and PFFreshness.IsSunny(weather, hour) or false
+        end
+        pcall(PFFreshness.UpdateDropSunlight, Drops, sunny)
+    end
+end)

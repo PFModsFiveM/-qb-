@@ -204,6 +204,33 @@ function F.Prepare(itemName, info, storage, now)
     return info
 end
 
+--- Whether it is sunny enough for food lying outside to spoil faster: a clear sky around midday.
+function F.IsSunny(weather, hour)
+    local c = (cfg() or {}).Sunlight or {}
+    local weathers = c.Weathers or { EXTRASUNNY = true, CLEAR = true }
+    hour = tonumber(hour)
+    return weathers[tostring(weather or ''):upper()] == true and hour ~= nil
+        and hour >= (c.FromHour or 11) and hour <= (c.ToHour or 16)
+end
+
+--- Ground drops use the 'sunlight' rate while it is sunny and the outdoor rule otherwise. The
+--- shelf life used so far is settled at the old rate before a drop switches.
+function F.UpdateDropSunlight(drops, sunny, now)
+    now = now or F.now()
+    local want = sunny and 'sunlight' or nil
+    for id, drop in pairs(drops or {}) do
+        id = tostring(id)
+        if F.StorageOverrides[id] ~= want then
+            F.SetStorageOverride(id, want)
+            -- re-preparing settles the shelf life used at the item's old rate, then switches it
+            if drop.items then F.EnsureItems(drop.items, id, now) end
+        end
+    end
+    for id in pairs(F.StorageOverrides) do
+        if id:find('^drop%-') and not (drops or {})[id] then F.StorageOverrides[id] = nil end
+    end
+end
+
 --- Freshness for goods unpacked from a delivery. Goods age at the grace storage rate (normal) for
 --- the first DeliveryGraceSeconds after delivery (30 minutes), then at the faster DeliveryStorage
 --- rate (outdoor) for as long as the delivery stayed packed. Returns an info table, or nil for
