@@ -45,13 +45,13 @@ RegisterNetEvent('qb-weed:server:placePlant', function(coords, sort, currentHous
     if type(currentHouse) ~= 'string' or #currentHouse > 64 then return end
     local plantCoords = decodeCoords(coords)
     if not nearCoords(src, plantCoords) then return end
-    -- grow only in a house you hold keys for
-    if GetResourceState('pfm-houses') == 'started' then
-        local ok, allowed = pcall(function()
-            return exports['pfm-houses']:hasKey(Player.PlayerData.license, Player.PlayerData.citizenid, currentHouse)
-        end)
-        if ok and not allowed then return end
-    end
+    -- grow only in a house you hold keys for (refused when that cannot be checked: plants used to be
+    -- allowed anywhere while pfm-houses was stopped or its key check failed)
+    if GetResourceState('pfm-houses') ~= 'started' then return end
+    local ok, allowed = pcall(function()
+        return exports['pfm-houses']:hasKey(Player.PlayerData.license, Player.PlayerData.citizenid, currentHouse)
+    end)
+    if not ok or not allowed then return end
     -- the seed is used up here, in the same step
     if not exports['pfm-inventory']:RemoveItem(src, 'weed_' .. sort .. '_seed', 1, false, 'qb-weed:server:placePlant') then return end
 
