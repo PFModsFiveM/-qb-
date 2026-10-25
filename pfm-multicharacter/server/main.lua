@@ -58,6 +58,33 @@ local function loadHouseData(src)
     TriggerClientEvent('qb-houses:client:setHouseConfig', src, Houses)
 end
 
+local function MaxCharacters(license)
+    for _, v in pairs(Config.PlayersNumberOfCharacters or {}) do
+        if v.license == license then return v.numberOfChars end
+    end
+    return Config.DefaultNumberOfCharacters
+end
+
+-- Only the fields the creation form fills in; phone, account and the rest are made by pfm-core.
+-- (A client could send someone else's bank account or phone number, or any other field.)
+local function CleanCharinfo(data)
+    local function text(v, max)
+        if type(v) ~= 'string' then return nil end
+        v = v:gsub('%c', ''):gsub('^%s+', ''):gsub('%s+$', '')
+        if v == '' or #v > max then return nil end
+        return v
+    end
+    local charinfo = {
+        firstname = text(data.firstname, 32),
+        lastname = text(data.lastname, 32),
+        birthdate = text(data.birthdate, 16),
+        nationality = text(data.nationality, 48),
+        gender = tonumber(data.gender) == 1 and 1 or 0,
+    }
+    if not charinfo.firstname or not charinfo.lastname or not charinfo.birthdate then return nil end
+    return charinfo
+end
+
 -- Commands
 
 QBCore.Commands.Add('logout', Lang:t('commands.logout_description'), {}, false, function(source)
@@ -89,6 +116,10 @@ end)
 
 RegisterNetEvent('qb-multicharacter:server:loadUserData', function(cData)
     local src = source
+    -- a missing citizenid made Login create a blank new character; loading over a live character
+    -- replaced it without saving
+    if type(cData) ~= 'table' or type(cData.citizenid) ~= 'string' then return end
+    if QBCore.Functions.GetPlayer(src) then return end
     if QBCore.Player.Login(src, cData.citizenid) then
         repeat
             Wait(10)
@@ -97,7 +128,9 @@ RegisterNetEvent('qb-multicharacter:server:loadUserData', function(cData)
         QBCore.Commands.Refresh(src)
         loadHouseData(src)
         if Config.SkipSelection then
-            local coords = json.decode(cData.position)
+            -- the saved position, not the one the client sends
+            local Player = QBCore.Functions.GetPlayer(src)
+            local coords = Player and Player.PlayerData.position
             TriggerClientEvent('qb-multicharacter:client:spawnLastLocation', src, coords, cData)
         else
             if GetResourceState('pfm-apartments') == 'started' then
@@ -113,9 +146,18 @@ end)
 
 RegisterNetEvent('qb-multicharacter:server:createCharacter', function(data)
     local src = source
+    if type(data) ~= 'table' or QBCore.Functions.GetPlayer(src) then return end
+    local charinfo = CleanCharinfo(data)
+    local slot = tonumber(data.cid)
+    if not charinfo or not slot or slot < 1 or slot % 1 ~= 0 then return end
+    -- the character limit was only enforced by the UI
+    local license = QBCore.Functions.GetIdentifier(src, 'license')
+    local owned = MySQL.query.await('SELECT citizenid FROM players WHERE license = ?', { license }) or {}
+    local max = MaxCharacters(license)
+    if #owned >= max or slot > max then return end
     local newData = {}
-    newData.cid = data.cid
-    newData.charinfo = data
+    newData.cid = slot
+    newData.charinfo = charinfo
     if QBCore.Player.Login(src, false, newData) then
         repeat
             Wait(10)
@@ -158,7 +200,9 @@ QBCore.Functions.CreateCallback('qb-multicharacter:server:GetUserCharacters', fu
     end)
 end)
 
-QBCore.Functions.CreateCallback('qb-multicharacter:server:GetServerLogs', function(_, cb)
+QBCore.Functions.CreateCallback('qb-multicharacter:server:GetServerLogs', function(source, cb)
+    -- staff only (any client could read the whole server log table)
+    if not (QBCore.Functions.HasPermission(source, 'admin') or IsPlayerAceAllowed(source, 'command')) then return cb({}) end
     MySQL.query('SELECT * FROM server_logs', {}, function(result)
         cb(result)
     end)
@@ -198,7 +242,12 @@ QBCore.Functions.CreateCallback('qb-multicharacter:server:setupCharacters', func
     end)
 end)
 
-QBCore.Functions.CreateCallback('qb-multicharacter:server:getSkin', function(_, cb, cid)
+QBCore.Functions.CreateCallback('qb-multicharacter:server:getSkin', function(source, cb, cid)
+    -- only the requesting license's own characters
+    local license = QBCore.Functions.GetIdentifier(source, 'license')
+    if type(cid) ~= 'string' or not license or MySQL.scalar.await('SELECT license FROM players WHERE citizenid = ?', { cid }) ~= license then
+        return cb(nil)
+    end
     local result = MySQL.query.await('SELECT * FROM playerskins WHERE citizenid = ? AND active = ?', { cid, 1 })
     if result[1] ~= nil then
         cb(result[1].model, result[1].skin)
