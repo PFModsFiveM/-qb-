@@ -2,6 +2,7 @@ local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local sharedItems = exports['pfm-core']:GetShared('Items')
 local robberyBusy = false
 local timeOut = false
+local typeOf = type -- some handlers below take a parameter named `type`
 
 -- PF hardening: server-side loot + action tracking
 local lootedLockers = {}     -- [type .. bankId .. lockerId] = true (one claim per locker per robbery)
@@ -473,10 +474,23 @@ RegisterNetEvent('qb-bankrobbery:server:callCops', function(type, bank, coords)
     local now = os.time()
     if copsCallCooldown[src] and now - copsCallCooldown[src] < 30 then return end
     copsCallCooldown[src] = now
-    -- the alert must come from where the player actually is
-    if not coords or not coords.x then return end
-    local playerCoords = GetEntityCoords(GetPlayerPed(src))
-    if #(playerCoords - vector3(coords.x + 0.0, coords.y + 0.0, coords.z + 0.0)) > 100.0 then return end
+    -- the alert must come from where the player actually is, at the bank it names (it used to accept
+    -- any spot and any type, and an unknown Fleeca id errored)
+    if typeOf(coords) ~= 'table' and typeOf(coords) ~= 'vector3' then return end
+    local cx, cy, cz = tonumber(coords.x), tonumber(coords.y), tonumber(coords.z)
+    if not (cx and cy and cz) then return end
+    local playerCoords = PlayerCoords(src)
+    if #(playerCoords - vector3(cx, cy, cz)) > 100.0 then return end
+    local bankCoords
+    if type == 'small' then
+        bankCoords = Config.SmallBanks[bank] and Config.SmallBanks[bank]['coords']
+    elseif type == 'paleto' then
+        bankCoords = BankPanelCoords('paleto')
+    elseif type == 'pacific' then
+        bankCoords = Config.BigBanks['pacific']['coords'][1]
+    end
+    if not bankCoords or #(playerCoords - bankCoords) > 60.0 then return end
+    coords = vector3(cx, cy, cz)
     if type == 'small' then
         if not Config.SmallBanks[bank]['alarm'] then
             return error(Lang:t('error.event_trigger_wrong', { event = 'qb-bankrobbery:server:callCops', extraInfo = ' (smallbank ' .. bank .. ') ', source = source }))
