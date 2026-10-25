@@ -32,7 +32,9 @@ AddEventHandler('onResourceStart', function(res)
     end
 end)
 
-RegisterNetEvent('QBCore:Server:PlayerLoaded', function(Player)
+-- server-only: pfm-core raises it with TriggerEvent (as a net event any client could fake a player
+-- object and send the prices to any player id)
+AddEventHandler('QBCore:Server:PlayerLoaded', function(Player)
     if Player and Player.PlayerData and Player.PlayerData.source then
         TriggerClientEvent('qb-fuel:client:syncPrices', Player.PlayerData.source, stationMults)
     end

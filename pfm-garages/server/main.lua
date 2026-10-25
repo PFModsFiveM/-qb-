@@ -181,18 +181,47 @@ local function GetVehicleTypeByModel(model)
 end
 -- Backwards Compat
 
+-- Impound fees paid and not yet used to take the car out: [plate] = citizenid
+local paidRelease = {}
+
+local function isOutside(plate)
+    local out = OutsideVehicles[plate]
+    return out ~= nil and out.entity ~= nil and DoesEntityExist(out.entity)
+end
+
 -- Spawns a vehicle and returns its network ID and properties.
+-- Only a car that is in the garage (state 1, no impound fee), or whose impound fee was just paid, and
+-- that is not already out; next to the player. (Any owned car could be spawned any number of times,
+-- from the impound without paying, anywhere.)
 QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(source, cb, plate, _, coords)
     local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then
+    if not Player or type(plate) ~= 'string' or type(coords) ~= 'table' or not tonumber(coords.x) or not tonumber(coords.y) or not tonumber(coords.z) then
         cb(nil, nil, nil)
         return
     end
-    local ownedVehicle = MySQL.single.await('SELECT vehicle, mods FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, Player.PlayerData.citizenid })
-    if not ownedVehicle then
+    local cid = Player.PlayerData.citizenid
+    local ownedVehicle = MySQL.single.await('SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
+    if not ownedVehicle or isOutside(plate) then
         cb(nil, nil, nil)
         return
     end
+    if #(GetEntityCoords(GetPlayerPed(source)) - vector3(tonumber(coords.x), tonumber(coords.y), tonumber(coords.z))) > 100.0 then
+        cb(nil, nil, nil)
+        return
+    end
+    local fee = tonumber(ownedVehicle.depotprice) or 0
+    if fee > 0 then
+        if paidRelease[plate] ~= cid then
+            cb(nil, nil, nil)
+            return
+        end
+        paidRelease[plate] = nil
+        MySQL.update('UPDATE player_vehicles SET depotprice = 0 WHERE plate = ? AND citizenid = ?', { plate, cid })
+    elseif tonumber(ownedVehicle.state) ~= 1 then
+        cb(nil, nil, nil)
+        return
+    end
+    MySQL.update('UPDATE player_vehicles SET state = 0 WHERE plate = ? AND citizenid = ?', { plate, cid })
     local vehType = sharedVehicles[ownedVehicle.vehicle] and sharedVehicles[ownedVehicle.vehicle].type or GetVehicleTypeByModel(ownedVehicle.vehicle)
     local hash = type(ownedVehicle.vehicle) == 'number' and ownedVehicle.vehicle or type(ownedVehicle.vehicle) == 'string' and GetHashKey(ownedVehicle.vehicle) or nil
     if not hash then
@@ -225,6 +254,10 @@ QBCore.Functions.CreateCallback('qb-garages:server:canDeposit', function(source,
     end
     local isOwned = GetPlateOwner(plate)
     if isOwned ~= Player.PlayerData.citizenid then
+        cb(false)
+        return
+    end
+    if type == 'house' and not Config.Garages[garage] then
         cb(false)
         return
     end
@@ -265,14 +298,16 @@ RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, e
     MySQL.update('UPDATE player_vehicles SET fuel = ?, engine = ?, body = ? WHERE plate = ? AND citizenid = ?', { fuel, engine, body, plate, Player.PlayerData.citizenid })
 end)
 
-local allowedStates = { [0] = true, [1] = true, [2] = true }
+-- The client reports a car it took out (state 0). Parking (state 1) is set by canDeposit, and the
+-- impound fee is cleared by the spawn once paid: this event used to accept any state and clear the
+-- fee, so a car could be marked parked while still out (and spawned again) or released unpaid.
 RegisterNetEvent('qb-garages:server:updateVehicleState', function(state, plate)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     state = tonumber(state)
-    if not state or not allowedStates[state] or type(plate) ~= 'string' then return end
-    MySQL.update('UPDATE player_vehicles SET state = ?, depotprice = ? WHERE plate = ? AND citizenid = ?', { state, 0, plate, Player.PlayerData.citizenid })
+    if state ~= 0 or type(plate) ~= 'string' then return end
+    MySQL.update('UPDATE player_vehicles SET state = ? WHERE plate = ? AND citizenid = ?', { 0, plate, Player.PlayerData.citizenid })
 end)
 
 RegisterNetEvent('qb-garages:server:UpdateOutsideVehicle', function(plate, vehicleNetID)
@@ -284,7 +319,8 @@ RegisterNetEvent('qb-garages:server:UpdateOutsideVehicle', function(plate, vehic
             netID = vehicleNetID,
             entity = NetworkGetEntityFromNetworkId(vehicleNetID)
         }
-    else
+    elseif not isOutside(plate) then
+        -- forgotten only once the car is really gone (else the spawn could run again while it exists)
         OutsideVehicles[plate] = nil
     end
 end)
@@ -322,6 +358,7 @@ RegisterNetEvent('qb-garages:server:PayDepotPrice', function(data)
             -- was not checked)
             local key = ('pfm-garages:depot:%s:%s'):format(tostring(data.plate), PFPayout.NewId())
             if PFPayout.Charge(Player, { 'cash', 'bank' }, depotPrice, { key = key, kind = 'fee', reason = 'Impound release ' .. tostring(data.plate) }) then
+                paidRelease[data.plate] = Player.PlayerData.citizenid
                 if GetResourceState('pf-government') == 'started' then
                     pcall(function()
                         exports['pf-government']:DepositToTreasury(depotPrice, 'impound', ('Impound release fee (%s)'):format(data.plate), Player.PlayerData.citizenid, key .. ':treasury')

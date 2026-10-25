@@ -49,6 +49,7 @@ end)
 
 QBCore.Functions.CreateCallback('qb-occasions:server:checkVehicleOwner', function(source, cb, plate)
     local pData = exports['pfm-core']:GetPlayer(source)
+    if not pData then return cb(false) end
     MySQL.query('SELECT balance FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, pData.PlayerData.citizenid }, function(result)
         if result[1] then
             cb(true, result[1].balance)
@@ -58,10 +59,14 @@ QBCore.Functions.CreateCallback('qb-occasions:server:checkVehicleOwner', functio
     end)
 end)
 
+-- The seller's name and contact details shown on a listing. (The whole players row went to any client
+-- for any citizen id: license, money, inventory, metadata.)
 QBCore.Functions.CreateCallback('qb-occasions:server:getSellerInformation', function(_, cb, citizenid)
-    MySQL.query('SELECT * FROM players WHERE citizenid = ?', { citizenid }, function(result)
-        if result[1] then
-            cb(result[1])
+    if type(citizenid) ~= 'string' then return cb(nil) end
+    MySQL.query('SELECT charinfo FROM players WHERE citizenid = ?', { citizenid }, function(result)
+        local ok, info = pcall(json.decode, result and result[1] and result[1].charinfo or '')
+        if ok and type(info) == 'table' then
+            cb({ charinfo = json.encode({ firstname = info.firstname, lastname = info.lastname, phone = info.phone, account = info.account }) })
         else
             cb(nil)
         end
@@ -86,8 +91,12 @@ RegisterNetEvent('qb-occasions:server:ReturnVehicle', function(vehicleData)
     local result = MySQL.query.await('SELECT * FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { vehicleData['plate'], vehicleData['oid'] })
     if result[1] then
         if result[1].seller == Player.PlayerData.citizenid then
-            MySQL.insert('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, state) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.license, Player.PlayerData.citizenid, vehicleData['model'], joaat(vehicleData['model']), vehicleData['mods'], vehicleData['plate'], 0 })
-            MySQL.query('DELETE FROM occasion_vehicles WHERE occasionid = ? AND plate = ?', { vehicleData['oid'], vehicleData['plate'] })
+            -- the car that was listed comes back (model and mods came from the client, so a cheap
+            -- listing could be taken back as any car), and only once: the listing is claimed first
+            local listing = result[1]
+            local claimed = MySQL.query.await('DELETE FROM occasion_vehicles WHERE occasionid = ? AND plate = ?', { listing.occasionid, listing.plate })
+            if not claimed or (claimed.affectedRows or 0) < 1 then return end
+            MySQL.insert('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, state) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.license, Player.PlayerData.citizenid, listing.model, joaat(listing.model), listing.mods, listing.plate, 0 })
             exports['pfm-core']:GrantVehicleSpawn(src, result[1].model)
             TriggerClientEvent('qb-occasions:client:ReturnOwnedVehicle', src, result[1])
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)

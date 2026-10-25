@@ -34,21 +34,63 @@ end)
 ---- Server Events ----
 -----------------------
 
+-- The citizen id owning this plate in player_vehicles, or nil (job, rental and NPC cars).
+local function PlateOwner(plate)
+    if type(plate) ~= 'string' or plate == '' then return nil end
+    return MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1', { plate })
+end
+
+--- True when `plate` is a player-owned car that belongs to someone other than this player.
+local function IsSomeoneElsesCar(src, plate)
+    local owner = PlateOwner(plate)
+    if not owner then return false end
+    local Player = exports['pfm-core']:GetPlayer(src)
+    return not Player or Player.PlayerData.citizenid ~= owner
+end
+
+local function HasLockpick(src)
+    for _, name in ipairs({ 'lockpick', 'advancedlockpick' }) do
+        local ok, item = pcall(function() return exports['pfm-inventory']:GetItemByName(src, name) end)
+        if ok and item then return true end
+    end
+    return false
+end
+
 -- Event to give keys. receiver can either be a single id, or a table of ids.
--- Must already have keys to the vehicle, trigger the event from the server, or pass forcegive paramter as true.
+-- Must already have keys to the vehicle, or trigger the event from the server (pf-jobs and
+-- pf-mechanicjob do: those grants were refused, as the server is not a player with keys).
+-- A player gives keys to people next to them.
 RegisterNetEvent('qb-vehiclekeys:server:GiveVehicleKeys', function(receiver, plate)
     local giver = source
 
     if type(plate) ~= 'string' then return end
 
+    local fromServer = type(giver) ~= 'number' or giver <= 0
+    if fromServer then
+        if type(receiver) == 'table' then
+            for _, r in ipairs(receiver) do GiveKeys(tonumber(r), plate) end
+        else
+            GiveKeys(tonumber(receiver), plate)
+        end
+        return
+    end
+
     if HasKeys(giver, plate) then
+        local giverCoords = GetEntityCoords(GetPlayerPed(giver))
+        local function giveNear(r)
+            r = tonumber(r)
+            if not r or not exports['pfm-core']:GetPlayer(r) then return end
+            if #(giverCoords - GetEntityCoords(GetPlayerPed(r))) > 10.0 then return end
+            GiveKeys(r, plate)
+        end
         TriggerClientEvent('QBCore:Notify', giver, Lang:t('notify.vgkeys'), 'success')
         if type(receiver) == 'table' then
-            for _, r in ipairs(receiver) do
-                GiveKeys(r, plate)
+            for i, r in ipairs(receiver) do
+                if i > 16 then break end
+                giveNear(r)
             end
         else
-            GiveKeys(receiver, plate)
+            giveNear(receiver)
         end
     else
         TriggerClientEvent('QBCore:Notify', giver, Lang:t('notify.ydhk'), 'error')
@@ -87,7 +129,12 @@ RegisterNetEvent('qb-vehiclekeys:server:AcquireVehicleKeys', function(vehicleNet
     if not DoesEntityExist(vehicle) or GetEntityType(vehicle) ~= 2 then return end
     if #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(vehicle)) > 7.5 then return end
 
-    GiveKeys(src, Trim(GetVehicleNumberPlateText(vehicle)))
+    local plate = Trim(GetVehicleNumberPlateText(vehicle))
+    -- Another player's own car: only from its driver's seat (lockpicked from inside, or hotwired).
+    -- (Standing next to any parked player car was enough to get its keys.)
+    if IsSomeoneElsesCar(src, plate) and GetPedInVehicleSeat(vehicle, -1) ~= GetPlayerPed(src) then return end
+
+    GiveKeys(src, plate)
 end)
 
 RegisterNetEvent('qb-vehiclekeys:server:RemoveVehicleKeys', function(plate)
@@ -115,6 +162,12 @@ RegisterNetEvent('qb-vehiclekeys:server:setVehLockState', function(vehNetId, sta
     local vehicle = NetworkGetEntityFromNetworkId(vehNetId)
     if not DoesEntityExist(vehicle) or GetEntityType(vehicle) ~= 2 then return end
     if #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(vehicle)) > 20.0 then return end
+    -- Another player's own car: its keys, or (to unlock) a lockpick. (Anyone could lock or unlock any
+    -- player's car from 20m.)
+    local plate = Trim(GetVehicleNumberPlateText(vehicle))
+    if not HasKeys(src, plate) and IsSomeoneElsesCar(src, plate) then
+        if state ~= 1 or not HasLockpick(src) then return end
+    end
     SetVehicleDoorsLocked(vehicle, state)
 end)
 

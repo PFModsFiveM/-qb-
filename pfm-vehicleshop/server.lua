@@ -43,33 +43,6 @@ local function GetVehicleTypeByModel(model)
     return vehicleType or 'automobile'
 end
 
-QBCore.Functions.CreateCallback('qb-vehicleshop:server:spawnvehicle', function(source, cb, plate, vehicle, coords)
-    local src = source
-    local player = exports['pfm-core']:GetPlayer(src)
-    if not player then cb(nil) return end
-
-    -- Verify the plate belongs to this player and the vehicle model matches
-    local citizenid = player.PlayerData.citizenid
-    local row = MySQL.query.await('SELECT mods, vehicle FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, citizenid })
-    if not row or not row[1] then
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error')
-        cb(nil)
-        return
-    end
-    if row[1].vehicle ~= vehicle then
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error')
-        cb(nil)
-        return
-    end
-
-    local vehType = sharedVehicles[vehicle] and sharedVehicles[vehicle].type or GetVehicleTypeByModel(vehicle)
-    local veh = CreateVehicleServerSetter(GetHashKey(vehicle), vehType, coords.x, coords.y, coords.z, coords.w)
-    local netId = NetworkGetNetworkIdFromEntity(veh)
-    SetVehicleNumberPlateText(veh, plate)
-    local vehProps = row[1].mods and json.decode(row[1].mods) or {}
-    cb(netId, vehProps, plate)
-end)
-
 -- Handlers
 
 -- Update server-side cached variables when QBCore objects are updated dynamically
@@ -78,14 +51,27 @@ AddEventHandler('QBCore:Server:UpdateObject', function()
     sharedVehicles = exports['pfm-core']:GetShared('Vehicles')
 end)
 
+-- Finance play-time is counted for the sender's own character. (The citizen id came from the client,
+-- so anyone could run down another player's finance timer and get their car repossessed, or keep
+-- restarting their own timer so a payment never came due.)
+local sessionCid = {} -- [source] = citizenid whose play time is being counted
+
 -- Store game time for player when they load
-RegisterNetEvent('qb-vehicleshop:server:addPlayer', function(citizenid)
-    financetimer[citizenid] = os.time()
+RegisterNetEvent('qb-vehicleshop:server:addPlayer', function()
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return end
+    local citizenid = Player.PlayerData.citizenid
+    sessionCid[src] = citizenid
+    financetimer[citizenid] = financetimer[citizenid] or os.time()
 end)
 
 -- Deduct stored game time from player on logout
-RegisterNetEvent('qb-vehicleshop:server:removePlayer', function(citizenid)
-    if financetimer[citizenid] then
+RegisterNetEvent('qb-vehicleshop:server:removePlayer', function()
+    local src = source
+    local citizenid = sessionCid[src]
+    sessionCid[src] = nil
+    if citizenid and financetimer[citizenid] then
         local playTime = financetimer[citizenid]
         local financetime = MySQL.query.await('SELECT * FROM player_vehicles WHERE citizenid = ?', { citizenid })
         for _, v in pairs(financetime) do
@@ -102,6 +88,7 @@ end)
 -- Deduct stored game time from player on quit because we can't get citizenid
 AddEventHandler('playerDropped', function()
     local src = source
+    sessionCid[src] = nil
     local license
     for _, v in pairs(GetPlayerIdentifiers(src)) do
         if string.sub(v, 1, string.len('license:')) == 'license:' then
@@ -184,19 +171,48 @@ RegisterNetEvent('qb-vehicleshop:server:deleteVehicle', function(netId)
     DeleteEntity(vehicle)
 end)
 
--- Sync vehicle for other players
+local function nearShop(src, shopName, maxDist)
+    local shop = Config.Shops[shopName]
+    if not shop or not shop.Location then return false end
+    local l = shop.Location
+    return #(GetEntityCoords(GetPlayerPed(src)) - vector3(l.x, l.y, l.z)) <= (maxDist or 60.0)
+end
+
+local function sellsModel(model, shopName)
+    local v = type(model) == 'string' and sharedVehicles[model]
+    if not v then return false end
+    if type(v.shop) == 'table' then
+        for _, s in pairs(v.shop) do if s == shopName then return true end end
+        return false
+    end
+    return v.shop == shopName
+end
+
+-- Sync vehicle for other players: a car the shop sells, on one of its showroom spots, by someone in
+-- the shop (any client could put any model on any showroom spot for everyone).
 RegisterNetEvent('qb-vehicleshop:server:swapVehicle', function(data)
     local src = source
-    TriggerClientEvent('qb-vehicleshop:client:swapVehicle', -1, data)
+    if type(data) ~= 'table' or type(data.ClosestShop) ~= 'string' then return end
+    local shop = Config.Shops[data.ClosestShop]
+    local spot = shop and shop.ShowroomVehicles and shop.ShowroomVehicles[tonumber(data.ClosestVehicle)]
+    if not spot or not sellsModel(data.toVehicle, data.ClosestShop) or not nearShop(src, data.ClosestShop) then return end
+    TriggerClientEvent('qb-vehicleshop:client:swapVehicle', -1, { toVehicle = data.toVehicle, ClosestVehicle = tonumber(data.ClosestVehicle), ClosestShop = data.ClosestShop })
     Wait(1500)                                                -- let new car spawn
     TriggerClientEvent('qb-vehicleshop:client:homeMenu', src) -- reopen main menu
 end)
 
--- Send customer for test drive
+-- Send customer for test drive (a dealership employee, in their dealership)
 RegisterNetEvent('qb-vehicleshop:server:customTestDrive', function(vehicle, playerid)
     local src = source
     local target = tonumber(playerid)
-    if not exports['pfm-core']:GetPlayer(target) then
+    local seller = exports['pfm-core']:GetPlayer(src)
+    if not seller then return end
+    local atWork = false
+    for name, shop in pairs(Config.Shops) do
+        if shop.Type == 'managed' and shop.Job == seller.PlayerData.job.name and nearShop(src, name) then atWork = true end
+    end
+    if not atWork then return end
+    if not exports['pfm-core']:GetPlayer(target) or target == src then
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.Invalid_ID'), 'error')
         return
     end
@@ -272,11 +288,72 @@ local function insertVehicle(Player, model, plate, terms)
     end
 end
 
+-- Cars bought and not yet driven out: [source][plate] = model. The spawn callback hands out each
+-- bought car once, at the shop. (It spawned any owned car, any number of times, wherever the client
+-- asked; and refused test drives, which use the plate 'TESTDRIVE'.)
+local pendingDelivery = {}
+local lastTestDrive = {}
+local TESTDRIVE_COOLDOWN = 20
+
 local function deliver(Player, model, plate)
-    TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('success.purchased'), 'success')
-    TriggerClientEvent('qb-vehicleshop:client:buyShowroomVehicle', Player.PlayerData.source, model, plate)
+    local src = Player.PlayerData.source
+    pendingDelivery[src] = pendingDelivery[src] or {}
+    pendingDelivery[src][plate] = model
+    TriggerClientEvent('QBCore:Notify', src, Lang:t('success.purchased'), 'success')
+    TriggerClientEvent('qb-vehicleshop:client:buyShowroomVehicle', src, model, plate)
     TriggerEvent('qb-vehicleshop:server:onVehiclePurchased', Player.PlayerData.citizenid, model, plate)
 end
+
+--- The shop the player stands in (any type) whose cars include `model`, or any shop they stand in.
+local function shopAt(src, model)
+    local fallback
+    for name, shop in pairs(Config.Shops) do
+        if nearShop(src, name) then
+            if soldAt(model, name) then return name, shop end
+            fallback = fallback or name
+        end
+    end
+    if fallback then return fallback, Config.Shops[fallback] end
+end
+
+QBCore.Functions.CreateCallback('qb-vehicleshop:server:spawnvehicle', function(source, cb, plate, vehicle, _)
+    local src = source
+    local player = exports['pfm-core']:GetPlayer(src)
+    if not player or type(plate) ~= 'string' or not validModel(vehicle) then cb(nil) return end
+
+    local spawnAt, vehProps = nil, {}
+    if plate == 'TESTDRIVE' then
+        local _, shop = shopAt(src, vehicle)
+        if not shop or not shop.TestDriveSpawn then cb(nil) return end
+        if lastTestDrive[src] and os.time() - lastTestDrive[src] < TESTDRIVE_COOLDOWN then cb(nil) return end
+        lastTestDrive[src] = os.time()
+        spawnAt = shop.TestDriveSpawn
+    else
+        if not (pendingDelivery[src] and pendingDelivery[src][plate] == vehicle) then
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error')
+            cb(nil)
+            return
+        end
+        -- Verify the plate belongs to this player and the vehicle model matches
+        local row = MySQL.query.await('SELECT mods, vehicle FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, player.PlayerData.citizenid })
+        if not row or not row[1] or row[1].vehicle ~= vehicle then
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error')
+            cb(nil)
+            return
+        end
+        local _, shop = shopAt(src, vehicle)
+        if not shop or not shop.VehicleSpawn then cb(nil) return end
+        pendingDelivery[src][plate] = nil
+        spawnAt = shop.VehicleSpawn
+        vehProps = row[1].mods and json.decode(row[1].mods) or {}
+    end
+
+    local vehType = sharedVehicles[vehicle] and sharedVehicles[vehicle].type or GetVehicleTypeByModel(vehicle)
+    local veh = CreateVehicleServerSetter(GetHashKey(vehicle), vehType, spawnAt.x, spawnAt.y, spawnAt.z, spawnAt.w or 0.0)
+    local netId = NetworkGetNetworkIdFromEntity(veh)
+    SetVehicleNumberPlateText(veh, plate)
+    cb(netId, vehProps, plate)
+end)
 
 -- Make a finance payment
 RegisterNetEvent('qb-vehicleshop:server:financePayment', function(paymentAmount, vehData)
@@ -503,12 +580,15 @@ end)
 
 AddEventHandler('playerDropped', function()
     pendingOffers[source] = nil
+    pendingDelivery[source] = nil
+    lastTestDrive[source] = nil
 end)
 
 -- Check if payment is due
 RegisterNetEvent('qb-vehicleshop:server:checkFinance', function()
     local src = source
     local player = exports['pfm-core']:GetPlayer(src)
+    if not player then return end
     local query = 'SELECT * FROM player_vehicles WHERE citizenid = ? AND balance > 0 AND financetime < 1'
     local result = MySQL.query.await(query, { player.PlayerData.citizenid })
     if result[1] then
