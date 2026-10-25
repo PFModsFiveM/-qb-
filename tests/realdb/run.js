@@ -144,18 +144,24 @@ function sqlFileFn(L) {
     return 0;
 }
 
+// PF_RT_SHARED_DB=<pf_rt_name>: use that database as it is (no drop/create), so several processes can
+// work on one database at the same time (realdb/ledger_parallel.js). PF_RT_SPEC_DIR picks the folder.
+const sharedDb = process.env.PF_RT_SHARED_DB;
+if (sharedDb && !/^pf_rt_[a-z0-9_]+$/.test(sharedDb)) throw new Error("PF_RT_SHARED_DB must look like pf_rt_<name>");
+
 function freshDatabase(spec) {
-    const name = "pf_rt_" + spec.replace(/_spec\.lua$/, "").replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+    const name = sharedDb || "pf_rt_" + spec.replace(/_spec\.lua$/, "").replace(/[^a-z0-9_]/gi, "_").toLowerCase();
     let res = call({ op: "connect", config: baseConfig });
     if (!res.ok) throw new Error("cannot connect to " + url + ": " + res.error);
-    res = call({ sql: `DROP DATABASE IF EXISTS \`${name}\`; CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` });
+    res = call({ sql: sharedDb ? `CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+        : `DROP DATABASE IF EXISTS \`${name}\`; CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` });
     if (!res.ok) throw new Error(res.error);
     res = call({ op: "connect", config: { ...baseConfig, database: name } });
     if (!res.ok) throw new Error(res.error);
     return name;
 }
 
-const failedCount = H.runSpecs(path.join(H.TESTS, "realdb_specs"), process.argv[2], (L, spec) => {
+const failedCount = H.runSpecs(path.join(H.TESTS, process.env.PF_RT_SPEC_DIR || "realdb_specs"), process.argv[2], (L, spec) => {
     const db = freshDatabase(spec);
     lua.lua_pushcfunction(L, sqlFn);
     lua.lua_setglobal(L, to_luastring("__sql"));
@@ -163,6 +169,8 @@ const failedCount = H.runSpecs(path.join(H.TESTS, "realdb_specs"), process.argv[
     lua.lua_setglobal(L, to_luastring("__sqlfile"));
     lua.lua_pushstring(L, to_luastring(db));
     lua.lua_setglobal(L, to_luastring("__TEST_DATABASE"));
+    lua.lua_pushstring(L, to_luastring(process.env.PF_RT_WORKER || ""));
+    lua.lua_setglobal(L, to_luastring("__TEST_WORKER"));
     // reconnect helper for "server restart" scenarios
     lua.lua_pushcfunction(L, (Ls) => { const r = call({ op: "connect", config: { ...baseConfig, database: db } }); lua.lua_pushboolean(Ls, r.ok); return 1; });
     lua.lua_setglobal(L, to_luastring("__sqlreconnect"));
