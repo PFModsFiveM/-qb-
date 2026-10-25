@@ -27,6 +27,21 @@ local function IsRateLimited(src, action)
     return false
 end
 
+-- Returns true once the source has done `action` more than `max` times inside `windowMs` (one tweet
+-- sends several hashtag / mention events at once, so these allow a small burst).
+local Bursts = {}
+local function IsBurstLimited(src, action, max, windowMs)
+    local key = action .. ':' .. tostring(src)
+    local now = GetGameTimer()
+    local b = Bursts[key]
+    if not b or now - b.start >= windowMs then
+        Bursts[key] = { start = now, count = 1 }
+        return false
+    end
+    b.count = b.count + 1
+    return b.count > max
+end
+
 -- Strips control characters and caps length; returns nil for invalid/empty input
 local function SanitizeText(text, maxLen)
     if type(text) ~= 'string' then return nil end
@@ -46,6 +61,43 @@ end
 local function Round(value, numDecimalPlaces)
     local mult = 10 ^ (numDecimalPlaces or 0)
     return math.floor(value * mult + 0.5) / mult
+end
+
+-- The MEOS app (person / vehicle / plate lookups) is a police app (Config.PhoneApplications.meos.job);
+-- the server checks it, as any client could call these callbacks.
+local function IsPolice(Player)
+    local job = Player and Player.PlayerData.job
+    return job ~= nil and (job.type == 'leo' or job.name == 'police')
+end
+
+-- Escapes LIKE wildcards so a search term only matches itself.
+local function LikeEscape(text)
+    return (text:gsub('[\\%%_]', '\\%0'))
+end
+
+local function IsPhoneNumber(number)
+    number = tostring(number or '')
+    return number ~= '' and #number <= 20 and number:match('^[%w%-]+$') ~= nil
+end
+
+--- The players row of the holder of exactly this phone number (the old lookups used
+--- LIKE '%<number>%', which matched any player whose character data merely contained those digits).
+local function FindPlayerRowByPhone(number)
+    if not IsPhoneNumber(number) then return nil end
+    local rows = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ? LIMIT 2', { '%"phone":"' .. tostring(number) .. '"%' })
+    if rows and rows[1] and not rows[2] then return rows[1] end
+    return nil
+end
+
+local function ProfilePicture(row)
+    local ok, meta = pcall(json.decode, row and row.metadata or '')
+    local picture = ok and type(meta) == 'table' and type(meta.phone) == 'table' and meta.phone.profilepicture
+    return picture or 'default'
+end
+
+local function EncodedSize(value)
+    local ok, encoded = pcall(json.encode, value)
+    return ok and type(encoded) == 'string' and #encoded or math.huge
 end
 
 -- Bank transfers between players go through the pfm-banking ledger (PFPayout, '@pfm-banking/payouts.lua'):
@@ -96,14 +148,6 @@ end
 
 local function GenerateMailId()
     return math.random(111111, 999999)
-end
-
-local function escape_sqli(source)
-    local replacements = {
-        ['"'] = '\\"',
-        ["'"] = "\\'"
-    }
-    return source:gsub("['\"]", replacements)
 end
 
 function QBPhone.AddMentionedTweet(citizenid, TweetData)
@@ -270,6 +314,7 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetInvoices', function(source, 
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetCallState', function(_, cb, ContactData)
+    if type(ContactData) ~= 'table' then return cb(false, false) end
     local Target = QBCore.Functions.GetPlayerByPhone(ContactData.number)
     if Target ~= nil then
         if Calls[Target.PlayerData.citizenid] ~= nil then
@@ -428,18 +473,18 @@ QBCore.Functions.CreateCallback('qb-phone:server:DeclineInvoice', function(sourc
     cb(false)
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:GetContactPictures', function(_, cb, Chats)
-    for _, v in pairs(Chats) do
-        local query = '%' .. v.number .. '%'
-        local result = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ?', { query })
-        if result[1] ~= nil then
-            local MetaData = json.decode(result[1].metadata)
+-- Contact pictures: looked up by the exact phone number, at most MAX_PICTURE_LOOKUPS per request (the
+-- list comes from the client and each entry is a database query).
+local MAX_PICTURE_LOOKUPS = 50
 
-            if MetaData.phone.profilepicture ~= nil then
-                v.picture = MetaData.phone.profilepicture
-            else
-                v.picture = 'default'
-            end
+QBCore.Functions.CreateCallback('qb-phone:server:GetContactPictures', function(_, cb, Chats)
+    if type(Chats) ~= 'table' then return cb({}) end
+    local looked = 0
+    for _, v in pairs(Chats) do
+        if type(v) == 'table' and looked < MAX_PICTURE_LOOKUPS then
+            looked = looked + 1
+            local row = FindPlayerRowByPhone(v.number)
+            if row then v.picture = ProfilePicture(row) end
         end
     end
     SetTimeout(100, function()
@@ -448,59 +493,50 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetContactPictures', function(_
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetContactPicture', function(_, cb, Chat)
-    local query = '%' .. Chat.number .. '%'
-    local result = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ?', { query })
-    local MetaData = json.decode(result[1].metadata)
-    if MetaData.phone.profilepicture ~= nil then
-        Chat.picture = MetaData.phone.profilepicture
-    else
-        Chat.picture = 'default'
-    end
+    if type(Chat) ~= 'table' then return cb(nil) end
+    Chat.picture = ProfilePicture(FindPlayerRowByPhone(Chat.number))
     SetTimeout(100, function()
         cb(Chat)
     end)
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetPicture', function(_, cb, number)
-    local query = '%' .. number .. '%'
-    local result = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ?', { query })
-    if result[1] ~= nil then
-        local Picture = 'default'
-        local MetaData = json.decode(result[1].metadata)
-        if MetaData.phone.profilepicture ~= nil then
-            Picture = MetaData.phone.profilepicture
-        end
-        cb(Picture)
+    local row = FindPlayerRowByPhone(number)
+    if row then
+        cb(ProfilePicture(row))
     else
         cb(nil)
     end
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:FetchResult', function(_, cb, search)
-    search = escape_sqli(search)
+-- MEOS person search (police only). The search used to be pasted into the SQL text (a quote-escaping
+-- helper that a backslash defeated), and any client could look up anyone's personal data.
+QBCore.Functions.CreateCallback('qb-phone:server:FetchResult', function(source, cb, search)
+    if not IsPolice(exports['pfm-core']:GetPlayer(source)) then return cb(nil) end
+    search = SanitizeText(search, 64)
+    if not search then return cb(nil) end
     local searchData = {}
     local ApaData = {}
-    local query = 'SELECT * FROM `players` WHERE `citizenid` = "' .. search .. '"'
-    -- Split on " " and check each var individual
-    local searchParameters = SplitStringToArray(search)
-    -- Construct query dynamicly for individual parm check
-    if #searchParameters > 1 then
-        query = query .. ' OR `charinfo` LIKE "%' .. searchParameters[1] .. '%"'
-        for i = 2, #searchParameters do
-            query = query .. ' AND `charinfo` LIKE  "%' .. searchParameters[i] .. '%"'
-        end
-    else
-        query = query .. ' OR `charinfo` LIKE "%' .. search .. '%"'
+    local query = 'SELECT * FROM `players` WHERE `citizenid` = ?'
+    local params = { search }
+    -- every word must appear in the character data
+    local likes = {}
+    for i, word in ipairs(SplitStringToArray(search)) do
+        if i > 5 then break end
+        likes[#likes + 1] = '`charinfo` LIKE ?'
+        params[#params + 1] = '%' .. LikeEscape(word) .. '%'
     end
-    local ApartmentData = MySQL.query.await('SELECT * FROM apartments', {})
+    if #likes > 0 then query = query .. ' OR (' .. table.concat(likes, ' AND ') .. ')' end
+    query = query .. ' LIMIT 25'
+    local ApartmentData = MySQL.query.await('SELECT * FROM apartments', {}) or {}
     for k, v in pairs(ApartmentData) do
         ApaData[v.citizenid] = ApartmentData[k]
     end
-    local result = MySQL.query.await(query)
-    if result[1] ~= nil then
+    local result = MySQL.query.await(query, params)
+    if result and result[1] ~= nil then
         for _, v in pairs(result) do
-            local charinfo = json.decode(v.charinfo)
-            local metadata = json.decode(v.metadata)
+            local charinfo = json.decode(v.charinfo) or {}
+            local metadata = json.decode(v.metadata) or {}
             local appiepappie = {}
             if ApaData[v.citizenid] ~= nil and next(ApaData[v.citizenid]) ~= nil then
                 appiepappie = ApaData[v.citizenid]
@@ -514,7 +550,7 @@ QBCore.Functions.CreateCallback('qb-phone:server:FetchResult', function(_, cb, s
                 nationality = charinfo.nationality,
                 gender = charinfo.gender,
                 warrant = false,
-                driverlicense = metadata['licences']['driver'],
+                driverlicense = type(metadata.licences) == 'table' and metadata.licences.driver or false,
                 appartmentdata = appiepappie
             }
         end
@@ -524,12 +560,14 @@ QBCore.Functions.CreateCallback('qb-phone:server:FetchResult', function(_, cb, s
     end
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:GetVehicleSearchResults', function(_, cb, search)
-    search = escape_sqli(search)
+QBCore.Functions.CreateCallback('qb-phone:server:GetVehicleSearchResults', function(source, cb, search)
+    if not IsPolice(exports['pfm-core']:GetPlayer(source)) then return cb(nil) end
+    search = SanitizeText(search, 32)
+    if not search then return cb(nil) end
     local searchData = {}
-    local query = '%' .. search .. '%'
-    local result = MySQL.query.await('SELECT * FROM player_vehicles WHERE plate LIKE ? OR citizenid = ?',
-        { query, search })
+    local query = '%' .. LikeEscape(search) .. '%'
+    local result = MySQL.query.await('SELECT * FROM player_vehicles WHERE plate LIKE ? OR citizenid = ? LIMIT 25',
+        { query, search }) or {}
     if result[1] ~= nil then
         for k, _ in pairs(result) do
             local player = MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { result[k].citizenid })
@@ -586,12 +624,14 @@ end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:ScanPlate', function(source, cb, plate)
     local src = source
+    if not IsPolice(exports['pfm-core']:GetPlayer(src)) then return cb(nil) end
+    plate = type(plate) == 'string' and SanitizeText(plate, 16) or nil
     local vehicleData
     if plate ~= nil then
-        local result = MySQL.query.await('SELECT * FROM player_vehicles WHERE plate = ?', { plate })
-        if result[1] ~= nil then
-            local player = MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { result[1].citizenid })
-            local charinfo = json.decode(player[1].charinfo)
+        local result = MySQL.query.await('SELECT * FROM player_vehicles WHERE plate = ?', { plate }) or {}
+        local player = result[1] and MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { result[1].citizenid })
+        if player and player[1] then
+            local charinfo = json.decode(player[1].charinfo) or {}
             vehicleData = {
                 plate = plate,
                 status = true,
@@ -761,9 +801,16 @@ RegisterNetEvent('qb-phone:server:RemoveMail', function(MailId)
     end)
 end)
 
+-- A mail to the sender's own phone (job and mission scripts send these from the client).
 RegisterNetEvent('qb-phone:server:sendNewMail', function(mailData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(mailData) ~= 'table' then return end
+    mailData.sender = SanitizeText(tostring(mailData.sender or ''), 64)
+    mailData.subject = SanitizeText(tostring(mailData.subject or ''), 128)
+    mailData.message = type(mailData.message) == 'string' and mailData.message ~= '' and mailData.message:sub(1, 4000) or nil
+    if not mailData.sender or not mailData.subject or not mailData.message then return end
+    if mailData.button ~= nil and (type(mailData.button) ~= 'table' or EncodedSize(mailData.button) > 2000) then return end
     if mailData.button == nil then
         MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
     else
@@ -785,16 +832,10 @@ RegisterNetEvent('qb-phone:server:sendNewMail', function(mailData)
     end)
 end)
 
-RegisterNetEvent('qb-phone:server:sendNewEventMail', function(citizenid, mailData)
-    local src = source
-    if src and src > 0 then
-        if IsRateLimited(src, 'mail') then return end
-        if type(citizenid) ~= 'string' or type(mailData) ~= 'table' then return end
-        mailData.sender = SanitizeText(tostring(mailData.sender or ''), 64)
-        mailData.subject = SanitizeText(tostring(mailData.subject or ''), 128)
-        mailData.message = SanitizeText(tostring(mailData.message or ''), 1000)
-        if not mailData.sender or not mailData.subject or not mailData.message then return end
-    end
+-- Server-only: a mail to any citizen. It was a net event, so any client could put a mail (with a
+-- button that runs an event of its choosing when clicked) into anyone's inbox. No client sends it.
+AddEventHandler('qb-phone:server:sendNewEventMail', function(citizenid, mailData)
+    if type(citizenid) ~= 'string' or type(mailData) ~= 'table' then return end
     local Player = QBCore.Functions.GetPlayerByCitizenId(citizenid)
     if mailData.button == nil then
         MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
@@ -834,28 +875,51 @@ RegisterNetEvent('qb-phone:server:ClearButtonData', function(mailId)
     end)
 end)
 
+--- A tweet as everyone else sees it, built by the server: the author is the sender, the text and links
+--- are cleaned. (Tweets, mentions and hashtag posts used to be relayed as the client sent them, so a
+--- client could post in someone else's name.) Returns nil for an empty message.
+local function BuildTweet(Player, data)
+    if type(data) ~= 'table' then return nil end
+    local message = SanitizeText(tostring(data.message or ''))
+    if not message then return nil end
+    local time = type(data.time) == 'string' and SanitizeText(data.time, 64) or os.date('%Y-%m-%d %H:%M:%S')
+    return {
+        citizenid = Player.PlayerData.citizenid,
+        firstName = Player.PlayerData.charinfo.firstname,
+        lastName = Player.PlayerData.charinfo.lastname,
+        message = message,
+        time = time,
+        date = time,
+        url = (SanitizeText(tostring(data.url or ''), 255) or ''):gsub('[%<>\"()\' $]', ''),
+        picture = (SanitizeText(tostring(data.picture or ''), 255) or 'default'):gsub('[%<>\"()\' $]', ''),
+        tweetId = type(data.tweetId) == 'string' and data.tweetId:match('^TWEET%-%d+$') and data.tweetId or nil,
+    }
+end
+
 RegisterNetEvent('qb-phone:server:MentionedPlayer', function(firstName, lastName, TweetMessage)
     local src = source
-    if IsRateLimited(src, 'tweet') then return end
-    if type(firstName) ~= 'string' or type(lastName) ~= 'string' then return end
+    local Sender = exports['pfm-core']:GetPlayer(src)
+    if not Sender or IsBurstLimited(src, 'mention', 5, 3000) then return end
+    firstName, lastName = SanitizeText(firstName, 64), SanitizeText(lastName, 64)
+    local tweet = BuildTweet(Sender, TweetMessage)
+    if not firstName or not lastName or not tweet then return end
+    -- an online player with that name, else one database lookup (this used to run a query for
+    -- every online player who did not match)
     for _, v in pairs(QBCore.Functions.GetPlayers()) do
         local Player = exports['pfm-core']:GetPlayer(v)
-        if Player ~= nil then
-            if (Player.PlayerData.charinfo.firstname == firstName and Player.PlayerData.charinfo.lastname == lastName) then
-                QBPhone.SetPhoneAlerts(Player.PlayerData.citizenid, 'twitter')
-                QBPhone.AddMentionedTweet(Player.PlayerData.citizenid, TweetMessage)
-                TriggerClientEvent('qb-phone:client:GetMentioned', Player.PlayerData.source, TweetMessage, AppAlerts[Player.PlayerData.citizenid]['twitter'])
-            else
-                local query1 = '%' .. firstName .. '%'
-                local query2 = '%' .. lastName .. '%'
-                local result = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ? AND charinfo LIKE ?', { query1, query2 })
-                if result[1] ~= nil then
-                    local MentionedTarget = result[1].citizenid
-                    QBPhone.SetPhoneAlerts(MentionedTarget, 'twitter')
-                    QBPhone.AddMentionedTweet(MentionedTarget, TweetMessage)
-                end
-            end
+        if Player ~= nil and Player.PlayerData.charinfo.firstname == firstName and Player.PlayerData.charinfo.lastname == lastName then
+            QBPhone.SetPhoneAlerts(Player.PlayerData.citizenid, 'twitter')
+            QBPhone.AddMentionedTweet(Player.PlayerData.citizenid, tweet)
+            TriggerClientEvent('qb-phone:client:GetMentioned', Player.PlayerData.source, tweet, AppAlerts[Player.PlayerData.citizenid]['twitter'])
+            return
         end
+    end
+    local result = MySQL.query.await('SELECT citizenid FROM players WHERE charinfo LIKE ? AND charinfo LIKE ? LIMIT 1',
+        { '%"firstname":"' .. LikeEscape(firstName) .. '"%', '%"lastname":"' .. LikeEscape(lastName) .. '"%' })
+    if result and result[1] ~= nil then
+        local MentionedTarget = result[1].citizenid
+        QBPhone.SetPhoneAlerts(MentionedTarget, 'twitter')
+        QBPhone.AddMentionedTweet(MentionedTarget, tweet)
     end
 end)
 
@@ -873,13 +937,11 @@ end)
 
 RegisterNetEvent('qb-phone:server:UpdateHashtags', function(Handle, messageData)
     local src = source
-    if IsRateLimited(src, 'tweet') then return end
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or IsBurstLimited(src, 'hashtag', 3, 3000) then return end
     Handle = SanitizeText(Handle, 64)
-    if not Handle or type(messageData) ~= 'table' then return end
-    if messageData.message then
-        messageData.message = SanitizeText(tostring(messageData.message))
-        if not messageData.message then return end
-    end
+    messageData = BuildTweet(Player, messageData)
+    if not Handle or not messageData then return end
     if Hashtags[Handle] ~= nil and next(Hashtags[Handle]) ~= nil then
         Hashtags[Handle].messages[#Hashtags[Handle].messages + 1] = messageData
     else
@@ -899,54 +961,57 @@ RegisterNetEvent('qb-phone:server:SetPhoneAlerts', function(app, alerts)
     QBPhone.SetPhoneAlerts(Player.PlayerData.citizenid, app, alerts)
 end)
 
+-- The tweet feed every phone shows is the server's own list (TWData, the recent rows of phone_tweets).
+-- Posting used to broadcast the poster's whole client-side list to everyone, so a client could replace
+-- every phone's feed with tweets in other people's names.
+local MAX_FEED = 200
+
+local function LoadTweets()
+    if next(TWData) == nil then
+        TWData = MySQL.query.await('SELECT * FROM phone_tweets WHERE `date` > NOW() - INTERVAL ? hour', { Config.TweetDuration }) or {}
+    end
+    return TWData
+end
+
 RegisterNetEvent('qb-phone:server:DeleteTweet', function(tweetId)
     local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then return end
-    local delete = false
-    local TID = tweetId
-    local Data = MySQL.scalar.await('SELECT citizenid FROM phone_tweets WHERE tweetId = ?', { TID })
-    if Data == Player.PlayerData.citizenid then
-        MySQL.query.await('DELETE FROM phone_tweets WHERE tweetId = ?', { TID })
-        delete = true
+    if not Player or type(tweetId) ~= 'string' then return end
+    local Data = MySQL.scalar.await('SELECT citizenid FROM phone_tweets WHERE tweetId = ?', { tweetId })
+    if Data ~= Player.PlayerData.citizenid then return end
+    MySQL.query.await('DELETE FROM phone_tweets WHERE tweetId = ? AND citizenid = ?', { tweetId, Player.PlayerData.citizenid })
+    local feed = LoadTweets()
+    for i = #feed, 1, -1 do
+        if feed[i].tweetId == tweetId then table.remove(feed, i) end
     end
-
-    if delete then
-        for k, _ in pairs(TWData) do
-            if TWData[k].tweetId == TID then
-                TWData = nil
-            end
-        end
-        TriggerClientEvent('qb-phone:client:UpdateTweets', -1, TWData, nil, true)
-    end
+    -- (this used to set the whole list to nil, and passed the arguments in the wrong order)
+    TriggerClientEvent('qb-phone:client:UpdateTweets', -1, 0, feed, nil, true)
 end)
 
-RegisterNetEvent('qb-phone:server:UpdateTweets', function(NewTweets, TweetData)
+RegisterNetEvent('qb-phone:server:UpdateTweets', function(_, TweetData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if IsRateLimited(src, 'tweet') then return end
-    if type(TweetData) ~= 'table' then return end
-    local message = SanitizeText(tostring(TweetData.message or ''))
-    if not message then return end
-    TweetData.message = message
-    -- identity always comes from the server, never the client payload
-    TweetData.citizenid = Player.PlayerData.citizenid
-    TweetData.firstName = Player.PlayerData.charinfo.firstname
-    TweetData.lastName = Player.PlayerData.charinfo.lastname
-    TweetData.url = SanitizeText(tostring(TweetData.url or ''), 255) or ''
-    TweetData.picture = SanitizeText(tostring(TweetData.picture or ''), 255) or 'default'
+    local tweet = BuildTweet(Player, TweetData)
+    if not tweet then return end
+    if not tweet.tweetId or MySQL.scalar.await('SELECT citizenid FROM phone_tweets WHERE tweetId = ?', { tweet.tweetId }) then
+        tweet.tweetId = 'TWEET-' .. math.random(11111111, 99999999)
+    end
 
     MySQL.insert('INSERT INTO phone_tweets (citizenid, firstName, lastName, message, date, url, picture, tweetid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', {
-        TweetData.citizenid,
-        TweetData.firstName,
-        TweetData.lastName,
-        TweetData.message,
-        TweetData.time,
-        TweetData.url:gsub('[%<>\"()\' $]', ''),
-        TweetData.picture:gsub('[%<>\"()\' $]', ''),
-        TweetData.tweetId
+        tweet.citizenid,
+        tweet.firstName,
+        tweet.lastName,
+        tweet.message,
+        tweet.time,
+        tweet.url,
+        tweet.picture,
+        tweet.tweetId
     })
-    TriggerClientEvent('qb-phone:client:UpdateTweets', -1, src, NewTweets, TweetData, false)
+    local feed = LoadTweets()
+    feed[#feed + 1] = tweet
+    while #feed > MAX_FEED do table.remove(feed, 1) end
+    TriggerClientEvent('qb-phone:client:UpdateTweets', -1, src, feed, tweet, false)
 end)
 
 RegisterNetEvent('qb-phone:server:TransferMoney', function(iban, amount)
@@ -1002,6 +1067,10 @@ RegisterNetEvent('qb-phone:server:UpdateMessages', function(ChatMessages, ChatNu
     if IsRateLimited(src, 'message') then return end
     if type(ChatMessages) ~= 'table' then return end
     if type(ChatNumber) ~= 'string' and type(ChatNumber) ~= 'number' then return end
+    ChatNumber = tostring(ChatNumber)
+    if ChatNumber == SenderData.PlayerData.charinfo.phone then return end
+    -- the whole chat is stored for both people: keep it a sane size
+    if EncodedSize(ChatMessages) > 60000 then return end
     -- sanitize every message body in the payload
     for _, day in pairs(ChatMessages) do
         if type(day) == 'table' and type(day.messages) == 'table' then
@@ -1012,8 +1081,10 @@ RegisterNetEvent('qb-phone:server:UpdateMessages', function(ChatMessages, ChatNu
             end
         end
     end
-    local query = '%' .. ChatNumber .. '%'
-    local Player = MySQL.query.await('SELECT * FROM players WHERE charinfo LIKE ?', { query })
+    -- the holder of exactly that number (LIKE '%<number>%' wrote into the chats of whichever player's
+    -- data happened to contain those digits)
+    local row = FindPlayerRowByPhone(ChatNumber)
+    local Player = { row }
     if Player[1] ~= nil then
         local TargetData = QBCore.Functions.GetPlayerByCitizenId(Player[1].citizenid)
         if TargetData ~= nil then
@@ -1052,14 +1123,15 @@ RegisterNetEvent('qb-phone:server:UpdateMessages', function(ChatMessages, ChatNu
     end
 end)
 
-RegisterNetEvent('qb-phone:server:AddRecentCall', function(type, data)
+RegisterNetEvent('qb-phone:server:AddRecentCall', function(callType, data)
     local src = source
     local Ply = exports['pfm-core']:GetPlayer(src)
-    if not Ply or type(data) ~= 'table' then return end
+    -- (the first argument used to be named `type`, so type(data) below raised an error on every call)
+    if not Ply or type(data) ~= 'table' or type(callType) ~= 'string' then return end
     local Hour = os.date('%H')
     local Minute = os.date('%M')
     local label = Hour .. ':' .. Minute
-    TriggerClientEvent('qb-phone:client:AddRecentCall', src, data, label, type)
+    TriggerClientEvent('qb-phone:client:AddRecentCall', src, data, label, callType)
     local Trgt = QBCore.Functions.GetPlayerByPhone(data.number)
     if Trgt ~= nil then
         TriggerClientEvent('qb-phone:client:AddRecentCall', Trgt.PlayerData.source, {
@@ -1102,7 +1174,10 @@ end)
 RegisterNetEvent('qb-phone:server:GiveContactDetails', function(PlayerId)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player or not exports['pfm-core']:GetPlayer(PlayerId) then return end
+    PlayerId = tonumber(PlayerId)
+    if not Player or not PlayerId or PlayerId == src or not exports['pfm-core']:GetPlayer(PlayerId) then return end
+    -- handed to someone standing next to you (the client picks the closest player)
+    if #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(PlayerId))) > 5.0 then return end
     local SuggestionData = {
         name = {
             [1] = Player.PlayerData.charinfo.firstname,
@@ -1133,7 +1208,10 @@ RegisterNetEvent('qb-phone:server:InstallApplication', function(ApplicationData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or type(ApplicationData) ~= 'table' or type(ApplicationData.app) ~= 'string' then return end
-    Player.PlayerData.metadata['phonedata'].InstalledApps[ApplicationData.app] = ApplicationData
+    -- only apps the store offers, stored as their name (the whole client table was saved in metadata)
+    local app = ApplicationData.app
+    if not (Config.StoreApps and Config.StoreApps[app]) then return end
+    Player.PlayerData.metadata['phonedata'].InstalledApps[app] = { app = app }
     Player.SetMetaData('phonedata', Player.PlayerData.metadata['phonedata'])
 
     -- TriggerClientEvent('qb-phone:RefreshPhone', src)
@@ -1162,6 +1240,7 @@ end)
 RegisterNetEvent('qb-phone:server:getImageFromGallery', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return end
     local images = MySQL.query.await('SELECT * FROM phone_gallery WHERE citizenid = ? ORDER BY `date` DESC', { Player.PlayerData.citizenid })
     TriggerClientEvent('qb-phone:refreshImages', src, images)
 end)
