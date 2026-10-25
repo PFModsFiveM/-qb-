@@ -4,7 +4,13 @@
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/fake_db.lua')
 function GetCurrentResourceName() return 'pfm-banking' end
-function GetResourceState(name) if name == 'pf-government' or name == 'pf-computer' then return 'missing' end return 'started' end
+local govRunning = false
+function GetResourceState(name)
+    if name == 'pf-government' then return govRunning and 'started' or 'missing' end
+    if name == 'pf-computer' then return 'missing' end
+    return 'started'
+end
+local gov = { registered = {}, revenue = {}, closed = {} }
 
 QBCoreMock.Shared.Jobs = { mechanic = { label = 'Mechanic' }, bennys = { label = "Benny's" }, police = { label = 'Police' } }
 
@@ -204,5 +210,37 @@ describe('mechanic POS: the customer confirms the bill', function()
     it('a forged bill id does nothing', function()
         answer(CUST, { id = '999-999' }, true)
         assert_eq(money(CUST, 'cash'), 500)
+    end)
+end)
+
+describe('mechanic shops in the government registry', function()
+    local function withGovernment()
+        govRunning = true
+        gov.registered, gov.revenue, gov.closed = {}, {}, {}
+        Mock.exportsByResource['pf-government'] = {
+            RegisterBusinessWithGovernment = function(_, id, label, kind, owner) gov.registered[id] = { kind = kind, owner = owner } return true end,
+            AddBusinessRevenue = function(_, id, amount, key, account) gov.revenue[#gov.revenue + 1] = { id = id, amount = amount, key = key, account = account } return true end,
+            CanBusinessTrade = function(_, id) if gov.closed[id] then return false, gov.closed[id] end return true end,
+            CollectTaxAmount = function(_, tax) return 0 end,
+        }
+    end
+    it('a sale registers the shop and is reported once, with the shop account', function()
+        withGovernment()
+        chargeAndPay(MECH, { customerId = CUST, items = CART, paymentType = 'cash' })
+        assert_eq(gov.registered['mechanic:mechanic'].kind, 'mechanic')
+        assert_eq(#gov.revenue, 1)
+        assert_eq(gov.revenue[1].id, 'mechanic:mechanic')
+        assert_eq(gov.revenue[1].amount, 150)
+        assert_eq(gov.revenue[1].account, 'society:mechanic')
+        govRunning = false
+    end)
+    it('a shop the government closed cannot charge customers', function()
+        withGovernment()
+        gov.closed['mechanic:mechanic'] = 'closed'
+        chargeAndPay(MECH, { customerId = CUST, items = CART, paymentType = 'cash' })
+        assert_eq(money(CUST, 'cash'), 500)
+        assert_eq(shop('mechanic'), 0)
+        assert_eq(#gov.revenue, 0)
+        govRunning = false
     end)
 end)

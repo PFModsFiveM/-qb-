@@ -14,8 +14,12 @@ Mock.exportsByResource['pfm-banking'] = {
     EnsureSocietyAccount = function() return true end,
     GetAccountBalance = function() return 1234 end,
 }
+local gov = { registered = {}, revenue = {}, closed = {} }
 Mock.exportsByResource['pf-government'] = {
     GetSalesTaxBreakdown = function(_, subtotal) return { subtotal = subtotal, tax = 0, total = subtotal, rate = 0 } end,
+    RegisterBusinessWithGovernment = function(_, id, label, kind, owner) gov.registered[id] = { label = label, kind = kind, owner = owner } return true end,
+    AddBusinessRevenue = function(_, id, amount, key, account) gov.revenue[#gov.revenue + 1] = { id = id, amount = amount, key = key, account = account } return true end,
+    CanBusinessTrade = function(_, id) if gov.closed[id] then return false, gov.closed[id] end return true end,
 }
 
 Config = {
@@ -62,6 +66,7 @@ BeforeEach = function()
     Mock.reset()
     FakeDB.reset()
     transfers, given = {}, {}
+    gov.registered, gov.revenue, gov.closed = {}, {}, {}
     Mock.clock = (Mock.clock or 1700000000) + 1000
     S.rows = { corner = { store_id = 'corner', label = 'Corner Store', store_type = 'purchasable', owner_citizenid = 'OWN1', purchased_at = 1 } }
     S.stock = 10
@@ -139,5 +144,34 @@ describe('pf-trucking contract steps', function()
         assert_false(cb('pf-trucking:server:completeActiveJob', DRIVER).ok)
         assert_eq(#transfers, 1)
         assert_eq(transfers[1].amount, 1000)
+    end)
+end)
+
+describe('pf-stores in the government registry', function()
+    it('a bought store is registered under its new owner', function()
+        S.rows.corner.owner_citizenid = nil
+        Mock.coords[SHOPPER] = vector3(100.0, 0.0, 0.0)
+        assert_true(cb('pf-stores:server:purchaseStore', SHOPPER, 'corner').ok)
+        assert_eq(gov.registered['store:corner'].owner, 'SHOP1')
+        assert_eq(gov.registered['store:corner'].kind, 'store')
+    end)
+    it('each sale is reported once with its key and the store account', function()
+        Mock.coords[SHOPPER] = SHOP
+        assert_true(cb('pf-stores:server:storefrontCheckout', SHOPPER, 'corner', { { name = 'sandwich', quantity = 2 } }, 'cash').ok)
+        assert_eq(#gov.revenue, 1)
+        assert_eq(gov.revenue[1].id, 'store:corner')
+        assert_eq(gov.revenue[1].amount, 20)
+        assert_true(type(gov.revenue[1].key) == 'string' and gov.revenue[1].key ~= '')
+        assert_true(gov.revenue[1].account:find('^society:') ~= nil, gov.revenue[1].account)
+    end)
+    it('a store the government closed (or without power) sells nothing', function()
+        Mock.coords[SHOPPER] = SHOP
+        gov.closed['store:corner'] = 'closed'
+        local res = cb('pf-stores:server:storefrontCheckout', SHOPPER, 'corner', { { name = 'sandwich', quantity = 2 } }, 'cash')
+        assert_eq(res.error, 'closed')
+        gov.closed['store:corner'] = 'no_power'
+        assert_eq(cb('pf-stores:server:storefrontCheckout', SHOPPER, 'corner', { { name = 'sandwich', quantity = 2 } }, 'cash').error, 'closed')
+        assert_eq(#transfers, 0)
+        assert_eq(#given, 0)
     end)
 end)
