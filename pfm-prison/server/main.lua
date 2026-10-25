@@ -8,6 +8,9 @@ local JailResourceAllowlist = Config.JailResourceAllowlist or {
     ['pfm-adminmenu'] = true,
 }
 local MaxJailTime = Config.MaxJailTime or 1440
+local JailMoneyPaid = {}   -- [citizenid] = true once the jail money was paid for the current sentence
+local CheckChanceAt = {}   -- [src] = os.time() of the last phone search
+local LastBreakAt = 0      -- os.time() of the last escape or lockdown by an inmate
 
 RegisterNetEvent('prison:server:SetJailStatus', function(jailTime)
     local src = source
@@ -33,6 +36,9 @@ RegisterNetEvent('prison:server:SetJailStatus', function(jailTime)
             local coords = GetEntityCoords(GetPlayerPed(src))
             local middle = vec2(Config.Locations['middle'].x, Config.Locations['middle'].y)
             if #(coords.xy - middle) <= 195.0 then return end
+            -- an escapee forfeits the stored items (the client could ask for them back afterwards)
+            Player.SetMetaData('jailitems', {})
+            LastBreakAt = os.time()
         end
     end
 
@@ -43,7 +49,8 @@ RegisterNetEvent('prison:server:SetJailStatus', function(jailTime)
             TriggerClientEvent('QBCore:Notify', src, Lang:t('info.lost_job'))
         end
     else
-        GotItems[source] = nil
+        GotItems[src] = nil
+        JailMoneyPaid[Player.PlayerData.citizenid] = nil
     end
 end)
 
@@ -54,7 +61,10 @@ RegisterNetEvent('prison:server:SaveJailItems', function()
     if (Player.PlayerData.metadata.injail or 0) <= 0 then return end
     if not Player.PlayerData.metadata['jailitems'] or table.type(Player.PlayerData.metadata['jailitems']) == 'empty' then
         Player.SetMetaData('jailitems', Player.PlayerData.items)
-        -- through the bank ledger, once per jailing (the jailitems check above guards the rest)
+        -- through the bank ledger, once per jailing (with an empty inventory the jailitems check
+        -- above passes every time, so the payment is tracked on its own)
+        if JailMoneyPaid[Player.PlayerData.citizenid] then return end
+        JailMoneyPaid[Player.PlayerData.citizenid] = true
         PFPayout.Pay(Player, 'cash', 80, { key = ('pfm-prison:jailmoney:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), reason = 'jail money', quiet = true })
         Wait(2000)
         Player.ClearInventory()
@@ -90,6 +100,7 @@ RegisterNetEvent('prison:server:SecurityLockdown', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or (Player.PlayerData.metadata['injail'] or 0) <= 0 then return end
+    LastBreakAt = os.time()
     TriggerClientEvent('prison:client:SetLockDown', -1, true)
     for _, v in pairs(QBCore.Functions.GetPlayers()) do
         local Player = exports['pfm-core']:GetPlayer(v)
@@ -106,6 +117,7 @@ RegisterNetEvent('prison:server:SetGateHit', function(key)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or (Player.PlayerData.metadata['injail'] or 0) <= 0 then return end
     if type(key) ~= 'string' and type(key) ~= 'number' then return end
+    LastBreakAt = os.time()
     TriggerClientEvent('prison:client:SetGateHit', -1, key, true)
     if math.random(1, 100) <= 50 then
         for _, v in pairs(QBCore.Functions.GetPlayers()) do
@@ -125,6 +137,7 @@ RegisterNetEvent('prison:server:CheckRecordStatus', function()
     if not Player then return end
     local CriminalRecord = Player.PlayerData.metadata['criminalrecord']
     local currentDate = os.date('*t')
+    if type(CriminalRecord) ~= 'table' or type(CriminalRecord['date']) ~= 'table' or not CriminalRecord['date'].month then return end
 
     if (CriminalRecord['date'].month + 1) == 13 then
         CriminalRecord['date'].month = 0
@@ -140,12 +153,16 @@ end)
 
 RegisterNetEvent('prison:server:JailAlarm', function()
     if AlarmActivated then return end
+    -- only after a real escape or lockdown (any client far from the prison could ring it server-wide)
+    if os.time() - LastBreakAt > 600 then return end
     local playerPed = GetPlayerPed(source)
     local coords = GetEntityCoords(playerPed)
     local middle = vec2(Config.Locations['middle'].x, Config.Locations['middle'].y)
     if #(coords.xy - middle) < 200 then return error('"prison:server:JailAlarm" triggered whilst the player was too close to the prison, cancelled event') end
+    AlarmActivated = true
     TriggerClientEvent('prison:client:JailAlarm', -1, true)
     SetTimeout(5 * 60000, function()
+        AlarmActivated = false
         TriggerClientEvent('prison:client:JailAlarm', -1, false)
     end)
 end)
@@ -153,7 +170,11 @@ end)
 RegisterNetEvent('prison:server:CheckChance', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player or Player.PlayerData.metadata.injail == 0 or GotItems[src] then return end
+    if not Player or (Player.PlayerData.metadata.injail or 0) <= 0 or GotItems[src] then return end
+    -- one search per finished prison job at most (spamming the event made the phone a sure thing)
+    local now = os.time()
+    if CheckChanceAt[src] and now - CheckChanceAt[src] < 10 then return end
+    CheckChanceAt[src] = now
     local chance = math.random(100)
     local odd = math.random(100)
     if chance ~= odd then return end
@@ -161,6 +182,10 @@ RegisterNetEvent('prison:server:CheckChance', function()
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['phone'], 'add')
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.found_phone'), 'success')
     GotItems[src] = true
+end)
+
+AddEventHandler('playerDropped', function()
+    CheckChanceAt[source] = nil
 end)
 
 QBCore.Functions.CreateCallback('prison:server:IsAlarmActive', function(_, cb)
