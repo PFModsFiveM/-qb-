@@ -1295,3 +1295,65 @@ Field treatment works up to *severe*; *critical* injuries need the hospital.
 - the pfm-menu list.
 
 pf-emsmdt (in `[custom]`, not started) was not tested with this.
+
+### pf-emsmdt moved into [pfscripts], reviewed and hardened
+
+**Move** (-pfscripts- 5a41d58, unchanged first):
+- **From:** `resources/[custom]/pf-emsmdt`, a checkout of `PFModsFiveM/pf-policemdt` with the EMS conversion uncommitted on top. Only the working files were copied, not `.git`.
+- **Backup:** the full original, `.git` included, is at `F:\fivemserver\txData\PF\_moved_backup_2026-10-24\pf-emsmdt`. The `[custom]` copy was then removed.
+- **Checked before committing to the public repository:**
+  - no backdoor signatures;
+  - no webhook URLs, keys or passwords in the files (the evidence webhook comes from the `pf_emsmdt_evidence_webhook` convar).
+- **One webhook URL exists in that checkout's old git history** (not copied). It is the pf-policemdt webhook already flagged for rotation; rotate it if not done.
+
+**Server hardening** (f9540e5, c5e6897):
+
+| Area | Problem | Now |
+|---|---|---|
+| Civilian callouts, auto calls (shots/theft/homicide), `/911` | placed anywhere on the map; suspect fields passed on as sent | within 150 m of the caller; payload must be a table; suspect fields cleaned |
+| Roster reload `pf_emsmdt:server:RosterUpdated` | any client could force a reload and broadcast | server-only |
+| Accept/complete call | job check only | on-duty medic |
+| Profile (callsign/status/avatar) | anyone, any text, any URL, shown to all medics | medics only, rate-limited, short callsign, one-word status, https avatar |
+| Patient search | any page size (one request could list every player) | 1–25 per page, 64-character query |
+| Patient notes | job only | on duty, rate-limited, existing citizen |
+| Chat | — | rate-limited |
+| Bulletins | broadcast to every player | medics only |
+| `pf-emsmdt:server:getCitizenData` | answered anyone (server id to citizen id and name) | on-duty medic within 5 m |
+| Fire / employment / flags / discipline | command could act on **any citizen** (firing set a police officer's job to unemployed) | EMS staff only; firing needs a higher grade and never applies to yourself; viewing a profile no longer creates a staff record |
+| Leftovers | unused money helpers editing balances directly; `ensureTablesOnce` called an undeclared function | removed; forward-declared |
+| Start order | roster queries before the roster table existed (fresh database, found on staging) | waits for the table |
+
+**Police MDT data** (702311b):
+- **Start-up copies:** pf-emsmdt copied the police MDT's staff, discipline, audit, roster and SOP rows (`pf_mdt_*`, pf-policemdt's tables here) into itself on first start, and ran `ALTER TABLE` on the police SOP table. This is now behind `Config.MigrateLegacyPoliceTables` (default **false**).
+- **SQL files:** `sql/pf-emsmdt-qb.sql` and `-esx.sql` were the police MDT's schema plus police SOPs and cameras; importing them wrote into the police tables and failed with a duplicate key. The EMS MDT creates its own tables, so the files now explain that. The old content is in git history.
+
+**One /911 for both departments** (8105de0):
+- **Before:** both MDTs registered `/911`, so only one department got calls.
+- **Now:** `/ems911` always works, and `/911` is registered by pf-emsmdt only when the police MDT isn't running. The EMS server also listens to the police MDT's 911 event and opens an EMS call when the description matches an EMS 911 type.
+
+**UI (NUI) escaping** (2b5e1c8):
+- **The risk:** text from other players (chat, 911 descriptions, call titles, units, notes, bulletins, SOPs, roster, staff and injury records) was in places inserted as HTML. A civilian could run script in a medic's MDT and act through its callbacks.
+- **The fix:** about 135 insertions escaped, plus helpers for JS-in-attribute values (`escapeJsAttr`) and URLs (`safeUrl`, `safeCssUrl`).
+- **Not loaded:** `app-extended.js` is fixed too but is not loaded by `index.html`.
+
+**Injury system connection:**
+- **Treatment buttons** (df7d28f): the panel's buttons were bandage, medkit, painkiller and surgery, and only bandage existed. They are now bandage, splint, burn dressing and oxygen. A test keeps them in line with `Config.Treatments`.
+- **Local display events:** `displayInjuries` and `displayInjuryAssessment` are now local (AddEventHandler).
+- **One view per refresh:** pf-ambulancejob only shows its own injury list when pf-emsmdt isn't running (5559e16), so a refresh opens one view.
+- **The scan flow:** `/checkinjuries` → pf-emsmdt injury panel → treatment buttons → `pf-ambulancejob:server:applyTreatment`, which has the server checks from the injury system.
+
+**Tests:**
+- `emsmdt_security_spec` (14; 11 fail on the old code).
+- `emsmdt_legacy_tables_spec` (2).
+- Treatment-button check in `ambulance_injury_helpers_spec`.
+- Full suites: mocked **385 passed** (47 files), real database **69 passed**.
+- Staging: 98 resources started. pf-emsmdt and pf-policemdt-DEV run side by side; pf-emsmdt touches no police table and has no errors. The remaining failures are unchanged (ox_lib, kq_wheeldamage).
+
+**Not verified in game:**
+- the MDT UI itself (only checked for syntax);
+- the F6 keybind;
+- the injury panel;
+- whether both MDTs' `/911` behave as described on a client.
+
+**Notes:**
+- The optional `ems_mdt` item (`Config.Item.Name`) does not exist in pfm-core's item list. The MDT opens by command or F6.
