@@ -345,7 +345,12 @@ describe('3b. the business computer shows the real stock', function()
 end)
 
 describe('4. kitchen and counter', function()
-    it('cooking takes the delivered stock from the restaurant, not the cook', function()
+    it('cooking takes the delivered stock from the restaurant, not the cook; the dish is as fresh as it', function()
+        local lowest = 100
+        for _, it in pairs(exports['pfm-inventory']:GetInventory(StockStashId(BID, StorageFor('raw_bacon'))).items) do
+            if it.name == 'raw_bacon' then lowest = math.min(lowest, exports['pfm-inventory']:GetFreshness(it.name, it.info).pct) end
+        end
+        assert_true(lowest < 100, 'the delivered bacon aged')
         Mock.coords[BOSS] = GRILL
         Mock.fireNet('pf-restaurants:server:startStationAction', BOSS, BID, 'bs_grill_1', 1, { action = 'grill_bacon', inputItems = { { item = 'raw_bacon', qty = 2 } } })
         assert_eq(stash(StorageFor('raw_bacon'), 'raw_bacon'), 4)
@@ -354,6 +359,9 @@ describe('4. kitchen and counter', function()
         Mock.clock = Mock.clock + 26
         Mock.fireNet('pf-restaurants:server:completeStationAction', BOSS, session.sessionId)
         assert_eq(exports['pfm-inventory']:GetItemCount(BOSS, 'bacon_cooked'), 2)
+        local dish = exports['pfm-inventory']:GetItemsByName(BOSS, 'bacon_cooked')[1]
+        local pct = exports['pfm-inventory']:GetFreshness(dish.name, dish.info).pct
+        assert_true(math.abs(pct - lowest) < 1.5, ('dish %.1f%% vs ingredient %.1f%%'):format(pct, lowest))
     end)
     it('a customer pays the server price; revenue to the restaurant, tax to the government', function()
         Mock.fireNet('pf-restaurants:server:createMenuItem', BOSS, BID, { recipeId = 'burger_classic', price = 10 })

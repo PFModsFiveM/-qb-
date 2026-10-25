@@ -231,6 +231,21 @@ function F.UpdateDropSunlight(drops, sunny, now)
     end
 end
 
+--- Freshness record for an item that starts at `pct` percent of its shelf life left (e.g. a dish made
+--- from ingredients that were not fresh any more). Returns an info table, or nil for non-perishables.
+function F.InfoAtPercent(itemName, pct, now)
+    local life = F.ShelfLife(itemName)
+    if not life then return nil end
+    now = now or F.now()
+    pct = math.max(0, math.min(100, tonumber(pct) or 100))
+    return {
+        fresh = {
+            v = 1, batch = F.NewBatchId(now), cat = F.CategoryOf(itemName), life = life,
+            used = math.floor(life * (1 - pct / 100)), at = now, storage = 'normal',
+        },
+    }
+end
+
 --- Freshness for goods unpacked from a delivery. Goods age at the grace storage rate (normal) for
 --- the first DeliveryGraceSeconds after delivery (30 minutes), then at the faster DeliveryStorage
 --- rate (outdoor) for as long as the delivery stayed packed. Returns an info table, or nil for
