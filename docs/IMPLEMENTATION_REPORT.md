@@ -1357,3 +1357,26 @@ pf-emsmdt (in `[custom]`, not started) was not tested with this.
 
 **Notes:**
 - The optional `ems_mdt` item (`Config.Item.Name`) does not exist in pfm-core's item list. The MDT opens by command or F6.
+
+### Loose ends: fake billing mails, car save events, SQL files on a fresh database (2026-10-25)
+
+**pfm-phone fake "invoice paid" mails** (-qb- d53a8a3):
+- **Before:** the phone sent `qb-phone:server:BillingEmail` with a business and amount it chose. The server mailed every online member of that job, so any player could send any job fake "Invoice Paid ... $999999" mails.
+- **Now:** `PayInvoice` and `DeclineInvoice` mail the business themselves, from the stored invoice (amount, business) and the payer's real name. The relay event and its client handler are removed.
+- **Tests:** 3 new in `phone_bank_spec` (all 3 fail on the old code). The mock QBCore gained `Functions.GetPlayers`.
+
+**pf-mechanicjob car save events** (-pfscripts- a145539, test -qb- d857d3e):
+- **Before:** not only `updateVehicleStats`: all four sync events (`cacheVehicleState`, `forceSave`, `qb-garages:server:updateVehicleStats`, `saveFullDiagnostics`) took any plate from any client and wrote `player_vehicles.mods` and `vehicle_diagnostics`. A player could overwrite anyone's car mods and damage.
+- **Now:** a write needs the plate's owner, or a player sitting in that car (checked on the server, so a friend driving the car still syncs it). Props must be a table under 64 KB; client engine/body values are clamped.
+- **Tests:** `mechanic_garage_sync_spec` (5; 3 fail on the old code).
+- **Not changed:** the unused copies in `[custom]` and `[jobsystem]` (not in the staging config).
+
+**SQL files on a fresh database:**
+- `pfm-vehicleshop/vehshop.sql` (3b3c378): columns, the unique plate index and the foreign key use `IF NOT EXISTS`, so the file loads after pfm-garages and on a re-import.
+- `pfm-inventory/migrate.sql` (1631da1): this was a one-time copy from the old qb-inventory tables, not an install file. It is now `upgrade/migrate_from_old_qb_inventory.sql` with a note on when to run it, and uses `INSERT IGNORE` so a second run never overwrites newer inventories. README updated.
+- `pf-garageuionly/sql/garage.sql` (-pfscripts- 7d7e3a3): a duplicate `plate` key in the standalone table, and two indexes on an `owner` column QBCore doesn't have (now `citizenid`).
+- **Test:** `tests/realdb/sql_install_check.js` (5648d4f) loads each file twice on a fresh database and checks the inventory upgrade keeps newer rows. Run: `PF_TEST_DB="mysql://root@127.0.0.1:3399" node realdb/sql_install_check.js`. Checked on MariaDB (XAMPP); the `IF NOT EXISTS` forms are MariaDB syntax and would fail on MySQL 8.
+
+**Found, not fixed:** pf-garageuionly's `server/integration.lua` also queries `player_vehicles.owner`. The resource has no manifest and doesn't run, so nothing breaks today.
+
+**Totals:** mocked **393 passed** (48 files), real database **69 passed**, SQL install check passed. No staging run this time: the changes are server event checks and SQL files, covered by the tests above. Nothing pushed.
