@@ -1517,3 +1517,171 @@ The working list is now `docs/TASK_LEDGER.md` (statuses, evidence, next task per
   - mocked 691 passed;
   - real database 108 passed in 9 files;
   - staging 99 resources, known failures only.
+
+
+## Batch 7 — 2026-10-25: end-to-end supply chain, restaurant ordering, premises and equipment
+
+### 1. Starting and final commits
+
+| Repository | On GitHub (`origin/main`) | Start of this batch | End of this batch |
+|---|---|---|---|
+| `[qb]` (PFModsFiveM/-qb-) | 0d5e7d1 (batch 2) | a398ea4 | see `git log` (last code commit c99ba43) |
+| `[pfscripts]` (PFModsFiveM/-pfscripts-) | fa4482d (initial import) | b5d22d2 | d1be559 |
+
+- **Branch:** `batch5-security-supply-chain` in both repositories.
+- **Pushed state:** GitHub has only batch 2 (`-qb-`) and the initial import (`-pfscripts-`). Batches 3–7 exist only on the local branch, which contains all of `origin/main` (0 commits behind). Nothing was pushed or deployed.
+
+**Standalone repositories, checked today against `[pfscripts]`:**
+- **pf-government, pf-trucking, pf-policemdt:** every differing file equals our base (fa4482d), so `[pfscripts]` is newer and nothing needs importing.
+- **pf-jobsystem:** the only extra file is the duplicate `server/gruppe6.lua`, removed on purpose in batch 6.
+- **pf-computer (2026-03) and pf-mechanicjob (2025-08, real remote pf-advancedmechanicjob):** their differences are older versions, not newer work.
+- **Canonical copies:** the `[pfscripts]` ones, unchanged from earlier batches.
+
+### 2. Files changed
+
+**`[qb]`:**
+- `pfm-worldobjects/{server,client,config}.lua`: fixtures, float clock.
+- `pfm-inventory/server/{freshness,functions}.lua`: `FreshnessAtPercent`, `SetInventoryCapacity`.
+- New tests: `tests/realdb_specs/supply_chain_e2e_realdb_spec.lua`, `government_premises_realdb_spec.lua`, additions to `restaurants_realdb_spec.lua`.
+
+**`[pfscripts]`:**
+- `pf-computer/{server/main.lua, client/main.lua, ui/js/script.js}`
+- `pf-government/{server/premises.lua (new), server/businesses.lua, config.lua, fxmanifest.lua, client/nui.lua, html/script.js}`
+- `pf-restaurants/{server/inventory.lua, server/persistence.lua, server/stations.lua, config/shared.lua}`
+- `pf-stores/{server_orders.lua, server.lua, shared/config.lua}`
+- `pf-trucking/server.lua`
+
+### 3. Features implemented
+
+**Restaurants can order supplies (889b37b):**
+- **What was wrong:** nothing in any UI sent `pf-restaurants:server:orderSupplies`. On PF Computer a restaurant boss got the job-business catalog, which is empty for restaurant jobs. This is the "empty supplier catalog" from earlier reports.
+- **Now, on PF Computer:** a restaurant job orders as its restaurant.
+  - The catalog is the configured ingredients at the server's unit prices (`GetRestaurantForJob`, `GetSupplyCatalog`).
+  - Create, list, cancel and collect all use the shared order service with buyer kind `restaurant`.
+  - Delivery is offered when the restaurant has a receiving point. The pallet's rotation comes from `receiving.deliveryHeading`.
+
+**One shared order lifecycle, used end to end:**
+- **Users:** stores, restaurants and job businesses all use pf-stores `PFOrders`.
+- **Delivery states:** `created → paid → awaiting_supplier → awaiting_delivery → assigned → in_transit → delivered → unpacked`.
+- **Pickup states:** `paid → ready → delivered → unpacked`.
+- **Side states:** `cancelled` and `failed`. A driver release or timeout returns to `awaiting_delivery`.
+- **Stored per order:** order id, buyer kind and id, purchaser, items with server prices, totals, markup, freight payout, payment transaction, supplier, driver, delivery method, pallet id, every status change with actor and note, and timestamps.
+- **Duplicate prevention, new in d71ec7c:**
+  - one order at a time per business;
+  - the same items and method from the same person within `DuplicateWindowSeconds` (10) returns the existing order instead of charging again.
+- **Cancellation policy:** allowed with a full refund only while nobody has taken the delivery (`awaiting_supplier`, `awaiting_delivery`). Refused once a driver is assigned.
+
+**Truckers, AI fallback, pallets, unpacking:** unchanged in design (batches 2d–6), now verified end to end for restaurants; see the tests.
+
+**Dish freshness (9d460de):**
+- A dish starts as fresh as the least fresh ingredient lot it was cooked from (`Config.Cooking.DishFreshnessFromIngredients`).
+- Quality and poison risk already followed the ingredients.
+
+**Government premises and equipment (8207f4d, 8333bbd, e08f590, d1be559):**
+- **Approving slots:** officials with the `businesses` permission approve typed slots at their own position:
+  - cooking station, register, office, locker, delivery point, fridge, freezer, shelf;
+  - limits: at most 40 per business, at least 1 m apart.
+- **Who may buy:** the owner on the government record, the restaurant owner role (`premises.buy`, which only `all` grants), or the boss of a job-owned business.
+- **Purchase checks:** the buyer stands at the slot and the slot is empty and of the matching type.
+- **Payment:** one keyed ledger transfer from the business account. If the slot was filled meanwhile, the money comes back under its own key.
+- **The prop:** a persistent pfm-worldobjects fixture at the approved position and heading, restored after restarts, with no delivery actions.
+- **Blocked:** closed businesses cannot buy, and slots in use cannot be withdrawn.
+- **Restaurant capacity:** installed fridges, freezers and shelves enlarge the matching restaurant stock area.
+- **UI:** "Premises & Equipment" in the government business registry (officials), and "Premises" in the PF Computer Business Manager (owners).
+
+**PF Computer Business Manager uses the authoritative data (bd39271):**
+- **Inventory:** it showed `Math.random()` stock and its editor wrote a data-file number nothing used. It now lists the real stock from the business's stashes, with freshness. Typed quantities are refused (`stock_is_physical`).
+- **"Add initial inventory" option on new menu items:** removed. It called a handler that does not exist and would have created stock from nothing.
+- **Dead buttons:** `stash:place`, `wages:get` and `wages:set` were called by the UI but never forwarded by the client, so the buttons did nothing. They are forwarded now.
+
+### 4. Security fixes confirmed in this batch
+- **Duplicate supply orders from resent requests:** charged twice. Fixed in d71ec7c.
+- **Fake inventory numbers:** a boss could set any "stock" count in the computer data file. That count is no longer used, and the write is refused.
+- **Re-checked from the report, still fixed in the current code:**
+  - `pf-computer:server:supplies:completeOrder` is server-only and only collects the order the player's own pickup run was started for;
+  - `deleteProp` is owner or admin only;
+  - mechanic register and tablet totals come from server prices;
+  - `AcceptJob` finds contracts by id;
+  - there is one shared-account model (batch 5, fa08b06).
+
+### 5. Database and migrations
+No new versioned migrations. The new tables are created at start and on first use, idempotently and once (a lock against concurrent first use):
+- **pf-government:**
+  - `pf_gov_premises_slots`;
+  - `pf_gov_premises_equipment` (unique `slot_id`).
+- **pfm-worldobjects:** fixtures use the existing `pf_world_objects` table (`kind = 'fixture'`, `state = 'installed'`).
+- **Upgrade:** start the resources; nothing to run by hand.
+- **Clocks (8f2f803):**
+  - Millisecond clocks in pf-stores, pf-trucking, pf-restaurants and pfm-worldobjects use float maths (`os.time() * 1000.0`).
+  - FiveM Lua 5.4 is 64-bit, so stored values are unchanged.
+  - The 32-bit test VM used to wrap them.
+
+### 6. Dependencies and start order
+Unchanged from batch 5, section 10:
+1. oxmysql, ox_lib, PolyZone, menuv;
+2. pfm-core;
+3. `[qb]` (pfm-banking, pfm-inventory, pfm-worldobjects);
+4. pf-government;
+5. pf-scoreboard;
+6. pf-trucking;
+7. pf-computer;
+8. pf-jobs;
+9. pf-tablet;
+10. pf-mechanicjob;
+11. pf-stores;
+12. pf-restaurants.
+
+Notes:
+- **New cross-resource calls:**
+  - pf-computer → pf-restaurants (`GetRestaurantForJob`, `GetSupplyCatalog`, `GetStockStashes`) and → pf-government (`ListPremisesFor`, `BuyPremisesEquipment`);
+  - pf-government → pfm-worldobjects (`CreateFixture`) and → pf-restaurants (`HasPermission`).
+- **Missing dependencies:** each call fails closed: no order, no purchase, a clear error.
+- **ox_lib:** pf-mechanicjob uses it client-side only (context menus, progress circles, an input dialog). Install it; removing it would remove those menus.
+
+### 7. Tests actually run (end of batch)
+- **Mocked (`node harness.js`):** 691 passed, 0 failed, 97 files.
+- **Real database (`PF_TEST_DB=mysql://root@127.0.0.1:3399 node realdb/run.js`):** 141 passed, 0 failed, 11 files.
+- **New: `supply_chain_e2e_realdb_spec` (24).** It runs the real pf-computer, pf-stores, pf-trucking, pfm-worldobjects, pf-restaurants, pfm-inventory and the pfm-banking ledger together:
+  - **Ordering:** the restaurant catalog is not empty; an unfunded restaurant is refused; prices come from the server; the restaurant account pays into escrow; a resend is not charged twice; the order points at its ledger transaction.
+  - **Supplier and drivers:** an AI supplier takes it; of two truckers, one wins; no cancellation after a driver takes it; cargo is loaded only at the warehouse.
+  - **Restart mid-delivery:** pf-stores and pf-trucking restart with the same driver and nothing lost.
+  - **Delivery:** the driver is paid once, escrow is settled, and a sealed pallet appears at the receiving point with its heading.
+  - **Isolation:** another restaurant, a stranger and forged requests cannot open, move or unpack it; contents are sealed.
+  - **Pallet restart:** pfm-worldobjects restarts and restores position, rotation and contents.
+  - **Unpacking:** goods are unpacked once into the right storage, aged by the wait, with the full status history recorded.
+  - **Computer:** the PF Computer stock shows the real items; typed quantities are refused; premises go through pf-government.
+  - **Kitchen and sale:** cooking uses the delivered stock and the dish keeps its freshness; the customer pays the server price, the restaurant gets the revenue and the government the tax.
+  - **Other paths:** AI delivery fallback with a pallet; cancellation refunded once; another restaurant sees none of the orders.
+  - **Dependency failures:** bank down means nothing is ordered; order service down means no unpacking; bank down means no payout, then exactly one payout after recovery.
+  - **Ledger:** reconciles.
+- **New: `government_premises_realdb_spec` (8):**
+  - slot approval and refusals;
+  - purchase permissions, type, distance, payment once, underfunded, closed;
+  - fixture position and rotation across a restart;
+  - job-boss purchases;
+  - who may list premises.
+- **Restaurants:** capacity follows installed equipment (`restaurants_realdb_spec`, 23).
+- **Staging FXServer, fresh database:**
+  - 99 resources start; the only failures are ox_lib (pf-mechanicjob, illenium-appearance) and the kq_wheeldamage entitlement;
+  - all migrations applied;
+  - restaurants registered with their accounts.
+
+### 8. Still needs a real FXServer test with clients
+- **Trucking and pallets in game:** a trucker's trailer connect (`cargoLoaded`) and arrival; pallet entities seen by several players; pallet and fixture targets.
+- **UIs in a client:** the PF Computer Order Supplies (restaurant mode), Inventory and Premises sections, and the government Premises dialog.
+- **pf-mechanicjob:** anything at runtime (needs ox_lib), including the mechanic pickup run collecting a shared order.
+- **Live data:** the order service and premises against a copy of the live database.
+
+### 9. Known issues and migration risks
+- **Old pf-computer orders:** job-business orders from the data file stay listed and collectable but deliver nothing, as before. The shared service handles every new order.
+- **Store prices:** purchasable stores still cost 0 until you set prices in `pf-stores/shared/config.lua`.
+- **Existing hardware:** existing restaurants get no premises slots until officials approve them. Nothing changes for them until then.
+- **Heat:** `hot` spoilage is still unused, as decided earlier.
+
+### 10. Remaining work, in priority order
+1. **ox_lib:** install it (your action) and re-run staging so pf-mechanicjob starts.
+2. **Client test:** with two clients on staging, run the end-to-end path from section 8.
+3. **Live database:** test on a copy of the live database.
+4. **Tablet:** connect PF Tablet to the same supply-order and stock views. It still has its own job apps.
+5. **Mechanic parts:** use the shared stock (`bizstash-<job>`) in mechanic repairs, which still use personal inventory items.
+6. **Register equipment:** let installed registers and cooking stations add POS points and stations to restaurants. Today only storage capacity follows equipment.

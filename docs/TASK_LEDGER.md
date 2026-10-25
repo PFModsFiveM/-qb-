@@ -53,7 +53,7 @@ The working list for the whole project. Read this first in every session, then `
 
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
-| 2.1 | One persistent order lifecycle (create, pay, player supplier/trucker priority, AI fallback, assignment, delivery, exactly-once payout, restart) | VERIFIED (real DB, mocked) | pf-stores `PFOrders`, now used by stores, restaurants and job businesses (pf-computer `jobbiz`); supply chain realdb spec (21), computer orders (7) | In-game trucking run |
+| 2.1 | One persistent order lifecycle (create, pay, player supplier/trucker priority, AI fallback, assignment, delivery, exactly-once payout, restart) | VERIFIED (real DB, end to end) | pf-stores `PFOrders` used by stores, restaurants (now from PF Computer, 889b37b) and job businesses; duplicate submissions return the existing order (d71ec7c); supply_chain_e2e_realdb_spec 24 across the real resources incl. restarts and dependency failures | In-game trucking run |
 | 2.2 | Business ownership, permissions, employees as one shared service | IN_PROGRESS | pf-government `pf_gov_businesses` is the shared registry: restaurants (`restaurant:<id>`, owner from employees), player-owned stores (`store:<id>`), mechanic shops (`mechanic:<job>`) register, report each sale once and stop trading when closed/without power (6f1b81c, d54d863, 1817c58, 15e9229; government_business_realdb_spec 5, store/mechanic mocked tests). Employees/permissions still live in each resource (restaurant roles, store owner, job grades) | Employee records into the registry (UpdateBusinessEmployees) and a read API for pf-computer/tablet/MDT |
 | 2.3 | Business accounts and transactions | VERIFIED (real DB) | pfm-banking society accounts on the ledger | — |
 
@@ -61,14 +61,14 @@ The working list for the whole project. Read this first in every session, then `
 
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
-| 3.1 | Persistent pallets with their own stash, server-checked access, restart restore | VERIFIED (real DB, staging load) | pfm-worldobjects v1; pallet persistence in supply chain realdb spec | Two players at one pallet, in game |
+| 3.1 | Persistent pallets with their own stash, server-checked access, restart restore | VERIFIED (real DB, staging load) | e2e spec: sealed pallet at the receiving point with heading, other business/stranger refused, restart restores position/rotation/contents, unpacked once | Two players at one pallet, in game |
 | 3.2 | 30-minute grace after unpacking before faster spoilage | VERIFIED (real DB) | Packed deliveries age at the normal rate for 30 min after delivery, then at the outdoor rate until unpacked (pfm-inventory DeliveredInfo; pf-stores passes delivered_at; pf-restaurants stocks with it). 31182bd; restaurants_realdb_spec 'deliveries left packed' | — |
 
 ## Priority 4: restaurants
 
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
-| 4.1 | Persistent stock, atomic consumption, server prices/totals, roles, order states, refunds | VERIFIED (real DB) | df8eb0a; restaurants realdb spec (16) | Sweep result for remaining events |
+| 4.1 | Persistent stock, atomic consumption, server prices/totals, roles, order states, refunds; supplier catalog | VERIFIED (real DB) | Restaurant supply catalog on PF Computer (was empty) and orders through the shared service (889b37b); e2e: delivered stock cooked and sold with revenue and tax | — |
 | 4.2 | Freshness by item and storage (fridge, freezer, trunk, glovebox, sun, heat, broken equipment), offline, visible in UI | IN_PROGRESS | Rates and storage rules exist (freshness_spec 28). Restaurant cold storage follows government power: cut = broken_fridge rate (restaurants_realdb_spec 'power cuts'). Ground drops use the `sunlight` rate in clear midday weather (freshness_spec). Not applied: `hot` (no heat source chosen), fridge equipment failure (restaurant fridges are not equipment) | Decide whether anything should use `hot` (e.g. gloveboxes of cars parked in the sun) |
 | 4.3 | Cooking: stock-backed recipes, doneness, burnt, quality | VERIFIED (real DB) | restaurants realdb spec | In-game cooking check |
 
@@ -83,7 +83,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 6.1 | Fines, revenue, tax collection on the ledger | VERIFIED (mocked, staging) | 93be14f, 3aaaf7f | — |
-| 6.2 | Registration, transfer, closure, licenses, inspections, utilities shutdown, loans, upgrades, shared with computer/tablet/MDT | IN_PROGRESS | Done: registration (restaurants, stores, mechanic shops, with their ledger account); business tax on the ledger; closure/power enforced at sale; utility bills auto-paid from the business account, else billed -> delinquent -> cut -> restored when paid; inspections on the record (restaurants); employee counts (restaurants); loans from the treasury; **ownership transfers drive the real owner** (stores, restaurants; mechanic shops refused as job-owned) (b5d22d2). Decided 2026-10-25: licenses are record-only (not required to trade). Real DB: government_business 11, government_start_order 2 | Upgrades are not modelled anywhere (no requirement detail); computer/tablet/MDT read API for the registry |
+| 6.2 | Registration, transfer, closure, licenses, inspections, utilities shutdown, loans, upgrades, premises | IN_PROGRESS | Registry, tax, closures, utilities, inspections, transfers (batch 6b); **premises: approved typed slots, owner-bought equipment paid once from the business account, persistent fixtures, restaurant storage capacity** (8207f4d; government_premises_realdb_spec 8) | Installed registers/cooking stations do not yet add POS points or stations to restaurants |
 
 ## Priority 7: other resources
 
@@ -112,6 +112,7 @@ The working list for the whole project. Read this first in every session, then `
 
 ## Session log
 
+- **2026-10-25 (batch 7):** end-to-end supply chain test across the real resources; restaurants order on PF Computer; duplicate-order guard; premises and equipment; Business Manager shows real stock; dish freshness from ingredients. See report Batch 7.
 - **2026-10-25 (decisions):** licenses record-only; government transfers drive ownership (done, b5d22d2); auto-bans replaced by refuse-and-log (e86e9e8); store prices left to you.
 - **2026-10-25 (end):** staging restart found a start-order/concurrency bug in the government schema; fixed (be48b94). Remaining work is listed as decisions in 2.2, 4.2, 6.2, 7.2 and the sweep table, and external blockers in 0.7, 1.2, 1.3.
 - **2026-10-25 (later):** government registry wired (restaurants, stores, mechanic shops), business tax on the ledger, delivery grace, cold storage on power, sunlight on drops, job-business supplies on PFOrders, duty refresh server-side.
