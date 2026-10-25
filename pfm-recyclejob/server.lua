@@ -80,20 +80,12 @@ if Config.LimitedMaterials then
 end
 
 
-local function exploitBan(id, reason)
-    MySQL.insert('INSERT INTO bans (name, license, discord, ip, reason, expire, bannedby) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        {
-            GetPlayerName(id),
-            QBCore.Functions.GetIdentifier(id, 'license'),
-            QBCore.Functions.GetIdentifier(id, 'discord'),
-            QBCore.Functions.GetIdentifier(id, 'ip'),
-            reason,
-            2147483647,
-            'qb-recyclejob'
-        })
-    TriggerEvent('qb-log:server:CreateLog', 'recyclejob', 'Player Banned', 'red',
-        string.format('%s was banned by %s for %s', GetPlayerName(id), 'qb-recyclejob', reason), true)
-    DropPlayer(id, 'You were permanently banned by the server for: Exploiting')
+-- A request from too far away is refused and logged for staff. (It used to ban the player permanently
+-- on the first miss, which a lagging player could trigger.)
+local function reportExploit(id, reason)
+    TriggerEvent('qb-log:server:CreateLog', 'recyclejob', 'Request refused', 'orange',
+        string.format('%s (%s) refused: %s', GetPlayerName(id) or '?', QBCore.Functions.GetIdentifier(id, 'license') or '?', reason), false)
+    print(('^3[pfm-recyclejob]^7 %s refused: %s'):format(tostring(GetPlayerName(id)), reason))
 end
 
 local function isClose(source, loc)
@@ -116,7 +108,7 @@ local function isClose(source, loc)
     else
         uhohs[cid] = (uhohs[cid] or 0) + 1 -- was `uhohs[cid] + 1 or 0`, which errored on first offense
         if uhohs[cid] >= 3 then
-            exploitBan(source, 'Exploiting distance on qb-recyclejob')
+            reportExploit(source, 'Exploiting distance on qb-recyclejob')
         end
         return false
     end
@@ -196,7 +188,7 @@ RegisterNetEvent('qb-recyclejob:server:getItem', function()
         end
         uhohs[src] = (uhohs[src] or 0) + 1
         if uhohs[src] >= 3 then
-            exploitBan(src, 'Exploiting distance on qb-recyclejob')
+            reportExploit(src, 'Exploiting distance on qb-recyclejob')
         end
         return
     end

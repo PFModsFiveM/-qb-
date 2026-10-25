@@ -305,6 +305,7 @@ QBCoreMock = {
             end
         end,
         GetQBPlayers = function() return Mock.players end,
+        GetIdentifier = function(src, kind) return (kind or 'license') .. ':' .. tostring(src) end,
         GetPlayers = function()
             local out = {}
             for src in pairs(Mock.players) do out[#out + 1] = src end

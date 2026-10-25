@@ -44,3 +44,18 @@ describe('recycle hand-ins', function()
         assert_eq(total(), 0)
     end)
 end)
+
+describe('requests from too far away', function()
+    it('are refused and logged, never a ban (a lagging player used to be banned permanently)', function()
+        Mock.coords[W] = vector3(-5000.0, -5000.0, 0.0)
+        local bans = 0
+        FakeDB.extraPatterns = FakeDB.extraPatterns or {}
+        table.insert(FakeDB.extraPatterns, 1, { 'INSERT INTO bans', function() bans = bans + 1 return 1 end })
+        for _ = 1, 5 do
+            assert_eq(next(Mock.callCallback('qb-recyclejob:server:getPriceList', W) or {}), nil, 'refused')
+        end
+        assert_eq(bans, 0)
+        assert_eq(#Mock.dropped, 0)
+        table.remove(FakeDB.extraPatterns, 1)
+    end)
+end)

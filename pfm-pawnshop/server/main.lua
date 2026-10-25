@@ -53,20 +53,12 @@ local function getMeltConfig(itemName)
     return nil
 end
 
-local function exploitBan(id, reason)
-    MySQL.insert('INSERT INTO bans (name, license, discord, ip, reason, expire, bannedby) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        {
-            GetPlayerName(id),
-            QBCore.Functions.GetIdentifier(id, 'license'),
-            QBCore.Functions.GetIdentifier(id, 'discord'),
-            QBCore.Functions.GetIdentifier(id, 'ip'),
-            reason,
-            2147483647,
-            'qb-pawnshop'
-        })
-    TriggerEvent('qb-log:server:CreateLog', 'pawnshop', 'Player Banned', 'red',
-        string.format('%s was banned by %s for %s', GetPlayerName(id), 'qb-pawnshop', reason), true)
-    DropPlayer(id, 'You were permanently banned by the server for: Exploiting')
+-- A request from too far away is refused and logged for staff. (It used to ban the player permanently
+-- on the first miss, which a lagging player could trigger.)
+local function reportExploit(id, reason)
+    TriggerEvent('qb-log:server:CreateLog', 'pawnshop', 'Request refused', 'orange',
+        string.format('%s (%s) refused: %s', GetPlayerName(id) or '?', QBCore.Functions.GetIdentifier(id, 'license') or '?', reason), false)
+    print(('^3[pfm-pawnshop]^7 %s refused: %s'):format(tostring(GetPlayerName(id)), reason))
 end
 
 RegisterNetEvent('qb-pawnshop:server:sellPawnItems', function(itemName, itemAmount, itemPrice)
@@ -75,7 +67,7 @@ RegisterNetEvent('qb-pawnshop:server:sellPawnItems', function(itemName, itemAmou
     if not Player then return end
     if onCooldown(src, 'sellPawn', 1500) then return end
     if not isNearPawnshop(src) then
-        exploitBan(src, 'sellPawnItems Exploiting')
+        reportExploit(src, 'sellPawnItems Exploiting')
         return
     end
     -- recompute the price server-side; the client-sent itemPrice is ignored
@@ -136,7 +128,7 @@ RegisterNetEvent('qb-pawnshop:server:pickupMelted', function(item)
     if not Player then return end
     if onCooldown(src, 'pickupMelt', 1500) then return end
     if not isNearPawnshop(src) then
-        exploitBan(src, 'pickupMelted Exploiting')
+        reportExploit(src, 'pickupMelted Exploiting')
         return
     end
     -- rewards come from the server-side melt ledger + config, never from the client-sent table
