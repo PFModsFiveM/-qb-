@@ -370,7 +370,12 @@ describe('pf-trucking pay', function()
             stops = { { label = 'Pickup', coords = vector3(0.0, 0.0, 0.0) }, { label = 'Drop', coords = DROP } },
         })
     end
-    local function claim(id) return cb('pf-trucking:server:claimContract', DRIVER, id) end
+    -- claims and hooks the trailer at the pickup (the driver starts there); delivery needs the load
+    local function claim(id)
+        local res = cb('pf-trucking:server:claimContract', DRIVER, id)
+        Mock.fireNet('pf-trucking:server:cargoLoaded', DRIVER)
+        return res
+    end
 
     it('the AcceptJob export finds and claims the same contract the app sees, once', function()
         local id = postJob()

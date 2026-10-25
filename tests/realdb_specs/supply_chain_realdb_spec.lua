@@ -353,6 +353,8 @@ describe('restarts', function()
         Mock.exportsByResource['pf-trucking'] = Mock.exportsByResource['__self']
         TriggerEvent('pf-trucking:server:started')
         assert_false(cb('pf-trucking:server:claimContract', DRIVER2, 'SUP-' .. id).ok, 'still the first driver\'s')
+        Mock.coords[DRIVER] = PICKUP                                -- not loaded before the restart: load it
+        Mock.fireNet('pf-trucking:server:cargoLoaded', DRIVER)
         Mock.coords[DRIVER] = DROP
         Mock.clock = Mock.clock + 600
         assert_true(cb('pf-trucking:server:completeActiveJob', DRIVER).ok, 'the driver can finish it')
