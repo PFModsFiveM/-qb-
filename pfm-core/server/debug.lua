@@ -27,8 +27,11 @@ local function tPrint(tbl, indent)
     end
 end
 
+-- Only admins may print to the server console from a client (any player could flood it).
 RegisterNetEvent('QBCore:DebugSomething', function(tbl, indent, resource)
-    resource = resource or 'unknown'
+    if not QBCore.Functions.HasPermission(source, 'admin') then return end
+    resource = tostring(resource or 'unknown'):sub(1, 64)
+    indent = math.min(tonumber(indent) or 0, 8)
     print(('^4[ %s : DEBUG]^0'):format(resource))
     tPrint(tbl, indent)
     print('^4[ END DEBUG ]^0')

@@ -126,15 +126,17 @@ end)
 
 -- Client Callback
 RegisterNetEvent('QBCore:Server:TriggerClientCallback', function(name, ...)
-    local ClientCallback = QBCore.ClientCallbacks[name .. source]
+    if type(name) ~= 'string' then return end
+    -- only the player the callback was sent to can answer it (see QBCore.ClientCallbackKey)
+    local key = QBCore.ClientCallbackKey(source, name)
+    local ClientCallback = QBCore.ClientCallbacks[key]
     if ClientCallback then
+        QBCore.ClientCallbacks[key] = nil
         ClientCallback.promise:resolve(...)
 
         if ClientCallback.callback then
             ClientCallback.callback(...)
         end
-
-        QBCore.ClientCallbacks[name .. source] = nil
     end
 end)
 
@@ -253,7 +255,8 @@ end)
 
 RegisterNetEvent('QBCore:CallCommand', function(command, args)
     local src = source
-    if not QBCore.Commands.List[command] then return end
+    if type(command) ~= 'string' or not QBCore.Commands.List[command] then return end
+    if type(args) ~= 'table' then args = {} end
     local Player = QBCore.Functions.GetPlayer(src)
     if not Player then return end
     local hasPerm = QBCore.Functions.HasPermission(src, 'command.' .. QBCore.Commands.List[command].name)

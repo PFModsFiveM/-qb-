@@ -486,19 +486,26 @@ function QBCore.Functions.TriggerClientCallback(name, source, ...)
         table.remove(args, 1)
     end
 
-    QBCore.ClientCallbacks[name .. source] = {
+    local key = QBCore.ClientCallbackKey(source, name)
+    local entry = {
         callback = cb,
         promise = promise.new()
     }
+    QBCore.ClientCallbacks[key] = entry
 
     TriggerClientEvent('QBCore:Client:TriggerClientCallback', source, name, table.unpack(args))
 
     if cb == nil then
-        Citizen.Await(QBCore.ClientCallbacks[name .. source].promise)
-        local value = QBCore.ClientCallbacks[name .. source].promise.value
-        QBCore.ClientCallbacks[name .. source] = nil
-        return value
+        Citizen.Await(entry.promise)
+        if QBCore.ClientCallbacks[key] == entry then QBCore.ClientCallbacks[key] = nil end
+        return entry.promise.value
     end
+end
+
+--- Key for a pending client callback: the player's id, a separator, then the name. (name .. source
+--- let player 2 answering 'cb1' resolve player 12's 'cb'.)
+function QBCore.ClientCallbackKey(source, name)
+    return tostring(source) .. '|' .. tostring(name)
 end
 
 ---Create Server Callback
