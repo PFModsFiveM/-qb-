@@ -1,9 +1,15 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 
 -- Get Employees
-QBCore.Functions.CreateCallback('qb-gangmenu:server:GetEmployees', function(source, cb, gangname)
+-- Boss and target must be in the same gang.
+local function SameGang(Player, Employee)
+	return Employee and Employee.PlayerData.gang and Employee.PlayerData.gang.name == Player.PlayerData.gang.name
+end
+
+QBCore.Functions.CreateCallback('qb-gangmenu:server:GetEmployees', function(source, cb)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
+	if not Player then return cb({}) end
 
 	if not Player.PlayerData.gang.isboss then
 		ExploitBan(src, 'GetEmployees Exploiting')
@@ -11,12 +17,14 @@ QBCore.Functions.CreateCallback('qb-gangmenu:server:GetEmployees', function(sour
 	end
 
 	local employees = {}
-	local players = MySQL.query.await("SELECT * FROM `players` WHERE `gang` LIKE '%" .. gangname .. "%'", {})
+	-- always the boss's own gang (the client-sent name was pasted into the SQL)
+	local gangname = Player.PlayerData.gang.name
+	local players = MySQL.query.await('SELECT * FROM `players` WHERE `gang` LIKE ?', { '%' .. gangname .. '%' })
 	if players[1] ~= nil then
 		for _, value in pairs(players) do
 			local Target = QBCore.Functions.GetPlayerByCitizenId(value.citizenid) or QBCore.Functions.GetOfflinePlayerByCitizenId(value.citizenid)
 
-			if Target then
+			if Target and Target.PlayerData.gang.name == gangname then
 				local isOnline = Target.PlayerData.source
 				employees[#employees + 1] = {
 					empSource = Target.PlayerData.citizenid,
@@ -57,10 +65,19 @@ end)
 RegisterNetEvent('qb-gangmenu:server:GradeUpdate', function(data)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
-	local Employee = QBCore.Functions.GetPlayerByCitizenId(data.cid) or QBCore.Functions.GetOfflinePlayerByCitizenId(data.cid)
+	if not Player then return end
 
 	if not Player.PlayerData.gang.isboss then
 		ExploitBan(src, 'GradeUpdate Exploiting')
+		return
+	end
+	if type(data) ~= 'table' or type(data.cid) ~= 'string' then return end
+	data.grade = tonumber(data.grade)
+	if not data.grade or data.grade < 0 or data.grade % 1 ~= 0 then return end
+	local Employee = QBCore.Functions.GetPlayerByCitizenId(data.cid) or QBCore.Functions.GetOfflinePlayerByCitizenId(data.cid)
+	-- only members of the boss's own gang, and not someone ranked above the boss
+	if not SameGang(Player, Employee) or Employee.PlayerData.gang.grade.level > Player.PlayerData.gang.grade.level then
+		TriggerClientEvent('QBCore:Notify', src, 'You cannot change this rank!', 'error')
 		return
 	end
 	if data.grade > Player.PlayerData.gang.grade.level then
@@ -74,7 +91,7 @@ RegisterNetEvent('qb-gangmenu:server:GradeUpdate', function(data)
 			Employee.Functions.Save()
 
 			if Employee.PlayerData.source then
-				TriggerClientEvent('QBCore:Notify', Employee.PlayerData.source, 'You have been promoted to ' .. data.gradename .. '.', 'success')
+				TriggerClientEvent('QBCore:Notify', Employee.PlayerData.source, 'You have been promoted to ' .. tostring(Employee.PlayerData.gang.grade.name or data.grade) .. '.', 'success')
 			end
 		else
 			TriggerClientEvent('QBCore:Notify', src, 'Grade does not exist.', 'error')
@@ -87,13 +104,19 @@ end)
 RegisterNetEvent('qb-gangmenu:server:FireMember', function(target)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
-	local Employee = QBCore.Functions.GetPlayerByCitizenId(target) or QBCore.Functions.GetOfflinePlayerByCitizenId(target)
+	if not Player or type(target) ~= 'string' then return end
 
 	if not Player.PlayerData.gang.isboss then
 		ExploitBan(src, 'FireEmployee Exploiting')
 		return
 	end
 
+	local Employee = QBCore.Functions.GetPlayerByCitizenId(target) or QBCore.Functions.GetOfflinePlayerByCitizenId(target)
+	-- any citizenid used to be accepted, firing people out of other gangs
+	if Employee and not SameGang(Player, Employee) then
+		TriggerClientEvent('QBCore:Notify', src, 'You cannot fire this citizen!', 'error')
+		return
+	end
 	if Employee then
 		if target == Player.PlayerData.citizenid then
 			TriggerClientEvent('QBCore:Notify', src, 'You can\'t kick yourself out of the gang!', 'error')
@@ -121,10 +144,15 @@ end)
 RegisterNetEvent('qb-gangmenu:server:HireMember', function(recruit)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
-	local Target = exports['pfm-core']:GetPlayer(recruit)
+	if not Player then return end
+	local Target = exports['pfm-core']:GetPlayer(tonumber(recruit))
 
 	if not Player.PlayerData.gang.isboss then
 		ExploitBan(src, 'HireEmployee Exploiting')
+		return
+	end
+	-- same 10 m as the hire list (anyone on the server could be hired from anywhere)
+	if Target and #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(Target.PlayerData.source))) > 10.0 then
 		return
 	end
 
@@ -140,14 +168,16 @@ end)
 QBCore.Functions.CreateCallback('qb-gangmenu:getplayers', function(source, cb)
 	local src = source
 	local players = {}
+	local Boss = exports['pfm-core']:GetPlayer(src)
+	if not Boss or not Boss.PlayerData.gang.isboss then return cb(players) end
 	local PlayerPed = GetPlayerPed(src)
 	local pCoords = GetEntityCoords(PlayerPed)
 	for _, v in pairs(QBCore.Functions.GetPlayers()) do
 		local targetped = GetPlayerPed(v)
 		local tCoords = GetEntityCoords(targetped)
 		local dist = #(pCoords - tCoords)
-		if PlayerPed ~= targetped and dist < 10 then
-			local ped = exports['pfm-core']:GetPlayer(v)
+		local ped = exports['pfm-core']:GetPlayer(v)
+		if PlayerPed ~= targetped and dist < 10 and ped then
 			players[#players + 1] = {
 				id = v,
 				coords = GetEntityCoords(targetped),
