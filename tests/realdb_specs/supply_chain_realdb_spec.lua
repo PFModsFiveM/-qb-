@@ -244,6 +244,22 @@ describe('player suppliers', function()
         assert_eq(status(id), 'delivered')
         assert_eq(Mock.players[SUPP].PlayerData.money.bank, 75 + 750, 'goods share to the player supplier')
     end)
+    it('food is stocked only while fresh: stale or spoiled food is refused and kept by the supplier', function()
+        assert_true(O.RegisterSupplier(SUPP, 'Farm Fresh').ok)
+        assert_true(O.SetOffer(SUPP, 'sandwich', 4).ok)
+        local life = 12 * 3600
+        local function aged(share)
+            return { fresh = { v = 1, batch = 'Btest-' .. share, cat = 'prepared', life = life, used = math.floor(life * share), at = os.time(), storage = 'person' } }
+        end
+        assert_true(Mock.selfExport('AddItem')(SUPP, 'sandwich', 5, false, aged(0.9), 'test'))   -- stale (10 % left)
+        assert_eq(O.DepositStock(SUPP, 'sandwich', 3).error, 'not_fresh_enough')
+        assert_eq(Mock.selfExport('GetItemCount')(SUPP, 'sandwich'), 5, 'nothing taken')
+        assert_true(Mock.selfExport('AddItem')(SUPP, 'sandwich', 4, false, aged(0.1), 'test'))   -- fresh
+        assert_true(O.DepositStock(SUPP, 'sandwich', 4).ok)
+        assert_eq(Mock.selfExport('GetItemCount')(SUPP, 'sandwich'), 5, 'only the fresh ones went into stock')
+        assert_eq(tonumber(MySQL.scalar.await("SELECT stock_qty FROM pf_supplier_offers WHERE item = 'sandwich'")), 4)
+        MySQL.update.await("DELETE FROM pf_supplier_offers WHERE item = 'sandwich'")
+    end)
     it('if no supplier accepts in time, the AI supplier fills it', function()
         assert_true(Mock.selfExport('AddItem')(SUPP, 'lockpick', 50, false, false, 'test'))
         assert_true(O.DepositStock(SUPP, 'lockpick', 50).ok)
