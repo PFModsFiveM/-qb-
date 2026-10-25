@@ -9,9 +9,17 @@ function SetTimeout(_, fn) timeouts[#timeouts + 1] = fn end
 function GetResourcePath() return nil end
 
 load_resource('[pfscripts]/pf-scoreboard/server/main.lua')
+-- both business apps listen to the same server event; the mock keeps one handler per name
+local dutyHandlers = {}
+local realAddEventHandler = AddEventHandler
+AddEventHandler = function(name, fn)
+    if name == 'QBCore:Server:SetDuty' then dutyHandlers[#dutyHandlers + 1] = fn end
+    return realAddEventHandler(name, fn)
+end
 Config = {}
 load_resource('[pfscripts]/pf-tablet/server/apps/business.lua')
 load_resource('[pfscripts]/pf-jobs/server/apps/business.lua')
+AddEventHandler = realAddEventHandler
 Config = nil
 load_resource('[pfscripts]/pf-elevator/config.lua')
 load_resource('[pfscripts]/pf-elevator/server.lua')
@@ -35,10 +43,12 @@ describe('job group: server-only events and small checks', function()
         assert_eq(Mock.clientEventsNamed('pf-scoreboard:client:show')[1].target, 5)
     end)
 
-    it('QBCore:Server:OnJobUpdate is not a client event, and duty-toggle pushes are limited', function()
+    it('QBCore:Server:OnJobUpdate and QBCore:ToggleDuty are not client events here, and duty pushes are limited', function()
         assert_eq(Mock.netHandlers['QBCore:Server:OnJobUpdate'], nil)
+        assert_eq(Mock.netHandlers['QBCore:ToggleDuty'], nil, 'refreshes follow pfm-core QBCore:Server:SetDuty')
+        assert_eq(#dutyHandlers, 2)
         Mock.gameTimer = Mock.gameTimer + 5000
-        for _ = 1, 20 do Mock.fireNetAll('QBCore:ToggleDuty', P) end
+        for _ = 1, 20 do for _, fn in ipairs(dutyHandlers) do fn(P, true) end end
         assert_eq(named('pf-tablet:client:businessPushRefresh'), 1)
         assert_eq(named('pf-jobs:client:businessPushRefresh'), 1)
         -- the change made inside that second is still pushed once afterwards
