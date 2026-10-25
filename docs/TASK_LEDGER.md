@@ -112,5 +112,6 @@ The working list for the whole project. Read this first in every session, then `
 
 ## Session log
 
+- **2026-10-25 (end):** staging restart found a start-order/concurrency bug in the government schema; fixed (be48b94). Remaining work is listed as decisions in 2.2, 4.2, 6.2, 7.2 and the sweep table, and external blockers in 0.7, 1.2, 1.3.
 - **2026-10-25 (later):** government registry wired (restaurants, stores, mechanic shops), business tax on the ledger, delivery grace, cold storage on power, sunlight on drops, job-business supplies on PFOrders, duty refresh server-side.
 - **2026-10-25:** ledger created. pf-farming added (5.1). Ledger parallel test + tx id fix (1.5). Loose ends fixed (billing mails, pf-mechanicjob save events, SQL files). Started the 0.6 sweep.

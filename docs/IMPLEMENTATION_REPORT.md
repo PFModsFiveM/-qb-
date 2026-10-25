@@ -1486,3 +1486,19 @@ The working list is now `docs/TASK_LEDGER.md` (statuses, evidence, next task per
 - Staging FXServer on a fresh database: 99 resources, no new errors (ox_lib and kq_wheeldamage only), all migrations applied, restaurants registered.
 
 **Not verified:** anything in a game client; pf-mechanicjob at runtime (needs ox_lib).
+
+**Staging restart finding (be48b94):**
+- **Setup:** a restart against an existing staging database, the case a live upgrade goes through.
+- **Problem 1:** pf-restaurants registered its businesses before pf-government had finished starting, so the new `account_ref` column did not exist yet.
+- **Problem 2:** after the first fix, two registrations at once both ran the same `ALTER`, so one business lost its account.
+- **Fix:** the schema is now made on first use, once, with other callers waiting.
+- **Checks:**
+  - reproduced and fixed on staging (both restaurants have their account, no errors);
+  - `government_start_order_realdb_spec` (2, fails on the old code).
+- **Additional work since the 6b section:**
+  - restaurant inspections on the government record (b99d811);
+  - employee counts (7e458ba).
+- **Final totals:**
+  - mocked 689 passed;
+  - real database 103 passed in 9 files;
+  - staging: 99 resources, only the known ox_lib and kq_wheeldamage failures.
