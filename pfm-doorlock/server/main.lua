@@ -132,15 +132,74 @@ end)
 
 QBCore.Functions.CreateCallback('qb-doorlock:server:checkItems', function(source, cb, items, needsAll)
 	local Player = exports['pfm-core']:GetPlayer(source)
+	if not Player or (type(items) ~= 'table' and type(items) ~= 'string') then return cb(false) end
 	cb(checkItems(Player, items, needsAll, false))
 end)
 
 -- Events
 
+-- Door access granted by server scripts (e.g. a hack finished on the server): [src] = { [doorID] = expiry }
+local doorGrants = {}
+
+--- Lets one player unlock one door once, within `ms` (default 60 s), from beside it.
+local function GrantDoorAccess(playerId, doorID, ms)
+	playerId = tonumber(playerId)
+	if not playerId or Config.DoorList[doorID] == nil then return false end
+	doorGrants[playerId] = doorGrants[playerId] or {}
+	doorGrants[playerId][doorID] = GetGameTimer() + (tonumber(ms) or 60000)
+	return true
+end
+exports('GrantDoorAccess', GrantDoorAccess)
+
+local function useDoorGrant(playerId, doorID)
+	local grants = doorGrants[playerId]
+	local expiry = grants and grants[doorID]
+	if not expiry then return false end
+	grants[doorID] = nil
+	return GetGameTimer() <= expiry
+end
+
+AddEventHandler('playerDropped', function()
+	doorGrants[source] = nil
+end)
+
+local function doorCoords(door)
+	local c = door.objCoords or (door.doors and door.doors[1] and door.doors[1].objCoords)
+	if type(c) ~= 'table' and type(c) ~= 'vector3' then return nil end
+	return vector3(c.x, c.y, c.z)
+end
+
+local function nearDoor(playerId, door)
+	local c = doorCoords(door)
+	if not c then return false end
+	local doorDistance = tonumber(door.distance) or Config.FallbackDistance or 3.0
+	local reach = math.max(doorDistance, 2.0) + 3.0
+	if door.remoteTrigger then -- aimed at from up to RemoteTriggerDistance away
+		reach = math.max(doorDistance, Config.RemoteTriggerMinDistance or 5.0) + (Config.RemoteTriggerDistance or 15.0) + 5.0
+	end
+	return #(GetEntityCoords(GetPlayerPed(playerId)) - c) <= reach
+end
+
+local function hasLockpick(Player)
+	return Player.GetItemByName('lockpick') ~= nil or Player.GetItemByName('advancedlockpick') ~= nil
+end
+
 RegisterNetEvent('qb-doorlock:server:updateState', function(doorID, locked, src, usedLockpick, unlockAnyway, enableSounds, enableAnimation, sentSource)
-	local playerId = sentSource or source
+	local fromClient = tonumber(source) ~= nil and tonumber(source) > 0
+	-- A client acts only as itself, from beside the door. `unlockAnyway` from a client needs a grant from
+	-- a server script, and `usedLockpick` needs a lockpick. (A client could name another player's id as
+	-- sentSource and use their access, or pass unlockAnyway and open any door from anywhere.)
+	local playerId = fromClient and tonumber(source) or (sentSource or source)
 	local Player = exports['pfm-core']:GetPlayer(playerId)
 	if not Player then return end
+	if fromClient then
+		local door = Config.DoorList[doorID]
+		if not door or not nearDoor(playerId, door) then return end
+		if unlockAnyway then
+			unlockAnyway = locked == false and useDoorGrant(playerId, doorID)
+		end
+		if usedLockpick and not hasLockpick(Player) then usedLockpick = false end
+	end
 	if type(doorID) ~= 'number' and type(doorID) ~= 'string' then
 		if Config.Warnings then
 			showWarning((Lang:t('general.warn_wrong_doorid_type', { player = Player.PlayerData.name, license = Player.PlayerData.license, doorID = doorID })))
@@ -308,6 +367,8 @@ AddEventHandler('onResourceStop', function(resource)
 end)
 
 RegisterNetEvent('txAdmin:events:scheduledRestart', function(eventData)
+	if tonumber(source) and tonumber(source) > 0 then return end -- txAdmin only, not clients
+	if type(eventData) ~= 'table' then return end
 	if eventData.secondsRemaining == 60 then
 		CreateThread(function()
 			Wait(45000)
