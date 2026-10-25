@@ -69,7 +69,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 4.1 | Persistent stock, atomic consumption, server prices/totals, roles, order states, refunds | VERIFIED (real DB) | df8eb0a; restaurants realdb spec (16) | Sweep result for remaining events |
-| 4.2 | Freshness by item and storage (fridge, freezer, trunk, glovebox, sun, heat, broken equipment), offline, visible in UI | IN_PROGRESS | Rates and storage rules exist (freshness_spec 28). Restaurant cold storage follows government power: cut = broken_fridge rate (restaurants_realdb_spec 'power cuts'). Nothing yet applies `sunlight`/`hot` or a fridge equipment failure (restaurant fridges are not modelled as equipment) | Decide what sets sunlight/heat (weather? outdoor drops in daytime?) |
+| 4.2 | Freshness by item and storage (fridge, freezer, trunk, glovebox, sun, heat, broken equipment), offline, visible in UI | IN_PROGRESS | Rates and storage rules exist (freshness_spec 28). Restaurant cold storage follows government power: cut = broken_fridge rate (restaurants_realdb_spec 'power cuts'). Ground drops use the `sunlight` rate in clear midday weather (freshness_spec). Not applied: `hot` (no heat source chosen), fridge equipment failure (restaurant fridges are not equipment) | Decide whether anything should use `hot` (e.g. gloveboxes of cars parked in the sun) |
 | 4.3 | Cooking: stock-backed recipes, doneness, burnt, quality | VERIFIED (real DB) | restaurants realdb spec | In-game cooking check |
 
 ## Priority 5: farming
