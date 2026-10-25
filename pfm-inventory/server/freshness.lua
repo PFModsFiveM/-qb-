@@ -204,6 +204,27 @@ function F.Prepare(itemName, info, storage, now)
     return info
 end
 
+--- Freshness for goods unpacked from a delivery. Goods age at the grace storage rate (normal) for
+--- the first DeliveryGraceSeconds after delivery (30 minutes), then at the faster DeliveryStorage
+--- rate (outdoor) for as long as the delivery stayed packed. Returns an info table, or nil for
+--- non-perishables.
+function F.DeliveredInfo(itemName, deliveredAt, now)
+    local life = F.ShelfLife(itemName)
+    if not life then return nil end
+    local c = cfg() or {}
+    now = now or F.now()
+    local elapsed = math.max(0, now - (tonumber(deliveredAt) or now))
+    local grace = tonumber(c.DeliveryGraceSeconds) or 1800
+    local used = math.min(elapsed, grace) * F.Rate(c.DeliveryGraceStorage or 'normal')
+        + math.max(0, elapsed - grace) * F.Rate(c.DeliveryStorage or 'outdoor')
+    return {
+        fresh = {
+            v = 1, batch = F.NewBatchId(now), cat = F.CategoryOf(itemName), life = life,
+            used = math.min(life, math.floor(used)), at = now, storage = 'normal',
+        },
+    }
+end
+
 --- Whether an incoming item may merge into an existing stack. Non-perishables keep the
 --- framework's original behaviour (same name stacks); perishables need the same batch and
 --- matching freshness so no item loses its individual state.

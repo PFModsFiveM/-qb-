@@ -60,6 +60,11 @@ Config.Freshness = {
         { '^fridge', 'fridge' },
     },
     DefaultStashStorage = 'stash',
+    -- Deliveries: goods left packed age normally for this long after delivery, then at the
+    -- DeliveryStorage rate until someone unpacks them
+    DeliveryGraceSeconds = 1800,
+    DeliveryGraceStorage = 'normal',
+    DeliveryStorage = 'outdoor',
 
     -- Freshness bands, highest first. Spoiled food is never deleted; it stays usable with penalties.
     States = {

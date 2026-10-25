@@ -1019,6 +1019,7 @@ end
 exports('GetFreshness', GetFreshness)
 exports('IsPerishable', function(itemName) return PFFreshness.IsPerishable(itemName) end)
 exports('RegisterPerishables', function(map) return PFFreshness.RegisterItems(map) end)
+exports('DeliveredInfo', function(itemName, deliveredAt) return PFFreshness.DeliveredInfo(itemName, deliveredAt) end)
 
 --- Sets the storage condition of an inventory (a business fridge failing, a door left open...).
 --- Shelf life already used is settled at the old condition before the new one applies.
