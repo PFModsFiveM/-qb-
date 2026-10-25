@@ -5,10 +5,38 @@ local function IsVehicleOwned(plate)
     return result
 end
 
+local function IsOnDutyLeo(Player)
+    return Player and Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty
+end
+
+local function TrimPlate(plate)
+    return (tostring(plate or ''):gsub('^%s+', ''):gsub('%s+$', ''))
+end
+
+-- the vehicle being impounded must exist next to the officer (any owned plate could be impounded from anywhere)
+local function IsPlateNearby(src, plate)
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    plate = TrimPlate(plate):upper()
+    for _, veh in ipairs(GetAllVehicles()) do
+        if TrimPlate(GetVehicleNumberPlateText(veh)):upper() == plate and #(pos - GetEntityCoords(veh)) < 10.0 then
+            return true
+        end
+    end
+    return false
+end
+
+local function Clamp(v, lo, hi)
+    v = tonumber(v)
+    if not v or v ~= v then return nil end
+    return math.max(lo, math.min(hi, v))
+end
+
 -- Callbacks
 
-QBCore.Functions.CreateCallback('police:GetImpoundedVehicles', function(_, cb)
+QBCore.Functions.CreateCallback('police:GetImpoundedVehicles', function(source, cb)
     local vehicles = {}
+    -- the impound list (owners' citizenids and licenses) is for officers only
+    if not IsOnDutyLeo(exports['pfm-core']:GetPlayer(source)) then return cb(vehicles) end
     MySQL.query('SELECT * FROM player_vehicles WHERE state = ?', { 2 }, function(result)
         if result[1] then
             vehicles = result
@@ -31,6 +59,8 @@ end)
 
 RegisterNetEvent('heli:server:spotlight', function(state)
     local serverID = source
+    if not IsOnDutyLeo(exports['pfm-core']:GetPlayer(serverID)) then return end
+    state = state == true
     TriggerClientEvent('heli:client:spotlight', -1, serverID, state)
 end)
 
@@ -38,11 +68,12 @@ RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, bo
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or Player.PlayerData.job.type ~= 'leo' or not Player.PlayerData.job.onduty then return end
-    if type(plate) ~= 'string' then return end
+    if type(plate) ~= 'string' or #plate > 16 then return end
     price = tonumber(price) or 0
     if price < 0 or price ~= price or price == math.huge then price = 0 end
-    price = math.floor(price)
-    body, engine, fuel = tonumber(body), tonumber(engine), tonumber(fuel)
+    price = math.min(math.floor(price), Config.MaxFine or 50000)
+    body, engine, fuel = Clamp(body, 0, 1000), Clamp(engine, -4000, 1000), Clamp(fuel, 0, 100)
+    if not IsPlateNearby(src, plate) then return end
     if IsVehicleOwned(plate) then
         if not fullImpound then
             MySQL.query('UPDATE player_vehicles SET state = ?, depotprice = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 0, price, body, engine, fuel, plate })
@@ -63,11 +94,22 @@ RegisterNetEvent('police:server:TakeOutImpound', function(plate, garage)
     local playerCoords = GetEntityCoords(playerPed)
     local targetCoords = Config.Locations['impound'][garage]
     if #(playerCoords - targetCoords) > 10.0 then return DropPlayer(src, 'Attempted exploit abuse') end
-    MySQL.update('UPDATE player_vehicles SET state = ? WHERE plate = ?', { 0, plate })
+    MySQL.update('UPDATE player_vehicles SET state = ? WHERE plate = ? AND state = ?', { 0, plate, 2 })
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.impound_vehicle_removed'), 'success')
 end)
 
 RegisterNetEvent('police:server:FlaggedPlateTriggered', function(coords, plate)
+    local src = source
+    -- sent by the driver of a flagged car passing a radar: the plate must really be flagged and the
+    -- alert goes to the radar the driver is at (any text and position used to be relayed to police)
+    if type(plate) ~= 'string' or #plate > 16 then return end
+    if not (Plates[plate:upper()] and Plates[plate:upper()].isflagged) then return end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    coords = nil
+    for _, radar in ipairs(Config.Radars or {}) do
+        if #(pos - radar) < 40.0 then coords = radar break end
+    end
+    if not coords then return end
     for _, Player in pairs(QBCore.Functions.GetQBPlayers()) do
         if Player then
             if (Player.PlayerData.job.name == 'police' and Player.PlayerData.job.onduty) then

@@ -223,6 +223,7 @@ RegisterNetEvent('police:server:JailPlayer', function(playerId, time)
     time = tonumber(time)
     if not time or time <= 0 or time ~= time or time == math.huge then return end
     time = math.floor(time)
+    if time > (Config.MaxJailTime or 1440) then time = Config.MaxJailTime or 1440 end
 
     local currentDate = os.date('*t')
     if currentDate.day == 31 then

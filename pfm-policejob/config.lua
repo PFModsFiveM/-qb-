@@ -203,3 +203,4 @@ Config.Gameplay = {
 
 -- Highest fine or bill an officer can issue with /fine or the bill menu
 Config.MaxFine = 50000
+Config.MaxJailTime = 1440 -- longest sentence an officer can give (same cap as pfm-prison)

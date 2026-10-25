@@ -69,12 +69,14 @@ QBCore.Functions.CreateCallback('police:GetCops', function(_, cb)
 end)
 
 QBCore.Functions.CreateCallback('police:server:isPlayerDead', function(_, cb, playerId)
-    local Player = exports['pfm-core']:GetPlayer(playerId)
+    local Player = exports['pfm-core']:GetPlayer(tonumber(playerId))
+    if not Player then return cb(false) end
     cb(Player.PlayerData.metadata['isdead'])
 end)
 
 QBCore.Functions.CreateCallback('police:IsSilencedWeapon', function(source, cb, weapon)
     local Player = exports['pfm-core']:GetPlayer(source)
+    if not Player or not sharedWeapons[weapon] then return cb(false) end
     local itemInfo = Player.GetItemByName(sharedWeapons[weapon]['name'])
     local retval = false
     if itemInfo then
@@ -141,6 +143,19 @@ RegisterNetEvent('qb-policejob:server:evidence', function(currentEvidence)
     if not Player then return end
     if Player.PlayerData.job.type ~= 'leo' or not Player.PlayerData.job.onduty then return end
     if type(currentEvidence) ~= 'string' or #currentEvidence < 1 or #currentEvidence > 64 then return end
+    -- only an evidence drawer at the locker the officer stands at (any stash name used to be accepted,
+    -- e.g. another player's stash)
+    local slot = currentEvidence:match('(%d+)%s*$')
+    if not slot or #slot > 6 then return end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    local valid = false
+    for i, loc in ipairs(Config.Locations['evidence'] or {}) do
+        if #(pos - vector3(loc.x, loc.y, loc.z)) < 3.0 and currentEvidence == Lang:t('info.current_evidence', { value = i, value2 = slot }) then
+            valid = true
+            break
+        end
+    end
+    if not valid then return end
     exports['pfm-inventory']:OpenInventory(src, currentEvidence, {
         maxweight = 4000000,
         slots = 500,
@@ -149,6 +164,8 @@ end)
 
 RegisterNetEvent('police:server:policeAlert', function(text)
     local src = source
+    if type(text) ~= 'string' or #text < 1 then return end
+    text = text:sub(1, 256)
     local ped = GetPlayerPed(src)
     local coords = GetEntityCoords(ped)
     local players = QBCore.Functions.GetQBPlayers()
