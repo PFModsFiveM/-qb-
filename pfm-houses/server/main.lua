@@ -144,6 +144,44 @@ local function isOnDutyPolice(Player)
     return job and job.type == 'leo' and job.onduty == true
 end
 
+local function isPolice(Player)
+    local job = Player and Player.PlayerData.job
+    return job ~= nil and (job.type == 'leo' or job.name == 'police')
+end
+
+local function isRealEstate(Player)
+    return Player and Player.PlayerData.job and Player.PlayerData.job.name == 'realestate' or false
+end
+
+-- Inside a house: the interior is spawned under the door (enter.z - MinZOffset).
+local INSIDE_RADIUS = 60.0
+local function insideHouse(src, house)
+    local h = Config.Houses[house]
+    local e = h and h.coords and h.coords.enter
+    if not e then return false end
+    local shell = vector3(e.x, e.y, e.z - (Config.MinZOffset or 0))
+    return #(GetEntityCoords(GetPlayerPed(src)) - shell) <= INSIDE_RADIUS
+end
+
+-- Visitors let in at the door: [house][src] = true until they leave. Ringing: [house][src] = time.
+local houseGuests = {}
+local doorRings = {}
+
+local function isGuest(src, house)
+    return houseGuests[house] ~= nil and houseGuests[house][src] == true
+end
+
+--- May this player be inside `house` and use it (stash, door): a key holder, someone let in at the
+--- door, anyone while the house is unlocked (the client lets anyone walk into an unlocked house), or
+--- on-duty police once the door was rammed.
+local function mayUseHouse(Player, house)
+    local h = Config.Houses[house]
+    if not h then return false end
+    if hasKey(Player.PlayerData.license, Player.PlayerData.citizenid, house) then return true end
+    if isGuest(Player.PlayerData.source, house) or h.locked == false then return true end
+    return isOnDutyPolice(Player) and h.IsRammed == true or false
+end
+
 -- server-side furniture prices (the client used to send the price)
 local FurniturePrice = {}
 for _, category in pairs(Config.Furniture or {}) do
@@ -195,14 +233,6 @@ local function isHouseOwned(house)
     return false
 end
 
-local function escape_sqli(source)
-    local replacements = {
-        ['"'] = '\\"',
-        ["'"] = "\\'"
-    }
-    return source:gsub("['\"]", replacements)
-end
-
 -- Events
 
 RegisterNetEvent('qb-houses:server:setHouses', function()
@@ -210,18 +240,33 @@ RegisterNetEvent('qb-houses:server:setHouses', function()
     TriggerClientEvent('qb-houses:client:setHouseConfig', src, Config.Houses)
 end)
 
+-- Creating houses and garages is the real estate job's (/createhouse and /addgarage check it; these
+-- events, which those commands lead to, did not).
 RegisterNetEvent('qb-houses:server:createBlip', function()
     local src = source
+    if not isRealEstate(exports['pfm-core']:GetPlayer(src)) then return end
     local ped = GetPlayerPed(src)
     local coords = GetEntityCoords(ped)
     TriggerClientEvent('qb-houses:client:createBlip', -1, coords)
 end)
 
+local function validHouseCoords(coords)
+    if type(coords) ~= 'table' or type(coords.enter) ~= 'table' then return false end
+    local e = coords.enter
+    return tonumber(e.x) ~= nil and tonumber(e.y) ~= nil and tonumber(e.z) ~= nil
+end
+
 RegisterNetEvent('qb-houses:server:addNewHouse', function(street, coords, price, tier)
     local src = source
+    if not isRealEstate(exports['pfm-core']:GetPlayer(src)) then return end
+    if type(street) ~= 'string' or street == '' or #street > 64 or not validHouseCoords(coords) then return end
+    -- the house is created where the agent stands
+    local e = coords.enter
+    if #(GetEntityCoords(GetPlayerPed(src)) - vector3(tonumber(e.x), tonumber(e.y), tonumber(e.z))) > 10.0 then return end
     street = street:gsub("%'", '')
-    price = tonumber(price)
-    tier = tonumber(tier)
+    price = math.floor(tonumber(price) or 0)
+    tier = math.floor(tonumber(tier) or 0)
+    if price <= 0 or price > 100000000 or tier < 1 or tier > 20 then return end
     local houseCount = GetHouseStreetCount(street)
     local name = street:lower() .. tostring(houseCount)
     local label = street .. ' ' .. tostring(houseCount)
@@ -244,6 +289,10 @@ end)
 
 RegisterNetEvent('qb-houses:server:addGarage', function(house, coords)
     local src = source
+    if not isRealEstate(exports['pfm-core']:GetPlayer(src)) then return end
+    if type(house) ~= 'string' or not Config.Houses[house] or type(coords) ~= 'table' then return end
+    if not tonumber(coords.x) or not tonumber(coords.y) or not tonumber(coords.z) then return end
+    if #(GetEntityCoords(GetPlayerPed(src)) - vector3(tonumber(coords.x), tonumber(coords.y), tonumber(coords.z))) > 10.0 then return end
     MySQL.update('UPDATE houselocations SET garage = ? WHERE name = ?', { json.encode(coords), house })
     local garageInfo = {
         label = Config.Houses[house].adress,
@@ -256,6 +305,7 @@ end)
 RegisterNetEvent('qb-houses:server:viewHouse', function(house)
     local src = source
     local pData = exports['pfm-core']:GetPlayer(src)
+    if not pData or type(house) ~= 'string' or not Config.Houses[house] then return end
     local houseprice = Config.Houses[house].price
     local brokerfee = (houseprice / 100 * 5)
     local bankfee = (houseprice / 100 * 10)
@@ -273,13 +323,19 @@ RegisterNetEvent('qb-houses:server:viewHouse', function(house)
     TriggerClientEvent('qb-houses:client:viewHouse', src, houseprice, brokerfee, bankfee, taxes, pData.PlayerData.charinfo.firstname, pData.PlayerData.charinfo.lastname)
 end)
 
+-- A house stash: only that house's, from inside it, for someone who may be in there. (Any client could
+-- open any house's stash - or any other stash id - from anywhere.)
 RegisterNetEvent('qb-houses:server:openStash', function(CurrentHouse)
     local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(CurrentHouse) ~= 'string' then return end
     local houseData = Config.Houses[CurrentHouse]
-    if not houseData then return end
+    if not houseData or not houseowneridentifier[CurrentHouse] then return end
+    if not insideHouse(src, CurrentHouse) or not mayUseHouse(Player, CurrentHouse) then return end
     local houseTier = houseData.tier
-    local stashSlots = Config.StashWeights[houseTier].slots
-    local stashWeight = Config.StashWeights[houseTier].maxweight
+    local weights = Config.StashWeights[houseTier] or {}
+    local stashSlots = weights.slots
+    local stashWeight = weights.maxweight
     if stashSlots and stashWeight then
         exports['pfm-inventory']:OpenInventory(src, CurrentHouse, {
             maxweight = stashWeight,
@@ -392,11 +448,16 @@ end)
 RegisterNetEvent('qb-houses:server:giveKey', function(house, target)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    local pData = exports['pfm-core']:GetPlayer(target)
-    if not Player or not pData then return end
+    local pData = exports['pfm-core']:GetPlayer(tonumber(target))
+    if not Player or not pData or type(house) ~= 'string' then return end
     if not isHouseOwner(Player.PlayerData.license, Player.PlayerData.citizenid, house) then
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_owner'), 'error')
         return
+    end
+    if #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(pData.PlayerData.source))) > 5.0 then return end
+    housekeyholders[house] = housekeyholders[house] or { Player.PlayerData.citizenid }
+    for _, cid in pairs(housekeyholders[house]) do
+        if cid == pData.PlayerData.citizenid then return end
     end
     housekeyholders[house][#housekeyholders[house] + 1] = pData.PlayerData.citizenid
     MySQL.update('UPDATE player_houses SET keyholders = ? WHERE house = ?',
@@ -406,11 +467,12 @@ end)
 RegisterNetEvent('qb-houses:server:removeHouseKey', function(house, citizenData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player then return end
+    if not Player or type(citizenData) ~= 'table' or type(citizenData.citizenid) ~= 'string' then return end
     if not isHouseOwner(Player.PlayerData.license, Player.PlayerData.citizenid, house) then
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_owner'), 'error')
         return
     end
+    if citizenData.citizenid == Player.PlayerData.citizenid then return end -- the owner keeps their key
     local newHolders = {}
     if housekeyholders[house] then
         for k, _ in pairs(housekeyholders[house]) do
@@ -424,15 +486,33 @@ RegisterNetEvent('qb-houses:server:removeHouseKey', function(house, citizenData)
     MySQL.update('UPDATE player_houses SET keyholders = ? WHERE house = ?', { json.encode(housekeyholders[house]), house })
 end)
 
+-- Letting a visitor in: someone who may be inside that house answers the door for a player who rang
+-- it in the last minute and is still at the door. (Any client could put any player into any house.)
+local RING_SECONDS = 60
+
 RegisterNetEvent('qb-houses:server:OpenDoor', function(target, house)
-    local OtherPlayer = exports['pfm-core']:GetPlayer(target)
-    if OtherPlayer then
-        TriggerClientEvent('qb-houses:client:SpawnInApartment', OtherPlayer.PlayerData.source, house)
-    end
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    local OtherPlayer = exports['pfm-core']:GetPlayer(tonumber(target))
+    if not Player or not OtherPlayer or type(house) ~= 'string' or not Config.Houses[house] then return end
+    local visitor = OtherPlayer.PlayerData.source
+    local rang = doorRings[house] and doorRings[house][visitor]
+    if not rang or os.time() - rang > RING_SECONDS then return end
+    if not insideHouse(src, house) or not mayUseHouse(Player, house) then return end
+    if not nearHouse(visitor, house, 5.0) then return end
+    doorRings[house][visitor] = nil
+    houseGuests[house] = houseGuests[house] or {}
+    houseGuests[house][visitor] = true
+    TriggerClientEvent('qb-houses:client:SpawnInApartment', visitor, house)
 end)
 
 RegisterNetEvent('qb-houses:server:RingDoor', function(house)
     local src = source
+    if type(house) ~= 'string' or not Config.Houses[house] or not nearHouse(src, house, 5.0) then return end
+    local last = doorRings[house] and doorRings[house][src]
+    if last and os.time() - last < 3 then return end
+    doorRings[house] = doorRings[house] or {}
+    doorRings[house][src] = os.time()
     TriggerClientEvent('qb-houses:client:RingDoor', -1, src, house)
 end)
 
@@ -506,12 +586,14 @@ end)
 RegisterNetEvent('qb-houses:server:giveHouseKey', function(target, house)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    local tPlayer = exports['pfm-core']:GetPlayer(target)
-    if not tPlayer or not Player then return end
+    local tPlayer = exports['pfm-core']:GetPlayer(tonumber(target))
+    if not tPlayer or not Player or type(house) ~= 'string' or not Config.Houses[house] then return end
     if not isHouseOwner(Player.PlayerData.license, Player.PlayerData.citizenid, house) then
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_owner'), 'error')
         return
     end
+    -- handed over in person (the client picks the closest player within 2.5m)
+    if #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(tPlayer.PlayerData.source))) > 5.0 then return end
     if housekeyholders[house] then
         for _, cid in pairs(housekeyholders[house]) do
             if cid == tPlayer.PlayerData.citizenid then
@@ -536,13 +618,24 @@ RegisterNetEvent('qb-houses:server:giveHouseKey', function(target, house)
     end
 end)
 
+-- Placing the stash / wardrobe / logout spot: a key holder, inside that house, where they stand.
+-- (Any client could move these spots of any house.)
 RegisterNetEvent('qb-houses:server:setLocation', function(coords, house, type)
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or _G.type(house) ~= 'string' or not Config.Houses[house] or _G.type(coords) ~= 'table' then return end
+    if not hasKey(Player.PlayerData.license, Player.PlayerData.citizenid, house) or not insideHouse(src, house) then return end
+    local x, y, z = tonumber(coords.x), tonumber(coords.y), tonumber(coords.z)
+    if not x or not y or not z or #(GetEntityCoords(GetPlayerPed(src)) - vector3(x, y, z)) > 5.0 then return end
+    coords = { x = x, y = y, z = z }
     if type == 1 then
         MySQL.update('UPDATE player_houses SET stash = ? WHERE house = ?', { json.encode(coords), house })
     elseif type == 2 then
         MySQL.update('UPDATE player_houses SET outfit = ? WHERE house = ?', { json.encode(coords), house })
     elseif type == 3 then
         MySQL.update('UPDATE player_houses SET logout = ? WHERE house = ?', { json.encode(coords), house })
+    else
+        return
     end
     TriggerClientEvent('qb-houses:client:refreshLocations', -1, house, json.encode(coords), type)
 end)
@@ -559,7 +652,12 @@ end)
 RegisterNetEvent('qb-houses:server:SetInsideMeta', function(insideId, bool)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(Player.PlayerData.metadata['inside']) ~= 'table' then return end
     local insideMeta = Player.PlayerData.metadata['inside']
+    insideMeta.apartment = insideMeta.apartment or {}
+    -- (a player is put back inside this house on their next login)
+    if bool and (type(insideId) ~= 'string' or not Config.Houses[insideId] or not mayUseHouse(Player, insideId)) then return end
+    if not bool and houseGuests[insideId] then houseGuests[insideId][src] = nil end
     if bool then
         insideMeta.apartment.apartmentType = nil
         insideMeta.apartment.apartmentId = nil
@@ -655,14 +753,19 @@ QBCore.Functions.CreateCallback('qb-houses:server:isOwned', function(source, cb,
     end
 end)
 
-QBCore.Functions.CreateCallback('qb-houses:server:getHouseOwner', function(_, cb, house)
-    cb(houseownercid[house])
+-- The client only asks "am I the owner?": the owner's citizen id is returned to the owner alone.
+QBCore.Functions.CreateCallback('qb-houses:server:getHouseOwner', function(source, cb, house)
+    local Player = exports['pfm-core']:GetPlayer(source)
+    local owner = houseownercid[house]
+    cb(Player and owner == Player.PlayerData.citizenid and owner or nil)
 end)
 
+-- Key holders' names and citizen ids, for the owner's key menu only.
 QBCore.Functions.CreateCallback('qb-houses:server:getHouseKeyHolders', function(source, cb, house)
     local retval = {}
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or not isHouseOwner(Player.PlayerData.license, Player.PlayerData.citizenid, house) then return cb(nil) end
     if housekeyholders[house] then
         for i = 1, #housekeyholders[house], 1 do
             if Player.PlayerData.citizenid ~= housekeyholders[house][i] then
@@ -683,10 +786,17 @@ QBCore.Functions.CreateCallback('qb-houses:server:getHouseKeyHolders', function(
     end
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:TransferCid', function(_, cb, NewCid, house)
+-- Giving a house to another citizen from the phone: only its owner can. (Any client could hand any
+-- house to any citizen id, including itself.)
+QBCore.Functions.CreateCallback('qb-phone:server:TransferCid', function(source, cb, NewCid, house)
+    local Player = exports['pfm-core']:GetPlayer(source)
+    local HouseName = type(house) == 'table' and house.name or nil
+    if not Player or type(NewCid) ~= 'string' or NewCid == '' or #NewCid > 50 or type(HouseName) ~= 'string'
+        or not isHouseOwner(Player.PlayerData.license, Player.PlayerData.citizenid, HouseName) then
+        return cb(false)
+    end
     local result = MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { NewCid })
-    if result[1] then
-        local HouseName = house.name
+    if result and result[1] then
         housekeyholders[HouseName] = {}
         housekeyholders[HouseName][1] = NewCid
         houseownercid[HouseName] = NewCid
@@ -711,11 +821,13 @@ QBCore.Functions.CreateCallback('qb-houses:server:getHouseDecorations', function
     cb(retval)
 end)
 
+-- Only the stash / wardrobe / logout spots (the whole row went to any client, with the owner's
+-- license and citizen id and the key holders).
 QBCore.Functions.CreateCallback('qb-houses:server:getHouseLocations', function(_, cb, house)
     local retval = nil
     local result = MySQL.query.await('SELECT * FROM player_houses WHERE house = ?', { house })
-    if result[1] then
-        retval = result[1]
+    if result and result[1] then
+        retval = { stash = result[1].stash, outfit = result[1].outfit, logout = result[1].logout }
     end
     cb(retval)
 end)
@@ -757,6 +869,7 @@ end)
 QBCore.Functions.CreateCallback('qb-phone:server:GetPlayerHouses', function(source, cb)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return cb({}) end
     local MyHouses = {}
     local result = MySQL.query.await('SELECT * FROM player_houses WHERE citizenid = ?',
         { Player.PlayerData.citizenid })
@@ -849,19 +962,20 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetHouseKeys', function(source,
     cb(MyKeys)
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:MeosGetPlayerHouses', function(_, cb, input)
-    if input then
-        local search = escape_sqli(input)
+-- MEOS (police phone app) house search: police only.
+QBCore.Functions.CreateCallback('qb-phone:server:MeosGetPlayerHouses', function(source, cb, input)
+    if type(input) == 'string' and input ~= '' and #input <= 64 and isPolice(exports['pfm-core']:GetPlayer(source)) then
+        local search = input
         local searchData = {}
-        local query = '%' .. search .. '%'
-        local result = MySQL.query.await('SELECT * FROM players WHERE citizenid = ? OR charinfo LIKE ?',
+        local query = '%' .. search:gsub('[\\%%_]', '\\%0') .. '%'
+        local result = MySQL.query.await('SELECT * FROM players WHERE citizenid = ? OR charinfo LIKE ? LIMIT 1',
             { search, query })
-        if result[1] then
+        if result and result[1] then
             local houses = MySQL.query.await('SELECT * FROM player_houses WHERE citizenid = ?',
-                { result[1].citizenid })
+                { result[1].citizenid }) or {}
             if houses[1] then
                 for _, v in pairs(houses) do
-                    searchData[#searchData + 1] = {
+                    if Config.Houses[v.house] then searchData[#searchData + 1] = {
                         name = v.house,
                         keyholders = v.keyholders,
                         owner = v.citizenid,
@@ -875,9 +989,11 @@ QBCore.Functions.CreateCallback('qb-phone:server:MeosGetPlayerHouses', function(
                             y = Config.Houses[v.house].coords.enter.y,
                             z = Config.Houses[v.house].coords.enter.z
                         }
-                    }
+                    } end
                 end
                 cb(searchData)
+            else
+                cb(nil)
             end
         else
             cb(nil)
@@ -1090,5 +1206,8 @@ RegisterNetEvent('qb-houses:server:RespondHouseSale', function(accepted)
 end)
 
 AddEventHandler('playerDropped', function()
-    pendingHouseSales[source] = nil
+    local src = source
+    pendingHouseSales[src] = nil
+    for _, guests in pairs(houseGuests) do guests[src] = nil end
+    for _, rings in pairs(doorRings) do rings[src] = nil end
 end)
