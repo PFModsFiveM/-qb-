@@ -62,14 +62,14 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 3.1 | Persistent pallets with their own stash, server-checked access, restart restore | VERIFIED (real DB, staging load) | pfm-worldobjects v1; pallet persistence in supply chain realdb spec | Two players at one pallet, in game |
-| 3.2 | 30-minute grace after unpacking before faster spoilage | NOT_STARTED | No grace logic in pfm-inventory freshness, pfm-worldobjects or pf-stores | Implement after the sweep |
+| 3.2 | 30-minute grace after unpacking before faster spoilage | VERIFIED (real DB) | Packed deliveries age at the normal rate for 30 min after delivery, then at the outdoor rate until unpacked (pfm-inventory DeliveredInfo; pf-stores passes delivered_at; pf-restaurants stocks with it). 31182bd; restaurants_realdb_spec 'deliveries left packed' | — |
 
 ## Priority 4: restaurants
 
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 4.1 | Persistent stock, atomic consumption, server prices/totals, roles, order states, refunds | VERIFIED (real DB) | df8eb0a; restaurants realdb spec (16) | Sweep result for remaining events |
-| 4.2 | Freshness by item and storage (fridge, freezer, trunk, glovebox, sun, heat, broken equipment), offline, visible in UI | VERIFIED (mocked) | `pfm-inventory/config/freshness.lua`, `server/freshness.lua`; freshness_spec (28) | Check heat/sun are actually applied somewhere (storage overrides) |
+| 4.2 | Freshness by item and storage (fridge, freezer, trunk, glovebox, sun, heat, broken equipment), offline, visible in UI | IN_PROGRESS | Rates and storage rules exist (freshness_spec 28). Restaurant cold storage follows government power: cut = broken_fridge rate (restaurants_realdb_spec 'power cuts'). Nothing yet applies `sunlight`/`hot` or a fridge equipment failure (restaurant fridges are not modelled as equipment) | Decide what sets sunlight/heat (weather? outdoor drops in daytime?) |
 | 4.3 | Cooking: stock-backed recipes, doneness, burnt, quality | VERIFIED (real DB) | restaurants realdb spec | In-game cooking check |
 
 ## Priority 5: farming
