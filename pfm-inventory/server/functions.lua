@@ -750,6 +750,19 @@ end
 
 exports('CreateInventory', CreateInventory)
 
+--- Changes an existing stash's capacity (e.g. a business installed more storage). Items already in
+--- it stay even when the new weight is lower; nothing more fits until it is under the limit.
+function SetInventoryCapacity(identifier, maxweight, slots)
+    local inv = type(identifier) == 'string' and Inventories[identifier]
+    if not inv then return false end
+    maxweight, slots = tonumber(maxweight), tonumber(slots)
+    if maxweight and maxweight > 0 then inv.maxweight = math.floor(maxweight) end
+    if slots and slots > 0 then inv.slots = math.floor(slots) end
+    return true
+end
+
+exports('SetInventoryCapacity', SetInventoryCapacity)
+
 --- Retrieves an inventory by its identifier.
 --- @param identifier string The identifier of the inventory to retrieve.
 --- @return table|nil - The inventory object if found, nil otherwise.

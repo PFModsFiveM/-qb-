@@ -14,6 +14,8 @@ local function targetOptions(id)
 end
 
 local function attachTarget(id, info)
+    -- fixtures (installed equipment) have no delivery actions
+    if info.kind == 'fixture' then return end
     if not info.netId or GetResourceState('pfm-target') ~= 'started' then return end
     CreateThread(function()
         local tries = 0

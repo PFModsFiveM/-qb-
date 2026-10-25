@@ -46,6 +46,8 @@ W.Migrations = {
 
 local allowedModels = {}
 for _, m in ipairs(C.Models or {}) do allowedModels[m] = true end
+local fixtureModels = {}
+for _, m in ipairs(C.FixtureModels or {}) do fixtureModels[m] = true end
 
 local counter = 0
 local function newId()
@@ -119,6 +121,37 @@ function W.CreateDeliveryObject(opts)
     spawnEntity(row)
     TriggerClientEvent('pfm-worldobjects:client:upsert', -1, publicObject(row))
     return id
+end
+
+--- A fixture: a persistent prop with no stash, e.g. equipment a business installed in a slot the
+--- government approved (pf-government premises). opts = { model, coords, heading, ownerRef }.
+--- Returns the object id. Fixtures are restored on start like deliveries and never offer delivery actions.
+function W.CreateFixture(opts)
+    if type(opts) ~= 'table' or type(opts.ownerRef) ~= 'string' or not fixtureModels[opts.model] then return nil end
+    local c = opts.coords or {}
+    local x, y, z = tonumber(c.x), tonumber(c.y), tonumber(c.z)
+    if not (x and y and z) then return nil end
+    local id = newId()
+    local now = nowMs()
+    local inserted = MySQL.insert.await([[INSERT INTO pf_world_objects
+        (id, kind, model, x, y, z, rx, ry, rz, origin_x, origin_y, origin_z, owner_ref, order_id, stash_id, state, created_at, updated_at)
+        VALUES (?, 'fixture', ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, NULL, ?, 'installed', ?, ?)]],
+        { id, opts.model, x, y, z, tonumber(opts.heading) or 0.0, x, y, z, opts.ownerRef, 'fixture-' .. id, now, now })
+    if inserted == nil then return nil end
+    local row = W.Get(id)
+    spawnEntity(row)
+    TriggerClientEvent('pfm-worldobjects:client:upsert', -1, publicObject(row))
+    return id
+end
+
+--- Takes a fixture away (the record stays, marked removed).
+function W.RemoveFixture(id)
+    local row = W.Get(id)
+    if not row or row.kind ~= 'fixture' or row.state ~= 'installed' then return false end
+    MySQL.update.await("UPDATE pf_world_objects SET state = 'removed', updated_at = ? WHERE id = ? AND state = 'installed'", { nowMs(), row.id })
+    despawn(row.id)
+    TriggerClientEvent('pfm-worldobjects:client:removed', -1, row.id)
+    return true
 end
 
 -- ── access ──────────────────────────────────────────────────────────────────
@@ -246,7 +279,7 @@ RegisterNetEvent('pfm-worldobjects:server:sync', function()
     if syncAt[src] and os.time() - syncAt[src] < 10 then return end
     syncAt[src] = os.time()
     local out = {}
-    for _, row in ipairs(MySQL.query.await("SELECT * FROM pf_world_objects WHERE state = 'sealed'") or {}) do
+    for _, row in ipairs(MySQL.query.await("SELECT * FROM pf_world_objects WHERE state IN ('sealed', 'installed')") or {}) do
         out[#out + 1] = publicObject(row)
     end
     TriggerClientEvent('pfm-worldobjects:client:all', src, out)
@@ -261,9 +294,9 @@ function W.Start()
         print('^1[pfm-worldobjects]^7 migrations failed: ' .. tostring(err))
         return false
     end
-    local rows = MySQL.query.await("SELECT * FROM pf_world_objects WHERE state = 'sealed'") or {}
+    local rows = MySQL.query.await("SELECT * FROM pf_world_objects WHERE state IN ('sealed', 'installed')") or {}
     for _, row in ipairs(rows) do
-        ensureStash(row)
+        if row.state == 'sealed' then ensureStash(row) end
         spawnEntity(row)
     end
     registerStashHook()
@@ -287,3 +320,5 @@ end)
 
 exports('CreateDeliveryObject', W.CreateDeliveryObject)
 exports('GetObject', function(id) return W.Get(id) end)
+exports('CreateFixture', W.CreateFixture)
+exports('RemoveFixture', W.RemoveFixture)
