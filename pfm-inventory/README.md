@@ -24,7 +24,7 @@ https://docs.qbcore.org/qbcore-documentation/qbcore-resources/qb-inventory
 
 ## Database
 ### Upload the new `inventory.sql` file to create the new `inventories` table
-### Use the provided `migrate.sql` file to migrate all of your saved inventory data from stashes, trunks, etc
+### Use the provided `upgrade/migrate_from_old_qb_inventory.sql` file (once, only on a database that still has the old tables) to migrate all of your saved inventory data from stashes, trunks, etc
 ### Once complete, you can delete `gloveboxitems` `stashitems` and `trunkitems` tables from your database
 ```sql
 CREATE TABLE IF NOT EXISTS `inventories` (
