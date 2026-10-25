@@ -1443,3 +1443,46 @@ The working list is now `docs/TASK_LEDGER.md` (statuses, evidence, next task per
 
 ### Install SQL note
 `pf-government/sql/migration_monthly_budget_infrastructure.sql` is an upgrade from weekly to monthly budgets. It fails on a fresh database (`Unknown column 'weekly_budget'`), which is expected for an upgrade file.
+
+### Batch 6b — government business registry, deliveries, freshness, job-business supplies (2026-10-25)
+
+**Government business registry (ledger 2.2, 6.2):**
+- **What was there:** pf-government had a business registry (licenses, utilities, closure), but no business resource used it. The restaurant revenue hook existed, but restaurants never registered, so it did nothing. Had they registered, its tax step would have created money: it credited the treasury first, then charged a society named after the business id.
+- **Now:**
+  - Restaurants (`restaurant:<id>`, owner from staff), player-owned stores (`store:<id>`) and mechanic shops (`mechanic:<job>`) register with their own ledger account.
+  - Each sale is recorded once (`pf_gov_business_revenue`, unique key). Business tax is one keyed transfer from the business account to the treasury; an underfunded business is billed instead.
+  - Sales stop while the government has closed the business or cut its power (`CanBusinessTrade`).
+  - Daily utility bills are paid automatically from the business account when it can pay.
+  - Paying the last delinquent bill restores power the system cut (staff cut-offs stay).
+  - `business_status`, `closed_at` and `account_ref` are added at start. The first two used to be added only when staff opened the businesses page, so closure checks failed on a fresh install.
+- **Commits:** 6f1b81c, d54d863, 1817c58, 15e9229, 2266b9d.
+- **Tests:** `government_business_realdb_spec` (7, real DB; all fail on the old code), plus mocked store and mechanic registry tests.
+- **Staging:** both restaurants registered with utility accounts on a fresh database.
+
+**Deliveries and freshness (ledger 3.2, 4.2):**
+- **Delivery grace:** packed deliveries age at the normal rate for 30 minutes after delivery, then at the outdoor rate until unpacked (`DeliveredInfo`). Restaurants and job businesses stock with it; pf-stores passes the delivery time (31182bd).
+- **Cold storage:** restaurant fridges and freezers stop cooling while the government has cut the power (dd28254).
+- **Sunlight:** ground drops spoil at the sunlight rate in clear weather from 11:00 to 16:00 game time (541d97b).
+- **Tests:** `restaurants_realdb_spec` (delivery grace, power cuts), `freshness_spec` (sunlight).
+
+**Job-business supplies (ledger 7.1, 2.1):**
+- **What was there:** mechanic shops and other job businesses ordered through a separate list in pf-computer's data file. The business paid, and nothing ever added the goods anywhere.
+- **Now:** they use the shared order service (buyer kind `jobbiz`):
+  - priced from their catalog, known items only;
+  - paid from the job's bank account;
+  - collected by the mechanic pickup run, or delivered by a trucker on a pallet once a delivery point is set;
+  - unpacked once into `bizstash-<job>`.
+- **Business stash points:** these never opened, because the client event had no handler. They now open the business stock after a server check of job and position.
+- **Commits:** 131718c, e65c680. **Tests:** `computer_orders_realdb_spec` job mode (4).
+
+**Smaller items:**
+- pf-jobs and pf-tablet refresh on `QBCore:Server:SetDuty` instead of accepting the client duty event (33ace78).
+- Ledger tx ids fixed (34addb5, see batch 6).
+
+**Tests actually run at the end of this batch:**
+- `node harness.js`: 689 passed, 0 failed, 96 files.
+- `realdb/run.js`: 98 passed in 8 files.
+- `realdb/ledger_parallel.js 6`: passed.
+- Staging FXServer on a fresh database: 99 resources, no new errors (ox_lib and kq_wheeldamage only), all migrations applied, restaurants registered.
+
+**Not verified:** anything in a game client; pf-mechanicjob at runtime (needs ox_lib).
