@@ -90,7 +90,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 7.1 | Mechanics: parts via supply orders, checkout on the ledger | IN_PROGRESS | checkout on the ledger (2g); car save events fixed (a145539) | Sweep result; parts supply |
-| 7.2 | pf-jobgarages: business fleets, fail-open permissions, ownership/keys | IN_PROGRESS | In the sweep (jobs group) | — |
+| 7.2 | pf-jobgarages: business fleets, fail-open permissions, ownership/keys | IN_PROGRESS | Fail-open keys check fixed, ownership/grade/distance enforced (ee43911, sweep_jobs_jobgarages_spec) | Decide how a fleet car is blocked from its owner's personal garage; on-duty rule |
 | 7.3 | Trucking: priority, AI fallback, persistence, exactly-once | VERIFIED (real DB) | 2.1 | — |
 | 7.4 | Police MDT data from authoritative sources with permissions | IN_PROGRESS | In the sweep (mdt group) | — |
 | 7.5 | Stale qb-core references, broken exports, duplicate event names | IN_PROGRESS | `docs/staging/event_collisions.py`; staging start-up clean apart from 1.2 | Rerun the scan after the sweep |
@@ -104,7 +104,8 @@ The working list for the whole project. Read this first in every session, then `
 | rob (robberies, side jobs) | done | 9005fcf, 27b9fee, 427c1d2, 4a3ee5a; weed 8da5632 | hotdog quality/price from client (P2; `hotdog` item never given, play-test); recycle/pawnshop permanently ban on one distance miss (lag risk, policy decision); thermite StopFires any player (P2); newsjob gear per plate (P2); drugs delivery re-yield after 2 h (economy) |
 | mdt (pf-policemdt-DEV) | done | 9202e1a, d2e9ebd | sentence/jail any online citizen without proximity (design); grade 4+ can reseed roster (permission decision); built-in jail timer is client-side; UI JS not fully XSS-audited (18k lines) |
 | pol (police, prison, management, multichar, apartments, admin) | done | 4d90d39, 2db1416, d5c586f, 53e529c, 3896a3e, e7def91 | handcuff status client-driven (redesign); escape detection distance only; SyncSpikes rebroadcasts client table (police only, capped); /reportr never works (ace compare bug) |
-| core, veh, mech, jobs, biz | running | — | — |
+| jobs (pf-jobs, jobgarages, outfitbag, tablet, scoreboard, elevator, hud) | done | 877aba6, ee43911, 1b8d753, 5f8c5b8, ffb522a | pf-tabletuionly cash register sends a client total to pf-computer DepositSale (P0 if ever loaded; no manifest today); Gruppe6 stop distance unchecked (would break gruppe6_stash_spec positions); a fleet car can still leave its owner's personal garage (needs a state decision); jobgarages no on-duty requirement, min_grade_manage unused; taxi rating from client (P2); group payouts 1.5x each (economy) |
+| core, veh, mech, biz | running | — | — |
 
 ## Session log
 
