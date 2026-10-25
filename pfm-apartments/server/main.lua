@@ -1,5 +1,7 @@
 local ApartmentObjects = {}
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
+local Invites = {}   -- [visitorSrc] = { apartmentId = ..., expires = os.time() } set when someone inside opens the door
+local Rings = {}     -- [visitorSrc] = { apartmentId = ..., expires = os.time() } set when the visitor rings
 
 -- Functions
 
@@ -26,6 +28,15 @@ local function GetApartmentInfo(apartmentId)
     return retval
 end
 
+-- Owner of the apartment, or a visitor someone inside let in within the last minute.
+-- (Any apartment id used to be accepted, so anyone could walk into anyone's apartment.)
+local function CanEnter(src, Player, apartmentId)
+    local invite = Invites[src]
+    if invite and invite.apartmentId == apartmentId and os.time() <= invite.expires then return true end
+    local apartment = GetApartmentInfo(apartmentId)
+    return apartment ~= nil and apartment.citizenid == Player.PlayerData.citizenid
+end
+
 -- Events
 
 RegisterNetEvent('qb-apartments:server:SetInsideMeta', function(house, insideId, bool, isVisiting)
@@ -42,6 +53,8 @@ RegisterNetEvent('qb-apartments:server:SetInsideMeta', function(house, insideId,
             -- only the actual owner may mark an apartment as their own inside-location
             local apartment = GetApartmentInfo(insideId)
             if not apartment or apartment.citizenid ~= Player.PlayerData.citizenid then return end
+        elseif not CanEnter(src, Player, insideId) then
+            return
         end
         if not isVisiting then
             insideMeta.apartment.apartmentType = house
@@ -126,6 +139,8 @@ end)
 RegisterNetEvent('apartments:server:RingDoor', function(apartmentId, apartment)
     local src = source
     if not ApartmentObjects[apartment] or not ApartmentObjects[apartment].apartments then return end
+    if type(apartmentId) ~= 'string' then return end
+    Rings[src] = { apartmentId = apartmentId, expires = os.time() + 120 }
     if ApartmentObjects[apartment].apartments[apartmentId] ~= nil and next(ApartmentObjects[apartment].apartments[apartmentId].players) ~= nil then
         for k, _ in pairs(ApartmentObjects[apartment].apartments[apartmentId].players) do
             TriggerClientEvent('apartments:client:RingDoor', k, src)
@@ -135,14 +150,20 @@ end)
 
 RegisterNetEvent('apartments:server:OpenDoor', function(target, apartmentId, apartment)
     local src = source
-    local OtherPlayer = exports['pfm-core']:GetPlayer(target)
+    local OtherPlayer = exports['pfm-core']:GetPlayer(tonumber(target))
     if OtherPlayer == nil then return end
+    target = OtherPlayer.PlayerData.source
+    -- only someone who rang this apartment's bell (any player could be pulled in from anywhere)
+    local ring = Rings[target]
+    if not ring or ring.apartmentId ~= apartmentId or os.time() > ring.expires then return end
     -- the inviter must actually be inside this apartment to let someone in
     if not ApartmentObjects[apartment] or not ApartmentObjects[apartment].apartments
         or not ApartmentObjects[apartment].apartments[apartmentId]
         or not ApartmentObjects[apartment].apartments[apartmentId].players[src] then
         return
     end
+    Rings[target] = nil
+    Invites[target] = { apartmentId = apartmentId, expires = os.time() + 60 }
     TriggerClientEvent('apartments:client:SpawnInApartment', OtherPlayer.PlayerData.source, apartmentId, apartment)
 end)
 
@@ -151,6 +172,7 @@ RegisterNetEvent('apartments:server:AddObject', function(apartmentId, apartment,
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if type(apartmentId) ~= 'string' or type(apartment) ~= 'string' or not tonumber(offset) then return end
+    if not CanEnter(src, Player, apartmentId) then return end
     if ApartmentObjects[apartment] ~= nil and ApartmentObjects[apartment].apartments ~= nil and ApartmentObjects[apartment].apartments[apartmentId] ~= nil then
         ApartmentObjects[apartment].apartments[apartmentId].players[src] = Player.PlayerData.citizenid
     else
@@ -198,7 +220,7 @@ QBCore.Functions.CreateCallback('apartments:GetAvailableApartments', function(_,
         for k, _ in pairs(ApartmentObjects[apartment].apartments) do
             if (ApartmentObjects[apartment].apartments[k] ~= nil and next(ApartmentObjects[apartment].apartments[k].players) ~= nil) then
                 local apartmentInfo = GetApartmentInfo(k)
-                apartments[k] = apartmentInfo.label
+                if apartmentInfo then apartments[k] = apartmentInfo.label end
             end
         end
     end
@@ -231,6 +253,9 @@ end)
 
 QBCore.Functions.CreateCallback('apartments:GetOwnedApartment', function(source, cb, cid)
     if cid ~= nil then
+        -- only the caller's own character (any citizenid used to be looked up)
+        local Self = exports['pfm-core']:GetPlayer(source)
+        if not Self or Self.PlayerData.citizenid ~= cid then return cb(nil) end
         local result = MySQL.query.await('SELECT * FROM apartments WHERE citizenid = ?', { cid })
         if result[1] ~= nil then
             return cb(result[1])
@@ -264,6 +289,11 @@ QBCore.Functions.CreateCallback('apartments:IsOwner', function(source, cb, apart
     end
 end)
 
+
+AddEventHandler('playerDropped', function()
+    Invites[source] = nil
+    Rings[source] = nil
+end)
 
 QBCore.Functions.CreateCallback('apartments:GetOutfits', function(source, cb)
     local src = source
