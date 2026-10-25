@@ -182,6 +182,44 @@ describe('cooking', function()
     end)
 end)
 
+describe('deliveries left packed', function()
+    local function pctOf(storage, item, batchNot)
+        local inv = exports['pfm-inventory']:GetInventory(StockStashId(BID, storage))
+        local out = {}
+        for _, it in pairs(inv.items) do
+            if it.name == item then out[#out + 1] = exports['pfm-inventory']:GetFreshness(it.name, it.info).pct end
+        end
+        table.sort(out)
+        return out
+    end
+    it('the unpack gets the delivery time from the order service', function()
+        local adapter = O.kinds.restaurant
+        local realUnpack, seen = adapter.unpack, nil
+        adapter.unpack = function(...) seen = { ... } return realUnpack(...) end
+        supply('lettuce', 1)
+        adapter.unpack = realUnpack
+        -- leave the restaurant account as it was (supply() funds a little more than it spends)
+        local left = society('restaurant_' .. BID)
+        if left > 0 then assert(L.Transfer({ from = 'society:restaurant_' .. BID, to = 'system:test', amount = left, key = L.AutoKey('drain'), kind = 'test' }).ok) end
+        assert_true(type(seen[4]) == 'number' and math.abs(seen[4] - os.time()) <= 5, 'deliveredAt passed: ' .. tostring(seen and seen[4]))
+    end)
+    it('spoil normally for 30 minutes, then faster, for as long as they stay packed', function()
+        local adapter = O.kinds.restaurant
+        local now = os.time()
+        assert_true(adapter.unpack(BID, { { name = 'tomato', quantity = 1 } }, 0, now))               -- unpacked at once
+        assert_true(adapter.unpack(BID, { { name = 'tomato', quantity = 1 } }, 0, now - 20 * 60))     -- inside the grace
+        assert_true(adapter.unpack(BID, { { name = 'tomato', quantity = 1 } }, 0, now - 6 * 3600))    -- left out 6 hours
+        local pcts = pctOf(StorageFor('tomato'), 'tomato')
+        assert_eq(#pcts, 3, 'three separate batches')
+        local life = 4 * 86400                                  -- produce shelf life
+        local graceLoss = 100 * (20 * 60) / life                -- normal rate inside the grace
+        local lateLoss = 100 * (1800 + (6 * 3600 - 1800) * Config.Freshness.Storage.outdoor) / life
+        assert_true(math.abs(pcts[3] - 100) < 0.5, 'fresh: ' .. pcts[3])
+        assert_true(math.abs((100 - pcts[2]) - graceLoss) < 0.5, ('grace %.2f vs %.2f'):format(100 - pcts[2], graceLoss))
+        assert_true(math.abs((100 - pcts[1]) - lateLoss) < 0.5, ('late %.2f vs %.2f'):format(100 - pcts[1], lateLoss))
+    end)
+end)
+
 describe('freshness', function()
     it('freezer stock keeps longer than stock left out, and expired food is kept, not deleted', function()
         assert_true(exports['pfm-inventory']:AddItem(StockStashId(BID, 'dry'), 'raw_beef_patty', 1, nil, nil, 'test'))
