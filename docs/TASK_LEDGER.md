@@ -54,7 +54,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 2.1 | One persistent order lifecycle (create, pay, player supplier/trucker priority, AI fallback, assignment, delivery, exactly-once payout, restart) | VERIFIED (real DB, mocked) | pf-stores `PFOrders`; supply chain realdb spec (20) | In-game trucking run |
-| 2.2 | Business ownership, permissions, employees as one shared service | IN_PROGRESS | Registries found: `pf_gov_businesses` (pf-government; exports RegisterBusinessWithGovernment, AddBusinessRevenue, IsBusinessOperational, CheckBusinessLicense, CheckBusinessPower), `pf_business*` (pf-mechanicjob), `pf_stores` (pf-stores), `pf_restaurant_*` (pf-restaurants), job bosses (pfm-management). **No business resource calls the government registry.** | Wire stores, restaurants and mechanic shops into pf-government's registry (register, revenue, operational/license/power checks) after the biz sweep lands |
+| 2.2 | Business ownership, permissions, employees as one shared service | IN_PROGRESS | pf-government `pf_gov_businesses` is the shared registry: restaurants (`restaurant:<id>`, owner from employees), player-owned stores (`store:<id>`), mechanic shops (`mechanic:<job>`) register, report each sale once and stop trading when closed/without power (6f1b81c, d54d863, 1817c58, 15e9229; government_business_realdb_spec 5, store/mechanic mocked tests). Employees/permissions still live in each resource (restaurant roles, store owner, job grades) | Employee records into the registry (UpdateBusinessEmployees) and a read API for pf-computer/tablet/MDT |
 | 2.3 | Business accounts and transactions | VERIFIED (real DB) | pfm-banking society accounts on the ledger | — |
 
 ## Priority 3: physical deliveries
@@ -83,7 +83,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 6.1 | Fines, revenue, tax collection on the ledger | VERIFIED (mocked, staging) | 93be14f, 3aaaf7f | — |
-| 6.2 | Registration, transfer, closure, licenses, inspections, utilities shutdown, loans, upgrades, shared with computer/tablet/MDT | NOT_STARTED (audit) | Latent bug: `UpdateBusinessRevenue` (export AddBusinessRevenue) credits the treasury first, then `RemoveMoney` on the society, and only bills on failure (mints tax). Unused today; must go through the ledger before wiring. | pf-government has businesses, licenses, utilities (DisconnectService), budgets; how they connect to pf-computer/pf-restaurants is unaudited | After 2.2 |
+| 6.2 | Registration, transfer, closure, licenses, inspections, utilities shutdown, loans, upgrades, shared with computer/tablet/MDT | IN_PROGRESS | Done: registration of the three business types; business tax on the ledger (no minting); closure and power checks enforced at the point of sale; utility bills -> delinquency -> power cut -> paying the last delinquent bill restores system cut-offs; loans from the treasury (529d354); business_status columns at start. Not done: business licenses required to trade (CheckBusinessLicense is not enforced), inspections linked to restaurant hygiene, ownership transfer synced back to stores/restaurants, upgrades | Decide whether trading needs an active business license (would block every existing business until licensed) |
 
 ## Priority 7: other resources
 
