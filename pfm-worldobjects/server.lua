@@ -15,7 +15,7 @@ PFWorldObjects = PFWorldObjects or { entities = {} }
 local W = PFWorldObjects
 local C = Config.WorldObjects
 
-local function nowMs() return math.floor(os.time() * 1000) end
+local function nowMs() return math.floor(os.time() * 1000.0) end   -- float math: no integer overflow on 32-bit Lua builds
 
 W.Migrations = {
     {
