@@ -363,7 +363,13 @@ QBCore.Commands.Add('report', Lang:t('info.admin_report'), { { name = 'message',
     local src = source
     local msg = table.concat(args, ' ')
     local Player = exports['pfm-core']:GetPlayer(source)
-    TriggerClientEvent('qb-admin:client:SendReport', -1, GetPlayerName(src), src, msg)
+    -- to staff only (it went to every client, so anyone could read the reports)
+    for _, plr in ipairs(GetPlayers()) do
+        plr = tonumber(plr)
+        if plr and IsAdmin(plr) then
+            TriggerClientEvent('qb-admin:client:SendReport', plr, GetPlayerName(src), src, msg)
+        end
+    end
     TriggerEvent('qb-log:server:CreateLog', 'report', 'Report', 'green', '**' .. GetPlayerName(source) .. '** (CitizenID: ' .. Player.PlayerData.citizenid .. ' | ID: ' .. source .. ') **Report:** ' .. msg, false)
 end)
 
