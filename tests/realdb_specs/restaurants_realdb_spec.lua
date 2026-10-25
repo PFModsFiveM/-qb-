@@ -58,7 +58,7 @@ load_resource('pfm-inventory/server/hooks.lua')
 load_resource('[pfscripts]/pf-stores/server_orders.lua')
 load_resource('pfm-worldobjects/server.lua')
 QBCore = QBCoreMock
-for _, f in ipairs({ 'main', 'persistence', 'business', 'recipes', 'menu', 'orders', 'stations', 'inventory', 'equipment', 'hygiene', 'fire', 'placeholders_government' }) do
+for _, f in ipairs({ 'main', 'persistence', 'business', 'recipes', 'menu', 'orders', 'stations', 'inventory', 'equipment', 'hygiene', 'fire', 'placeholders_government', 'integration' }) do
     load_resource('[pfscripts]/pf-restaurants/server/' .. f .. '.lua')
 end
 for _, res in ipairs({ 'pfm-banking', 'pfm-inventory', 'pf-stores', 'pfm-worldobjects', 'pf-restaurants' }) do
@@ -232,6 +232,36 @@ describe('government record', function()
         RestaurantDB.DeleteEmployee(BID, 'EMP9')
         assert_eq(counted.n, n - 1)
         gov.UpdateBusinessEmployees = nil
+    end)
+end)
+
+describe('ownership from the government', function()
+    it('moves the owner role to the new citizen and removes the old owner', function()
+        local function owners()
+            local out = {}
+            for _, r in ipairs(MySQL.query.await("SELECT citizenid FROM pf_restaurant_employees WHERE business_id = ? AND role = 'owner'", { BID })) do out[#out + 1] = r.citizenid end
+            return out
+        end
+        RestaurantDB.SaveEmployee(BID, 'COOK1', 'owner')
+        RestaurantData.employees[BID] = RestaurantData.employees[BID] or {}
+        RestaurantData.employees[BID]['COOK1'] = { citizenid = 'COOK1', role = 'owner' }
+        local realInvoker = GetInvokingResource
+        GetInvokingResource = function() return 'pf-government' end
+        assert_true(exports['pf-restaurants']:SetOwnerFromGovernment(BID, 'CASH1'))
+        assert_false(exports['pf-restaurants']:SetOwnerFromGovernment(BID, 'NOBODY'), 'unknown citizen')
+        GetInvokingResource = function() return 'pf-stores' end
+        assert_false(exports['pf-restaurants']:SetOwnerFromGovernment(BID, 'COOK1'), 'only pf-government')
+        GetInvokingResource = realInvoker
+        local list = owners()
+        assert_eq(#list, 1)
+        assert_eq(list[1], 'CASH1')
+        assert_eq(RestaurantData.employees[BID]['COOK1'], nil)
+        assert_eq(RestaurantData.employees[BID]['CASH1'].role, 'owner')
+        -- back to the staff the other tests expect (roles from job grades)
+        for _, cid in ipairs({ 'COOK1', 'CASH1' }) do
+            MySQL.query.await('DELETE FROM pf_restaurant_employees WHERE business_id = ? AND citizenid = ?', { BID, cid })
+            RestaurantData.employees[BID][cid] = nil
+        end
     end)
 end)
 

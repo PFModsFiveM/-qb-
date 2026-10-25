@@ -30,7 +30,8 @@ QBCoreMock.Shared.Jobs = { government = { label = 'Government' } }
 Config = nil
 load_resource('pfm-banking/payouts.lua')
 for _, f in ipairs({ 'config.lua', 'server/core.lua', 'server/treasury.lua', 'server/taxes.lua', 'server/utilities.lua',
-    'server/bills.lua', 'server/businesses.lua', 'server/audit.lua', 'server/licenses.lua', 'server/integrations.lua' }) do
+    'server/bills.lua', 'server/businesses.lua', 'server/audit.lua', 'server/licenses.lua', 'server/integrations.lua',
+    'server/staff.lua', 'server/callbacks.lua' }) do
     load_resource('[pfscripts]/pf-government/' .. f)
 end
 function NotifyGovernment() end
@@ -147,5 +148,35 @@ describe('inspections from business resources', function()
         assert_false(exports['pf-government']:RecordBusinessInspection(BIZ, 'closed', 'x'))
         assert_false(exports['pf-government']:RecordBusinessInspection('restaurant:nowhere', 'compliant', 'x'))
         assert_eq(business().business_status, 'active', 'an inspection does not close the business by itself')
+    end)
+end)
+
+describe('ownership transfers', function()
+    local calls
+    local function stub(resource, fn, answer)
+        Mock.exportsByResource[resource] = { [fn] = function(_, id, cid) calls[#calls + 1] = { resource = resource, id = id, cid = cid } return answer end }
+    end
+    BeforeEach = function() calls = {} end
+    it('change the real owner first, then the record', function()
+        MySQL.query.await("INSERT IGNORE INTO players (citizenid, cid, license, name, money, charinfo, job, gang, position, metadata, inventory) VALUES ('CID3', 1, 'license:CID3', 'New', '{}', '{}', '{}', '{}', '{}', '{}', '[]')")
+        stub('pf-restaurants', 'SetOwnerFromGovernment', true)
+        assert_true(TransferBusinessOwnership(BIZ, 'CID3', 'New Owner'))
+        assert_eq(calls[1].resource, 'pf-restaurants')
+        assert_eq(calls[1].id, 'bs')
+        assert_eq(calls[1].cid, 'CID3')
+        assert_eq(business().owner_id, 'CID3')
+    end)
+    it('change nothing when the business resource refuses', function()
+        stub('pf-restaurants', 'SetOwnerFromGovernment', false)
+        local ok = TransferBusinessOwnership(BIZ, 'CID9', 'Someone')
+        assert_false(ok)
+        assert_eq(business().owner_id, 'CID3')
+    end)
+    it('are refused for mechanic shops (owned by their job) and unknown businesses', function()
+        RegisterBusiness('mechanic:bennys', 'Bennys', 'mechanic', 'job:bennys', nil, 'society:bennys')
+        local ok, err = TransferBusinessOwnership('mechanic:bennys', 'CID3', 'New')
+        assert_false(ok)
+        assert_eq(err, 'job_business')
+        assert_false(TransferBusinessOwnership('restaurant:nowhere', 'CID3', 'New'))
     end)
 end)

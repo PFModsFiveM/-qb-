@@ -403,3 +403,21 @@ describe('books', function()
         assert_eq(#report.mismatches, 0)
     end)
 end)
+
+describe('store ownership from the government', function()
+    local function owner() return MySQL.scalar.await("SELECT owner_citizenid FROM pf_stores WHERE store_id = 'corner'") end
+    it('a government transfer changes the store owner; only pf-government may do it', function()
+        local before = owner()
+        Mock.invokingResource = 'pf-stores'
+        assert_false(exports['pf-stores']:SetStoreOwnerFromGovernment('corner', 'DRV1'), 'other resources cannot')
+        assert_eq(owner(), before)
+        Mock.invokingResource = 'pf-government'
+        assert_false(exports['pf-stores']:SetStoreOwnerFromGovernment('corner', 'NOBODY'), 'unknown citizen')
+        assert_true(exports['pf-stores']:SetStoreOwnerFromGovernment('corner', 'DRV1'))
+        assert_eq(owner(), 'DRV1')
+        assert_true(exports['pf-stores']:SetStoreOwnerFromGovernment('corner', nil))
+        assert_eq(owner(), nil, 'unowned: for sale again')
+        assert_true(exports['pf-stores']:SetStoreOwnerFromGovernment('corner', before))
+        Mock.invokingResource = nil
+    end)
+end)
