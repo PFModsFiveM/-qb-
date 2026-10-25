@@ -112,6 +112,37 @@ RegisterCommand('hotbar', function(source)
     TriggerClientEvent('qb-inventory:client:hotbar', source, hotbarItems)
 end, false)
 
+-- The client only says which vehicle storage it is at; the server checks the player is in that
+-- vehicle (glovebox) or beside it and it is unlocked (trunk). The client's name used to be opened as-is,
+-- and the unanchored 'trunk%-' match opened any stash whose id contained it.
+local VEHICLE_REACH = 10.0
+
+local function trimPlate(plate)
+    return (tostring(plate or ''):gsub('^%s+', ''):gsub('%s+$', ''))
+end
+
+function CheckVehicleStorage(source, inventory)
+    if type(inventory) ~= 'string' or #inventory > 64 then return nil end
+    local kind, plate = inventory:match('^(%a+)%-(.+)$')
+    if kind ~= 'trunk' and kind ~= 'glovebox' then return nil end
+    plate = trimPlate(plate)
+    if plate == '' then return nil end
+    local ped = GetPlayerPed(source)
+    if kind == 'glovebox' then
+        local veh = GetVehiclePedIsIn(ped, false)
+        if veh and veh ~= 0 and trimPlate(GetVehicleNumberPlateText(veh)) == plate then return kind end
+        return nil
+    end
+    local pos = GetEntityCoords(ped)
+    for _, veh in ipairs(GetAllVehicles()) do
+        if trimPlate(GetVehicleNumberPlateText(veh)) == plate and #(pos - GetEntityCoords(veh)) <= VEHICLE_REACH then
+            if (GetVehicleDoorLockStatus(veh) or 0) >= 2 then return nil end
+            return kind
+        end
+    end
+    return nil
+end
+
 RegisterCommand('inventory', function(source)
     if Player(source).state.inv_busy then return end
     local QBPlayer = exports['pfm-core']:GetPlayer(source)
@@ -119,13 +150,17 @@ RegisterCommand('inventory', function(source)
     if not QBPlayer or QBPlayer.PlayerData.metadata['isdead'] or QBPlayer.PlayerData.metadata['inlaststand'] or QBPlayer.PlayerData.metadata['ishandcuffed'] then return end
     QBCore.Functions.TriggerClientCallback('qb-inventory:client:vehicleCheck', source, function(inventory, class)
         if not inventory then return OpenInventory(source) end
-        if inventory:find('trunk%-') then
+        local kind = CheckVehicleStorage(source, inventory)
+        if not kind then return OpenInventory(source) end
+        class = tonumber(class)
+        if class and (class ~= math.floor(class) or class < 0 or class > 22) then class = nil end
+        if kind == 'trunk' then
             OpenInventory(source, inventory, {
                 slots = VehicleStorage[class] and VehicleStorage[class].trunkSlots or VehicleStorage.default.trunkSlots,
                 maxweight = VehicleStorage[class] and VehicleStorage[class].trunkWeight or VehicleStorage.default.trunkWeight
             })
             return
-        elseif inventory:find('glovebox%-') then
+        elseif kind == 'glovebox' then
             OpenInventory(source, inventory, {
                 slots = VehicleStorage[class] and VehicleStorage[class].gloveboxSlots or VehicleStorage.default.gloveboxSlots,
                 maxweight = VehicleStorage[class] and VehicleStorage[class].gloveboxWeight or VehicleStorage.default.gloveboxWeight

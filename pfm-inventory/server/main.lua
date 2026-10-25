@@ -287,17 +287,17 @@ RegisterNetEvent('qb-inventory:server:useItem', function(item)
     local itemInfo = QBCore.Shared.Items[itemData.name]
     if itemData.type == 'weapon' then
         local hookData = buildHookData('ItemUsed', source, exports['pfm-core']:GetPlayer(source), itemData)
-        if TriggerHook('ItemUsed', item.type, hookData) == false then return end
+        if TriggerHook('ItemUsed', itemData.type, hookData) == false then return end
         TriggerClientEvent('qb-weapons:client:UseWeapon', src, itemData, itemData.info.quality and itemData.info.quality > 0)
         TriggerClientEvent('qb-inventory:client:ItemBox', src, itemInfo, 'use')
-        TriggerListener('ItemUsed', item.type, hookData)
+        TriggerListener('ItemUsed', itemData.type, hookData)
     elseif itemData.name == 'id_card' then
         if UseItem(itemData.name, src, itemData) == false then return end
         TriggerClientEvent('qb-inventory:client:ItemBox', source, itemInfo, 'use')
         local playerPed = GetPlayerPed(src)
         local playerCoords = GetEntityCoords(playerPed)
         local players = QBCore.Functions.GetPlayers()
-        local info = itemData.info or item.info or {}
+        local info = itemData.info or {}
         local gender = info.gender == 0 and 'Male' or 'Female'
         for _, v in pairs(players) do
             local targetPed = GetPlayerPed(v)
@@ -323,7 +323,7 @@ RegisterNetEvent('qb-inventory:server:useItem', function(item)
         local playerPed = GetPlayerPed(src)
         local playerCoords = GetEntityCoords(playerPed)
         local players = QBCore.Functions.GetPlayers()
-        local info = itemData.info or item.info or {}
+        local info = itemData.info or {}
         for _, v in pairs(players) do
             local targetPed = GetPlayerPed(v)
             local dist = #(playerCoords - GetEntityCoords(targetPed))
@@ -724,31 +724,39 @@ QBCore.Functions.CreateCallback('qb-inventory:server:giveItem', function(source,
         return
     end
 
-    local itemInfo = QBCore.Shared.Items[item:lower()]
+    if type(item) ~= 'string' then cb(false) return end
+    item = item:lower()
+    local itemInfo = QBCore.Shared.Items[item]
     if not itemInfo then
         cb(false)
         return
     end
 
-    local hasItem = HasItem(source, item)
-    if not hasItem then
+    -- The given stack is the server's own: the client names the slot, and the item's info (serials,
+    -- worth, attachments, freshness) is copied from that slot. The client's `info` used to be handed
+    -- to the receiver as-is.
+    slot = tonumber(slot)
+    local serverItem = slot and GetItemBySlot(source, slot) or GetItemByName(source, item)
+    if type(serverItem) ~= 'table' or type(serverItem.name) ~= 'string' or serverItem.name:lower() ~= item then
         cb(false)
         return
     end
+    slot = serverItem.slot
 
-    local itemAmount = GetItemByName(source, item).amount
-    if itemAmount <= 0 then
-        cb(false)
-        return
-    end
-
+    local itemAmount = tonumber(serverItem.amount) or 0
     local giveAmount = tonumber(amount)
+    if not giveAmount or giveAmount ~= giveAmount or giveAmount < 1 or itemAmount <= 0 then
+        cb(false)
+        return
+    end
+    giveAmount = math.floor(giveAmount)
     if giveAmount > itemAmount then
         cb(false)
         return
     end
+    info = PFFreshness.CopyInfo(type(serverItem.info) == 'table' and serverItem.info or {})
 
-    local hookData = buildHookData('ItemMoved', 'player', 'player', source, target, slot, nil, amount, player, Target)
+    local hookData = buildHookData('ItemMoved', 'player', 'player', source, target, slot, nil, giveAmount, player, Target)
     if TriggerHook('ItemMoved', 'given', hookData) == false then cb(false) return end
 
     local removeItem = RemoveItem(source, item, giveAmount, slot, 'Item given to ID #' .. target)
