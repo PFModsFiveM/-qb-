@@ -53,7 +53,7 @@ The working list for the whole project. Read this first in every session, then `
 
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
-| 2.1 | One persistent order lifecycle (create, pay, player supplier/trucker priority, AI fallback, assignment, delivery, exactly-once payout, restart) | VERIFIED (real DB, mocked) | pf-stores `PFOrders`; supply chain realdb spec (20) | In-game trucking run |
+| 2.1 | One persistent order lifecycle (create, pay, player supplier/trucker priority, AI fallback, assignment, delivery, exactly-once payout, restart) | VERIFIED (real DB, mocked) | pf-stores `PFOrders`, now used by stores, restaurants and job businesses (pf-computer `jobbiz`); supply chain realdb spec (21), computer orders (7) | In-game trucking run |
 | 2.2 | Business ownership, permissions, employees as one shared service | IN_PROGRESS | pf-government `pf_gov_businesses` is the shared registry: restaurants (`restaurant:<id>`, owner from employees), player-owned stores (`store:<id>`), mechanic shops (`mechanic:<job>`) register, report each sale once and stop trading when closed/without power (6f1b81c, d54d863, 1817c58, 15e9229; government_business_realdb_spec 5, store/mechanic mocked tests). Employees/permissions still live in each resource (restaurant roles, store owner, job grades) | Employee records into the registry (UpdateBusinessEmployees) and a read API for pf-computer/tablet/MDT |
 | 2.3 | Business accounts and transactions | VERIFIED (real DB) | pfm-banking society accounts on the ledger | — |
 
@@ -89,7 +89,7 @@ The working list for the whole project. Read this first in every session, then `
 
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
-| 7.1 | Mechanics: parts via supply orders, checkout on the ledger | IN_PROGRESS | checkout on the ledger (2g); car save events fixed (a145539) | Sweep result; parts supply |
+| 7.1 | Mechanics: parts via supply orders, checkout on the ledger | VERIFIED (real DB, mocked) | Checkout on the ledger (2g); sweep fixes (c5dc441). Job-business supply orders moved from pf-computer's data file (paid, goods never added) to the shared order service as buyer kind `jobbiz`: catalog prices, job bank account, mechanic pickup run or trucker pallet, unpacked once into `bizstash-<job>` (131718c; computer_orders_realdb_spec job mode 4). Business stash points open the stock (server-checked) | pf-mechanicjob does not start on staging without ox_lib, so its runtime is unverified |
 | 7.2 | pf-jobgarages: business fleets, fail-open permissions, ownership/keys | IN_PROGRESS | Fail-open keys check fixed, ownership/grade/distance enforced (ee43911, sweep_jobs_jobgarages_spec) | Decide how a fleet car is blocked from its owner's personal garage; on-duty rule |
 | 7.3 | Trucking: priority, AI fallback, persistence, exactly-once | VERIFIED (real DB) | 2.1 | — |
 | 7.4 | Police MDT data from authoritative sources with permissions | IN_PROGRESS | In the sweep (mdt group) | — |
@@ -112,4 +112,5 @@ The working list for the whole project. Read this first in every session, then `
 
 ## Session log
 
+- **2026-10-25 (later):** government registry wired (restaurants, stores, mechanic shops), business tax on the ledger, delivery grace, cold storage on power, sunlight on drops, job-business supplies on PFOrders, duty refresh server-side.
 - **2026-10-25:** ledger created. pf-farming added (5.1). Ledger parallel test + tx id fix (1.5). Loose ends fixed (billing mails, pf-mechanicjob save events, SQL files). Started the 0.6 sweep.
