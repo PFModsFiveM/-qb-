@@ -220,6 +220,24 @@ describe('deliveries left packed', function()
     end)
 end)
 
+describe('installed equipment', function()
+    it('a fridge installed in an approved slot enlarges the fridge stock area', function()
+        local gov = Mock.exportsByResource['pf-government']
+        local inv = exports['pfm-inventory']:GetInventory(StockStashId(BID, 'fridge'))
+        local base = inv.maxweight
+        gov.GetInstalledEquipment = function(_, id)
+            if id ~= 'restaurant:' .. BID then return {} end
+            return { { equipmentType = 'fridge_commercial', slotType = 'fridge', storage = { area = 'fridge', capacity = 150 } } }
+        end
+        TriggerEvent('pf-government:server:equipmentChanged', 'restaurant:' .. BID)
+        assert_eq(exports['pfm-inventory']:GetInventory(StockStashId(BID, 'fridge')).maxweight, base + 150 * 1000)
+        assert_eq(exports['pfm-inventory']:GetInventory(StockStashId(BID, 'freezer')).maxweight, (Config.Restaurants[BID].storage.freezer.capacity or 300) * 1000, 'other areas unchanged')
+        gov.GetInstalledEquipment = nil
+        TriggerEvent('pf-government:server:equipmentChanged', 'restaurant:' .. BID)
+        assert_eq(exports['pfm-inventory']:GetInventory(StockStashId(BID, 'fridge')).maxweight, base)
+    end)
+end)
+
 describe('government record', function()
     it('staff changes update the owner and the employee count', function()
         local gov = Mock.exportsByResource['pf-government']
