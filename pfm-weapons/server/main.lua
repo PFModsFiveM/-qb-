@@ -42,12 +42,11 @@ end)
 QBCore.Functions.CreateCallback('weapon:server:GetWeaponAmmo', function(source, cb, WeaponData)
     local Player = exports['pfm-core']:GetPlayer(source)
     local retval = 0
-    if WeaponData then
-        if Player then
-            local ItemData = Player.GetItemBySlot(WeaponData.slot)
-            if ItemData then
-                retval = ItemData.info.ammo and ItemData.info.ammo or 0
-            end
+    if type(WeaponData) ~= 'table' then return cb(0, nil) end
+    if Player then
+        local ItemData = Player.GetItemBySlot(WeaponData.slot)
+        if ItemData and type(ItemData.info) == 'table' then
+            retval = ItemData.info.ammo and ItemData.info.ammo or 0
         end
     end
     cb(retval, WeaponData.name)
@@ -170,16 +169,40 @@ end)
 
 -- Events
 
+-- Ammo a client reports can only go down (shots fired), except by the rounds of an ammo item the
+-- server has taken from the player (removeWeaponAmmoItem) for that weapon's ammo type. Any client
+-- could set any weapon to the cap before.
+local ammoCredit = {} -- [src] = { [AMMO_TYPE] = rounds }
+
+AddEventHandler('playerDropped', function()
+    ammoCredit[source] = nil
+end)
+
+local function weaponAmmoType(weaponName)
+    local weapon = type(weaponName) == 'string' and sharedWeapons[GetHashKey(weaponName)]
+    return weapon and weapon.ammotype and tostring(weapon.ammotype):upper() or nil
+end
+
 RegisterNetEvent('qb-weapons:server:UpdateWeaponAmmo', function(CurrentWeaponData, amount)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     amount = tonumber(amount)
-    if not amount or amount < 0 then return end
+    if not amount or amount ~= amount or amount < 0 then return end
     amount = math.min(math.floor(amount), Config.MaxAmmoCount or 250)
     if type(CurrentWeaponData) == 'table' and CurrentWeaponData.slot then
-        local slotItem = Player.PlayerData.items[CurrentWeaponData.slot]
+        local slotItem = Player.PlayerData.items[tonumber(CurrentWeaponData.slot)]
         if slotItem and (not CurrentWeaponData.name or slotItem.name == CurrentWeaponData.name) then
+            if type(slotItem.info) ~= 'table' then slotItem.info = {} end
+            local current = math.max(0, math.floor(tonumber(slotItem.info.ammo) or 0))
+            if amount > current and not QBCore.Functions.HasPermission(src, 'admin') then
+                local ammoType = weaponAmmoType(slotItem.name)
+                local credits = ammoCredit[src]
+                local credit = ammoType and credits and credits[ammoType] or 0
+                local raise = math.min(amount - current, credit)
+                if raise > 0 then credits[ammoType] = credit - raise end
+                amount = current + raise
+            end
             slotItem.info.ammo = amount
         end
         Player.SetInventory(Player.PlayerData.items, true)
@@ -267,9 +290,16 @@ RegisterNetEvent('qb-weapons:server:UpdateWeaponQuality', function(data, RepeatA
 end)
 
 RegisterNetEvent('qb-weapons:server:removeWeaponAmmoItem', function(item)
-    local Player = exports['pfm-core']:GetPlayer(source)
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or type(item) ~= 'table' or not item.name or not item.slot then return end
-    exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-weapons:server:removeWeaponAmmoItem')
+    local ammo = Config.AmmoTypes[item.name]
+    if not ammo then return end
+    if not exports['pfm-inventory']:RemoveItem(src, item.name, 1, item.slot, 'qb-weapons:server:removeWeaponAmmoItem') then return end
+    -- the rounds of the box just taken may now be added to a weapon of that ammo type
+    local ammoType = tostring(ammo.ammoType):upper()
+    ammoCredit[src] = ammoCredit[src] or {}
+    ammoCredit[src][ammoType] = (ammoCredit[src][ammoType] or 0) + ammo.amount
 end)
 
 -- Commands

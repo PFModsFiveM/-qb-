@@ -107,8 +107,9 @@ RegisterNetEvent('qb-weapons:client:AddAmmo', function(ammoType, amount, itemDat
 
         AddAmmoToPed(ped, weapon, amount)
         TaskReloadWeapon(ped, false)
-        TriggerServerEvent('qb-weapons:server:UpdateWeaponAmmo', CurrentWeaponData, total + amount)
+        -- the box is taken first: the server only accepts more ammo for rounds it has taken
         TriggerServerEvent('qb-weapons:server:removeWeaponAmmoItem', itemData)
+        TriggerServerEvent('qb-weapons:server:UpdateWeaponAmmo', CurrentWeaponData, total + amount)
         TriggerEvent('qb-inventory:client:ItemBox', QBCore.Shared.Items[itemData.name], 'remove')
         TriggerEvent('QBCore:Notify', Lang:t('success.reloaded'), 'success')
     end, function()
