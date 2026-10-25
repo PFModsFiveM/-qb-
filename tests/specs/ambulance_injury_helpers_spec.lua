@@ -32,4 +32,13 @@ describe('injury helpers', function()
         for _, injuryType in pairs(Config.WeaponInjuryTypes) do assert_true(Config.InjuryTypes[injuryType] ~= nil, injuryType) end
         for _, part in pairs(Config.BodyParts) do assert_true(Config.BodyZones[part.zone] ~= nil, part.zone) end
     end)
+    it("the EMS MDT's treatment buttons are real treatments", function()
+        local html = __readfile('[pfscripts]/pf-emsmdt/html/index.html')
+        local n = 0
+        for name in html:gmatch('data%-treatment="([%w_]+)"') do
+            n = n + 1
+            assert_true(Config.Treatments[name] ~= nil, 'button ' .. name)
+        end
+        assert_true(n > 0)
+    end)
 end)
