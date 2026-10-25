@@ -369,6 +369,60 @@ describe('5. other paths', function()
         local list = pc(RIVAL, 'business:supplies:orders:list', { mode = 'job' })
         for _, o in ipairs(list.data or {}) do assert_true(o.id ~= id, 'pizzathis sees burgershot orders') end
     end)
+    it('with the bank down nothing is ordered and no money moves (fails closed)', function()
+        fund(100)
+        local before = society('restaurant_' .. BID)
+        local orders = tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM pf_store_supply_orders'))
+        local realState = GetResourceState
+        GetResourceState = function(name) if name == 'pfm-banking' then return 'stopped' end return realState(name) end
+        local res = pc(BOSS, 'business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = { { item = 'onion', quantity = 2 } } })
+        GetResourceState = realState
+        assert_false(res.ok)
+        assert_eq(res.error, 'bank_unavailable')
+        assert_eq(society('restaurant_' .. BID), before)
+        assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM pf_store_supply_orders')), orders, 'no order row left behind')
+    end)
+    it('with the order service down a pallet cannot be unpacked, and stays sealed', function()
+        fund(100)
+        local res = pc(BOSS, 'business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = { { item = 'garlic', quantity = 2 } } })
+        assert_true(res.ok, tostring(res.error))
+        tick(121) tick(301)
+        local p = pallet(res.data.orderId)
+        assert_true(p ~= nil)
+        Mock.coords[BOSS] = vector3(p.x, p.y, p.z)
+        local realState = GetResourceState
+        GetResourceState = function(name) if name == 'pf-stores' then return 'stopped' end return realState(name) end
+        local un = PFWorldObjects.Unpack(BOSS, p.id)
+        GetResourceState = realState
+        assert_false(un.ok)
+        assert_eq(pallet(res.data.orderId).state, 'sealed')
+        assert_eq(order(res.data.orderId).status, 'delivered')
+        assert_true(PFWorldObjects.Unpack(BOSS, p.id).ok, 'works again once it is back')
+    end)
+    it('a trucker cannot be paid while the bank is down, and is paid once when it is back', function()
+        fund(100)
+        local res = pc(BOSS, 'business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = { { item = 'potato', quantity = 4 } } })
+        assert_true(res.ok, tostring(res.error))
+        local oid = res.data.orderId
+        assert_true(cb('pf-trucking:server:claimContract', DRIVER2, 'SUP-' .. oid).ok)
+        Mock.coords[DRIVER2] = WAREHOUSE
+        Mock.fireNet('pf-trucking:server:cargoLoaded', DRIVER2)
+        Mock.coords[DRIVER2] = RECEIVING
+        Mock.clock = Mock.clock + 900
+        local realState = GetResourceState
+        GetResourceState = function(name) if name == 'pfm-banking' then return 'stopped' end return realState(name) end
+        local down = cb('pf-trucking:server:completeActiveJob', DRIVER2)
+        GetResourceState = realState
+        assert_false(down.ok, 'not completed without the bank')
+        assert_eq(Mock.players[DRIVER2].PlayerData.money.bank, 0)
+        assert_true(order(oid).status == 'in_transit', 'still in transit: ' .. tostring(order(oid).status))
+        assert_true(cb('pf-trucking:server:completeActiveJob', DRIVER2).ok)
+        local pay = Mock.players[DRIVER2].PlayerData.money.bank
+        assert_true(pay > 0)
+        assert_false(cb('pf-trucking:server:completeActiveJob', DRIVER2).ok)
+        assert_eq(Mock.players[DRIVER2].PlayerData.money.bank, pay, 'paid once')
+        assert_eq(order(oid).status, 'delivered')
+    end)
     it('every account reconciles with the ledger', function()
         local report = PFLedger.Reconcile()
         assert_eq(#(report.mismatches or {}), 0)
