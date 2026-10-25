@@ -220,6 +220,33 @@ describe('deliveries left packed', function()
     end)
 end)
 
+describe('power cuts', function()
+    it('a fridge without power keeps nothing cold until the power is back', function()
+        local function chilledPct()
+            local inv = exports['pfm-inventory']:GetInventory(StockStashId(BID, 'fridge'))
+            for _, it in pairs(inv.items) do
+                if it.name == 'raw_chicken_breast' then return exports['pfm-inventory']:GetFreshness(it.name, it.info).pct end
+            end
+        end
+        assert_true(exports['pfm-inventory']:AddItem(StockStashId(BID, 'fridge'), 'raw_chicken_breast', 1, nil, nil, 'test'))
+        local gov = Mock.exportsByResource['pf-government']
+        gov.CanBusinessTrade = function() return false, 'no_power' end
+        RestaurantDB.CheckColdStorage(BID)
+        Mock.clock = Mock.clock + 3600
+        local afterCut = chilledPct()
+        gov.CanBusinessTrade = function() return true end
+        RestaurantDB.CheckColdStorage(BID)
+        Mock.clock = Mock.clock + 3600
+        local afterRestore = chilledPct()
+        gov.CanBusinessTrade = nil
+        local life = 86400                                                     -- meat
+        local cutLoss = 100 * 3600 * Config.Freshness.Storage.broken_fridge / life
+        local coldLoss = 100 * 3600 * Config.Freshness.Storage.fridge / life
+        assert_true(math.abs((100 - afterCut) - cutLoss) < 0.5, ('hour without power: lost %.2f, expected %.2f'):format(100 - afterCut, cutLoss))
+        assert_true(math.abs((afterCut - afterRestore) - coldLoss) < 0.5, ('hour with power: lost %.2f, expected %.2f'):format(afterCut - afterRestore, coldLoss))
+    end)
+end)
+
 describe('freshness', function()
     it('freezer stock keeps longer than stock left out, and expired food is kept, not deleted', function()
         assert_true(exports['pfm-inventory']:AddItem(StockStashId(BID, 'dry'), 'raw_beef_patty', 1, nil, nil, 'test'))
