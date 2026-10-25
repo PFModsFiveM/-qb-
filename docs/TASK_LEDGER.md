@@ -42,7 +42,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 1.1 | Staging config without duplicates, correct order | VERIFIED (staging) | `docs/staging/server.staging.cfg`; 98 resources start | — |
-| 1.2 | Missing dependencies | BLOCKED (user) | ox_lib not installed (pf-mechanicjob, illenium-appearance fail); kq_wheeldamage needs its Tebex entitlement; oxmysql outside `resources/` on live | You: install ox_lib, decide on kq_wheeldamage |
+| 1.2 | Missing dependencies | IN_PROGRESS | ox_lib v3.41.0 + cfxlua-require verified on staging (102 resources, pf-mechanicjob and illenium-appearance start clean). Live server still lacks them; kq_wheeldamage needs its Tebex entitlement | You: install ox_lib + cfxlua-require on live (after oxmysql); decide on kq_wheeldamage; sv_stateBagStrictMode needs the client state writes moved first |
 | 1.3 | Live server.cfg fixes | BLOCKED (needs your approval) | Report section 6 lists the steps | Apply to a copy, test against a copy of the live DB |
 | 1.4 | Migrations: rerun, partial failure, existing data | VERIFIED (real DB, stock schemas) | realdb specs; sql_install_check.js | Run on a copy of the live database |
 | 1.5 | Ledger on real MySQL: duplicates, crashes, reconcile, parallel sessions | VERIFIED (real DB) | ledger realdb spec (13); `realdb/ledger_parallel.js` 6 processes in parallel: each key once, exact balances, clean reconcile. It found tx_id clashes reported as failed transfers, fixed in 34addb5 | — |

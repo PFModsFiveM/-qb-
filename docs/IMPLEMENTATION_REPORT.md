@@ -1685,3 +1685,34 @@ Notes:
 4. **Tablet:** connect PF Tablet to the same supply-order and stock views. It still has its own job apps.
 5. **Mechanic parts:** use the shared stock (`bizstash-<job>`) in mechanic repairs, which still use personal inventory items.
 6. **Register equipment:** let installed registers and cooking stations add POS points and stations to restaurants. Today only storage capacity follows equipment.
+
+### Batch 7b — ox_lib on staging, pf-mechanicjob runtime (2026-10-25)
+
+**ox_lib:**
+- **Version:** v3.41.0, the latest release, from github.com/overextended/ox_lib (`ox_lib.zip`, 3,479,914 bytes, sha256 `fc7cdbcf2860bcbf692172516de13339bb4e509a4d5ad367c26ea4a1a69e3193`). Downloaded with your approval into the **staging copy only**; the live resources are unchanged.
+- **Why it was checked:** it was published on 2026-10-25, the same day it was installed.
+- **Code scan:** no unexpected network calls, shell access, encoded payloads or dynamic code loading.
+  - **Network:** the only HTTP calls are the version check (GitHub API) and the optional logger, which posts only to a provider you configure.
+  - **Dynamic loading:** the only `load` calls are the module loader reading resource files.
+- **Contents:** the zip also contains the `require` resource (`cfxlua-require`), which ox_lib now depends on. A `.git` folder with git's stock hook samples was left out.
+- **Requirements:** server build 7290 or newer and OneSync. The local FXServer build met them.
+
+**Start order (both the staging config and `docs/staging/server.staging.cfg`):** `oxmysql`, `cfxlua-require`, `ox_lib`, `pfm-core`, `[qb]`, `[standalone]`, `[voice]`, `[pfscripts]`.
+- **The first run had ox_lib after `[standalone]`:** illenium-appearance then failed with "ox_lib must be started before this resource".
+- **Two comment lines contained `;`:** a cfg file treats it as a command separator even inside a comment, which produced "No such command pfm-ambulancejob" and "No such command it". Fixed.
+
+**Result (staging FXServer, existing staging database, 140 s):**
+- 102 resources started, including ox_lib, cfxlua-require, illenium-appearance and pf-mechanicjob.
+- No script errors.
+- pf-mechanicjob created its 12 tables.
+- pf-computer maps the five mechanic jobs to pf-mechanicjob as their data provider.
+- The only remaining failure is kq_wheeldamage, a paid Tebex asset that needs its entitlement on the server's license key.
+- No client connected, so pf-mechanicjob's menus and missions are still untested in game.
+
+**ox_lib security advisory (not changed, a decision for you):**
+- **The warning:** `sv_stateBagStrictMode` is off, so clients can change replicated state bags.
+- **Why not just enable it:** about 20 client writes in our resources set replicated state: the QBCore `inv_busy` flag (pfm-inventory, pfm-drugs, pfm-diving, pfm-houses, pfm-smallresources), and pfm-fuel's nozzle and fuel. Enabling strict mode would break those.
+- **What the flag guards:** the server only uses `inv_busy` to refuse opening an inventory while the client says it is busy, so a client clearing its own flag gains little.
+- **The safe path:** move those writes to the server first, then enable strict mode.
+
+**For the live server (your action):** install ox_lib v3.41.0 together with the `cfxlua-require` folder from the same zip, and start them right after oxmysql.
