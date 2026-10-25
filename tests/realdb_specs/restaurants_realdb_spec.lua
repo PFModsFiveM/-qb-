@@ -220,6 +220,26 @@ describe('deliveries left packed', function()
     end)
 end)
 
+describe('health inspections', function()
+    it('go on the government record with the compliance the rating gives', function()
+        local gov = Mock.exportsByResource['pf-government']
+        local recorded
+        gov.HasPermission = function(_, _, perm) return perm == 'licenses' end
+        gov.RecordBusinessInspection = function(_, id, status, findings, cid) recorded = { id = id, status = status, findings = findings, cid = cid } return true end
+        RestaurantData.businesses[BID].hygiene.dirtLevel = 0
+        Mock.coords[STRANGER] = REGISTER
+        Mock.fireNet('pf-restaurants:server:conductInspection', STRANGER, BID)
+        gov.HasPermission = function() return false end
+        gov.RecordBusinessInspection = nil
+        assert_true(recorded ~= nil, 'recorded with the government')
+        assert_eq(recorded.id, 'restaurant:' .. BID)
+        assert_eq(recorded.cid, 'STR1')
+        local rating = RestaurantData.businesses[BID].hygiene.healthRating
+        local expected = ({ A = 'compliant', B = 'compliant', C = 'warning', D = 'non_compliant', F = 'flagged' })[rating]
+        assert_eq(recorded.status, expected)
+    end)
+end)
+
 describe('power cuts', function()
     it('a fridge without power keeps nothing cold until the power is back', function()
         local function chilledPct()
