@@ -193,7 +193,9 @@ end)
 local padlockRequests = {} -- [src] = os.time()
 QBCore.Functions.CreateCallback('qb-storerobbery:server:getPadlockCombination', function(src, cb, safe)
     safe = tonumber(safe)
-    if not CanTouchSafe(src, safe) then
+    -- padlock safes only: asking this for a keypad safe used to hand out its 4-digit code and open
+    -- it without a guess (skipping the keypad lockout)
+    if not CanTouchSafe(src, safe) or Config.Safes[safe].type ~= 'padlock' then
         cb(nil)
         return
     end
@@ -265,15 +267,19 @@ RegisterNetEvent('qb-storerobbery:server:callCops', function(alertType, safe, st
         end
     end
     if #(playerCoords - coords) > 50.0 then return end
-    streetLabel = tostring(streetLabel or ''):sub(1, 60)
+    -- plain text only: the label is shown in every officer's alert UI
+    streetLabel = tostring(streetLabel or ''):gsub('[<>]', ''):sub(1, 60)
 
-    local cameraId
+    local target
     if alertType == 'safe' then
-        cameraId = Config.Safes[safe] and Config.Safes[safe].camId
+        target = Config.Safes[safe]
     else
-        cameraId = Config.Registers[safe] and Config.Registers[safe].camId
+        target = Config.Registers[safe]
     end
+    local cameraId = target and target.camId
     if not cameraId then return end
+    -- the alert must come from the store being robbed (any spot used to work)
+    if #(playerCoords - target[1].xyz) > 15.0 then return end
 
     local alertData = {
         title = '10-33 | Shop Robbery',
