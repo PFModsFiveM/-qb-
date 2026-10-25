@@ -313,6 +313,37 @@ describe('3. the pallet', function()
     end)
 end)
 
+describe('3b. the business computer shows the real stock', function()
+    it('Inventory lists what is in the restaurant stock areas, with freshness; typed quantities are refused', function()
+        local res = pc(BOSS, 'business:stock:get', {})
+        assert_true(res and res.ok, res and tostring(res.error))
+        local bacon
+        for _, it in ipairs(res.data.items) do if it.name == 'raw_bacon' then bacon = it end end
+        assert_true(bacon ~= nil, 'delivered bacon listed')
+        assert_eq(bacon.amount, 6)
+        assert_eq(bacon.area, StorageFor('raw_bacon'))
+        assert_true(bacon.freshness ~= nil and bacon.freshness.pct ~= nil)
+        local typed = pc(BOSS, 'business:inventory:updateQuantity', { ingredientId = 'raw_bacon', quantity = 999 })
+        assert_false(typed.ok)
+        assert_eq(pc(BOSS, 'business:stock:get', {}).data.items[1] ~= nil, true)
+        local stranger = pc(CUSTOMER, 'business:stock:get', {})
+        assert_false(stranger and stranger.ok, 'not for someone outside the business')
+    end)
+    it('Premises asks pf-government for the restaurant, as the authenticated player', function()
+        local gov = Mock.exportsByResource['pf-government']
+        local asked
+        gov.ListPremisesFor = function(_, src, id) asked = { src = src, id = id } return { ok = true, data = { slots = {} } } end
+        gov.BuyPremisesEquipment = function(_, src, slotId, kind) asked = { src = src, slotId = slotId, kind = kind } return { ok = false, error = 'too_far' } end
+        assert_true(pc(BOSS, 'business:premises:list', {}).ok)
+        assert_eq(asked.src, BOSS)
+        assert_eq(asked.id, 'restaurant:' .. BID)
+        local buy = pc(BOSS, 'business:premises:buy', { slotId = 3, equipmentType = 'fridge_commercial' })
+        assert_eq(buy.error, 'too_far')
+        assert_eq(asked.slotId, 3)
+        gov.ListPremisesFor, gov.BuyPremisesEquipment = nil, nil
+    end)
+end)
+
 describe('4. kitchen and counter', function()
     it('cooking takes the delivered stock from the restaurant, not the cook', function()
         Mock.coords[BOSS] = GRILL
