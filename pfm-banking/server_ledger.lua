@@ -110,16 +110,31 @@ function L.ParseRef(ref)
 end
 
 local randomSeeded = false
+local txCounter = 0
+local ID_CHARS = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
+local function base32(n, width)
+    local out = {}
+    for _ = 1, width do
+        local r = n % 32
+        out[#out + 1] = ID_CHARS:sub(r + 1, r + 1)
+        n = (n - r) // 32
+    end
+    return string.reverse(table.concat(out))
+end
+
+--- 'TX' + 22 characters: seconds (7) + a per-process counter (4) + random (11). The time and counter
+--- part keeps ids unique within one server without relying on how the random generator was seeded.
 function L.NewTxId()
     if not randomSeeded then
         math.randomseed(os.time() + math.floor((GetGameTimer() or 0)))
         randomSeeded = true
     end
-    local chars = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
-    local out = { 'TX' }
-    for i = 1, 22 do
-        local r = math.random(1, #chars)
-        out[#out + 1] = chars:sub(r, r)
+    txCounter = (txCounter + 1) % (32 ^ 4)
+    local out = { 'TX', base32(os.time() % (32 ^ 7), 7), base32(math.floor(txCounter), 4) }
+    for _ = 1, 11 do
+        local r = math.random(1, #ID_CHARS)
+        out[#out + 1] = ID_CHARS:sub(r, r)
     end
     return table.concat(out)
 end
@@ -355,15 +370,19 @@ function L.Transfer(opts)
             state = 'pending',
         }
         local metadata = (type(opts.metadata) == 'table') and json.encode(opts.metadata) or nil
-        local insertOk, inserted = pcall(MySQL.insert.await, L.SQL.insertTx, {
-            tx.tx_id, key, tx.kind, tx.from_account, tx.to_account, tx.amount, tx.reason, tx.actor, metadata,
-        })
-        if not insertOk or not inserted then
-            -- a concurrent server or a retry already claimed the key
+        -- The insert fails when the key was claimed meanwhile (another server, a retry) or, rarely, when
+        -- the generated tx_id is already taken; the second case retries with a new id.
+        local inserted
+        for attempt = 1, 3 do
+            local insertOk, id = pcall(MySQL.insert.await, L.SQL.insertTx, {
+                tx.tx_id, key, tx.kind, tx.from_account, tx.to_account, tx.amount, tx.reason, tx.actor, metadata,
+            })
+            if insertOk and id then inserted = true break end
             local raced = MySQL.single.await(L.SQL.selectByKey, { key })
             if raced then return result(raced, raced.state == 'completed', raced.state ~= 'completed' and raced.state or nil, true) end
-            return result(nil, false, 'ledger_write_failed')
+            if attempt < 3 then tx.tx_id = L.NewTxId() end
         end
+        if not inserted then return result(nil, false, 'ledger_write_failed') end
 
         activeTxId = tx.tx_id
         inFlight[tx.tx_id] = true
