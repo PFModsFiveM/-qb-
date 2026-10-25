@@ -15,6 +15,7 @@ RegisterServerEvent('AttackTransport:akceptujto', function()
 	local copsOnDuty = 0
 	local _source = source
 	local xPlayer = exports['pfm-core']:GetPlayer(_source)
+	if not xPlayer then return end
 	local accountMoney = xPlayer.PlayerData.money['bank']
 	if ActiveMission == 0 then
 		if accountMoney < Config.ActivationCost then
@@ -44,11 +45,27 @@ RegisterServerEvent('AttackTransport:akceptujto', function()
 	end
 end)
 
-RegisterServerEvent('qb-armoredtruckheist:server:callCops', function(streetLabel, coords)
-	-- local place = "Armored Truck"
-	-- local msg = "The Alarm has been activated from a "..place.. " at " ..streetLabel
-	-- Why is this unused?
-	TriggerClientEvent('qb-armoredtruckheist:client:robberyCall', -1, streetLabel, coords)
+-- Police alerts come only from the player on the current mission, at most every 30 s, placed at the
+-- mission truck (or the player), never at a client-chosen spot. They used to relay any client's text
+-- and coordinates to every player.
+local alertCooldowns = {} -- [eventName] = os.time()
+
+local function MissionAlertCoords(src, eventName)
+	if ActiveMission ~= 1 or not Mission or MissionPlayer ~= src then return nil end
+	local now = os.time()
+	if alertCooldowns[eventName] and now - alertCooldowns[eventName] < 30 then return nil end
+	alertCooldowns[eventName] = now
+	local truck = Mission.truck and NetworkGetEntityFromNetworkId(Mission.truck)
+	if truck and truck ~= 0 and DoesEntityExist(truck) then return GetEntityCoords(truck) end
+	return GetEntityCoords(GetPlayerPed(src))
+end
+
+RegisterServerEvent('qb-armoredtruckheist:server:callCops', function(streetLabel)
+	local c = MissionAlertCoords(source, 'callCops')
+	if not c then return end
+	-- plain text only: the label is shown in every officer's alert UI
+	streetLabel = tostring(streetLabel or ''):gsub('[<>]', ''):sub(1, 60)
+	TriggerClientEvent('qb-armoredtruckheist:client:robberyCall', -1, streetLabel, vector3(c.x, c.y, c.z))
 end)
 
 function OdpalTimer(id)
@@ -75,8 +92,10 @@ RegisterNetEvent('AttackTransport:truckSpawned', function(netId)
 	Mission.truckAt = os.time()
 end)
 
-RegisterServerEvent('AttackTransport:zawiadompsy', function(x, y, z)
-	TriggerClientEvent('AttackTransport:InfoForLspd', -1, x, y, z)
+RegisterServerEvent('AttackTransport:zawiadompsy', function()
+	local c = MissionAlertCoords(source, 'zawiadompsy')
+	if not c then return end
+	TriggerClientEvent('AttackTransport:InfoForLspd', -1, c.x, c.y, c.z)
 end)
 
 RegisterServerEvent('AttackTransport:graczZrobilnapad', function(lootTime)
