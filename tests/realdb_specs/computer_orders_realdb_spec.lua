@@ -72,6 +72,9 @@ for _, res in ipairs({ 'pfm-banking', 'pfm-inventory', 'pf-stores', 'pf-trucking
     Mock.exportsByResource[res] = Mock.exportsByResource['__self']
 end
 
+-- pf-computer registers its job-business buyer when pf-stores is (re)started
+TriggerEvent('onResourceStart', 'pf-stores')
+
 local L, O = PFLedger, PFOrders
 local OWNER = 1
 assert(L.Start(), 'ledger start')
@@ -131,5 +134,86 @@ describe('Order Supplies app, store mode', function()
         assert_true(pc('business:supplies:orders:cancel', { orderId = list.data[1].id }).ok)
         assert_eq(society('store_corner'), before)
         assert_false(pc('business:supplies:orders:cancel', { orderId = list.data[1].id }).ok)
+    end)
+end)
+
+describe('Order Supplies app, job business mode (shared order service)', function()
+    local missions = {}
+    local function asMechanicBoss()
+        QBCoreMock.Shared.Jobs = QBCoreMock.Shared.Jobs or {}
+        QBCoreMock.Shared.Jobs.mechanic = { label = 'Mechanic' }
+        Mock.players[OWNER].PlayerData.job = { name = 'mechanic', label = 'Mechanic', isboss = true, onduty = true, grade = { level = 4 } }
+        Mock.exportsByResource['pf-mechanicjob'] = {
+            GetBusinessConfig = function() return { suppliesCatalog = { items = {
+                { item = 'lockpick', label = 'Lockpick', pricePerCase = 50, caseSize = 3 },
+                { item = 'water_bottle', label = 'Water', pricePerCase = 10, caseSize = 6 },
+            } } } end,
+            StartSuppliesPickup = function(_, src, order) missions[#missions + 1] = order return true end,
+        }
+        Mock.coords[OWNER] = vector3(500.0, 500.0, 30.0)
+    end
+    local function mechanicBank() return society('mechanic') end
+    local function fundMechanic(amount)
+        assert(L.EnsureSociety('mechanic', 'job'))
+        assert(L.Transfer({ from = 'system:test', to = 'society:mechanic', amount = amount, key = L.AutoKey('fund'), kind = 'test' }).ok)
+    end
+    local function stashCount(item)
+        local inv = exports['pfm-inventory']:GetInventory('bizstash-mechanic')
+        local n = 0
+        for _, it in pairs(inv and inv.items or {}) do if it.name == item then n = n + it.amount end end
+        return n
+    end
+
+    it('a pickup order is charged at the catalog price, waits for the pickup run, and lands in the business stock once', function()
+        asMechanicBoss()
+        fundMechanic(1000)
+        local res = pc('business:supplies:orders:create', { mode = 'job', fulfillment = 'pickup', items = { { item = 'lockpick', quantity = 2, pricePerCase = 0.01 }, { item = 'water_bottle', quantity = 1 } } })
+        assert_true(res and res.ok, res and tostring(res.error))
+        assert_eq(mechanicBank(), 1000 - 2 * 50 - 10)
+        local list = pc('business:supplies:orders:list', { mode = 'job' })
+        assert_eq(list.data[1].orderStatus, 'ready')
+        assert_eq(stashCount('lockpick'), 0, 'not in stock before it is collected')
+
+        local id = list.data[1].id
+        assert_true(pc('business:supplies:orders:pickup', { mode = 'job', orderId = id }).ok)
+        assert_eq(#missions, 1)
+        assert_eq(tonumber(missions[1].id), id)
+        TriggerEvent('pf-computer:server:supplies:completeOrder', OWNER, id)
+        assert_eq(stashCount('lockpick'), 6)
+        assert_eq(stashCount('water_bottle'), 6)
+        TriggerEvent('pf-computer:server:supplies:completeOrder', OWNER, id)          -- a repeat adds nothing
+        assert_eq(stashCount('lockpick'), 6)
+        assert_eq(pc('business:supplies:orders:list', { mode = 'job' }).data[1].status, 'picked_up')
+    end)
+    it('nothing in the pf-computer data file, and only a boss of that job can order', function()
+        asMechanicBoss()
+        for _, content in pairs(SavedFiles) do
+            assert_true(not tostring(content):find('"businessOrders":{"mechanic"', 1, true), 'job orders written to the data file')
+        end
+        Mock.players[OWNER].PlayerData.job.isboss = false
+        local res = pc('business:supplies:orders:create', { mode = 'job', fulfillment = 'pickup', items = { { item = 'lockpick', quantity = 1 } } })
+        assert_false(res and res.ok)
+    end)
+    it('items outside the catalog, and unfunded businesses, are refused', function()
+        asMechanicBoss()
+        local before = mechanicBank()
+        assert_false(pc('business:supplies:orders:create', { mode = 'job', fulfillment = 'pickup', items = { { item = 'goldbar', quantity = 1 } } }).ok)
+        assert_false(pc('business:supplies:orders:create', { mode = 'job', fulfillment = 'pickup', items = { { item = 'lockpick', quantity = 100 } } }).ok)
+        assert_eq(mechanicBank(), before)
+    end)
+    it('staff open the business stock only at a stash point', function()
+        asMechanicBoss()
+        assert_true(pc('business:stash:place', { coords = { x = 500.0, y = 500.0, z = 30.0 } }).ok)
+        Mock.clientEvents = {}
+        Mock.coords[OWNER] = vector3(900.0, 900.0, 30.0)
+        Mock.fireNet('pf-computer:server:openBusinessStash', OWNER, 'mechanic', 1)
+        local opened = #Mock.clientEvents
+        Mock.coords[OWNER] = vector3(500.5, 500.0, 30.0)
+        Mock.fireNet('pf-computer:server:openBusinessStash', OWNER, 'mechanic', 1)
+        assert_true(#Mock.clientEvents > opened, 'opened at the stash point')
+        Mock.clientEvents = {}
+        Mock.players[OWNER].PlayerData.job = { name = 'police', isboss = true, grade = { level = 4 } }
+        Mock.fireNet('pf-computer:server:openBusinessStash', OWNER, 'mechanic', 1)
+        assert_eq(#Mock.clientEvents, 0, 'another job cannot open it')
     end)
 end)

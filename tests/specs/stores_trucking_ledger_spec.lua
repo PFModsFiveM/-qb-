@@ -596,22 +596,35 @@ describe('pf-computer company accounts are the job bank account', function()
         assert_eq(bank('mechanic'), 50)
         assert_eq(res.balance, 50)
     end)
-    it('job supply orders are paid from the job bank account', function()
+    it('job supply orders go to the shared order service as the job business (money: computer_orders_realdb_spec)', function()
         -- a job business's catalog comes from its provider resource (here a stub for pf-mechanicjob)
         Mock.exportsByResource['pf-mechanicjob'] = {
             GetBusinessConfig = function() return { businessName = 'Mechanic', businessType = 'mechanic',
                 suppliesCatalog = { items = { { item = 'engine_oil', label = 'Engine Oil', category = 'Parts', pricePerCase = 40 } } } } end,
         }
         Mock.players[OWNER].PlayerData.job = { name = 'mechanic', label = 'Mechanic', isboss = true, grade = { level = 4 } }
-        local order = { mode = 'job', fulfillment = 'pickup', items = { { item = 'engine_oil', quantity = 3 } } }
+        local stores = Mock.exportsByResource['pf-stores']
+        local sent, answer = {}, { ok = false, error = 'insufficient_funds' }
+        Mock.exportsByResource['pf-stores'] = setmetatable({
+            CreateOrder = function(_, src, payload) sent[#sent + 1] = payload return answer end,
+            RegisterBuyerKind = function() return true end,
+        }, { __index = stores })
+        local order = { mode = 'job', fulfillment = 'pickup', items = { { item = 'engine_oil', quantity = 3, pricePerCase = 0.01 } } }
         local refused = pc('business:supplies:orders:create', OWNER, order)
         assert_false(refused.ok)
         assert_eq(refused.error, 'insufficient_funds')
-        seed('mechanic', 1000)
+        answer = { ok = true, data = { orderId = 9, total = 120 } }
         local res = pc('business:supplies:orders:create', OWNER, order)
         assert_true(res.ok)
-        assert_eq(bank('mechanic'), 880)
-        Mock.exportsByResource['pf-mechanicjob'] = nil    end)
+        assert_eq(sent[2].kind, 'jobbiz')
+        assert_eq(sent[2].buyerId, 'mechanic')
+        assert_eq(sent[2].method, 'pickup')
+        assert_eq(sent[2].cart[1].name, 'engine_oil')
+        assert_eq(sent[2].cart[1].quantity, 3)
+        assert_eq(sent[2].cart[1].price, nil, 'no client price is passed on')
+        Mock.exportsByResource['pf-stores'] = stores
+        Mock.exportsByResource['pf-mechanicjob'] = nil
+    end)
 end)
 describe('pf-computer world computers', function()
     local function spawned() return Mock.clientEventsNamed('pf-computer:client:spawnProp') end
