@@ -6,6 +6,10 @@ local freezeTime = Config.FreezeTime
 local blackout = Config.Blackout
 local blackoutVehicle = Config.BlackoutVehicle
 local disable = Config.Disabled
+-- Set by pf-government when the player's district has no power. Kept apart from
+-- the admin blackout so neither one switches the other off.
+local districtOutage = false
+exports('setDistrictOutage', function(state) districtOutage = state == true end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     TriggerServerEvent('qb-weathersync:server:RequestStateSync')
@@ -45,7 +49,7 @@ CreateThread(function()
                 Wait(15000)
             end
             Wait(100) -- Wait 0 seconds to prevent crashing.
-            SetArtificialLightsState(blackout)
+            SetArtificialLightsState(blackout or districtOutage)
             SetArtificialLightsStateAffectsVehicles(blackoutVehicle)
             ClearOverrideWeather()
             ClearWeatherTypePersist()
