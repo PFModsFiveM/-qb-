@@ -52,8 +52,8 @@
 | Utility bills, auto-pay from the business account, delinquency, cut-off, restore | AWAITING TEST | |
 | Loans from the treasury, repayment | AWAITING TEST | Default handling (missed repayments) is PARTIAL; see batch log |
 | Premises: approved slots, equipment purchases, fixtures | AWAITING TEST | |
-| Budgets and district infrastructure simulation | PARTIAL | Department budgets compute district power/water stages, but nothing in the world reacted (no blackout); see batch 8 |
-| MDT access to government records (licenses, fines, businesses) | NOT | The MDT reads players and vehicles only; see batch 8 |
+| Budgets and district infrastructure simulation | AWAITING TEST | Power stages now switch the lights off for players in a cut district (batch 8); water/roads stay in the simulation and its exports |
+| MDT access to government records (licenses, fines, businesses) | AWAITING TEST | Citizen profile, Licenses tab (batch 8). Vehicle profiles do not show government data |
 
 ## 4. Businesses
 
@@ -84,7 +84,7 @@
 | Job garages (permissions, ownership, keys) | AWAITING TEST | Fleet car still usable from the owner's personal garage (decision pending) |
 | Mechanic: checkout, work orders, staff, parts via job-business supply orders into `bizstash-<job>` | AWAITING TEST | pf-mechanicjob now starts on staging (ox_lib) |
 | Police job: evidence, impound, fines, jail | AWAITING TEST | |
-| Police MDT: police-only handlers, records, jail items | AWAITING TEST | The `mdt_seed` command had no permission; fixed in batch 8 |
+| Police MDT: police-only handlers, records, jail items | AWAITING TEST | `/mdt_seed` is admin-only and off by default (`Config.AllowSeedCommand`) |
 
 ## 7. Computer and tablet
 
@@ -92,7 +92,7 @@
 |---|---|---|
 | PF Computer Business Manager: real stock, premises, supply orders, wages, stashes | AWAITING TEST | |
 | PF Computer government apps through pf-government permissions | AWAITING TEST | |
-| PF Tablet: job apps, business list | PARTIAL | No supply orders or stock on the tablet yet; see batch 8 |
+| PF Tablet: job apps, business list, Business Manager | AWAITING TEST | Business Manager reads the real registry and the player's supply orders (batch 8). Ordering and unpacking stay on PF Computer |
 
 ## 8. Security
 
@@ -102,11 +102,22 @@
 | Client-replicated state bags (`sv_stateBagStrictMode`) | PARTIAL | About 20 client writes (`inv_busy`, fuel nozzle); strict mode is off |
 
 ## 9. Batch log (newest first)
-- **Batch 8 (in progress):** MDT seed command, government records in the MDT, district power to the world, tablet supplies, restaurant equipment effects.
+- **Batch 8 (2026-10-26):**
+  - MDT seed flag;
+  - government records in the MDT;
+  - district power in the world;
+  - tablet Business Manager on real data.
+- **Next:**
+  - restaurant equipment effects;
+  - loan defaults;
+  - registry employees;
+  - fleet decision;
+  - state-bag strict mode;
+  - standalone sync.
 
 ## 10. Latest pushed commits
-- `-qb-` main: see `git log -1 origin/main`. At the start of batch 8: 09be222.
-- `-pfscripts-` main: at the start of batch 8: d1be559.
+- **`-qb-` main:** 09be222 at the start of batch 8; then the batch 8 docs and code. See `git log -1 origin/main`.
+- **`-pfscripts-` main:** d1be559 at the start of batch 8; b97b392 after the batch 8 code.
 
 ## 11. Standalone repositories
 - **Which copy is canonical:** pf-government, pf-trucking, pf-computer, pf-policemdt, pf-jobsystem and pf-mechanicjob are older than the canonical copies in `-pfscripts-`.

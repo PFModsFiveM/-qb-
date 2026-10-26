@@ -1716,3 +1716,32 @@ Notes:
 - **The safe path:** move those writes to the server first, then enable strict mode.
 
 **For the live server (your action):** install ox_lib v3.41.0 together with the `cfxlua-require` folder from the same zip, and start them right after oxmysql.
+
+## Batch 8 — 2026-10-26: MDT, district power, tablet Business Manager
+
+Checks run: Lua parse checks and `node --check` on every changed file, plus each new SQL query run against the throwaway staging database. Per the master mission, the full suites were not rerun; nothing was tested with a game client.
+
+| Change | Repository and commit |
+|---|---|
+| `/mdt_seed` is admin-only (it already was) and now also off unless `Config.AllowSeedCommand = true`, because it writes sample warrants and reports into the real tables | -pfscripts- 3243a6e |
+| District power reaches the world: pf-government publishes which districts have power (`GlobalState.pfGovDistrictPower`, every 10 s, only on change). A client in a cut district gets its lights switched off through pfm-weathersync | -pfscripts- ee0aad5, -qb- 3e8fab9 |
+| MDT citizen profile, Licenses tab: government licenses, unpaid bills and fines (with total), owned businesses. Read only | -pfscripts- c1e5481 |
+| PF Tablet Business Manager rebuilt on real data, replacing a mockup with hard-coded businesses whose buttons only edited browser data | -pfscripts- b97b392 |
+
+**District power details:**
+- **Zone mapping:** GTA zone codes map to the six government districts in `Config.InfrastructureWorld.ZoneDistricts`. County zones are not listed, so they never lose power. Adjust the list freely.
+- **Admin blackout:** pfm-weathersync's `/blackout` is kept separate. The light state is `adminBlackout or districtOutage`, so neither one turns the other off.
+
+**Tablet Business Manager:**
+- **Government pages:** Overview, Registry, Compliance, Taxes and Audit read `pf_gov_businesses`, `pf_gov_business_revenue`, `pf_gov_bills`, `pf_gov_licenses` and `pf_gov_audit_log`. They need the government `businesses` permission.
+- **Ownership changes:** go through the new export `pf-government:TransferBusinessOwnershipAs(src, …)`. That export checks the permission, updates the store or restaurant, and writes the audit log. Mechanic shops are job-owned and cannot be transferred.
+- **My supplies:** the player's restaurant, job-business and owned-store orders, read with `pf-stores:ListOrdersFor`. That call checks the player may manage the buyer.
+- **Removed:** the mock pages (Analytics, Employees, Settings) and the "Create business" form. Businesses register themselves when they are bought or opened.
+
+**Still open (moved to the checklist):**
+- **Restaurant equipment effects:** registers and stations.
+- **Loan defaults:** handling of missed repayments.
+- **Business employees:** a list in the government registry.
+- **Job-garage fleet decision.**
+- **State-bag strict mode:** move client writes to the server first.
+- **Standalone repository sync.**
