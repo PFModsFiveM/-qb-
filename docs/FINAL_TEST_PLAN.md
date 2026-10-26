@@ -49,6 +49,9 @@ Nothing in this plan has been run against a live FiveM server with clients yet. 
 | District power | Underfund the power department | Lights go out on the schedule; restored when funded |
 | Farming | Plant, water, harvest, sell to the market, stock a supplier offer | Plot persists across restart; spoiled produce refused |
 | MDT | Officer looks up a citizen: licenses, unpaid fines; non-police try to open records | Data shown to police only |
+| Premises equipment | Government approves a register slot and a cooking slot; owner buys a POS Register and a Grill Station; staff use both | Register opens the POS and sales pass the range check; the grill cooks like a configured one; both survive a restart |
+| Loans | Grant a loan (auto-pay on), shorten the interval, wait for a due date; then empty the business account and miss payments | Installment taken once per due date; missed payments mark the business warning, then non-compliant on default; paying what is due restores it |
+| Tablet Business Manager | Government staff open the registry, view employees, transfer a store; a cook opens My supplies | Real businesses and staff; transfer changes the store owner and appears in Audit; cook sees their restaurant's orders only |
 
 ## 4. Multiplayer and exploits
 | Case | Expect |

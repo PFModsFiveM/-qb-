@@ -50,7 +50,7 @@
 | Licenses | AWAITING TEST | Record only, not required to trade (owner decision) |
 | Inspections on the government record (restaurants) | AWAITING TEST | |
 | Utility bills, auto-pay from the business account, delinquency, cut-off, restore | AWAITING TEST | |
-| Loans from the treasury, repayment | AWAITING TEST | Default handling (missed repayments) is PARTIAL; see batch log |
+| Loans from the treasury, repayment, missed payments, default | AWAITING TEST | Batch 9: interest and installments each due date, auto-pay, default after `Config.Loans.DefaultAfterMissed`; real-DB tested |
 | Premises: approved slots, equipment purchases, fixtures | AWAITING TEST | |
 | Budgets and district infrastructure simulation | AWAITING TEST | Power stages now switch the lights off for players in a cut district (batch 8); water/roads stay in the simulation and its exports |
 | MDT access to government records (licenses, fines, businesses) | AWAITING TEST | Citizen profile, Licenses tab (batch 8). Vehicle profiles do not show government data |
@@ -59,10 +59,10 @@
 
 | System | Status | Notes |
 |---|---|---|
-| Registry as shared business record | AWAITING TEST | Employees and permissions still live in each business resource |
+| Registry as shared business record, with employees | AWAITING TEST | Batch 9: `GetBusinessEmployees` asks each business's staff source (restaurants, job members, owner); permissions stay in each business |
 | Employee permissions enforced on the server (restaurants, mechanic shops, stores, job bosses) | AWAITING TEST | Sweep fixes |
 | Recurring costs (utilities), taxes, fines, closure/reopen | AWAITING TEST | |
-| Upgrades and equipment | PARTIAL | Storage equipment changes restaurant capacity; registers and cooking stations do not yet add POS points or stations |
+| Upgrades and equipment | AWAITING TEST | Storage raises capacity; bought registers open the POS and grill/fryer stations cook (batch 9). Other slot types (office, locker, delivery bay) are only fixtures |
 
 ## 5. Supply chain, restaurants, freshness
 
@@ -107,19 +107,30 @@
   - government records in the MDT;
   - district power in the world;
   - tablet Business Manager on real data.
-- **Next:**
+- **Batch 9 (2026-10-26):**
   - restaurant equipment effects;
-  - loan defaults;
+  - loan servicing and defaults;
   - registry employees;
-  - fleet decision;
-  - state-bag strict mode;
-  - standalone sync.
+  - standalone repositories synced.
+- **Open:**
+  - job-garage fleet decision (owner);
+  - state-bag strict mode (owner, needs refactor first).
 
 ## 10. Latest pushed commits
 - **`-qb-` main:** 09be222 at the start of batch 8; then the batch 8 docs and code. See `git log -1 origin/main`.
-- **`-pfscripts-` main:** d1be559 at the start of batch 8; b97b392 after the batch 8 code.
+- **`-pfscripts-` main:** d1be559 at the start of batch 8; b97b392 after batch 8; 874d8a0 after batch 9.
 
 ## 11. Standalone repositories
-- **Which copy is canonical:** pf-government, pf-trucking, pf-computer, pf-policemdt, pf-jobsystem and pf-mechanicjob are older than the canonical copies in `-pfscripts-`.
-- **pf-mechanicjob:** its real remote is pf-advancedmechanicjob.
-- **Syncing:** see the batch log for whether they were brought up to date.
+- **Canonical copies:** the canonical copies are in `-pfscripts-`.
+- **Synced in batch 9** to `-pfscripts-` 874d8a0, each as one new commit on its `main` with no force-push:
+  - pf-government b152085;
+  - pf-computer c4d3054 (main first fast-forwarded to its Work-In-Progress branch);
+  - pf-policemdt dee6767;
+  - pf-stores c11ffc4;
+  - pf-trucking 4850833;
+  - pf-advancedmechanicjob 1d49c1e (canonical pf-mechanicjob).
+- **pf-guidebook:** already identical.
+- **Not synced:**
+  - **pf-jobsystem:** its code moved into pf-jobs and pf-tablet, and the local copies are stubs, so a sync would have wiped the repo.
+  - **The old pf-mechanicjob repository:** a separate, stale WIP project.
+- **Before the sync:** every file version in those repositories was checked against `-pfscripts-` history, so nothing newer was overwritten.

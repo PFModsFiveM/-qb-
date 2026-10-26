@@ -1745,3 +1745,19 @@ Checks run: Lua parse checks and `node --check` on every changed file, plus each
 - **Job-garage fleet decision.**
 - **State-bag strict mode:** move client writes to the server first.
 - **Standalone repository sync.**
+
+## Batch 9 — 2026-10-26: equipment effects, loans, registry employees, standalone sync
+
+Checks run: parse checks on every changed file, plus the government real-DB specs. Those are 26 tests across 4 files, including the new loans spec (5 tests); a separate employees spec adds 3. Nothing was tested with a game client.
+
+| Change | Commit |
+|---|---|
+| **Premises equipment in restaurants:** a bought POS Register becomes a working register, and a Grill Station or the new Deep Fryer becomes a cooking station. Both are copied from a configured station of that type and appear on server and clients, refreshed when equipment changes | -pfscripts- f506011 |
+| **Loan servicing:** each due date adds interest and an installment, claimed once by a guarded update. Auto-pay takes it from the business account; otherwise it counts as a missed payment. A loan defaults after 3 misses (marked non-compliant; closing is optional and off). Paying what is due restores it. The `Config.Loans` block holds these settings | -pfscripts- 730ecac, test -qb- bffd5b0 |
+| **Registry employees:** `GetBusinessEmployees` asks restaurants (new `GetStaffList` export), mechanic job members, or the owner, and keeps `employee_count` in step. Shown in the tablet registry. The restaurant `getLoans` callback now returns real loans | -pfscripts- 874d8a0, test -qb- a7b0970 |
+| **Standalone repositories** synced from -pfscripts- 874d8a0 | see the checklist, section 11 |
+
+**Defects found and fixed along the way:**
+- **Loans used the wrong account:** grant and repayment moved money to or from `society:<business_id>` (for example `society:restaurant:bs`), which is not the business's account. They now use the registry's `account_ref`.
+- **A crash the new test caught:** loans.lua called a function that is local to callbacks.lua, so it would have crashed in game. Fixed.
+- **Installment idempotency keys:** keys for two due dates in the same second could collide, so the ledger replayed the earlier payment instead of charging. Each key is now unique; the guarded claim prevents double processing.
