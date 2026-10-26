@@ -383,6 +383,8 @@ local patterns = {
     { 'CREATE TABLE IF NOT EXISTS', function() return 0 end },
     { 'ALTER TABLE', function() return 0 end },
     { 'SELECT TABLE_COLLATION FROM information_schema.TABLES', function() return nil end },
+    -- pf-jobgarages fleets are not installed unless a spec says so (pfm-garages checks for them)
+    { "AND TABLE_NAME = 'job_garage_vehicles'", function() return 0 end },
     { 'SELECT version FROM pf_schema_migrations', function(p)
         local out = {}
         for key in pairs(FakeDB.migrations) do

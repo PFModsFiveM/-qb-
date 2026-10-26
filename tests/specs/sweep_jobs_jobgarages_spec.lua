@@ -26,10 +26,13 @@ end
 FakeDB.extraPatterns = {
     { 'FROM player_vehicles WHERE plate = ? AND (citizenid = ? OR license = ?)', function(p)
         local v = owned[p[1]]
-        if v and (v.citizenid == p[2]) then return { plate = p[1], vehicle = v.vehicle } end
+        if v and (v.citizenid == p[2]) then return { plate = p[1], vehicle = v.vehicle, state = v.state or 1, depotprice = v.depotprice or 0 } end
         return nil
     end },
     { 'SELECT mods, engine, body FROM player_vehicles', function() return nil end },
+    { 'SELECT id FROM job_garage_vehicles WHERE plate = ? AND active = 1', function(p)
+        for id, r in pairs(fleet) do if r.plate == p[1] and r.active == 1 then return id end end
+    end },
     { 'SELECT min_grade_use FROM job_garage_permissions', function(p) return perms[p[1]] end },
     { 'INSERT INTO job_garage_vehicles', function(p)
         local id = nextId; nextId = nextId + 1
@@ -83,6 +86,24 @@ BeforeEach = function()
     Mock.newPlayer(OUTSIDER, 'CIDO'); setJob(OUTSIDER, 'police', 4)
     for src = 1, 3 do Mock.coords[src] = AT_TERMINAL end
 end
+
+describe('a fleet car belongs to the job garage only', function()
+    it('a car that is out or impounded cannot join a fleet', function()
+        owned['OUTCAR'] = { citizenid = 'CIDM', vehicle = 'flatbed', state = 0 }
+        owned['IMPCAR'] = { citizenid = 'CIDM', vehicle = 'flatbed', state = 0, depotprice = 500 }
+        Mock.fireNet('jobgarages:addFleetVehicle', MANAGER, GARAGE, { plate = 'OUTCAR' })
+        Mock.fireNet('jobgarages:addFleetVehicle', MANAGER, GARAGE, { plate = 'IMPCAR' })
+        assert_eq(next(fleet), nil)
+    end)
+    it('a car already in a fleet is not added again', function()
+        owned['TWICE1'] = { citizenid = 'CIDM', vehicle = 'flatbed' }
+        Mock.fireNet('jobgarages:addFleetVehicle', MANAGER, GARAGE, { plate = 'TWICE1' })
+        Mock.fireNet('jobgarages:addFleetVehicle', MANAGER, GARAGE, { plate = 'TWICE1' })
+        local n = 0
+        for _ in pairs(fleet) do n = n + 1 end
+        assert_eq(n, 1)
+    end)
+end)
 
 describe('pf-jobgarages fleet permissions', function()
     it("a manager cannot add a car they do not own (the old check allowed any plate)", function()

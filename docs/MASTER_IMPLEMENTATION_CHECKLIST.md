@@ -81,7 +81,7 @@
 | System | Status | Notes |
 |---|---|---|
 | Job payouts and completion checks (taxi, bus, tow, garbage, recycle, diving, vineyard, pawnshop, Gruppe6, prison, robberies) | AWAITING TEST | Sweep; garbage crews now actually paid |
-| Job garages (permissions, ownership, keys) | AWAITING TEST | Fleet car still usable from the owner's personal garage (decision pending) |
+| Job garages (permissions, ownership, keys, fleet cars job-only) | AWAITING TEST | Owner decision 2026-10-26: a fleet car comes out of the job garage only; pfm-garages hides it, refuses it and its impound fee; it must be parked to join a fleet |
 | Mechanic: checkout, work orders, staff, parts via job-business supply orders into `bizstash-<job>` | AWAITING TEST | pf-mechanicjob now starts on staging (ox_lib) |
 | Police job: evidence, impound, fines, jail | AWAITING TEST | |
 | Police MDT: police-only handlers, records, jail items | AWAITING TEST | `/mdt_seed` is admin-only and off by default (`Config.AllowSeedCommand`) |
@@ -112,9 +112,8 @@
   - loan servicing and defaults;
   - registry employees;
   - standalone repositories synced.
-- **Open:**
-  - job-garage fleet decision (owner);
-  - state-bag strict mode (owner, needs refactor first).
+- **After batch 9:** job fleet cars only from the job garage (owner decision).
+- **Open:** state-bag strict mode (owner, needs refactor first).
 
 ## 10. Latest pushed commits
 - **`-qb-` main:** 09be222 at the start of batch 8; then the batch 8 docs and code. See `git log -1 origin/main`.

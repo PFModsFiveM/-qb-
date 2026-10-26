@@ -51,6 +51,7 @@ Nothing in this plan has been run against a live FiveM server with clients yet. 
 | MDT | Officer looks up a citizen: licenses, unpaid fines; non-police try to open records | Data shown to police only |
 | Premises equipment | Government approves a register slot and a cooking slot; owner buys a POS Register and a Grill Station; staff use both | Register opens the POS and sales pass the range check; the grill cooks like a configured one; both survive a restart |
 | Loans | Grant a loan (auto-pay on), shorten the interval, wait for a due date; then empty the business account and miss payments | Installment taken once per due date; missed payments mark the business warning, then non-compliant on default; paying what is due restores it |
+| Job fleet | Owner parks a car, adds it to the job fleet; tries the personal garage and the impound; an employee takes it from the job garage; the car is removed from the fleet | Personal garage and impound do not list or release it and charge nothing; the job garage does; after removal the owner gets it back |
 | Tablet Business Manager | Government staff open the registry, view employees, transfer a store; a cook opens My supplies | Real businesses and staff; transfer changes the store owner and appears in Audit; cook sees their restaurant's orders only |
 
 ## 4. Multiplayer and exploits

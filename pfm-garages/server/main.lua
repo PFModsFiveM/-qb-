@@ -89,6 +89,42 @@ local function filterVehiclesByCategory(vehicles, category)
     return filtered
 end
 
+-- Job fleet cars (pf-jobgarages job_garage_vehicles, active) come out of their job garage only:
+-- the owner's personal garages and impound neither list nor spawn them. Taking a car out of the
+-- fleet (active = 0) gives it back to the personal garage.
+local fleetTableKnown = nil
+local function fleetTableExists()
+    if fleetTableKnown == nil then
+        fleetTableKnown = (tonumber(MySQL.scalar.await(
+            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")) or 0) > 0
+        if not fleetTableKnown then SetTimeout(300000, function() fleetTableKnown = nil end) end
+    end
+    return fleetTableKnown
+end
+
+local function fleetPlateSet(plates)
+    local set = {}
+    if #plates == 0 or not fleetTableExists() then return set end
+    local marks = string.rep('?,', #plates):sub(1, -2)
+    local ok, rows = pcall(function()
+        return MySQL.query.await('SELECT plate FROM job_garage_vehicles WHERE active = 1 AND plate IN (' .. marks .. ')', plates)
+    end)
+    for _, r in ipairs(ok and rows or {}) do set[r.plate] = true end
+    return set
+end
+
+local function isFleetPlate(plate) return fleetPlateSet({ plate })[plate] == true end
+
+local function withoutFleet(vehicles)
+    local plates = {}
+    for _, v in pairs(vehicles) do if v.plate then plates[#plates + 1] = v.plate end end
+    local fleet = fleetPlateSet(plates)
+    if not next(fleet) then return vehicles end
+    local out = {}
+    for _, v in pairs(vehicles) do if not fleet[v.plate] then out[#out + 1] = v end end
+    return out
+end
+
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-garages:server:getHouseGarage', function(_, cb, house)
@@ -149,6 +185,7 @@ QBCore.Functions.CreateCallback('qb-garages:server:GetGarageVehicles', function(
         cb(nil)
         return
     end
+    vehicles = withoutFleet(vehicles)
     if #vehicles == 0 then
         cb(nil)
         return
@@ -202,6 +239,11 @@ QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(sourc
     local cid = Player.PlayerData.citizenid
     local ownedVehicle = MySQL.single.await('SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
     if not ownedVehicle or isOutside(plate) then
+        cb(nil, nil, nil)
+        return
+    end
+    if isFleetPlate(plate) then
+        TriggerClientEvent('QBCore:Notify', source, 'This vehicle is in a job fleet. Take it from the job garage.', 'error')
         cb(nil, nil, nil)
         return
     end
@@ -342,6 +384,10 @@ RegisterNetEvent('qb-garages:server:PayDepotPrice', function(data)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or type(data) ~= 'table' or type(data.plate) ~= 'string' then return end
+    if isFleetPlate(data.plate) then   -- it could not be taken out after paying
+        TriggerClientEvent('QBCore:Notify', src, 'This vehicle is in a job fleet. Take it from the job garage.', 'error')
+        return
+    end
     local cashBalance = Player.PlayerData.money['cash']
     local bankBalance = Player.PlayerData.money['bank']
     -- Price is read from the database for the player's own vehicle only; the client-sent amount is ignored

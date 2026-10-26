@@ -18,6 +18,7 @@ LedgerEnv.load('pf-government', {
     '[pfscripts]/pf-government/server/licenses.lua',
     '[pfscripts]/pf-government/server/staff.lua',
     '[pfscripts]/pf-government/server/callbacks.lua',
+    '[pfscripts]/pf-government/server/loans.lua',
     '[pfscripts]/pf-government/server/civil.lua',
     '[pfscripts]/pf-government/server/main.lua',
 })
@@ -76,10 +77,13 @@ FakeDB.extraPatterns = {
     { 'DELETE FROM pf_gov_business_loans', function(p) G.loans[tonumber(p[1])] = nil return 1 end },
     { 'SELECT * FROM pf_gov_business_loans WHERE id = ?', function(p) return { G.loans[tonumber(p[1])] } end },
     { 'UPDATE pf_gov_business_loans SET remaining_amount', function(p)
-        local l = G.loans[tonumber(p[3])]
-        l.remaining_amount, l.status = p[1], p[2]
+        -- remaining, amount_due, missed_payments, status, id
+        local l = G.loans[tonumber(p[#p])]
+        l.remaining_amount, l.status = p[1], p[#p - 1]
         return 1
     end },
+    -- the business's account on the registry (loans move money to and from it)
+    { 'SELECT account_ref FROM pf_gov_businesses', function(p) return { { account_ref = 'society:' .. p[1] } } end },
     { 'information_schema', function() return { { c = 1 } } end },
     { 'SELECT metadata FROM ', function() return { { metadata = '{}' } } end },
     { ' SET metadata = ?', function(p) G.metadataWrites[#G.metadataWrites + 1] = p return 1 end },
