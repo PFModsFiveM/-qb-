@@ -220,3 +220,56 @@ describe('4. recycling rows of a deleted character', function()
         assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_recycle_stats WHERE citizenid = 'RECY1'")), 0)
     end)
 end)
+
+describe('5. a part the shop buys in cases of 10', function()
+    it('takes 10 stock units from the supplier per case, never fewer (no duplicated items)', function()
+        local res = pc('business:supplies:catalog', { mode = 'job' })
+        local part
+        for _, it in ipairs(res.data.catalog.items) do
+            if (tonumber(it.caseSize) or 1) == 10 and it.category ~= 'Materials' then part = it break end
+        end
+        assert_true(part ~= nil, 'a part sold in cases of 10')
+        QBCoreMock.Shared.Items[part.item] = QBCoreMock.Shared.Items[part.item]
+            or { name = part.item, label = part.item, weight = 1, type = 'item', unique = false, useable = false, image = 'x.png' }
+        assert_eq(O.SupplierUnits({ name = part.item, quantity = 2, caseSize = 10, cost = 100 }), 20)
+        assert_eq(O.SupplierUnits({ name = 'x', quantity = 3, cost = 5 }), 3, 'lines without a case size are unchanged')
+        Config.SupplyChain.CaseSize = { [part.item] = 3 }
+        assert_eq(O.SupplierUnits({ name = part.item, quantity = 1, caseSize = 10, cost = 100 }), nil, '10 items are not whole units of 3')
+        Config.SupplyChain.CaseSize = nil
+
+        assert_true(inv:AddItem(RECYCLER, part.item, 9, false, false, 'test'))
+        assert_true(O.SetOffer(RECYCLER, part.item, part.pricePerCase / 10).ok)
+        assert_true(O.DepositStock(RECYCLER, part.item, 9).ok)
+        assert(L.Transfer({ from = 'system:test', to = 'society:mechanic', amount = part.pricePerCase * 3, key = L.AutoKey('fund'), kind = 'test' }).ok)
+        local made = pc('business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = { { item = part.item, quantity = 1 } } })
+        assert_true(made and made.ok, made and tostring(made.error))
+        local first = O.Get(made.data.orderId)
+        assert_true(first.status ~= 'awaiting_supplier', '9 units cannot fill a case of 10: the AI supplier takes it')
+        assert_eq(first.supplier_kind, 'ai')
+        assert_false(O.AcceptSupply(RECYCLER, first.id).ok)
+        assert_eq(tonumber(MySQL.scalar.await('SELECT stock_qty FROM pf_supplier_offers WHERE item = ?', { part.item })), 9, 'nothing reserved')
+
+        assert_true(inv:AddItem(RECYCLER, part.item, 1, false, false, 'test'))
+        assert_true(O.DepositStock(RECYCLER, part.item, 1).ok)
+        Mock.clock = Mock.clock + 30   -- past the duplicate-order window
+        local again = pc('business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = { { item = part.item, quantity = 1 } } })
+        assert_true(again and again.ok, again and tostring(again.error))
+        local id = again.data.orderId
+        assert_true(id ~= first.id, 'a new order')
+        assert_eq(O.Get(id).status, 'awaiting_supplier', 'with 10 units the supplier is offered it')
+        local open = O.OpenOffersFor(RECYCLER)
+        assert_true(#open.data >= 1)
+        assert_true(O.AcceptSupply(RECYCLER, id).ok)
+        assert_eq(tonumber(MySQL.scalar.await('SELECT stock_qty FROM pf_supplier_offers WHERE item = ?', { part.item })), 0, 'all 10 units reserved')
+        tick(121)
+        tick(301)
+        assert_eq(O.Get(id).status, 'delivered')
+        local pallet = MySQL.single.await('SELECT * FROM pf_world_objects WHERE order_id = ?', { id })
+        Mock.coords[BOSS] = vector3(pallet.x, pallet.y, pallet.z)
+        assert_true(W.Unpack(BOSS, pallet.id).ok)
+        local s = inv:GetInventory('bizstash-mechanic')
+        local n = 0
+        for _, it in pairs(s and s.items or {}) do if it.name == part.item then n = n + it.amount end end
+        assert_eq(n, 10, 'the shop receives the 10 items the supplier handed over')
+    end)
+end)

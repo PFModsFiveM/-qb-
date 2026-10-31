@@ -199,7 +199,7 @@ function App.Resolve(Player, cid, ref, need)
         if not account or not perms then return nil, 'not_authorized' end
         if need == 'withdraw' and not perm(perms, 'can_withdraw') then return nil, 'not_authorized' end
         if need == 'deposit' and not perm(perms, 'can_deposit') then return nil, 'not_authorized' end
-        return { kind = 'acct', id = account.id, ledger = 'acct:' .. account.id, label = account.label, iban = account.iban }
+        return { kind = 'acct', id = account.id, ledger = 'acct:' .. account.id, label = account.label, iban = account.iban, owner = perms.isOwner == true }
     end
     local name = ref:match('^society:([%w_%-%.]+)$')
     if name and #name <= 50 then
@@ -385,9 +385,14 @@ function App.Transfer(src, p)
         local to, err2 = App.Resolve(Player, cid, p.to.account, 'deposit')
         if not to then return { ok = false, error = err2 } end
         if to.ledger == from.ledger then return { ok = false, error = 'same_account' } end
-        if amount > cfg('maxInternal', 10000000) then return { ok = false, error = 'over_limit' } end
-        local key = ('bankapp:%s:i:%s'):format(cid, ref)
-        if not L.GetTransaction(key) and onCooldown(cid) then return { ok = false, error = 'slow_down' } end
+        -- a shared account someone else owns is other people's money: it counts as a payment
+        local toOthers = to.kind == 'acct' and not to.owner
+        if amount > (toOthers and cfg('maxTransfer', 250000) or cfg('maxInternal', 10000000)) then return { ok = false, error = 'over_limit' } end
+        local key = ('bankapp:%s:%s:%s'):format(cid, toOthers and 'x' or 'i', ref)
+        if not L.GetTransaction(key) then
+            if toOthers and App.DailyUsed(cid) + amount > cfg('dailyTransferLimit', 1000000) then return { ok = false, error = 'daily_limit' } end
+            if onCooldown(cid) then return { ok = false, error = 'slow_down' } end
+        end
         if from.kind == 'personal' and to.kind == 'acct' then
             return fromCallback(BankingAccountOps.deposit(src, { accountId = to.id, amount = amount }, key))
         elseif from.kind == 'acct' and to.kind == 'personal' then

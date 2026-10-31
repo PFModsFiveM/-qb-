@@ -203,8 +203,8 @@ end)
 QBCore.Commands.Add('bankbranch', 'Close or reopen a bank branch (admin)', {
     { name = 'id', help = 'Branch number (1-' .. branchCount() .. ')' },
     { name = 'action', help = 'close or open' },
-    { name = 'minutes', help = 'Closure length (close only)' },
-}, true, function(source, args)
+    { name = 'minutes', help = 'Closure length (close only, optional)' },
+}, false, function(source, args)
     local id, action = validBranch(args[1]), tostring(args[2] or ''):lower()
     local ok, err
     if not id then ok, err = false, 'unknown_branch'
