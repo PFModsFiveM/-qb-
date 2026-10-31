@@ -86,7 +86,7 @@ describe('pfm-fuel', function()
         QBCore = nil
         Mock.netHandlers['QBCore:Server:PlayerLoaded'] = nil
         Config = nil
-        load_resource('pfm-fuel/config.lua')
+        load_resource('pfm-fuel/Config.lua')
         load_resource('pfm-fuel/server/main.lua')
         load_resource('pfm-fuel/server/pricing.lua')
         assert_eq(Mock.netHandlers['QBCore:Server:PlayerLoaded'], nil)
