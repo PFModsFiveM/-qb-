@@ -234,3 +234,9 @@ function loadAnimDict(dict)
         Wait(5)
     end
 end
+
+-- waypoint to a scrapyard (from the Scrap List app)
+RegisterNetEvent('qb-scrapyard:client:waypoint', function(x, y)
+    x, y = tonumber(x), tonumber(y)
+    if x and y then SetNewWaypoint(x + 0.0, y + 0.0) end
+end)

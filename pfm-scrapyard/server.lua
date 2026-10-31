@@ -84,6 +84,7 @@ RegisterNetEvent('qb-scrapyard:server:ScrapVehicle', function(listKey)
         -- claim the list slot and remove the car here before handing out parts
         Config.CurrentVehicles[vehicleKey] = nil
         TriggerClientEvent('qb-scapyard:client:setNewVehicles', -1, Config.CurrentVehicles)
+        TriggerEvent('pfm-scrapyard:server:listChanged')
         if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
         for _ = 1, math.random(2, 4), 1 do
             local item = Config.Items[math.random(1, #Config.Items)]
@@ -110,6 +111,7 @@ function GenerateVehicleList()
         end
     end
     TriggerClientEvent('qb-scapyard:client:setNewVehicles', -1, Config.CurrentVehicles)
+    TriggerEvent('pfm-scrapyard:server:listChanged')
 end
 
 function IsInList(name)
