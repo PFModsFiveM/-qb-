@@ -35,29 +35,6 @@ local ALLOWLIST = {}
 -- Writes in files outside this change (other work in progress). They still break under strict
 -- mode until fixed: clear the entry when the file is fixed. Format: [file] = { [key] = 'fix' }.
 local PENDING = {
-    ['pfm-houses/client/decorate.lua'] = {
-        inv_busy = "TriggerServerEvent('qb-inventory:server:setActionBusy', 'decorate', true|false)",
-    },
-    ['[pfscripts]/pf-mechanicjob/client/damage.lua'] = {
-        ['[key]'] = "SafeStateSet: always TriggerServerEvent('pf_mech:server:setState', netId, key, value)",
-    },
-    ['[pfscripts]/pf-mechanicjob/client/mileage_hud.lua'] = {
-        mileage = "TriggerServerEvent('pf_mech:server:setState', netId, 'mileage', current + miles)",
-    },
-    ['[pfscripts]/pf-mechanicjob/client/garage_sync.lua'] = {
-        partDamage = 'restore from the database on the server (see report)',
-        mileage = 'restore from the database on the server (see report)',
-        nos = 'restore from the database on the server (see report)',
-    },
-    ['[pfscripts]/pf-mechanicjob/client/tools_menu.lua'] = {
-        partDamage = 'set the replaced tyre on the server in the tyre repair handler',
-    },
-    ['[pfscripts]/pf-mechanicjob/client/work_order_vehicles.lua'] = {
-        partDamage = "job wear: 'pf_mech:server:setState' (adds wear); job repairs: server work order handler",
-    },
-    ['[pfscripts]/pf-mechanicjob/client/main.lua'] = {
-        pf_jobId = 'server sets it once the spawned NPC car reports its net id',
-    },
 }
 
 -- ── source helpers ────────────────────────────────────────────────

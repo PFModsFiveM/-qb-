@@ -564,9 +564,21 @@ local playertables = {
 -- and some of them are optional, so they are not listed here (one missing table would make the
 -- whole delete fail). Instead each resource listens for this server-only event and clears or
 -- anonymises its own rows:
---   AddEventHandler('pfm-core:server:characterDeleted', function(citizenid) ... end)
-local function notifyCharacterDeleted(citizenid)
-    TriggerEvent('pfm-core:server:characterDeleted', citizenid)
+--   AddEventHandler('pfm-core:server:characterDeleted', function(citizenid, deleted) ... end)
+-- `deleted` lists what the framework tables held for the character before they were cleared,
+-- for resources whose rows are keyed by those (an apartment's stash is keyed by its name):
+--   deleted.apartments = { 'apartment1234', ... }
+local function snapshotBeforeDelete(citizenid)
+    local snap = { apartments = {} }
+    local ok, rows = pcall(MySQL.query.await, 'SELECT name FROM apartments WHERE citizenid = ?', { citizenid })
+    for _, r in ipairs(ok and type(rows) == 'table' and rows or {}) do
+        if type(r.name) == 'string' then snap.apartments[#snap.apartments + 1] = r.name end
+    end
+    return snap
+end
+
+local function notifyCharacterDeleted(citizenid, snap)
+    TriggerEvent('pfm-core:server:characterDeleted', citizenid, snap or { apartments = {} })
 end
 
 function QBCore.Player.DeleteCharacter(source, citizenid)
@@ -578,11 +590,12 @@ function QBCore.Player.DeleteCharacter(source, citizenid)
         for i = 1, #playertables do
             queries[i] = { query = query:format(playertables[i].table), values = { citizenid } }
         end
+        local snap = snapshotBeforeDelete(citizenid)
         MySQL.transaction(queries, function(result2)
             if result2 then
                 TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Deleted', 'red',
                     '**' .. GetPlayerName(source) .. '** ' .. license .. ' deleted **' .. citizenid .. '**..')
-                notifyCharacterDeleted(citizenid)
+                notifyCharacterDeleted(citizenid, snap)
             end
         end)
     else
@@ -607,11 +620,12 @@ function QBCore.Player.ForceDeleteCharacter(citizenid)
     for i = 1, #playertables do
         queries[i] = { query = query:format(playertables[i].table), values = { citizenid } }
     end
+    local snap = snapshotBeforeDelete(citizenid)
     MySQL.transaction(queries, function(result2)
         if result2 then
             TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Force Deleted', 'red',
                 'Character **' .. citizenid .. '** got deleted')
-            notifyCharacterDeleted(citizenid)
+            notifyCharacterDeleted(citizenid, snap)
         end
     end)
 end

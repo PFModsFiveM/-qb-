@@ -135,3 +135,63 @@ describe('alcohol', function()
         assert_eq(Mock.players[SRC].PlayerData.metadata.thirst, 10)
     end)
 end)
+
+describe('items added at runtime (other resources)', function()
+    local X = Mock.exportsByResource['__self']
+    QBCoreMock.Shared.Items.test_wrap = { name = 'test_wrap', label = 'Wrap', weight = 200, type = 'item', unique = false, useable = true, image = 'x.png' }
+    QBCoreMock.Shared.Items.test_wine = { name = 'test_wine', label = 'Wine', weight = 200, type = 'item', unique = false, useable = true, image = 'x.png' }
+    it('give hunger like configured food (before, they were used up for nothing)', function()
+        assert_true((X.AddFood('test_wrap', 30)))
+        assert_false((X.AddFood('test_wrap', 99)), 'added once')
+        assert_true(AddItem(SRC, 'test_wrap', 1, 1))
+        use('test_wrap', 1)
+        assert_eq(itemAt(Mock.players[SRC].PlayerData.items, 1), nil, 'removed on the server')
+        Mock.fireNet('consumables:server:addHunger', SRC, 100)
+        assert_eq(Mock.players[SRC].PlayerData.metadata.hunger, 40)
+    end)
+    it('a dish cooked badly gives less and undercooked parts can make you ill', function()
+        assert_true(AddItem(SRC, 'test_wrap', 1, 1, { quality = 50, poisonRisk = 1 }))
+        use('test_wrap', 1)
+        Mock.fireNet('consumables:server:addHunger', SRC)
+        assert_eq(Mock.players[SRC].PlayerData.metadata.hunger, 10 + 15, '30 x 0.5')
+        assert_eq(#Mock.clientEventsNamed('consumables:client:FoodPoisoning'), 1)
+    end)
+    it('alcohol added at runtime is removed only when drunk, then gives thirst', function()
+        assert_true((X.AddAlcohol('test_wine', 15)))
+        assert_true(AddItem(SRC, 'test_wine', 1, 1))
+        use('test_wine', 1)
+        assert_true(itemAt(Mock.players[SRC].PlayerData.items, 1) ~= nil, 'still in hand')
+        Mock.gameTimer = (Mock.gameTimer or 0) + 60000   -- past the drink cooldown of the earlier alcohol tests
+        Mock.fireNet('consumables:server:drinkAlcohol', SRC, 'test_wine')
+        Mock.fireNet('consumables:server:addThirst', SRC)
+        assert_eq(Mock.players[SRC].PlayerData.metadata.thirst, 25)
+    end)
+end)
+
+describe('restaurant dishes are real consumables', function()
+    it('every consumable in pf-restaurants Config.Items is registered as food, drink or alcohol', function()
+        local X = Mock.exportsByResource['__self']
+        Mock.exportsByResource['pfm-smallresources'] = {
+            AddFood = function(_, ...) return X.AddFood(...) end,
+            AddDrink = function(_, ...) return X.AddDrink(...) end,
+            AddAlcohol = function(_, ...) return X.AddAlcohol(...) end,
+        }
+        load_resource('[pfscripts]/pf-restaurants/config/items.lua')
+        load_resource('[pfscripts]/pf-restaurants/server/integration.lua')
+        local added = PFRestaurantsRegisterConsumables()
+        assert_true(added >= 45, 'registered ' .. added)
+        assert_eq(Config.Consumables.eat.burger_classic, 45)
+        assert_eq(Config.Consumables.eat.milkshake_vanilla, 20, 'more filling than thirst-quenching: food')
+        assert_eq(Config.Consumables.drink.soda_small, 20)
+        assert_eq(Config.Consumables.drink.coffee_latte, 22)
+        assert_eq(Config.Consumables.alcohol.wine_glass, 15)
+        assert_eq(Config.Consumables.drink.grape_juice_glass, 30)
+        assert_eq(Config.Consumables.drink.water_bottle, 30, 'an item pfm-smallresources already has keeps its value')
+        assert_eq(PFRestaurantsRegisterConsumables(), 0, 'registering again adds nothing')
+        QBCoreMock.Shared.Items.burger_classic = { name = 'burger_classic', label = 'Burger', weight = 300, type = 'item', unique = false, useable = true, image = 'x.png' }
+        assert_true(AddItem(SRC, 'burger_classic', 1, 1, { quality = 100 }))
+        use('burger_classic', 1)
+        Mock.fireNet('consumables:server:addHunger', SRC)
+        assert_eq(Mock.players[SRC].PlayerData.metadata.hunger, 55)
+    end)
+end)
