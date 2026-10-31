@@ -73,6 +73,21 @@ Nothing in this plan has been run against a live FiveM server with clients yet. 
 | Mail and bills everywhere | Send mail tablet → computer → phone; receive a City Hall notice while offline; pay a fine in Bills | One mailbox on all three; notice waiting at login; fine paid once |
 | Computer without fakes | Post a job on the Job Board as a boss, apply as a citizen, hire | Applicant identity from the server; hire sets the job; no fake bills, stock or employee numbers anywhere |
 
+## 3c. Every system as a device app (batch 11)
+| Loop | Steps | Expect |
+|---|---|---|
+| Business apps on both devices | A restaurant owner opens Business Manager, Order Supplies and Job Board on the tablet, then on the computer; promotes, fires, orders, posts a job and hires an applicant | Same screens on both; the hire appears in the restaurant's staff list; the order and its delivery show without reopening |
+| Lock screen | Set a PIN on the computer, reconnect, enter a wrong PIN several times | The PIN survives the reconnect; the lockout is counted on the server |
+| Bank | Transfer to another citizen by IBAN and by citizen id; retry when the screen hangs; read statements with filters; rob a Fleeca | Each transfer once; the daily limit holds; the robbed branch refuses counter and ATM use nearby and reopens by itself |
+| Crypto and Boss | Buy, sell and send coin; a boss hires a person beside them, deposits and withdraws society cash at the desk and away from it | Each trade once; cash only at the desk; staff changes follow the boss rules |
+| Garages | Pay an impound fee from the app, then collect the car at the depot; ask for a tow to a garage; a tow driver delivers it | Charged once, the depot shows it paid; the car is parked in that garage after delivery |
+| Real estate and dealer | An agent sells a house and a dealer sells a car to a customer beside them; the customer accepts in the prompt, then in the app | Money moves only after accepting; commission once; the house is registered; the car gets a DMV bill; dealer stock drops by one |
+| Bus and tow | Drive a bus route in the depot bus and in another car; rent a flatbed, hook a car, finish an NPC contract, hand a dispatch request back | Pay only in the depot bus; deposit refunded once on return; contract paid once; the request goes back to the queue |
+| Crews and Gruppe 6 | A Gruppe 6 leader sets 60/40 shares; buy an upgrade; rob an armoured truck near a pickup | Each member paid their share once; the upgrade charged once and applied; pickups near the robbery held, crews warned |
+| Side jobs to businesses | A vineyard worker supplies wine to a restaurant; a recycler supplies scrap and a mechanic part case to a mechanic shop | Exactly what was paid for arrives (10 supplier units for a case of 10); glasses of wine are made, sold and drunk (alcohol) |
+| Strict state bags | Run the server with `setr sv_stateBagStrictMode true`; plant weed, corner-sell, fit a harness, decorate a house, refuel, fit NOS, take a car out of the garage | No state-bag errors in the console; the inventory locks and frees during each action; fuel, NOS and wear show the same for two players |
+| Character deletion | Delete a character that owns a house, a car on the lot, installed apps, open requests and documents | Their rows are gone or anonymised; houses back on the market; shared documents stay with the others; nobody else's data changes |
+
 ## 4. Multiplayer and exploits
 | Case | Expect |
 |---|---|

@@ -90,7 +90,7 @@ The working list for the whole project. Read this first in every session, then `
 | # | Requirement | Status | Evidence | Next |
 |---|---|---|---|---|
 | 7.1 | Mechanics: parts via supply orders, checkout on the ledger | VERIFIED (real DB, mocked) | Checkout on the ledger (2g); sweep fixes (c5dc441). Job-business supply orders moved from pf-computer's data file (paid, goods never added) to the shared order service as buyer kind `jobbiz`: catalog prices, job bank account, mechanic pickup run or trucker pallet, unpacked once into `bizstash-<job>` (131718c; computer_orders_realdb_spec job mode 4). Business stash points open the stock (server-checked) | pf-mechanicjob does not start on staging without ox_lib, so its runtime is unverified |
-| 7.2 | pf-jobgarages: business fleets, fail-open permissions, ownership/keys | IN_PROGRESS | Fail-open keys check fixed, ownership/grade/distance enforced (ee43911, sweep_jobs_jobgarages_spec) | Fleet cars job-garage only (owner decision 2026-10-26, pfm-garages + pf-jobgarages); on-duty rule still open |
+| 7.2 | pf-jobgarages: business fleets, fail-open permissions, ownership/keys | AWAITING TEST | Fail-open keys check fixed, ownership/grade/distance enforced (ee43911, sweep_jobs_jobgarages_spec) | Fleet cars job-garage only (owner decision 2026-10-26, pfm-garages + pf-jobgarages); on duty to take a fleet car out and `min_grade_manage` enforced (batch 11, pfjobs_jobgarages_duty_spec) |
 | 7.3 | Trucking: priority, AI fallback, persistence, exactly-once | VERIFIED (real DB) | 2.1 | — |
 | 7.4 | Police MDT data from authoritative sources with permissions | VERIFIED (mocked) | Sweep: every pf_mdt handler police-only via `server/access.lua`, jail items from the server inventory, licenses/reports/warrants checked (9202e1a; sweep_mdt_* 19) | Jail timer is client-side; UI JS not fully XSS-audited |
 | 7.5 | Stale qb-core references, broken exports, duplicate event names | VERIFIED (scan, staging) | No `exports['qb-core']` left in started resources; collision scan shows only intended pairs; QBCore:ToggleDuty no longer a net event in pf-jobs/pf-tablet (33ace78); staging start clean apart from 1.2 | — |
@@ -112,6 +112,13 @@ The working list for the whole project. Read this first in every session, then `
 
 ## Session log
 
+- **2026-10-31 (batch 11):**
+  - every framework system the tablet and computer should reach is now an app on both;
+  - the last pfm duplicates (bus, tow, recycling, vineyard) and the old pf copies are removed;
+  - character deletion cleans every resource;
+  - the state-bag lockdown is done (strict mode on in the staging config).
+
+  Details are in report Batch 11 and `JOB_LINKS.md`.
 - **2026-10-31 (batch 10):** pf-devices (one app platform for the tablet and the computer), pf-services (city events + service requests between jobs), pf-news, the government field apps, pf-citizen, the computer clean-up and job links across robberies, police, EMS, mechanic, tow, prison, weather and races. Branch `main-9hq3gi` in both repos. Details: report Batch 10, `DEVICES_AND_SERVICES.md`, `JOB_LINKS.md`.
 
 - **2026-10-25 (batch 7):** end-to-end supply chain test across the real resources; restaurants order on PF Computer; duplicate-order guard; premises and equipment; Business Manager shows real stock; dish freshness from ingredients. See report Batch 7.

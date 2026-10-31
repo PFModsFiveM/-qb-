@@ -1925,3 +1925,52 @@ Owner decisions:
 - **Check in game:**
   - every MDT page inside both device windows: the map, CCTV (it uses a scripted camera), evidence camera mode and the citation paper;
   - sizes at the tablet's 760x640.
+
+## Batch 11 — 2026-10-31: every framework system as a device app, the last pfm duplicates, strict state bags
+Owner request: finish the whole rework in one go: the shared business apps, bank/garages/property/dealer/boss apps, bus and tow in pf-jobs, side jobs, old copies, character-deletion cleanup, and the state-bag lockdown.
+
+### New apps on the tablet and the computer (one module each, server-checked, money on the ledger)
+| App | Resource | What it does |
+|---|---|---|
+| Business Manager, Order Supplies, Job Board | pf-computer | The computer's own windows became platform apps; the computer's handlers sit behind them. The tablet's built-in Business Manager is gone (its registry view and transfers are in the shared app's City registry section). |
+| Bank | pfm-banking | Accounts, shared and society accounts, statements from the ledger (paged, filtered), transfers with stable keys and daily limits, loans and cards, branches. Cash never moves remotely. |
+| Crypto | pfm-crypto | Price and history, wallet, buy/sell/send once per key. |
+| Boss | pfm-management | Staff, hiring a person beside you, ranks and wages, society money (cash only at the boss desk). The staff rules exist once and are exported. |
+| Garages | pfm-garages | Every owned car and its state, waypoints, impound fee paid ahead (one payment path with the depot), tow to a garage through pf-services. |
+| Real Estate, Agency | pfm-houses | Houses for sale, owned houses and keys, the apartment; agents list, reprice and sell to a customer beside them who accepts (fee, transfer tax, commission, registration). |
+| Car Dealer, Dealership | pfm-vehicleshop | Catalogue with stock and finance; finance payments; dealer sales with stock, purchase tax, commission, DMV registration; stock orders. |
+| Used Cars | pfm-vehiclesales | The used lot; sellers reprice their own cars. |
+| Tow | pf-jobs | Flatbed rental with deposit, hooking any car, NPC contracts when no request is open, dispatch requests (accept, complete, hand back), levels. |
+| Bus | pf-jobs | Real routes, passengers in the depot bus, levels, depot buses. |
+| Recycling, Vineyard | pf-jobs | The moved side jobs: shifts paid once, levels, selling to restaurants and mechanic shops through the Supplier app. |
+| Pawn Shop, Crafting | pfm-pawnshop, pfm-crafting | Today's prices, hours and melting; recipes with what you have. Read-only. |
+
+### pf over pfm (the rest)
+- **Removed:** pfm-busjob, pfm-towjob, pfm-recyclejob, pfm-vineyard (pf-jobs now covers each fully), and the old pf copies pf-governmentwebsiteonly, pf-tabletuionly, pf-garageuionly, pf-jobsystem, plus pf-mechanicjob's dead MechanicOS page.
+- **Still kept:** pfm-shops (pf-stores covers five player-owned stores, not every NPC shop), pfm-garages (pf-jobgarages covers job fleets only), pfm-newsjob (works with pf-news).
+
+### Rules every resource follows now (details in `DEVICES_AND_SERVICES.md`)
+- `pfm-core:server:characterDeleted` (citizenid, deleted) clears each resource's own rows: pf-devices, pf-services, pf-citizen, pf-news, pf-computer, pf-jobs, pf-jobgarages, pfm-banking, pfm-garages, pfm-houses, pfm-apartments, pfm-vehicleshop, pfm-vehiclesales.
+- Registry, store owner and staff data come through exports (`GetBusiness`, `GetBusinessesOwnedBy`, `ListBusinesses`, `GetStoreOwner`, pfm-management staff, `AddStaff`).
+- Websites get live updates by host (`BroadcastSite`).
+- **State bags are server-written.** `inv_busy` belongs to the inventory server (action locks via `SetBusyLock`). Fuel, NOS, drift tyres, part wear, mileage and a car's saved state are set by the server after range, timing and value checks. Staging now runs `setr sv_stateBagStrictMode true`; a scan spec fails on any new client write.
+
+### Defects found and fixed on the way
+- **Supplier items duplicated:** a mechanic part case is 10 items but a player supplier's stock unit was 1 item, so stocking 1 delivered 10. Supplier stock is now converted to the buyer's case size.
+- **Restaurant food fed nobody:** only one burger was usable and it relieved stress instead of hunger. Items added with `AddFood`/`AddDrink` were eaten for nothing and crashed the client handler. Every consumable dish is now real food or drink, scaled by freshness, cooked quality and poison risk.
+- **Bus distance paid without a bus:** a route checked in from any car paid its distance; now the depot bus is required (`MileageNeedsBus`).
+- **Gruppe 6 shipped in debug** (offers every 5–10 s); now off.
+- **Crew splits:** they were stored and then ignored; now each member is paid their share once.
+- **Other fixes:** management gaps (nonexistent ranks, a boss changing their own rank, re-hire resets, self-hire); a seized car released by paying an old fee; pawn prices shown from the client; weed planting releasing the inventory lock at once; a cancelled harness leaving the player busy; a `bus_routes_log` foreign-key failure; finance commission ignored.
+
+### Database migrations (rerun-safe)
+- pfm-crypto v1;
+- pfm-garages v1;
+- pfm-houses v1;
+- pfm-vehicleshop v1;
+- pf-jobs v1–v3 (bus, Gruppe 6 XP and upgrades, tow);
+- `pf-jobs:recycle` v1 and `pf-jobs:vineyard` v1;
+- pf-computer v3 (profiles).
+
+### Tests
+Mocked 1136 passed, 0 failed (140 files); real DB 327 passed, 0 failed (36 files); 8 JS specs green; the SQL install check passes; all 192 Lua files changed this round parse.

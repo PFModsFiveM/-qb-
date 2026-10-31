@@ -105,16 +105,29 @@
 | Government field apps and City Hall Requests; delivery zones in supply orders | AWAITING TEST | |
 | Job links (see `JOB_LINKS.md`) | AWAITING TEST | Candidates listed there |
 | Citizen apps (`pf-citizen`): mail, bills, documents, calendar on phone, tablet, computer | AWAITING TEST | One mailbox in `player_mails`; government bills via `PayBillFromPlayer` (refunds what it cannot apply); phone invoices via pfm-phone exports |
-| Computer without fake data (job board, business manager, persistence, security fixes) | AWAITING TEST | Restaurants on the Job Board can only "accept" (needs a pf-restaurants staff export) |
-| pf over pfm duplicates | AWAITING TEST | pfm-cityhall, pfm-hud, pfm-taxijob, pfm-garbagejob removed; pfm-busjob, pfm-towjob, pfm-shops, pfm-garages kept (pf version incomplete) |
+| Computer without fake data (job board, business manager, persistence, security fixes) | AWAITING TEST | Restaurants hire through pf-restaurants `AddStaff` (batch 11) |
+| pf over pfm duplicates | AWAITING TEST | Removed: pfm-cityhall, pfm-hud, pfm-taxijob, pfm-garbagejob (batch 10); pfm-busjob, pfm-towjob, pfm-recyclejob, pfm-vineyard (batch 11). Kept: pfm-shops, pfm-garages, pfm-newsjob (no complete pf version) |
 | Police and EMS MDT inside the tablet and computer (1:1, same page) with their dispatch | AWAITING TEST | Requests from pf-services land on the MDT dispatch board |
+
+## 7c. Every framework system as a device app (batch 11)
+
+| System | Status | Notes |
+|---|---|---|
+| Business Manager, Order Supplies, Job Board shared on both devices | AWAITING TEST | The tablet's own Business Manager removed; lock screen and layout stored on the server |
+| Bank, Crypto, Boss apps; robbed branch closes | AWAITING TEST | Real-DB: transfers once, daily limit, statements, society money, closures |
+| Garages, Real Estate, Car Dealer, Used Cars apps | AWAITING TEST | Real-DB: depot fee once, agent and dealer sales with commission once, finance payments |
+| pf-jobs Bus and Tow complete; pfm-busjob and pfm-towjob removed | AWAITING TEST | Bus distance pay needs the depot bus |
+| Recycling and Vineyard in pf-jobs; Pawn Shop and Crafting apps | AWAITING TEST | Wine and grape juice are restaurant supplies; scrap is a mechanic supply |
+| Crew pay splits, Gruppe 6 upgrades, truck-robbery hold, job-garage on-duty rule | AWAITING TEST | |
+| Character deletion cleans every resource's own rows | AWAITING TEST | `pfm-core:server:characterDeleted` |
+| Restaurant dishes as real food and drink | AWAITING TEST | Through pfm-smallresources consumables |
 
 ## 8. Security
 
 | Item | Status | Notes |
 |---|---|---|
 | Server-event sweep (~1,150 handlers) | AWAITING TEST | |
-| Client-replicated state bags (`sv_stateBagStrictMode`) | PARTIAL | About 20 client writes (`inv_busy`, fuel nozzle); strict mode is off |
+| Client-replicated state bags (`sv_stateBagStrictMode`) | AWAITING TEST | No client writes left (scan spec); staging config sets `setr sv_stateBagStrictMode true`; the live server.cfg needs the same line |
 
 ## 9. Batch log (newest first)
 - **Batch 8 (2026-10-26):**
@@ -138,7 +151,12 @@
   - computer clean-up.
 
   See `DEVICES_AND_SERVICES.md` and the report.
-- **Open:** state-bag strict mode (owner, needs refactor first).
+- **Batch 11 (2026-10-31, branch `main-9hq3gi`):**
+  - shared business apps;
+  - bank, crypto, boss, garages, real estate, dealer and used-car apps;
+  - bus, tow, recycling and vineyard in pf-jobs (pfm versions removed);
+  - character-deletion cleanup;
+  - strict state bags.
 
 ## 10. Latest pushed commits
 - **`-qb-` main:** 09be222 at the start of batch 8; then the batch 8 docs and code. See `git log -1 origin/main`.

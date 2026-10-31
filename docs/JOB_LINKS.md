@@ -67,6 +67,11 @@ Two shared services in `[pfscripts]/pf-services` carry every link:
 | Vineyard → Restaurants | A restaurant orders wine or grape juice; a vineyard worker fills it as a player supplier | Bottles from the worker's stock to the restaurant's storage; payment through escrow to the supplier | `pf-restaurants` `Config.Supplies.PricePerItem`, `SupplyUnitPrice` / pf-stores suppliers; the Vineyard app's Selling tab | Vineyard workers get a real customer, restaurants buy wine at a real price |
 | Restaurant stock → Menu → Customers | A cook fills drinks at the drink station; a customer drinks them | 1 wine → 4 glasses, 1 grape juice → 2 glasses; glasses are sold, and drinking one gives thirst (alcohol for wine) | `pf-restaurants/config/recipes.lua`, `server/integration.lua` / pfm-smallresources consumables | The supplied wine becomes something the restaurant sells and people drink |
 | Recycling and scrapyard → Mechanic shops | A mechanic shop orders materials; a recycler or scrapper fills it as a player supplier | Scrap materials into the shop's stash, one unit per unit paid | `pf-mechanicjob/config.lua` `SuppliesCatalog.materials`, `business_data_provider.lua` / pf-stores suppliers | Scrap gets a market beyond the NPC buyer, and shops get repair materials |
+| Armoured truck robbery → Gruppe 6 | `crime.robbery.truck` on the city timeline | Gruppe 6 pickups within 600 m are held for 10 minutes; crews on a contract or searching are warned (notification and app push) | `pfm-truckrobbery` (emit) / `pf-jobs/server/apps/gruppe6.lua` (`OnTruckRobbery`, `HoldAt`) | Cash crews don't walk into a crime scene, and police get time to secure it |
+| Dispatch requests → Tow app | Police impounds, mechanic breakdowns, citizen calls (`tow.impound`, `tow.recovery`) | Listed with destinations in the Tow app; accept, complete or hand back through pf-services; completion gives tow XP. NPC tow contracts are offered only while no request is open. | `pf-jobs/server/apps/tow.lua`, `tow_requests.lua` / `pf-services` | Real player work comes first; NPC work only fills idle time |
+| Job Board → Restaurant staff | A restaurant owner hires an applicant | The applicant joins the restaurant's staff with the chosen role (`AddStaff`) | `pf-computer/server/jobboard.lua` / `pf-restaurants/server/business.lua` | Restaurants could only "accept" applicants before |
+| Business Manager → Boss rules | Promote, demote or fire in a job business | The job grade, through pfm-management's single set of staff rules | `pf-computer/server/main.lua` / `pfm-management/server/sv_boss.lua` | One set of rules for the boss menu, the gang menu, the Boss app and the Business Manager |
+| Supply deliveries → Business apps | An order is unpacked or a pickup run ends | Order Supplies and the stock view refresh by themselves | `pf-computer/server/main.lua` / pf-devices pushes | Bosses see deliveries arrive without reopening the app |
 
 ## Links that already existed (earlier batches)
 
@@ -85,5 +90,5 @@ Two shared services in `[pfscripts]/pf-services` carry every link:
 | From → To | Why not yet |
 |---|---|
 | Script alerts (drug sales, "suspicious activity") → Dispatch | These would need de-duplication against the robbery events, or every robbery would create two requests. |
-| Armored truck hit → Gruppe 6 | The Gruppe 6 job could be told when one of its trucks is hit. |
-| Gruppe 6 / Garbage crew splits | Splits are stored but the payouts ignore them (every member gets 1.5×); this needs an owner decision. |
+| Dealership stock → Trucking | Stock orders are paid and arrive at once; a car-carrier delivery job could bring them (pf-stores orders carry items, not vehicles). |
+| Property tax → Government | pf-government has no recurring property tax yet (`property_tax_frequency` is unused); only the transfer tax is charged at a sale. |
