@@ -69,6 +69,9 @@ BeforeEach = function()
     cop.PlayerData.job = { name = 'police', onduty = true, grade = { level = 2 } }
     for src in pairs(Mock.players) do Mock.players[src].PlayerData.source = src end
     Mock.coords[CITIZEN] = vector3(100.0, 200.0, 30.0)
+    -- the citizen sits in the car that needs the tow
+    Mock.vehicleOf[CITIZEN] = 500
+    Mock.plates[500] = ' CAR1 '
 end
 
 describe('city events', function()
@@ -103,6 +106,7 @@ describe('a citizen calls a tow truck', function()
         assert_eq(r.escrow, 'held')
         assert_near(r.coords.x, 100, 0.01, 'server position used')
         assert_eq(r.requester, 'CIT1')
+        assert_eq(r.plate, 'CAR1', 'the plate of the car the citizen is in')
         -- the job was told
         local told = false
         for _, p in ipairs(pushes) do if p.job == 'tow' and p.event == 'request:new' then told = true end end
@@ -139,6 +143,14 @@ describe('a citizen calls a tow truck', function()
         done = true
         assert_true(PFServices.CompleteRequest(TOW1, res.id).ok)
         assert_eq(bank(TOW1), 175)
+    end)
+
+    it('a tow needs a car: on foot with no car next to you, nothing is created', function()
+        Mock.vehicleOf[CITIZEN] = nil
+        local res = PFServices.CitizenRequest(CITIZEN, 'tow.recovery')
+        assert_false(res.ok)
+        assert_eq(res.error, 'no_vehicle')
+        assert_eq(bank(CITIZEN), 1000)
     end)
 
     it('cannot be made without the money, and a second call returns the open one', function()

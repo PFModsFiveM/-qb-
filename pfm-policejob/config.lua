@@ -203,4 +203,13 @@ Config.Gameplay = {
 
 -- Highest fine or bill an officer can issue with /fine or the bill menu
 Config.MaxFine = 50000
+
+-- Impounding with the tow job: when a tow driver is on duty, an impound becomes a tow order (the
+-- car stays locked where it is until a tow truck brings it to an impound lot); with nobody from
+-- tow on duty, the car is impounded on the spot as before.
+Config.ImpoundTow = {
+    Enabled = true,
+    TowJob = 'tow',
+    LotRadius = 40.0,       -- metres around Config.Locations['impound'] that count as the lot
+}
 Config.MaxJailTime = 1440 -- longest sentence an officer can give (same cap as pfm-prison)

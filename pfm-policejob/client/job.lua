@@ -368,13 +368,8 @@ RegisterNetEvent('police:client:ImpoundVehicle', function(fullImpound, price)
                 rotation = { x = -120.0, y = 0.0, z = 0.0 },
             }, function() -- Play When Done
                 local plate = QBCore.Functions.GetPlate(vehicle)
+                -- the server decides: tow it in (the car stays) or impound now (the server removes it)
                 TriggerServerEvent('police:server:Impound', plate, fullImpound, price, bodyDamage, engineDamage, totalFuel)
-                while NetworkGetEntityOwner(vehicle) ~= 128 do -- Ensure we have entity ownership to prevent inconsistent vehicle deletion
-                    NetworkRequestControlOfEntity(vehicle)
-                    Wait(100)
-                end
-                QBCore.Functions.DeleteVehicle(vehicle)
-                TriggerEvent('QBCore:Notify', Lang:t('success.impounded'), 'success')
                 ClearPedTasks(ped)
             end, function() -- Play When Cancel
                 ClearPedTasks(ped)
@@ -409,6 +404,12 @@ RegisterNetEvent('police:client:VehicleMenuHeader', function(data)
     currentGarage = data.currentSelection
 end)
 
+
+RegisterNetEvent('police:client:ImpoundDecision', function(plate, mode)
+    if mode == 'instant' then
+        TriggerEvent('QBCore:Notify', Lang:t('success.impounded'), 'success')
+    end
+end)
 
 RegisterNetEvent('police:client:ImpoundMenuHeader', function(data)
     MenuImpound(data.currentSelection)

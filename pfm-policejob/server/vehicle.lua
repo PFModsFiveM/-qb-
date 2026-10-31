@@ -64,6 +64,62 @@ RegisterNetEvent('heli:server:spotlight', function(state)
     TriggerClientEvent('heli:client:spotlight', -1, serverID, state)
 end)
 
+-- The vehicle entity with this plate (server-side, OneSync), or nil.
+local function FindVehicleByPlate(plate)
+    plate = TrimPlate(plate):upper()
+    for _, veh in ipairs(GetAllVehicles()) do
+        if TrimPlate(GetVehicleNumberPlateText(veh)):upper() == plate then return veh end
+    end
+    return nil
+end
+
+local function TowDriversOnDuty()
+    local cfg = Config.ImpoundTow or {}
+    local n = 0
+    for _, P in pairs(QBCore.Functions.GetQBPlayers() or {}) do
+        local job = P.PlayerData and P.PlayerData.job
+        if job and job.name == (cfg.TowJob or 'tow') and job.onduty then n = n + 1 end
+    end
+    return n
+end
+
+-- Writes the impound to the vehicle record and removes the car from the world.
+-- opts: { fullImpound, price, body, engine, fuel, officer = citizenid }
+local function ApplyImpound(plate, opts)
+    opts = opts or {}
+    plate = TrimPlate(plate)
+    if IsVehicleOwned(plate) then
+        if not opts.fullImpound then
+            MySQL.query('UPDATE player_vehicles SET state = ?, depotprice = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 0, opts.price or 0, opts.body, opts.engine, opts.fuel, plate })
+        else
+            MySQL.query('UPDATE player_vehicles SET state = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 2, opts.body, opts.engine, opts.fuel, plate })
+        end
+    end
+    local veh = FindVehicleByPlate(plate)
+    if veh and DoesEntityExist(veh) then DeleteEntity(veh) end
+    if GetResourceState('pf-services') == 'started' then
+        pcall(function()
+            exports['pf-services']:Emit('police.impound', { plate = plate, seized = opts.fullImpound == true }, { actor = opts.officer, dedupe = plate })
+        end)
+    end
+    return true
+end
+
+--- Impound lots for the tow job: list of { coords = vector3, radius = number }.
+exports('GetImpoundLots', function()
+    local out = {}
+    for _, c in ipairs(Config.Locations['impound'] or {}) do
+        out[#out + 1] = { coords = c, radius = (Config.ImpoundTow or {}).LotRadius or 40.0 }
+    end
+    return out
+end)
+
+--- Called by the tow job when an ordered car reached an impound lot (server-checked there).
+exports('FinalizeImpound', function(plate, opts)
+    if type(plate) ~= 'string' or #plate > 16 then return false end
+    return ApplyImpound(plate, type(opts) == 'table' and opts or {})
+end)
+
 RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, body, engine, fuel)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -74,12 +130,39 @@ RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, bo
     price = math.min(math.floor(price), Config.MaxFine or 50000)
     body, engine, fuel = Clamp(body, 0, 1000), Clamp(engine, -4000, 1000), Clamp(fuel, 0, 100)
     if not IsPlateNearby(src, plate) then return end
+    local opts = { fullImpound = fullImpound == true, price = price, body = body, engine = engine, fuel = fuel, officer = Player.PlayerData.citizenid }
+
+    -- a tow driver on duty brings the car in; the city pays the tow through pf-services
+    local cfg = Config.ImpoundTow or {}
+    if cfg.Enabled and GetResourceState('pf-services') == 'started' and TowDriversOnDuty() > 0 then
+        local veh = FindVehicleByPlate(plate)
+        local ci = Player.PlayerData.charinfo or {}
+        local ok, res = pcall(function()
+            return exports['pf-services']:CreateRequest({
+                kind = 'tow.impound',
+                title = ('Impound %s'):format(TrimPlate(plate)),
+                details = opts.fullImpound and 'Seized by police: take it to the impound lot' or ('Depot: release fee $%d'):format(price),
+                coords = veh and GetEntityCoords(veh) or GetEntityCoords(GetPlayerPed(src)),
+                plate = TrimPlate(plate),
+                ref = { type = 'vehicle', id = TrimPlate(plate):upper() },
+                from = { type = 'job', id = Player.PlayerData.job.name, name = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', '') },
+                meta = opts,
+            })
+        end)
+        if ok and res and res.ok then
+            if veh then SetVehicleDoorsLocked(veh, 2) end
+            TriggerClientEvent('police:client:ImpoundDecision', src, plate, 'tow')
+            TriggerClientEvent('QBCore:Notify', src, 'Tow ordered: leave the vehicle, a tow truck is coming', 'success')
+            return
+        end
+    end
+
+    ApplyImpound(plate, opts)
+    TriggerClientEvent('police:client:ImpoundDecision', src, plate, 'instant')
     if IsVehicleOwned(plate) then
-        if not fullImpound then
-            MySQL.query('UPDATE player_vehicles SET state = ?, depotprice = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 0, price, body, engine, fuel, plate })
+        if not opts.fullImpound then
             TriggerClientEvent('QBCore:Notify', src, Lang:t('info.vehicle_taken_depot', { price = price }))
         else
-            MySQL.query('UPDATE player_vehicles SET state = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 2, body, engine, fuel, plate })
             TriggerClientEvent('QBCore:Notify', src, Lang:t('info.vehicle_seized'))
         end
     end
