@@ -1,0 +1,25 @@
+/* Car Dealer apps (pf-devices). Base styles come from pf-devices runtime.css; everything here is scoped to .pfd. */
+.pfd .pfd-top:empty { display: none; }
+.pfd .pfd-top { padding: 12px 18px 0; }
+.pfd .pfd-offer { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-color: rgba(56, 189, 248, .45); }
+.pfd .pfd-total { font-size: 18px; font-weight: 700; }
+.pfd .pfd-filters .pf-input, .pfd .pfd-filters .pf-select { width: auto; flex: 1; min-width: 140px; }
+.pfd .pfd-shop { display: flex; gap: 12px; align-items: center; }
+.pfd .pfd-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.pfd .pfd-card { display: flex; flex-direction: column; gap: 5px; }
+.pfd .pfd-price { font-size: 20px; font-weight: 700; }
+.pfd .pfd-stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.pfd .pfd-fin { display: flex; flex-direction: column; gap: 10px; }
+.pfd .pfd-overdue { border-color: rgba(239, 68, 68, .5); }
+.pfd .pfd-plate {
+    font-family: Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 700; letter-spacing: .08em;
+    padding: 1px 6px; border-radius: 4px; background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1;
+}
+.pfd .pfd-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.pfd .pfd-amount { width: 120px; padding: 5px 8px; font-size: 12px; }
+.pfd .pfd-qty { width: 70px; padding: 5px 8px; font-size: 12px; }
+.pfd .pfd-row2 { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+@media (max-width: 700px) {
+    .pfd .pfd-row2 { grid-template-columns: 1fr; }
+    .pfd .pf-table th:nth-child(3), .pfd .pf-table td:nth-child(3) { display: none; }
+}

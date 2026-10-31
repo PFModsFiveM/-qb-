@@ -50,8 +50,11 @@ Mock.exportsByResource['pf-government'] = {
 Mock.exportsByResource['pfm-apartments'] = {
     GetCitizenApartment = function(_, cid) return cid == 'CID2' and { id = 'apartment1555', label = 'South Rockford Drive 555', building = 'South Rockford Drive', coords = { x = 1, y = 2 } } or nil end,
 }
-local stashCleared = {}
-Mock.exportsByResource['pfm-inventory'] = { ClearStash = function(_, id) stashCleared[#stashCleared + 1] = id end }
+local stashCleared, busyLocks = {}, {}
+Mock.exportsByResource['pfm-inventory'] = {
+    ClearStash = function(_, id) stashCleared[#stashCleared + 1] = id end,
+    SetBusyLock = function(_, src, reason, busy) busyLocks[src] = busyLocks[src] or {} busyLocks[src][reason] = busy or nil return true end,
+}
 
 LedgerEnv.load('pfm-houses', { 'pfm-houses/config.lua', 'pfm-houses/server/main.lua', 'pfm-houses/server/apps.lua' })
 MySQL.Sync = { fetchSingle = function(q, p) return MySQL.single.await(q, p) end }
@@ -272,18 +275,21 @@ describe('listings', function()
 end)
 
 describe('decorating', function()
-    it('sets inv_busy on the server for a key holder inside the house, and only clears what it set', function()
+    it("takes pfm-inventory's busy lock for a key holder inside the house, and only releases its own", function()
+        busyLocks = {}
         Mock.coords[OTHER] = DOOR
         Mock.fireNet('qb-houses:server:SetDecorating', BUYER, 'owned1', true)        -- no key
-        assert_eq(Player(BUYER).state.inv_busy, nil)
+        assert_eq(busyLocks[BUYER], nil)
+        Mock.fireNet('qb-houses:server:SetDecorating', OTHER, 'nowhere', true)
+        assert_eq(busyLocks[OTHER], nil)
         Mock.fireNet('qb-houses:server:SetDecorating', OTHER, 'owned1', true)
-        assert_eq(Player(OTHER).state.inv_busy, true)
+        assert_true(busyLocks[OTHER]['houses:decorate'])
         Mock.fireNet('qb-houses:server:SetDecorating', OTHER, nil, false)
-        assert_eq(Player(OTHER).state.inv_busy, false)
-        -- the inventory's own busy flag cannot be cleared through this event
-        Player(BUYER).state.inv_busy = true
+        assert_eq(busyLocks[OTHER]['houses:decorate'], nil)
+        -- someone who never started decorating releases nothing (the event cannot touch other locks)
         Mock.fireNet('qb-houses:server:SetDecorating', BUYER, nil, false)
-        assert_eq(Player(BUYER).state.inv_busy, true)
+        assert_eq(busyLocks[BUYER], nil)
+        assert_eq(Player(OTHER).state.inv_busy, nil, 'the state bag itself is left to pfm-inventory')
     end)
 end)
 

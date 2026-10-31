@@ -329,3 +329,30 @@ exports('GetCitizenApartment', function(citizenid)
         coords = enter and { x = math.floor(enter.x * 100 + 0.5) / 100, y = math.floor(enter.y * 100 + 0.5) / 100 } or nil,
     }
 end)
+
+-- A deleted character: pfm-core deleted their apartments row and passes the apartment names it had
+-- (read before the delete). Each apartment's stash (pfm-inventory, id = the apartment name) is
+-- emptied so nobody inherits it; CreateApartmentId also never hands out an id that still has a stash.
+local function isApartmentName(name)
+    if type(name) ~= 'string' or #name < 2 or #name > 64 or not name:match('^[%w_%-]+$') then return false end
+    for kind in pairs(Apartments.Locations) do
+        local rest = name:sub(#kind + 1)
+        if name:sub(1, #kind) == kind and rest:match('^%d+$') then return true end
+    end
+    return false
+end
+
+AddEventHandler('pfm-core:server:characterDeleted', function(citizenid, deleted)
+    if type(citizenid) ~= 'string' or citizenid == '' or type(deleted) ~= 'table' or type(deleted.apartments) ~= 'table' then return end
+    local n = 0
+    for _, name in ipairs(deleted.apartments) do
+        n = n + 1
+        if n > 16 then break end
+        if isApartmentName(name) then
+            if GetResourceState('pfm-inventory') == 'started' then
+                pcall(function() exports['pfm-inventory']:ClearStash(name) end)
+            end
+            MySQL.query.await('DELETE FROM inventories WHERE identifier = ?', { name })
+        end
+    end
+end)

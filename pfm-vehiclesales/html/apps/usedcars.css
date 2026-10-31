@@ -1,0 +1,12 @@
+/* Used Cars app (pf-devices). Base styles come from pf-devices runtime.css; everything here is scoped to .pfu. */
+.pfu .pfu-filters .pf-input, .pfu .pfu-filters .pf-select { width: auto; flex: 1; min-width: 140px; }
+.pfu .pfu-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.pfu .pfu-card { display: flex; flex-direction: column; gap: 6px; }
+.pfu .pfu-mine { border-color: rgba(56, 189, 248, .45); }
+.pfu .pfu-price { font-size: 20px; font-weight: 700; }
+.pfu .pfu-desc { font-size: 13px; color: var(--pf-fg-2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 72px; overflow: auto; }
+.pfu .pfu-plate {
+    font-family: Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 700; letter-spacing: .08em;
+    padding: 1px 6px; border-radius: 4px; background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1;
+}
+.pfu .pfu-price-input { width: 120px; padding: 5px 8px; font-size: 12px; }

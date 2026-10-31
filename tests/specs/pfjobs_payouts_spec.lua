@@ -146,8 +146,10 @@ end)
 
 describe('bus route', function()
     it('a route pays once; bank down leaves it open for a retry', function()
-        -- the shipped config has bus disabled with no routes; give it one
+        -- one simple route; this spec is about paying once, so the bus itself is not required here
+        -- (bus_spec covers MileageNeedsBus and passengers riding in the depot bus)
         Config.Bus.Enabled = true
+        Config.Bus.MileageNeedsBus = false
         local STOP = vector3(100.0, 100.0, 30.0)
         Config.Bus.Routes = { { id = 1, baseDistance = 2, estimatedTime = 600000, stops = { { isPickup = true, passengerCount = 4, coords = STOP } } } }
         Config.Bus.Pricing = { BasePayPerPassenger = 10, PayPerMile = 20, RushHourMultiplier = 1, NightBonus = 1,

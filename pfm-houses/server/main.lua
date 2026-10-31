@@ -1273,10 +1273,10 @@ RegisterNetEvent('qb-houses:server:RespondHouseSale', function(accepted)
         ('%s sold to %s %s for $%s (+$%s tax)'):format(offer.house, Buyer.PlayerData.charinfo.firstname, Buyer.PlayerData.charinfo.lastname, offer.price, tax))
 end)
 
--- Decorating blocks the inventory (inv_busy). The server sets that state bag value: with
--- sv_stateBagStrictMode a client cannot write replicated values. Only a key holder inside the house
--- turns it on, and this event only turns off what decorating turned on (so it cannot be used to
--- clear the flag the inventory set while it is open).
+-- Decorating blocks the inventory (inv_busy). pfm-inventory owns that state bag value and combines
+-- its locks (with sv_stateBagStrictMode a client cannot write replicated values). Only a key holder
+-- inside the house takes the 'houses:decorate' lock, and this event only releases that lock (so it
+-- cannot clear the flag the inventory set while it is open).
 local decorating = {}   -- [src] = house
 
 RegisterNetEvent('qb-houses:server:SetDecorating', function(house, active)
@@ -1287,10 +1287,11 @@ RegisterNetEvent('qb-houses:server:SetDecorating', function(house, active)
         if type(house) ~= 'string' or not Config.Houses[house] then return end
         if not hasKey(qbPlayer.PlayerData.license, qbPlayer.PlayerData.citizenid, house) or not insideHouse(src, house) then return end
         decorating[src] = house
-        Player(src).state.inv_busy = true
+        -- through pfm-inventory, which combines this lock with open inventories and other locks
+        exports['pfm-inventory']:SetBusyLock(src, 'houses:decorate', true)
     elseif decorating[src] then
         decorating[src] = nil
-        Player(src).state.inv_busy = false
+        exports['pfm-inventory']:SetBusyLock(src, 'houses:decorate', false)
     end
 end)
 

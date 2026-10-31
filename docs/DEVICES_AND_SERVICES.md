@@ -49,6 +49,25 @@ apps and systems that register with them:
 - **Directory:** shows which businesses are open and which services are on duty.
 - **The list of every link:** `JOB_LINKS.md`.
 
+## Rules every resource follows (batch 11)
+- **Deleted characters:** pfm-core fires the server-only event `pfm-core:server:characterDeleted` (citizenid, deleted) after a character is deleted. `deleted.apartments` lists the apartment names it held. Each resource clears or anonymises its own rows in its handler:
+  - private rows go;
+  - rows other people still need stay without the link (published articles keep their byline, shared documents stay with the people they were shared with, ledger entries are never touched);
+  - open requests are cancelled and refunded, and jobs the character had accepted go back to the queue.
+- **Other resources' tables are read through exports, never directly:**
+  - pf-government registry: `GetBusiness(id)`, `GetBusinessesOwnedBy(ownerIds, businessIds)`, `ListBusinesses({ limit })`;
+  - pf-stores: `GetStoreOwner(storeId)`;
+  - pfm-management staff rules: `IsBoss`, `ListEmployees`, `SetEmployeeGrade`, `FireEmployee`, `HireEmployee`;
+  - pf-restaurants staff: `AddStaff`, `RemoveStaff`.
+- **Websites get live updates by host:** `exports['pf-devices']:BroadcastSite('news.ls', event, payload)` reaches every open copy in both browsers.
+- **State bags are written by the server only** (ready for `sv_stateBagStrictMode`):
+  - a client asks with a validated event and the server sets the value;
+  - values only that client reads are set locally with `:set(key, value, false)`;
+  - `inv_busy` belongs to the inventory server; other resources take an action lock with `exports['pfm-inventory']:SetBusyLock(src, reason, busy, ttl)` (server) or `qb-inventory:server:setActionBusy(reason, busy)` (client);
+  - `tests/specs/statebag_strict_scan_spec.lua` fails on any new client write.
+- **Consumables:** food and drink from any resource is registered with pfm-smallresources (`AddFood`, `AddDrink`, `AddAlcohol`), which removes the item on the server before granting hunger or thirst. Freshness, a dish's quality and its poison risk are taken into account.
+- **Supplier stock and case sizes:** a player supplier's stock unit is `Config.SupplyChain.CaseSize[item]` items. Orders whose lines carry their own `caseSize` are converted, so the supplier hands over exactly what the buyer unpacks.
+
 ## Where each owner requirement lives
 | Requirement | Where |
 |---|---|

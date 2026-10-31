@@ -540,32 +540,58 @@ Config.JobInteractions = {
         shouldClose = true
     }
     },
+    -- the tow job lives in pf-jobs (client/tow.lua): the flatbed hook and NPC tow contracts
     ['tow'] = {
         {
-            id = 'togglenpc',
-            title = 'Toggle NPC',
-            icon = 'toggle-on',
+            id = 'towcontract',
+            title = 'Next tow contract',
+            icon = 'clipboard-list',
             type = 'client',
-            event = 'jobs:client:ToggleNpc',
+            event = 'pf-jobs:tow:client:nextContract',
             shouldClose = true
         }, {
         id = 'towvehicle',
-        title = 'Tow vehicle',
+        title = 'Hook / unhook vehicle',
         icon = 'truck-pickup',
         type = 'client',
-        event = 'qb-tow:client:TowVehicle',
+        event = 'pf-jobs:tow:client:hookToggle',
         shouldClose = true
     }
     },
     ['mechanic'] = {
         {
             id = 'towvehicle',
-            title = 'Tow vehicle',
+            title = 'Hook / unhook vehicle',
             icon = 'truck-pickup',
             type = 'client',
-            event = 'qb-tow:client:TowVehicle',
+            event = 'pf-jobs:tow:client:hookToggle',
             shouldClose = true
         }
+    },
+    -- the bus job lives in pf-jobs (client/bus.lua); the Bus app does the same
+    ['bus'] = {
+        {
+            id = 'busroute',
+            title = 'Choose a route',
+            icon = 'route',
+            type = 'command',
+            event = 'busstart',
+            shouldClose = true
+        }, {
+        id = 'busstop',
+        title = 'Check in at stop',
+        icon = 'bus',
+        type = 'command',
+        event = 'busstop',
+        shouldClose = true
+    }, {
+        id = 'buscomplete',
+        title = 'Finish route',
+        icon = 'flag-checkered',
+        type = 'command',
+        event = 'buscomplete',
+        shouldClose = true
+    }
     },
     ['police'] = {
         {

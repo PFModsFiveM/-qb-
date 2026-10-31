@@ -52,6 +52,22 @@ Two shared services in `[pfscripts]/pf-services` carry every link:
 | Businesses → News | A business boss buys an ad | The ad price moves from the business account to the news company account (`society:reporter`) | `pf-news` | Businesses advertise; the news company earns money. |
 | Businesses → City Hall | The City Hall Requests app | `gov.request.slot`, `gov.request.inspection`, `gov.request.license` and `gov.request.delivery_zone` requests to government staff, approved on site | `pf-government` / `pf-services` | Businesses ask the government for equipment positions, inspections, licenses and delivery bays. Staff approve them where they stand. |
 
+## Links built in batch 11
+
+| From → To | Trigger | What moves | Code points (from / to) | Why it makes sense |
+|---|---|---|---|---|
+| Bank robbery → Bank branch | The vault opens (`Config.OnRobberyStart`), and the robbery timeout ends | The branch closes for 20 minutes, or until the robbery resource reopens it. Counter, ATM, cash and card actions within 30 m are refused (server position). City events `bank.branch.closed` / `bank.branch.reopened`. | `pfm-bankrobbery/sv_config.lua` / `pfm-banking/server_branches.lua` | A robbed branch can't serve customers. Paleto and Pacific now close too. |
+| Boss app → Bank | A boss deposits to or withdraws from the society account | Money on the ledger (`SocietyTransfer`); cash only at the boss desk | `pfm-management/server/sv_app.lua` / `pfm-banking/server.lua` | One place for society money; nothing is created |
+| Garages app → Tow → Garages | A citizen asks for their car to be towed to one of their garages | A `tow.recovery` request with the garage as destination. The call-out fee is held from the citizen; the car is parked in that garage when the driver delivers it there. | `pfm-garages/server/apps.lua` / `pf-jobs/server/apps/tow_requests.lua` | Stranded cars get home through a real tow driver |
+| Garages app → City treasury | A citizen pays an impound release fee ahead | Cash or bank to the depot, then to the treasury. The car is released at the depot without paying again. | `pfm-garages/server/main.lua` (`PayDepot`) / pf-government `DepositToTreasury` | One payment path for the app and the depot |
+| Real estate agent → Buyer → Government | An agent offers a house to a customer beside them, who accepts | The buyer's bank pays price, broker fee and transfer tax. The tax goes to the treasury, 10% to `society:realestate`, 3% to the agent. The house is registered (`RegisterProperty`). | `pfm-houses/server/apps.lua` / pf-government | The realestate job sells houses and the city records owners |
+| Car dealer → Buyer → Government | A dealer offers a car to a customer beside them, who accepts | Price (or down payment) plus purchase tax from the buyer. The price goes to the dealership, the commission to the salesperson, the tax to the treasury, and a registration bill from the city. One car is taken from stock. | `pfm-vehicleshop/server.lua` / pf-government `CollectTaxAmount`, `ChargeVehicleRegistration` | The cardealer job sells, the city taxes and registers |
+| Car dealer → Manufacturer | A dealership manager orders stock | The dealership's society account pays the wholesale price; stock rises | `pfm-vehicleshop/server_apps.lua` | Sales cost the dealership something real |
+| Used car lot → Seller's mail | A car on the lot is bought | A mail to the seller on any device | `pfm-vehiclesales/server/main.lua` / pf-citizen `SendMail` | The seller learns of the sale even with no phone resource |
+| Vineyard → Restaurants | A restaurant orders wine or grape juice; a vineyard worker fills it as a player supplier | Bottles from the worker's stock to the restaurant's storage; payment through escrow to the supplier | `pf-restaurants` `Config.Supplies.PricePerItem`, `SupplyUnitPrice` / pf-stores suppliers; the Vineyard app's Selling tab | Vineyard workers get a real customer, restaurants buy wine at a real price |
+| Restaurant stock → Menu → Customers | A cook fills drinks at the drink station; a customer drinks them | 1 wine → 4 glasses, 1 grape juice → 2 glasses; glasses are sold, and drinking one gives thirst (alcohol for wine) | `pf-restaurants/config/recipes.lua`, `server/integration.lua` / pfm-smallresources consumables | The supplied wine becomes something the restaurant sells and people drink |
+| Recycling and scrapyard → Mechanic shops | A mechanic shop orders materials; a recycler or scrapper fills it as a player supplier | Scrap materials into the shop's stash, one unit per unit paid | `pf-mechanicjob/config.lua` `SuppliesCatalog.materials`, `business_data_provider.lua` / pf-stores suppliers | Scrap gets a market beyond the NPC buyer, and shops get repair materials |
+
 ## Links that already existed (earlier batches)
 
 | From → To | What moves | Where |
@@ -68,10 +84,6 @@ Two shared services in `[pfscripts]/pf-services` carry every link:
 
 | From → To | Why not yet |
 |---|---|
-| Bank robbery → Fleeca branch closed | `Config.OnRobberyStart` already fires `qb-banking:server:SetBankClosed`, but pfm-banking doesn't handle it yet. |
 | Script alerts (drug sales, "suspicious activity") → Dispatch | These would need de-duplication against the robbery events, or every robbery would create two requests. |
-| MDT dispatch and the pf-services Dispatch app | Two dispatch systems now exist (the MDT has its own callouts and 911 board). The owner should pick the main one. |
 | Armored truck hit → Gruppe 6 | The Gruppe 6 job could be told when one of its trucks is hit. |
-| Vineyard → Restaurants (wine, grape juice) | Restaurants need drink recipes and per-item supply prices first. Wine is $1 a unit in today's category price. |
-| Scrapyard materials → Mechanic parts | Parts orders could accept scrap metal from player suppliers through the Supplier app once mechanic catalogs list materials. |
 | Gruppe 6 / Garbage crew splits | Splits are stored but the payouts ignore them (every member gets 1.5×); this needs an owner decision. |

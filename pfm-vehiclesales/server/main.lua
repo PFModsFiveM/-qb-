@@ -100,6 +100,7 @@ RegisterNetEvent('qb-occasions:server:ReturnVehicle', function(vehicleData)
             exports['pfm-core']:GrantVehicleSpawn(src, result[1].model)
             TriggerClientEvent('qb-occasions:client:ReturnOwnedVehicle', src, result[1])
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+            if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_your_vehicle'), 'error', 3500)
         end
@@ -123,6 +124,7 @@ RegisterNetEvent('qb-occasions:server:sellVehicle', function(vehiclePrice, vehic
         MySQL.insert('INSERT INTO occasion_vehicles (seller, price, description, plate, model, mods, occasionid) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, vehiclePrice, desc, vehicleData.plate, vehicleData.model, json.encode(vehicleData.mods), generateOID() })
         TriggerEvent('qb-log:server:CreateLog', 'vehicleshop', 'Vehicle for Sale', 'red', '**' .. GetPlayerName(src) .. '** has a ' .. vehicleData.model .. ' priced at ' .. vehiclePrice)
         TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+        if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('success.vehicle_listed'), 'success', 5500)
     else
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_your_vehicle'), 'error', 3500)
@@ -232,13 +234,20 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
             exports['pfm-core']:GrantVehicleSpawn(src, listing.model)
             TriggerClientEvent('qb-occasions:client:BuyFinished', src, listing)
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+            if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
             TriggerClientEvent('QBCore:Notify', src, ('Vehicle purchase complete. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'success')
+            -- the seller is told by mail (pf-citizen, the same mailbox on the phone, tablet and
+            -- computer; the old phone resource if that is what runs). The sale is done either way.
             local shared = sharedVehicles[listing.model]
-            exports['pfm-phone']:sendNewMailToOffline(SellerCitizenId, {
+            local mail = {
                 sender = Lang:t('mail.sender'),
                 subject = Lang:t('mail.subject'),
-                message = Lang:t('mail.message', { value = NewPrice, value2 = shared and shared.name or listing.model })
-            })
+                message = Lang:t('mail.message', { value = NewPrice, value2 = shared and shared.name or listing.model }),
+            }
+            local mailed = GetResourceState('pf-citizen') == 'started' and pcall(function() return exports['pf-citizen']:SendMail(SellerCitizenId, mail) end)
+            if not mailed and GetResourceState('pfm-phone') == 'started' then
+                pcall(function() exports['pfm-phone']:sendNewMailToOffline(SellerCitizenId, mail) end)
+            end
         else
             TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
         end

@@ -75,6 +75,8 @@ local function loadComputer()
     Mock.exportsByResource['pfm-banking'] = Mock.exportsByResource['__self']
 end
 loadComputer()
+-- pf-government's registry exports (the Job Board reads registry owners through GetBusinessesOwnedBy)
+load_resource('tests/lua/gov_registry_exports.lua')
 
 local BOSS, APPLICANT, OTHER, OWNER = 1, 2, 3, 4
 local function setJob(p, name, grade)

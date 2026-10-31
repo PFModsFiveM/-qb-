@@ -1,6 +1,6 @@
 -- The real pfm-banking ledger on the fake database, for specs of resources that pay through it.
 --   load_resource('tests/lua/ledger_env.lua')
---   LedgerEnv.load('pfm-towjob', { 'pfm-towjob/config.lua', 'pfm-towjob/server/main.lua' })
+--   LedgerEnv.load('pf-jobs', { '[pfscripts]/pf-jobs/config.lua', '[pfscripts]/pf-jobs/server/apps/tow.lua' })
 --   BeforeEach: LedgerEnv.reset() (fresh database and ledger), then create players.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/fake_db.lua')

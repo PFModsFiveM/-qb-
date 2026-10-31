@@ -354,6 +354,65 @@ async function open(env, id, params) {
         env.clean();
     });
 
+    await it('the computer page boots without the old windows; the lock screen and layout come from the server', async () => {
+        const UI = path.join(PF, 'pf-computer/ui');
+        const html = fs.readFileSync(path.join(UI, 'index.html'), 'utf8').replace(/<script[\s\S]*?<\/script>/g, '');
+        const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://cfx-nui-pf-computer/ui/index.html' });
+        const win = dom.window;
+        const errors = [];
+        win.addEventListener('error', (e) => errors.push(String(e.error && e.error.stack || e.message)));
+        const sent = [];
+        win.fetch = async (url, opts) => {
+            const name = String(url).replace(/^https:\/\/[^/]+\//, '');
+            const body = JSON.parse(opts && opts.body || '{}');
+            sent.push({ name, body });
+            let r = { ok: true, data: {} };
+            if (name === 'pc:getExternalPrograms') r = { ok: true, data: [] };
+            if (name === 'pc:getPlayerData') r = { ok: true, data: { citizenid: 'ABC', name: 'Test User' } };
+            if (name === 'pc:profile:get') r = { ok: true, layout: { items: [{ id: 'business-manager', app: 'business-manager', type: 'app', location: 'desktop', position: { x: 1, y: 1 } }],
+                folders: [{ id: 'f1', name: EVIL, location: 'desktop', position: { x: 3, y: 3 } }] },
+                security: { enabled: true, method: 'pin', hasPin: true, locked: true, fails: 0, attemptsLeft: 5, timeoutRemaining: 0, lockdownRemaining: 0 } };
+            if (name === 'pc:lock:unlock') r = body.secret === '2468' ? { ok: true, security: { enabled: true, method: 'pin', hasPin: true, locked: false, fails: 0 } }
+                : { ok: false, error: 'wrong_secret', security: { enabled: true, method: 'pin', hasPin: true, locked: true, fails: 1, attemptsLeft: 4, timeoutRemaining: 0 } };
+            return { json: async () => JSON.parse(JSON.stringify(r)) };
+        };
+        const deep = () => new Proxy(function () {}, { get: (t, k) => (k === Symbol.toPrimitive ? () => 0 : (k === 'then' ? undefined : deep())), apply: () => deep(), set: () => true });
+        win.HTMLCanvasElement.prototype.getContext = () => deep();
+        win.requestAnimationFrame = (f) => setTimeout(f, 0);
+        win.cancelAnimationFrame = (id) => clearTimeout(id);
+        win.console.log = () => {};
+        win.console.warn = () => {};
+        // the page's scripts share one global scope in the browser: evaluate them together
+        win.eval(['js/rte.js', 'js/games.js', 'js/script.js'].map((f) => fs.readFileSync(path.join(UI, f), 'utf8')).join('\n;\n'));
+        win.document.dispatchEvent(new win.Event('DOMContentLoaded'));
+        await settle();
+        win.postMessage({ action: 'openComputer', computerProfile: 'default', computerStateKey: 'profile:default:model:1:pos:1,2,3' }, '*');
+        await new Promise((r) => setTimeout(r, 300));
+        for (const a of ['business-manager', 'order-supplies', 'job-board']) eq(!!win.document.querySelector(`.window[data-app="${a}"]`), false, `old ${a} window`);
+        eq(win.document.querySelectorAll('.evil').length, 0, 'a folder name became HTML');
+        eq(win.document.querySelectorAll('.icon[data-app="business-manager"]').length, 0, 'the old Business Manager desktop item is dropped');
+        const overlay = win.document.querySelector('.pc-lockscreen-overlay');
+        ok(overlay && overlay.style.display === 'flex', 'locked on the server: lock screen shown');
+        win.document.querySelector('#pc-lock-idle-unlock').click();
+        await settle();
+        win.document.querySelector('#pc-lock-auth-input').value = '1111';
+        win.document.querySelector('#pc-lock-auth-submit').click();
+        await settle();
+        ok(win.document.querySelector('#pc-lock-feedback').textContent.includes('4 attempts'), 'the server counts the tries');
+        win.document.querySelector('#pc-lock-auth-input').value = '2468';
+        win.document.querySelector('#pc-lock-auth-submit').click();
+        await settle();
+        eq(overlay.style.display, 'none', 'unlocked by the server');
+        const unlocks = sent.filter((x) => x.name === 'pc:lock:unlock');
+        eq(unlocks.length, 2);
+        eq(unlocks[0].body.scope, 'profile:default:model:1:pos:1,2,3', 'sent for this computer');
+        ok(!sent.some((x) => /pin/i.test(x.name) && x.name !== 'pc:lock:unlock'), 'no PIN sent anywhere else');
+        ok(!Object.keys(win.localStorage).some((k) => /security_pin|security_password/.test(k)), 'no PIN in the browser cache');
+        await new Promise((r) => setTimeout(r, 1000));
+        ok(sent.some((x) => x.name === 'pc:profile:saveLayout'), 'the layout is saved on the server');
+        eq(errors.length, 0, errors.join(' | '));
+    });
+
     console.log(`${passed} passed, ${failed} failed`);
     if (failures.length) { console.log('Failures:'); failures.forEach((f) => console.log('  - ' + f)); process.exit(1); }
     process.exit(0);   // the apps' refresh timers would keep node running

@@ -38,9 +38,8 @@ local function EnableEditMode()
 	curPos = { x = pos.x, y = pos.y, z = pos.z }
 	DecoMode = true
 	exports['pfm-target']:AllowTargeting(false)
-	-- inv_busy is set by the server (a client cannot write replicated state bag values under
-	-- sv_stateBagStrictMode); the local, non-replicated copy only keeps this client in step meanwhile
-	LocalPlayer.state:set('inv_busy', true, false)
+	-- inv_busy is set by the server (pfm-inventory lock 'houses:decorate'); a local copy would hide
+	-- the server's value on this client, so none is written here
 	TriggerServerEvent('qb-houses:server:SetDecorating', ClosestHouse, true)
 	TriggerEvent('qb-anticheat:client:ToggleDecorate', true)
 end
@@ -74,7 +73,6 @@ local function DisableEditMode()
 	peanut = false
 	DecoMode = false
 	exports['pfm-target']:AllowTargeting(true)
-	LocalPlayer.state:set('inv_busy', false, false)
 	TriggerServerEvent('qb-houses:server:SetDecorating', ClosestHouse, false)
 	TriggerEvent('qb-anticheat:client:ToggleDecorate', false)
 end
