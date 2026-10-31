@@ -194,6 +194,24 @@ const APPS = (device) => [
         eq(esc('<b>"x"</b>'), '&lt;b&gt;&quot;x&quot;&lt;/b&gt;');
     });
 
+    await it('an iframe app gets the device in its URL and its own NUI messages unwrapped', async () => {
+        const apps = () => [{ id: 'trucking', name: 'Trucking', kind: 'iframe', url: 'https://cfx-nui-pf-trucking/html/index.html?embed=1&device={device}', styles: [] }];
+        const { win } = makeWindow(apps, {});
+        attachShell(win, 'computer');
+        await win.PFApps.refresh();
+        await win.PFApps.open('trucking');
+        await settle();
+        const frame = win.document.querySelector('[data-window="trucking"] iframe');
+        ok(frame, 'iframe mounted');
+        ok(frame.getAttribute('src').endsWith('device=computer'), frame.getAttribute('src'));
+        const got = [];
+        frame.contentWindow.postMessage = (m) => got.push(m);
+        win.PFApps.handleMessage({ action: 'pfapp:event', app: 'trucking', event: 'nui', payload: { action: 'pf-trucking:setStatus', online: true } });
+        win.PFApps.handleMessage({ action: 'pfapp:event', app: 'trucking', event: 'other', payload: { x: 1 } });
+        eq(got[0].action, 'pf-trucking:setStatus', 'raw NUI message');
+        eq(got[1].action, 'pfapp:event', 'other events wrapped');
+    });
+
     console.log(`\n${passed} passed, ${failed} failed (pf-devices runtime)`);
     if (failed) { failures.forEach((f) => console.log('  - ' + f)); process.exit(1); }
 })();
