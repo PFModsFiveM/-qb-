@@ -13,9 +13,9 @@ FakeDB.extraPatterns = {
         local l = listings[p[1]]
         return (l and l.occasionid == p[2]) and { l } or {}
     end },
-    { 'DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', function(p)
+    { 'DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?', function(p)
         local l = listings[p[1]]
-        if l and l.occasionid == p[2] then listings[p[1]] = nil return { affectedRows = 1 } end
+        if l and l.occasionid == p[2] and l.price == p[3] then listings[p[1]] = nil return { affectedRows = 1 } end
         return { affectedRows = 0 }
     end },
     -- the statements the old code used for an offline seller
@@ -39,7 +39,8 @@ local BUYER, BUYER2, SELLER = 1, 2, 3
 local LOT = vector3(Config.Zones.SandyOccasions.BuyVehicle.x, Config.Zones.SandyOccasions.BuyVehicle.y, Config.Zones.SandyOccasions.BuyVehicle.z)
 local function bank(src) return Mock.players[src].PlayerData.money.bank end
 local function later() Mock.gameTimer = Mock.gameTimer + 10000 end
-local CAR = { plate = 'USED123', oid = 'OC1234' }
+-- what the buyer's contract sends: the plate, the listing id and the price it showed
+local CAR = { plate = 'USED123', oid = 'OC1234', price = 10000 }
 
 BeforeEach = function()
     Mock.reset()
@@ -68,6 +69,19 @@ describe('buying a used car', function()
         Mock.fireNet('qb-occasions:server:buyVehicle', BUYER, CAR) -- the listing is gone
         assert_eq(bank(BUYER), 10000)
         assert_eq(bank(SELLER), 7700)
+    end)
+    it('a price changed while the contract was open is refused, not charged', function()
+        listings[CAR.plate].price = 19000   -- the seller repriced it from the Used Cars app
+        Mock.fireNet('qb-occasions:server:buyVehicle', BUYER, CAR)
+        assert_eq(bank(BUYER), 20000, 'nothing charged')
+        assert_eq(bank(SELLER), 0)
+        assert_true(listings[CAR.plate] ~= nil, 'the listing stays')
+        later()
+        Mock.fireNet('qb-occasions:server:buyVehicle', BUYER, { plate = CAR.plate, oid = CAR.oid })
+        assert_eq(bank(BUYER), 20000, 'no price sent: refused too')
+        later()
+        Mock.fireNet('qb-occasions:server:buyVehicle', BUYER, { plate = CAR.plate, oid = CAR.oid, price = 19000 })
+        assert_eq(bank(BUYER), 1000, 'the new price once the buyer has seen it')
     end)
     it('an offline seller is paid through the ledger', function()
         Mock.players[SELLER] = nil

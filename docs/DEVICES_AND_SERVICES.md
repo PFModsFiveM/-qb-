@@ -14,11 +14,11 @@ pf-devices  ── app registry, access rules, RPC bridge, push channel, App Sto
 pf-services ── city events timeline + service requests between jobs (Dispatch / Services apps)
    │
 apps and systems that register with them:
-   pf-jobs (taxi, bus, garbage, Gruppe6, tow)          pf-mechanicjob (work orders, register, management)
+   pf-jobs (taxi, bus, garbage, Gruppe6, tow, recycling, vineyard)   pf-mechanicjob (work orders, register, management)
    pf-news (newsroom, News app + news.ls)              pf-government (fines, inspections, requests, budget...)
    pf-citizen (mail, bills, documents, calendar)       pf-services (Dispatch, Services, Directory)
    police and EMS MDTs (their own page in a device window) pf-computer (Business Manager, Order Supplies, Job Board)
-   pf-jobs (tow, bus, recycling, vineyard too)          pfm-banking (Bank), pfm-crypto, pfm-management (Boss)
+   pfm-banking (Bank), pfm-crypto, pfm-management (Boss)
    pfm-garages, pfm-houses (Real Estate, Agency)        pfm-vehicleshop (Car Dealer, Dealership), pfm-vehiclesales
    pfm-pawnshop, pfm-crafting                           pf-stores (Supplier)
 ```

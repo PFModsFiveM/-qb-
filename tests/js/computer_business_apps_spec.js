@@ -168,23 +168,23 @@ async function open(env, id, params) {
         await it(`${device}: Business Manager renders every section from server data as text`, async () => {
             const env = makeWindow(device, bmHandlers());
             await open(env, 'businessmanager');
-            ok(env.$('.pfb-bm'), 'mounted');
+            ok(env.$('.pfbiz-bm'), 'mounted');
             const navs = env.all('.pf-nav-item');
             eq(navs.length, 15, 'ten business and five registry sections');
             for (let i = 0; i < navs.length; i++) {
                 env.all('.pf-nav-item')[i].click();
                 await settle();
-                ok(env.$('.pfb-section-title'), `section ${i} has a title`);
+                ok(env.$('.pfbiz-section-title'), `section ${i} has a title`);
                 env.clean();
             }
-            eq(env.all('.pfb-head-logo').length, 0, 'a javascript: logo is not shown');
+            eq(env.all('.pfbiz-head-logo').length, 0, 'a javascript: logo is not shown');
         });
 
         await it(`${device}: Order Supplies renders every tab, in job and store mode`, async () => {
             for (const mode of ['job', 'store']) {
                 const env = makeWindow(device, osHandlers(mode));
                 await open(env, 'ordersupplies');
-                ok(env.$('.pfb-os'), 'mounted');
+                ok(env.$('.pfbiz-os'), 'mounted');
                 env.button('Add to cart').click();
                 await settle();
                 for (const tab of env.all('.pf-tab').map((t) => t.textContent)) {
@@ -199,7 +199,7 @@ async function open(env, id, params) {
         await it(`${device}: Job Board renders every tab and the applicants`, async () => {
             const env = makeWindow(device, jbHandlers());
             await open(env, 'jobboard');
-            ok(env.$('.pfb-jb'), 'mounted');
+            ok(env.$('.pfbiz-jb'), 'mounted');
             eq(env.all('.pf-tab').length, 4, 'my business tab for a manager');
             for (let i = 0; i < 4; i++) {
                 env.all('.pf-tab')[i].click();
@@ -208,7 +208,7 @@ async function open(env, id, params) {
             }
             env.button('Applicants').click();
             await settle();
-            ok(env.$('.pfb-applicant'), 'applicant shown');
+            ok(env.$('.pfbiz-applicant'), 'applicant shown');
             env.clean();
         });
     }
@@ -240,13 +240,13 @@ async function open(env, id, params) {
         await settle();
         env.button('Add item').click();
         await settle();
-        const dialog = env.$('.pfb-dialog');
+        const dialog = env.$('.pfbiz-dialog');
         ok(dialog, 'dialog inside the app');
         const name = dialog.querySelector('input.pf-input');
         const price = dialog.querySelector('input.pf-input[type=number]');
         name.value = 'Fries';
         price.value = '4.5';
-        dialog.querySelector('.pfb-pick input[type=checkbox]').click();
+        dialog.querySelector('.pfbiz-pick input[type=checkbox]').click();
         env.button('Save').click();
         await settle();
         const add = env.rpcs.find((r) => r.method === 'menuAdd');
@@ -268,7 +268,7 @@ async function open(env, id, params) {
         await open(env, 'businessmanager');
         env.all('.pf-nav-item').find((n) => n.textContent.includes('Wages')).click();
         await settle();
-        const inputs = env.all('.pfb-bm table input');
+        const inputs = env.all('.pfbiz-bm table input');
         inputs[1].value = '90';
         env.button('Save wages').click();
         await settle();
@@ -276,7 +276,7 @@ async function open(env, id, params) {
         eq(JSON.stringify(set.payload.wages), JSON.stringify({ 1: 90 }));
         env.all('.pf-nav-item').find((n) => n.textContent.includes('Company account')).click();
         await settle();
-        env.$('.pfb-bm input[type=number]').value = '100';
+        env.$('.pfbiz-bm input[type=number]').value = '100';
         env.button('Deposit from my bank').click();
         await settle();
         eq(env.rpcs.find((r) => r.method === 'deposit').payload.amount, 100);
@@ -289,7 +289,7 @@ async function open(env, id, params) {
         await settle();
         env.all('.pf-tab').find((t) => t.textContent.startsWith('Cart')).click();
         await settle();
-        [...env.all('.pfb-chip')].find((c) => c.textContent === 'Trucker delivery').click();
+        [...env.all('.pfbiz-chip')].find((c) => c.textContent === 'Trucker delivery').click();
         await settle();
         env.button('Place order').click();
         await settle();
@@ -311,7 +311,7 @@ async function open(env, id, params) {
         await open(env, 'jobboard');
         env.button('Apply').click();
         await settle();
-        env.$('.pfb-jb textarea').value = 'Two years';
+        env.$('.pfbiz-jb textarea').value = 'Two years';
         env.button('Send application').click();
         await settle();
         const apply = env.rpcs.find((r) => r.method === 'apply');
@@ -348,9 +348,9 @@ async function open(env, id, params) {
         const env = makeWindow('tablet', { 'businessmanager.init': () => ({ ok: true, business: false, registry: false }),
             'ordersupplies.catalog': () => ({ ok: false, error: 'job_not_allowed' }) });
         await open(env, 'businessmanager');
-        ok(env.$('.pfb-bm .pf-empty'), 'explained');
+        ok(env.$('.pfbiz-bm .pf-empty'), 'explained');
         await open(env, 'ordersupplies');
-        ok(env.$('.pfb-os .pf-empty').textContent.includes('no business'), 'explained');
+        ok(env.$('.pfbiz-os .pf-empty').textContent.includes('no business'), 'explained');
         env.clean();
     });
 

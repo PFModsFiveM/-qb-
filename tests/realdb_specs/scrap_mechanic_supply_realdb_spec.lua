@@ -271,5 +271,15 @@ describe('5. a part the shop buys in cases of 10', function()
         local n = 0
         for _, it in pairs(s and s.items or {}) do if it.name == part.item then n = n + it.amount end end
         assert_eq(n, 10, 'the shop receives the 10 items the supplier handed over')
+        assert_eq(json.decode(O.Get(id).items_json)[1].reservedUnits, 10, 'the reservation is recorded on the order')
+
+        -- a cancelled order gives back exactly what was reserved; an order accepted before
+        -- reservations were recorded gives back its line quantity (what the old code reserved)
+        local function stockQty() return tonumber(MySQL.scalar.await('SELECT stock_qty FROM pf_supplier_offers WHERE item = ?', { part.item })) end
+        local before = stockQty()
+        O.ReturnSupplierStock({ supplier_ref = 'RECY1', items_json = json.encode({ { name = part.item, quantity = 1, caseSize = 10, reservedUnits = 10 } }) })
+        assert_eq(stockQty(), before + 10)
+        O.ReturnSupplierStock({ supplier_ref = 'RECY1', items_json = json.encode({ { name = part.item, quantity = 1, caseSize = 10 } }) })
+        assert_eq(stockQty(), before + 11, 'legacy order: its line quantity')
     end)
 end)

@@ -172,6 +172,14 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
     local result = MySQL.query.await('SELECT * FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { vehicleData['plate'], vehicleData['oid'] })
     if result[1] and next(result[1]) then
         local subtotal = tonumber(result[1].price) or 0
+        -- the buyer pays the price their contract showed: a seller can reprice a listing from the
+        -- Used Cars app, so a price changed while the contract was open is refused, not charged
+        local accepted = tonumber(vehicleData.price)
+        if not accepted or math.abs(accepted - subtotal) > 0.005 then
+            TriggerClientEvent('QBCore:Notify', src, 'The price of this car changed. Open the contract again to see the new price.', 'error', 5000)
+            TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+            return
+        end
         local taxAmount = 0
 
         if subtotal > 0 and GetResourceState('pf-government') == 'started' then
@@ -200,7 +208,8 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
                 TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
                 return
             end
-            local claimed = MySQL.query.await('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { listing.plate, listing.occasionid })
+            -- the claim also needs the price unchanged (a reprice between the read above and here)
+            local claimed = MySQL.query.await('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?', { listing.plate, listing.occasionid, listing.price })
             if not claimed or (claimed.affectedRows or 0) < 1 then
                 PFPayout.Pay(buyerCid, 'bank', total, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle already sold' })
                 TriggerClientEvent('QBCore:Notify', src, Lang:t('error.vehicle_does_not_exist'), 'error', 3500)
