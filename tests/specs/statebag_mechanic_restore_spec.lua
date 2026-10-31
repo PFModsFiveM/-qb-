@@ -1,6 +1,8 @@
 -- pf-mechanicjob under sv_stateBagStrictMode: a replaced tyre and a car's saved wear, mileage and
 -- NOS are set by the server only (server/consumables.lua 'pf_mech:server:tireReplaced',
--- server/garage_sync.lua 'pf_mech:server:restoreVehicleState').
+-- server/garage_sync.lua 'pf_mech:server:restoreVehicleState'). The saved state is what the server
+-- wrote to vehicle_diagnostics; NOS is never taken from player_vehicles.mods (the owner's client
+-- writes that). Saving: mechanic_saved_state_spec.lua.
 load_resource('tests/lua/fivem_mocks.lua')
 QBCore = QBCoreMock
 
@@ -40,7 +42,9 @@ BeforeEach = function()
     Mock.coords[MECH] = vector3(0.0, 0.0, 0.0)
     Mock.coords[VEH] = vector3(2.0, 0.0, 0.0)
     Mock.plates[VEH] = ' AB12CD '
+    Mock.models = { [VEH] = GetHashKey('sultan') }
     rows = { diag = {}, veh = {} }
+    Mock.fireEvent('entityRemoved', nil, VEH)       -- each test starts with a car not loaded yet
 end
 
 describe('a replaced tyre', function()
@@ -71,8 +75,8 @@ end)
 
 describe('a car taken out of a garage', function()
     it('gets its saved wear, mileage and NOS from the database, once, for a player in or near it', function()
-        rows.diag.AB12CD = { oil = 35, brakes = 20, mileage = 1234.5 }
-        rows.veh.AB12CD = { mods = '{"nos":{"has":true,"level":250,"color":"#FF0000"}}' }
+        rows.diag.AB12CD = { oil = 35, brakes = 20, mileage = 1234.5, nos_has = 1, nos_level = 250, nos_color = '#FF0000' }
+        rows.veh.AB12CD = { vehicle = 'sultan', mods = '{}' }
         Mock.coords[MECH] = vector3(500.0, 0.0, 0.0)
         Mock.fireNet('pf_mech:server:restoreVehicleState', MECH, VEH)
         assert_eq(Entity(VEH).state.mileage, nil, 'a player far away cannot trigger it')
@@ -85,6 +89,7 @@ describe('a car taken out of a garage', function()
         assert_eq(st.mileage, 1234.5)
         assert_true(st.nos.has)
         assert_eq(st.nos.level, 100, 'capped at the bottle capacity')
+        assert_eq(st.nos.color, '#FF0000')
         -- driven on: a second restore cannot wind the car back to its stored wear
         st:set('mileage', 1300, true)
         Mock.fireNet('pf_mech:server:restoreVehicleState', MECH, VEH)
@@ -94,6 +99,14 @@ describe('a car taken out of a garage', function()
         states[VEH] = nil
         Mock.fireNet('pf_mech:server:restoreVehicleState', MECH, VEH)
         assert_eq(Entity(VEH).state.mileage, 1234.5)
+    end)
+    it('never takes NOS from player_vehicles.mods', function()
+        rows.diag.AB12CD = { oil = 35, mileage = 10 }
+        rows.veh.AB12CD = { vehicle = 'sultan', mods = '{"nos":{"has":true,"level":100}}' }
+        Mock.vehicleOf[MECH] = VEH
+        Mock.fireNet('pf_mech:server:restoreVehicleState', MECH, VEH)
+        assert_eq(Entity(VEH).state.mileage, 10)
+        assert_eq(Entity(VEH).state.nos, nil)
     end)
     it('ignores cars that do not exist and odd plates', function()
         existing[VEH] = nil

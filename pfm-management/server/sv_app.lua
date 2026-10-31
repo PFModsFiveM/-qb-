@@ -101,6 +101,7 @@ end
 local SOCIETY_ERRORS = {
     insufficient_funds = 'Not enough money for that', not_authorized = 'You may not use this account', bad_amount = 'Enter a valid amount',
     already_processed = 'This transaction was already processed', unknown_account = 'The account was not found',
+    in_progress = 'That transaction is still being processed',
 }
 
 --- deposit / withdraw: payload { scope, amount, account = 'bank'|'cash', ref }
@@ -120,7 +121,9 @@ function App.Money(src, p, direction)
     end
     if not bankUp() then return { ok = false, error = 'bank_unavailable', message = 'The bank is not responding' } end
     local cid = Player.PlayerData.citizenid
-    local key = ('boss:%s:%s'):format(cid, ref)
+    -- the direction is part of the action: a ref reused for the other direction is a new move, and
+    -- SocietyTransfer refuses a reused key whose society or amount differs
+    local key = ('boss:%s:%s:%s'):format(cid, direction, ref)
     if onCooldown(cid) then return { ok = false, error = 'slow_down', message = 'Wait a moment between two transactions' } end
     local res = exports['pfm-banking']:SocietyTransfer(src, {
         society = group.name, direction = direction, account = account, amount = amount, key = key,

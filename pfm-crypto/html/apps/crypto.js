@@ -1,6 +1,7 @@
 // Crypto (pfm-crypto) on pf-devices: the Qbit price and its history, the wallet, buy / sell for bank
 // money and sending coins to another wallet. The server sets the price and does every trade; the module
-// sends the coin amount and a per-action `ref` (a retried request never trades twice).
+// sends the coin amount and a per-action `ref` (a retried request never trades twice; a changed trade
+// gets a new ref).
 (function () {
     const ERRORS = {
         bad_amount: 'Enter an amount of coins (at most 4 decimals)', bad_request: 'That request was not valid',
@@ -9,12 +10,23 @@
         slow_down: 'Wait a moment between two trades', already_processed: 'This trade was already processed',
         bank_unavailable: 'The bank is not responding; nothing was traded', server_error: 'The exchange had a problem. Try again.',
         request_failed: 'No answer from the exchange. Try again: it will not trade twice.', timeout: 'No answer from the exchange. Try again: it will not trade twice.',
-        rate_limited: 'Too many requests, slow down',
+        rate_limited: 'Too many requests, slow down', in_progress: 'Your last trade is still running',
     };
-    const RETRYABLE = { request_failed: true, timeout: true };
+    // answers after which the trade may still run or was not run at all: the same trade keeps its ref
+    const RETRYABLE = { request_failed: true, timeout: true, in_progress: true, busy: true, slow_down: true, rate_limited: true };
     const SVG = 'http://www.w3.org/2000/svg';
 
     function newRef() { return ('c' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)).slice(0, 40); }
+    // The ref of one trade. It is reused only to resend the exact same trade (same fingerprint) after a
+    // retryable answer; a changed trade always gets a fresh ref, so it can never be answered with the
+    // earlier trade's result.
+    function refKeeper() {
+        let kept = null;
+        return {
+            take(print) { return kept && kept.print === print ? kept.ref : newRef(); },
+            settle(ref, print, res) { kept = !(res && res.ok) && (!res || RETRYABLE[res.error]) ? { ref, print } : null; },
+        };
+    }
     function coinsText(n) { return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 4 }); }
     function when(at) {
         if (!at) return '';
@@ -30,7 +42,8 @@
     PFApps.register('crypto', {
         mount(container, ctx) {
             const { h, money } = ctx;
-            const state = { data: null, history: null, mode: 'buy', coins: '', wallet: '', ref: newRef(), busy: false, review: false };
+            const state = { data: null, history: null, mode: 'buy', coins: '', wallet: '', busy: false, review: false };
+            const refs = refKeeper();
 
             const priceEl = h('div.pfx-price', '—');
             const changeEl = h('span.pf-badge');
@@ -154,21 +167,26 @@
                 if (state.busy) return;
                 state.busy = true;
                 renderTrade();
+                const mode = state.mode;
                 const coins = Math.floor(Number(state.coins) * 10000) / 10000;
-                const payload = { coins, ref: state.ref };
-                if (state.mode === 'send') payload.walletId = state.wallet.trim();
-                const res = await ctx.rpc(state.mode, payload);
+                const payload = { coins };
+                if (mode === 'send') payload.walletId = state.wallet.trim();
+                // everything that makes it this trade: buy / sell / send, the coins and the wallet
+                const print = JSON.stringify([mode, coins, payload.walletId || '']);
+                const ref = refs.take(print);
+                payload.ref = ref;
+                const res = await ctx.rpc(mode, payload);
+                refs.settle(ref, print, res);
                 state.busy = false;
                 state.review = false;
                 if (res && res.ok) {
-                    const done = { buy: `Bought ${coinsText(res.coins)} QBit for ${money(res.total)}`, sell: `Sold ${coinsText(res.coins)} QBit for ${money(res.total)}`, send: `Sent ${coinsText(res.coins)} QBit` }[state.mode];
-                    ctx.notify(done, 'success');
-                    state.ref = newRef();
+                    const done = { buy: `Bought ${coinsText(res.coins)} QBit for ${money(res.total)}`, sell: `Sold ${coinsText(res.coins)} QBit for ${money(res.total)}`, send: `Sent ${coinsText(res.coins)} QBit` }[mode];
+                    // a resent trade: the server answered with the first one, nothing traded again
+                    ctx.notify(res.duplicate ? 'Already done earlier: ' + done : done, 'success');
                     state.coins = '';
                     await load();
                     return;
                 }
-                if (!(res && RETRYABLE[res.error])) state.ref = newRef();
                 ctx.notify(errorText(res), 'error');
                 renderTrade();
             }

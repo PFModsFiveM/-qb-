@@ -198,7 +198,7 @@ local function completeSale(o)
             PFPayout.Pay(o.buyerCid, 'bank', o.total, { key = key .. ':refund', kind = 'refund', reason = 'House no longer for sale' })
             return { ok = false, error = 'not_for_sale' }
         end
-        PFHouses.GiveHouse(o.house, buyer)
+        PFHouses.GiveHouse(o.house, buyer, o.price)   -- the price paid, for the state sell-back
         PFHouses.SettlePropertyTax(o.tax, o.buyerCid, key, o.price)
         local agencyCut = math.floor(o.price * (cfg().AgencyCommissionPercent or 0) / 100)
         local agentCut = math.floor(o.price * (cfg().AgentCommissionPercent or 0) / 100)
@@ -396,10 +396,19 @@ function PFHouses.SetListingPrice(src, payload)
     if not price or price ~= math.floor(price) or price < (cfg().MinPrice or 1000) or price > (cfg().MaxPrice or 100000000) then
         return { ok = false, error = 'bad_price' }
     end
-    if not forSale(house) then return { ok = false, error = 'not_for_sale' } end
+    -- an owned house keeps its price (the owned flag also covers an owner row not loaded yet)
+    if not forSale(house) or Config.Houses[house].owned == true then return { ok = false, error = 'not_for_sale' } end
     for _, o in pairs(offers) do if o.house == house then return { ok = false, error = 'house_offered' } end end
-    MySQL.update.await('UPDATE houselocations SET price = ? WHERE name = ? AND (owned = 0 OR owned IS NULL)', { price, house })
-    Config.Houses[house].price = price
+    if price == math.floor(tonumber(Config.Houses[house].price) or 0) then return { ok = true, price = price } end
+    -- The purchase lock: a door or agent sale cannot read the price while it changes, and none is
+    -- paying now. Memory follows only when the database changed that one unowned row.
+    if not PFHouses.Lock(house) then return { ok = false, error = 'not_for_sale' } end
+    local ok, changed = pcall(MySQL.update.await, 'UPDATE houselocations SET price = ? WHERE name = ? AND (owned = 0 OR owned IS NULL)', { price, house })
+    local applied = ok and tonumber(changed) == 1
+    if applied then Config.Houses[house].price = price end
+    PFHouses.Unlock(house)
+    if not ok then print(('^1[pfm-houses]^7 reprice of %s failed: %s'):format(house, tostring(changed))) end
+    if not applied then return { ok = false, error = ok and 'not_for_sale' or 'server_error' } end
     TriggerClientEvent('qb-houses:client:setHouseConfig', -1, Config.Houses)
     pushAgency('changed')
     TriggerEvent('qb-log:server:CreateLog', 'house', 'House repriced', 'orange', ('%s set %s to $%d'):format(nameOf(agent), house, price))

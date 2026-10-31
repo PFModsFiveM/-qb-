@@ -29,7 +29,8 @@ local Translations = {
         ["sell_buyer_far"] = "The buyer needs to stand next to you",
         ["sell_stash_full"] = "Empty your house storage before selling to the state",
         ["sell_declined"] = "They declined the offer",
-        ["sell_buyer_broke"] = "The buyer can't afford it"
+        ["sell_buyer_broke"] = "The buyer can't afford it",
+        ["price_changed"] = "The price of this house changed. Look at the contract again"
     },
     success = {
         ["sold_to_state"] = "Sold %{house} back to the state for $%{payout}",

@@ -1,7 +1,8 @@
 // Management (pfm-management) on pf-devices: the staff, ranks, wages and society account of the job
 // and/or gang the player is boss of. The server decides everything (who is boss, who may be ranked or
 // fired, who stands close enough to be hired, what the society holds); the module sends ids, a rank,
-// an amount and a per-action `ref` for money (a retried request never moves money twice).
+// an amount and a per-action `ref` for money (a retried request never moves money twice; a changed
+// request gets a new ref).
 (function () {
     const ERRORS = {
         not_boss: 'You are not the boss here', not_member: 'That person is not on your staff', outranks_you: 'They outrank you',
@@ -12,9 +13,21 @@
         slow_down: 'Wait a moment between two transactions', already_processed: 'This transaction was already processed', bank_unavailable: 'The bank is not responding',
         not_authorized: 'You may not use this account', bad_request: 'That request was not valid', server_error: 'Something went wrong. Try again.',
         request_failed: 'No answer. Try again: it will not be sent twice.', timeout: 'No answer. Try again: it will not be sent twice.',
+        in_progress: 'Your last transaction is still running. Try again in a moment.', rate_limited: 'Too many requests, slow down',
     };
-    const RETRYABLE = { request_failed: true, timeout: true };
+    // answers after which the action may still run or was not run at all: the same action keeps its ref
+    const RETRYABLE = { request_failed: true, timeout: true, in_progress: true, busy: true, slow_down: true, rate_limited: true };
     function newRef() { return ('m' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12)).slice(0, 40); }
+    // The ref of one money action. It is reused only to resend the exact same action (same fingerprint)
+    // after a retryable answer; a changed action always gets a fresh ref, so it can never be answered
+    // with the earlier action's result.
+    function refKeeper() {
+        let kept = null;
+        return {
+            take(print) { return kept && kept.print === print ? kept.ref : newRef(); },
+            settle(ref, print, res) { kept = !(res && res.ok) && (!res || RETRYABLE[res.error]) ? { ref, print } : null; },
+        };
+    }
     function when(at) {
         if (!at) return '';
         const d = new Date(at * 1000);
@@ -25,7 +38,8 @@
     PFApps.register('boss', {
         mount(container, ctx) {
             const { h, money } = ctx;
-            const state = { data: null, scope: null, tab: 'staff', members: null, nearby: null, society: null, busy: false, ref: newRef(), amount: '', account: 'bank' };
+            const state = { data: null, scope: null, tab: 'staff', members: null, nearby: null, society: null, busy: false, amount: '', account: 'bank' };
+            const refs = refKeeper();
             const sub = h('div.pf-app-sub', '');
             const scopes = h('div.pfm-scopes');
             const tabs = h('div.pf-tabs');
@@ -158,14 +172,18 @@
                 if (!(await confirmBox(`${direction === 'deposit' ? 'Deposit' : 'Withdraw'} ${money(amount)} ${direction === 'deposit' ? 'from' : 'to'} your ${account === 'cash' ? 'cash' : 'bank account'}?`))) return;
                 state.busy = true;
                 render();
-                const res = await ctx.rpc(direction, { scope: state.scope, amount, account, ref: state.ref });
+                const scope = state.scope;
+                const print = JSON.stringify([scope, direction, amount, account]);
+                const ref = refs.take(print);
+                const res = await ctx.rpc(direction, { scope, amount, account, ref });
+                refs.settle(ref, print, res);
                 state.busy = false;
                 if (res && res.ok) {
-                    ctx.notify(`${direction === 'deposit' ? 'Deposited' : 'Withdrew'} ${money(res.amount || amount)}`, 'success');
-                    state.ref = newRef();
+                    const done = `${direction === 'deposit' ? 'Deposited' : 'Withdrew'} ${money(res.amount || amount)}`;
+                    // a resent action: the server answered with the first one, nothing moved again
+                    ctx.notify(res.duplicate ? `Already done earlier: ${done}` : done, 'success');
                     state.amount = '';
                 } else {
-                    if (!(res && RETRYABLE[res.error])) state.ref = newRef();
                     ctx.notify(errorText(res), 'error');
                 }
                 loadTab();

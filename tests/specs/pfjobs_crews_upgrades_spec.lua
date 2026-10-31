@@ -234,6 +234,82 @@ describe('Gruppe 6 upgrades', function()
         assert_eq(Mock.players[M2].PlayerData.metadata.gruppe6_upgrades, nil)
     end)
 
+    -- every ledger row (any state) whose key starts with prefix
+    local function ledgerRows(prefix)
+        local out = {}
+        for k, row in pairs(FakeDB.byKey) do
+            if tostring(k):sub(1, #prefix) == prefix then out[#out + 1] = row end
+        end
+        return out
+    end
+    local COST = function() return G6.Upgrades.tier_2.cost end
+    local BASE = 'pf-jobs:gruppe6:upgrade:CID1:tier_2'
+
+    it('a purchase refused for money writes nothing and can be made once the money is there', function()
+        setLevel(LEAD, 2)
+        Mock.players[LEAD].PlayerData.money.bank = COST() - 1
+        local ok, why = PFJobsG6.BuyUpgrade(LEAD, 'tier_2')
+        assert_eq(ok, false)
+        assert_eq(why, 'insufficient_funds')
+        assert_eq(#ledgerRows(BASE), 0, 'the balance is checked before the ledger is asked')
+        Mock.players[LEAD].PlayerData.money.bank = 50000
+        assert_eq(PFJobsG6.BuyUpgrade(LEAD, 'tier_2'), true)
+        assert_eq(bank(LEAD), 50000 - COST())
+        assert_eq(Mock.players[LEAD].PlayerData.metadata.gruppe6_upgrades.tier_2, true)
+    end)
+
+    it('a key whose charge failed is never reused: the next attempt charges once', function()
+        setLevel(LEAD, 2)
+        Mock.players[LEAD].PlayerData.money.bank = 50000
+        -- the money left between the balance check and the debit: the ledger closes the key as failed
+        local p = Mock.players[LEAD]
+        local realRemove = p.Functions.RemoveMoney
+        p.Functions.RemoveMoney = function() return false end
+        assert_eq(select(2, PFJobsG6.BuyUpgrade(LEAD, 'tier_2')), 'insufficient_funds')
+        assert_eq(FakeDB.byKey[BASE .. ':bank'].state, 'failed')
+        p.Functions.RemoveMoney = realRemove
+        assert_eq(PFJobsG6.BuyUpgrade(LEAD, 'tier_2'), true, 'the retry is not stuck on the failed key')
+        assert_eq(FakeDB.byKey[BASE .. ':2:bank'].state, 'completed')
+        assert_eq(bank(LEAD), 50000 - COST())
+        assert_eq(#LedgerEnv.paid(BASE), 1)
+        -- owned now: no further charge
+        assert_eq(select(2, PFJobsG6.BuyUpgrade(LEAD, 'tier_2')), 'owned')
+        assert_eq(#ledgerRows(BASE), 2)
+        assert_eq(bank(LEAD), 50000 - COST())
+    end)
+
+    it('a charge that went through but was not recorded is applied without charging again', function()
+        setLevel(LEAD, 2)
+        -- an earlier attempt paid under the first key and then lost its record; what is left is
+        -- less than the price, so a second charge (or a plain balance check) would refuse
+        Mock.players[LEAD].PlayerData.money.bank = COST() + 100
+        assert_true(PFPayout.Charge(Mock.players[LEAD], { 'bank' }, COST(), { key = BASE, quiet = true }) ~= false)
+        assert_eq(bank(LEAD), 100)
+        assert_eq(PFJobsG6.BuyUpgrade(LEAD, 'tier_2'), true)
+        assert_eq(bank(LEAD), 100)
+        assert_eq(#ledgerRows(BASE), 1)
+        assert_eq(Mock.players[LEAD].PlayerData.metadata.gruppe6_upgrades.tier_2, true)
+    end)
+
+    it('a charge still in flight stops the purchase; a bank that is down charges nothing', function()
+        setLevel(LEAD, 2)
+        Mock.players[LEAD].PlayerData.money.bank = 50000
+        local row = { tx_id = 'TXPENDING1', idempotency_key = BASE .. ':bank', state = 'pending', amount = COST(),
+            from_account = 'player:CID1:bank', to_account = 'system:pf-jobs', kind = 'purchase' }
+        FakeDB.byKey[row.idempotency_key], FakeDB.byTxId[row.tx_id] = row, row
+        assert_eq(select(2, PFJobsG6.BuyUpgrade(LEAD, 'tier_2')), 'in_progress')
+        assert_eq(bank(LEAD), 50000)
+        assert_eq(Mock.players[LEAD].PlayerData.metadata.gruppe6_upgrades, nil)
+        FakeDB.byKey[row.idempotency_key], FakeDB.byTxId[row.tx_id] = nil, nil
+        bankUp = false
+        assert_eq(select(2, PFJobsG6.BuyUpgrade(LEAD, 'tier_2')), 'bank_unavailable')
+        assert_eq(bank(LEAD), 50000)
+        assert_eq(#ledgerRows(BASE), 0)
+        bankUp = true
+        assert_eq(PFJobsG6.BuyUpgrade(LEAD, 'tier_2'), true)
+        assert_eq(bank(LEAD), 50000 - COST())
+    end)
+
     it('licences unlock tiers, capacity adds bags and pay, priority dispatch halves the wait', function()
         Mock.players[LEAD].PlayerData.money.bank = 100000
         setLevel(LEAD, 2)

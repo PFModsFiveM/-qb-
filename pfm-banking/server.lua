@@ -210,7 +210,8 @@ exports('GetAccountBalance', GetAccountBalance)
 --- opts = { society, direction = 'deposit'|'withdraw', account = 'bank'|'cash', amount, key, reason }
 --- 'cash' is only for callers that checked on the server that the player stands at a counter (the boss
 --- office); remote callers use 'bank'. Nothing is created: a deposit leaves the player's balance, a
---- withdrawal leaves the society's, and the ledger refuses an overdraft.
+--- withdrawal leaves the society's, and the ledger refuses an overdraft. A key that was already used
+--- returns the stored amount (duplicate = true), or 'already_processed' when it named another move.
 --- @return table { ok, txId, duplicate, amount, balance } or { ok = false, error }
 local function SocietyTransfer(src, opts)
     local Player, citizenid = getPlayerAndCitizenId(src)
@@ -241,24 +242,33 @@ local function SocietyTransfer(src, opts)
     local societyRef = 'society:' .. name
     local reason = type(opts.reason) == 'string' and (opts.reason:gsub('[%c]', ' ')):sub(1, 50) or ''
     if reason == '' then reason = direction == 'deposit' and 'Society deposit' or 'Society withdrawal' end
+    local fromRef = direction == 'deposit' and playerRef or societyRef
+    local toRef = direction == 'deposit' and societyRef or playerRef
     local res = PFLedger.Transfer({
-        from = direction == 'deposit' and playerRef or societyRef,
-        to = direction == 'deposit' and societyRef or playerRef,
+        from = fromRef, to = toRef,
         amount = amount, key = opts.key, kind = 'society_' .. direction, reason = reason, actor = citizenid,
     })
     if not res.ok then
         return { ok = false, error = res.duplicate and 'already_processed' or (res.error or 'failed'), txId = res.txId }
     end
-    if not res.duplicate then
-        appendAccountStatement(name, amount, reason, direction)
-        if money == 'bank' then
-            CreateBankStatement(src, 'checking', amount, reason, direction == 'deposit' and 'withdraw' or 'deposit', 'player')
+    if res.duplicate then
+        -- A reused key answers with what was stored under it. A different move under the same key
+        -- is refused, so a changed request is never reported as done.
+        local tx = PFLedger.GetTransaction(opts.key)
+        local stored = tx and tonumber(tx.amount)
+        if not stored or tx.from_account ~= fromRef or tx.to_account ~= toRef or math.abs(stored - amount) >= 0.005 then
+            return { ok = false, error = 'already_processed', txId = res.txId }
         end
-        TriggerEvent('qb-log:server:CreateLog', 'banking', 'Society ' .. direction, direction == 'deposit' and 'green' or 'red',
-            ('**%s** %s $%s (%s) %s **%s**'):format(GetPlayerName(src), direction == 'deposit' and 'deposited' or 'withdrew', amount, money,
-                direction == 'deposit' and 'into' or 'from', name))
+        return { ok = true, txId = res.txId, duplicate = true, amount = PFLedger.Amount(stored), balance = GetAccountBalance(name) }
     end
-    return { ok = true, txId = res.txId, duplicate = res.duplicate, amount = amount, balance = GetAccountBalance(name) }
+    appendAccountStatement(name, amount, reason, direction)
+    if money == 'bank' then
+        CreateBankStatement(src, 'checking', amount, reason, direction == 'deposit' and 'withdraw' or 'deposit', 'player')
+    end
+    TriggerEvent('qb-log:server:CreateLog', 'banking', 'Society ' .. direction, direction == 'deposit' and 'green' or 'red',
+        ('**%s** %s $%s (%s) %s **%s**'):format(GetPlayerName(src), direction == 'deposit' and 'deposited' or 'withdrew', amount, money,
+            direction == 'deposit' and 'into' or 'from', name))
+    return { ok = true, txId = res.txId, duplicate = false, amount = amount, balance = GetAccountBalance(name) }
 end
 exports('SocietyTransfer', SocietyTransfer)
 

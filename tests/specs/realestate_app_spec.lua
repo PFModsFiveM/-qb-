@@ -21,7 +21,8 @@ FakeDB.extraPatterns = {
     { 'UPDATE houselocations SET price = ?', function(p) if houses[p[2]] and houses[p[2]].owned ~= 1 then houses[p[2]].price = p[1] return 1 end return 0 end },
     { 'INSERT INTO houselocations', function(p) houses[p[1]] = { owned = 0, price = p[5], tier = p[6], label = p[2] }; writes[#writes + 1] = { name = 'newhouse', params = p } return 1 end },
     { 'SELECT * FROM houselocations WHERE name LIKE ?', function() return nil end },
-    { 'INSERT INTO player_houses', function(p) playerHouses[p[1]] = { house = p[1], citizenid = p[3], keyholders = p[4] }; return 1 end },
+    { 'INSERT INTO player_houses', function(p) playerHouses[p[1]] = { house = p[1], citizenid = p[3], keyholders = p[4], purchase_price = p[5] }; return 1 end },
+    { 'UPDATE player_houses ph JOIN houselocations', function() return 0 end },   -- migration v2 backfill
     { 'UPDATE player_houses SET keyholders = ?', function(p) if playerHouses[p[2]] then playerHouses[p[2]].keyholders = p[1] end; writes[#writes + 1] = { name = 'keys', params = p } return 1 end },
     { 'DELETE FROM inventories WHERE identifier = ?', function(p) cleared[#cleared + 1] = p[1] return { affectedRows = 1 } end },
     { 'INSERT IGNORE INTO pfm_house_sales', function(p)
@@ -166,6 +167,7 @@ describe('an agent sale', function()
         assert_eq(properties[#properties].owner, 'CID2')
         assert_eq(#sales, 1)
         assert_eq(sales[1].agentCut, 6000)
+        assert_eq(playerHouses.grove1.purchase_price, 200000)               -- the price paid, for the sell-back
         -- a repeated accept, in the app or at the prompt, changes nothing
         assert_eq(citizen('answerOffer', BUYER, { id = res.offer.id, accept = true }).error, 'not_found')
         Mock.fireNet('qb-houses:server:RespondAgentSale', BUYER, res.offer.id, true)
@@ -249,6 +251,12 @@ describe('listings', function()
         assert_eq(agency('setPrice', AGENT, { house = 'grove1', price = '9' }).error, 'bad_price')
         assert_eq(agency('setPrice', BUYER, { house = 'grove1', price = 1000 }).error, 'not_agent')
         assert_eq(Config.Houses.grove1.price, 250000)
+        -- not while a sale holds the house, and the reprice leaves no lock behind
+        assert_true(PFHouses.Lock('grove1'))
+        assert_eq(agency('setPrice', AGENT, { house = 'grove1', price = 260000 }).error, 'not_for_sale')
+        PFHouses.Unlock('grove1')
+        assert_true(agency('setPrice', AGENT, { house = 'grove1', price = 260000 }).ok)
+        assert_false(PFHouses.Locked('grove1'))
     end)
     it('a new listing is created where the agent stands, from a typed street name', function()
         local res = agency('createListing', AGENT, { street = 'Grove Street', price = 150000, tier = 2 })

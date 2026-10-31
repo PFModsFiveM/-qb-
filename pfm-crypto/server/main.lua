@@ -328,7 +328,8 @@ end)
 -- (server/app.lua, the app's id for the action), so the same rules apply everywhere:
 --   * the price is the server's (Crypto.Worth); a buy rounds the cost up, a sale rounds the payout down;
 --   * the bank side is one ledger transfer whose key names the trade ('pfm-crypto:buy|sell:<cid>:<id>'),
---     so a repeated id is never charged or paid twice, and its coins move once;
+--     so a repeated id is never charged or paid twice, and its coins move once; a repeated id answers
+--     with that trade's stored coins and money, and is refused for another amount (or recipient);
 --   * buy: the bank is charged first, then the coins are credited; sell: the coins are taken first and
 --     given back if the bank cannot pay;
 --   * coins sent to another wallet are recorded in pf_crypto_transfers (unique per id).
@@ -362,6 +363,26 @@ local function tradeId(ref)
     return nil
 end
 
+-- coins are kept to 4 decimals; the database stores 6
+local function sameCoins(a, b)
+    a, b = tonumber(a), tonumber(b)
+    return a ~= nil and b ~= nil and math.abs(a - b) < 0.00005
+end
+
+-- A trade id that was already used answers with what that trade did (its stored coins and money),
+-- never with this request's numbers. Another amount under the same id is refused.
+local function priorTrade(tx, coins, Player)
+    if tx.state ~= 'completed' then return { ok = false, error = 'already_processed' } end
+    local meta = {}
+    if type(tx.metadata) == 'string' and tx.metadata ~= '' then
+        local ok, m = pcall(json.decode, tx.metadata)
+        if ok and type(m) == 'table' then meta = m end
+    end
+    if not sameCoins(meta.coins, coins) then return { ok = false, error = 'already_processed' } end
+    return { ok = true, duplicate = true, coins = tonumber(meta.coins), price = tonumber(meta.price), total = tonumber(tx.amount),
+        portfolio = Player.PlayerData.money.crypto }
+end
+
 function T.Buy(src, coins, ref)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return { ok = false, error = 'no_player' } end
@@ -377,7 +398,9 @@ function T.Buy(src, coins, ref)
         if total <= 0 then return { ok = false, error = 'bad_amount' } end
         local key = ('pfm-crypto:buy:%s:%s'):format(cid, ref)
         local existing = bankUp() and exports['pfm-banking']:GetTransaction(key .. ':bank') or nil
-        if not existing and (tonumber(Player.PlayerData.money.bank) or 0) < total then return { ok = false, error = 'insufficient_funds' } end
+        -- this purchase was charged and its coins credited the first time
+        if existing then return priorTrade(existing, coins, Player) end
+        if (tonumber(Player.PlayerData.money.bank) or 0) < total then return { ok = false, error = 'insufficient_funds' } end
         -- the bank side goes through the pfm-banking ledger (coins are their own balance, which the
         -- ledger does not carry: it only moves bank and cash in cents)
         local account, res = PFPayout.Charge(Player, 'bank', total, {
@@ -387,8 +410,9 @@ function T.Buy(src, coins, ref)
             return { ok = false, error = (res and res.duplicate) and 'already_processed' or (res and res.error) or 'failed' }
         end
         if res.duplicate then
-            -- this purchase was charged and its coins credited the first time
-            return { ok = true, duplicate = true, coins = coins, price = price, total = total, portfolio = Player.PlayerData.money.crypto }
+            -- recorded meanwhile by another server: answer with that trade, never credit twice
+            local tx = exports['pfm-banking']:GetTransaction(key .. ':bank')
+            return tx and priorTrade(tx, coins, Player) or { ok = false, error = 'already_processed' }
         end
         Player.AddMoney('crypto', coins, 'bought crypto')
         TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
@@ -409,12 +433,7 @@ function T.Sell(src, coins, ref)
         local price = tonumber(Crypto.Worth[coin])
         local key = ('pfm-crypto:sell:%s:%s'):format(cid, ref)
         local prior = exports['pfm-banking']:GetTransaction(key)
-        if prior then
-            if prior.state == 'completed' then
-                return { ok = true, duplicate = true, coins = coins, price = price, total = tonumber(prior.amount), portfolio = Player.PlayerData.money.crypto }
-            end
-            return { ok = false, error = 'already_processed' }
-        end
+        if prior then return priorTrade(prior, coins, Player) end
         local amount = math.floor(coins * price)
         if amount < 1 then return { ok = false, error = 'bad_amount' } end
         if (tonumber(Player.PlayerData.money.crypto) or 0) < coins then return { ok = false, error = 'insufficient_coins' } end
@@ -438,6 +457,13 @@ local function cleanWallet(v)
     return w
 end
 
+-- the player row whose wallet id is exactly this one (a LIKE pattern let '_' and '%' match other
+-- people's wallets)
+local function findWallet(walletId)
+    local result = MySQL.query.await("SELECT * FROM `players` WHERE JSON_UNQUOTE(JSON_EXTRACT(`metadata`, '$.walletid')) = ? LIMIT 1", { walletId })
+    return result and result[1] or nil
+end
+
 --- Sends coins to another wallet. `ref` (the app's id) makes a retry safe; the phone passes none.
 function T.Send(src, walletId, coins, ref)
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -452,13 +478,18 @@ function T.Send(src, walletId, coins, ref)
     return withLock(cid, function()
         local key = ref and ('pfm-crypto:send:%s:%s'):format(cid, ref) or nil
         if key then
-            local prior = MySQL.single.await('SELECT coins FROM pf_crypto_transfers WHERE transfer_key = ? LIMIT 1', { key })
-            if prior then return { ok = true, duplicate = true, coins = tonumber(prior.coins), portfolio = Player.PlayerData.money.crypto } end
+            local prior = MySQL.single.await('SELECT coins, to_cid FROM pf_crypto_transfers WHERE transfer_key = ? LIMIT 1', { key })
+            if prior then
+                -- the same id answers only for the same transfer (same coins, same recipient)
+                local same = findWallet(walletId)
+                if not sameCoins(prior.coins, coins) or not same or same.citizenid ~= prior.to_cid then
+                    return { ok = false, error = 'already_processed' }
+                end
+                return { ok = true, duplicate = true, coins = tonumber(prior.coins), portfolio = Player.PlayerData.money.crypto }
+            end
         end
         if (tonumber(Player.PlayerData.money.crypto) or 0) < coins then return { ok = false, error = 'insufficient_coins' } end
-        -- exact wallet match (a LIKE pattern let '_' and '%' match other people's wallets)
-        local result = MySQL.query.await("SELECT * FROM `players` WHERE JSON_UNQUOTE(JSON_EXTRACT(`metadata`, '$.walletid')) = ? LIMIT 1", { walletId })
-        local target = result and result[1]
+        local target = findWallet(walletId)
         if not target then return { ok = false, error = 'unknown_wallet' } end
         if target.citizenid == cid then return { ok = false, error = 'own_wallet' } end
         if not Player.RemoveMoney('crypto', coins, 'transfer crypto') then return { ok = false, error = 'insufficient_coins' } end

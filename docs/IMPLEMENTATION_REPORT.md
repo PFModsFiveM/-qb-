@@ -1972,5 +1972,34 @@ Owner request: finish the whole rework in one go: the shared business apps, bank
 - `pf-jobs:recycle` v1 and `pf-jobs:vineyard` v1;
 - pf-computer v3 (profiles).
 
+### Adversarial review of the round, and what it fixed
+Five reviewers each took one angle: money, trust in client data, the app screens, contracts between resources, and SQL. A skeptic then tried to disprove every finding. 16 findings survived, 10 different defects. Each fix was checked again by a second skeptic, and their remaining gaps were closed too.
+
+| Defect | Fix |
+|---|---|
+| A used-car seller could raise the price from the app while the buyer's contract was open; the buyer paid the new price | The buy carries the price shown and is refused if it differs. The listing claim also needs the price unchanged. |
+| An agent's reprice could race a door purchase; the 70% state sell-back then paid out of a raised listing (money from nothing) | Reprice and purchase share one lock, taken before the first wait. Memory changes only when the database row changed. The price paid is stored (`player_houses.purchase_price`) and the sell-back uses it. The door contract stays until a purchase succeeds and covers only its own house. The backfill join works across mixed collations. |
+| Saved wear, mileage and NOS were loaded from rows the client wrote, so a forged save gave free NOS, free repairs and a wound-back odometer | Saves read the server's own state of the car the sender is in or beside; nothing is written for a car that isn't spawned. NOS is kept in server-written columns. A restore only ever raises wear and mileage. A car carries the saved state of one plate only, and the plate is claimed before the database read. |
+| Anyone within 10 m could wear out every part of a parked car | Only the driver, or a mechanic for the work-order car the server registered for their accepted order. The entry is dropped when the car is removed, and the plate and model are checked on every report. |
+| One Gruppe 6 upgrade attempt without the money locked that upgrade forever (a failed ledger key never succeeds again) | The balance is checked first. A failed key moves to the next attempt key; a completed one only records the upgrade. |
+| Relogging turned a wrecked or abandoned flatbed into a full deposit refund | The truck's state is recorded at disconnect, and the refund follows it. A txAdmin restart (which drops everyone) keeps the full refund. |
+| Bank, Boss and Crypto apps reused a timed-out request id for a different action, and the server reported the new action as done | The id is kept only for a retry of exactly the same action. The server compares a duplicate with the stored transaction and refuses a mismatch. |
+| A refund whose first attempt failed was retried under the same dead key forever; a deleted character's refunds never ended | Retries use numbered keys. A payer whose account is gone gets `forfeited` and is not retried. |
+| A cancelled supplier order gave back stock in the new case units, more than was reserved | The reservation is stored on the order and returned exactly. |
+| The Bank app and the business apps shared CSS class names and broke each other's bars and grids in every shell | The business apps use the `pfbiz` prefix. |
+
 ### Tests
-Mocked 1136 passed, 0 failed (140 files); real DB 327 passed, 0 failed (36 files); 8 JS specs green; the SQL install check passes; all 192 Lua files changed this round parse.
+Mocked 1190 passed, 0 failed (143 files); real DB 349 passed, 0 failed (38 files); 8 JS specs green; the SQL install check passes; every Lua file changed this round parses.
+
+### Owner decisions and things to know
+- **Dealer commission:** paid from `system:pfm-vehicleshop` on top of the full price going to the dealership, which creates money. The other option is to take it out of the dealership's share.
+- **Small supplier orders:** the freight minimum ($150) comes out of the goods money, so a player supplier earns almost nothing on small orders.
+- **ATM cash:** withdrawals and deposits are not position-checked on the server, because ATMs are map props. An ATM coordinate list would fix that.
+- **Property tax:** there is no recurring property tax; only the transfer tax at a sale.
+- **Gruppe 6:** Tier 2 and Tier 3 contracts now need the licence upgrade, as its config intended.
+- **Bus:** a side job anyone can install (`Config.Bus.Job = nil`). Set it to `'bus'` to require the job.
+- **Perishable wine:** with pf-restaurants running, `wine` and `grapejuice` are perishable everywhere, including wine sold in stores.
+- **NOS:** bottles players had saved in vehicle mods (client-written) are not carried over.
+- **Branch closures:** kept in memory; a restart reopens every branch.
+- **Live server.cfg:** add `setr sv_stateBagStrictMode true`, and remove any `ensure` lines for pfm-busjob, pfm-towjob, pfm-recyclejob and pfm-vineyard.
+- **Old CSS:** the old Business Manager, Order Supplies and Job Board CSS in `pf-computer/ui/css/style.css` and `pf-tablet/html/style.css` is now unused.

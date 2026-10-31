@@ -2,6 +2,7 @@ local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions', 'Commands', 'Pla
 local houseowneridentifier = {}
 local houseownercid = {}
 local housekeyholders = {}
+local housePaid = {}        -- [house] = what the city was paid for it (player_houses.purchase_price)
 local housesLoaded = false
 
 -- Shared with server/apps.lua (the Real Estate apps on the tablet and the computer).
@@ -31,6 +32,18 @@ PFHouses.Migrations = {
             KEY `agent_cid` (`agent_cid`),
             KEY `created_at` (`created_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
+    } },
+    -- What the city was paid for an owned house; the state sell-back pays from it, not from the
+    -- listing price (an agent can reprice listings). Houses owned before this get the listing price
+    -- at the time of the migration: until the Dynasty 8 reprice there was no way to change a price
+    -- after /createhouse, and an owned house can no longer be repriced.
+    { version = 2, name = 'price paid for owned houses', up = {
+        'ALTER TABLE `player_houses` ADD COLUMN IF NOT EXISTS `purchase_price` INT NULL DEFAULT NULL',
+        -- both sides converted: the two tables often use different collations (or latin1), and a
+        -- plain join then fails with "Illegal mix of collations" on every start
+        [[UPDATE player_houses ph JOIN houselocations hl
+            ON CONVERT(hl.name USING utf8mb4) COLLATE utf8mb4_general_ci = CONVERT(ph.house USING utf8mb4) COLLATE utf8mb4_general_ci
+            SET ph.purchase_price = hl.price WHERE ph.purchase_price IS NULL AND hl.price IS NOT NULL]],
     } },
 }
 
@@ -75,6 +88,7 @@ CreateThread(function()
                         houseowneridentifier[house.house] = house.identifier
                         houseownercid[house.house] = house.citizenid
                         housekeyholders[house.house] = json.decode(house.keyholders)
+                        housePaid[house.house] = tonumber(house.purchase_price)
                     end
                 end
             end)
@@ -284,12 +298,19 @@ local function isHouseOwned(house)
 end
 
 --- Hands an unowned house to `Player` (memory, player_houses, houselocations) and registers it with
---- pf-government. The money was taken before this is called.
-local function giveHouse(house, Player)
+--- pf-government. The money was taken before this is called; `paid` is the house price it covered,
+--- recorded for the state sell-back.
+local function giveHouse(house, Player, paid)
+    paid = math.floor(tonumber(paid) or 0)
     houseowneridentifier[house] = Player.PlayerData.license
     houseownercid[house] = Player.PlayerData.citizenid
     housekeyholders[house] = { [1] = Player.PlayerData.citizenid }
-    MySQL.insert('INSERT INTO player_houses (house, identifier, citizenid, keyholders) VALUES (?, ?, ?, ?)', { house, Player.PlayerData.license, Player.PlayerData.citizenid, json.encode(housekeyholders[house]) })
+    housePaid[house] = paid > 0 and paid or nil
+    if PFHouses.dbReady then -- the purchase_price column exists once the migrations ran
+        MySQL.insert('INSERT INTO player_houses (house, identifier, citizenid, keyholders, purchase_price) VALUES (?, ?, ?, ?, ?)', { house, Player.PlayerData.license, Player.PlayerData.citizenid, json.encode(housekeyholders[house]), housePaid[house] })
+    else
+        MySQL.insert('INSERT INTO player_houses (house, identifier, citizenid, keyholders) VALUES (?, ?, ?, ?)', { house, Player.PlayerData.license, Player.PlayerData.citizenid, json.encode(housekeyholders[house]) })
+    end
     MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 1, house })
     Config.Houses[house].owned = true
     if GetResourceState('pf-government') == 'started' then
@@ -315,6 +336,17 @@ local function purchaseCost(price)
     end
     local total = math.floor(((price + brokerfee + bankfee + propertyTax) * 100) + 0.5) / 100
     return { price = price, broker = brokerfee, bank = bankfee, tax = propertyTax, total = total }
+end
+
+--- What the city was paid for an owned house, or nil when nothing was recorded. A sale between
+--- players keeps it, so a high private price cannot raise what the state pays back.
+function PFHouses.PricePaid(house)
+    if housePaid[house] then return housePaid[house] end
+    if not PFHouses.dbReady then return nil end
+    local ok, v = pcall(MySQL.scalar.await, 'SELECT purchase_price FROM player_houses WHERE house = ? ORDER BY id DESC LIMIT 1', { house })
+    v = ok and tonumber(v) or nil
+    if v and v > 0 then housePaid[house] = v return v end
+    return nil
 end
 
 PFHouses.NearHouse = nearHouse
@@ -404,12 +436,17 @@ RegisterNetEvent('qb-houses:server:addGarage', function(house, coords)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('info.added_garage', { value = garageInfo.label }))
 end)
 
+-- The contract last shown to each player at a door: [src] = { house, price, total }. Buying from it
+-- is refused if the house was repriced after it was shown (agents reprice from the Dynasty 8 app).
+local doorQuotes = {}
+
 RegisterNetEvent('qb-houses:server:viewHouse', function(house)
     local src = source
     local pData = exports['pfm-core']:GetPlayer(src)
     if not pData or type(house) ~= 'string' or not Config.Houses[house] then return end
     local houseprice = tonumber(Config.Houses[house].price) or 0
     local cost = purchaseCost(houseprice)
+    doorQuotes[src] = { house = house, price = houseprice, total = cost.total }
     TriggerClientEvent('qb-houses:client:viewHouse', src, houseprice, cost.broker, cost.bank, cost.tax, pData.PlayerData.charinfo.firstname, pData.PlayerData.charinfo.lastname)
 end)
 
@@ -437,58 +474,70 @@ RegisterNetEvent('qb-houses:server:openStash', function(CurrentHouse)
     end
 end)
 
+--- The door purchase, run while the caller holds the house lock. The price is read here, after
+--- the lock was taken, so an agent's reprice (same lock) cannot change it under the purchase.
+--- Returns the sale, or nil and the message for the buyer.
+local function payForHouse(src, pData, house, quote)
+    if houseownercid[house] or isHouseOwned(house) then return nil, Lang:t('error.already_owned') end
+    local price = tonumber(Config.Houses[house].price) or 0
+    if price <= 0 then return nil, Lang:t('error.something_wrong') end
+    local cost = purchaseCost(price)
+    -- bought from the contract the buyer was shown: they pay what it said, or nothing (a contract
+    -- shown for another house does not cover this one)
+    if quote and (quote.house ~= house or quote.price ~= price or quote.total ~= cost.total) then
+        return nil, Lang:t('error.price_changed')
+    end
+    if (tonumber(pData.PlayerData.money['bank']) or 0) < cost.total then return nil, Lang:t('error.not_enough_money') end
+
+    -- pay first (the house used to be handed over before the money was taken, unchecked)
+    local cid = pData.PlayerData.citizenid
+    local key = ('pfm-houses:buy:%s:%s:%s'):format(house, cid, PFPayout.NewId())
+    if not PFPayout.Charge(src, 'bank', cost.total, { key = key, kind = 'purchase', reason = 'House purchase ' .. house }) then
+        return nil, Lang:t('error.not_enough_money')
+    end
+    if houseownercid[house] or isHouseOwned(house) then -- owned meanwhile by another route: give the money back
+        PFPayout.Pay(cid, 'bank', cost.total, { key = key .. ':refund', kind = 'refund', reason = 'House no longer for sale' })
+        return nil, Lang:t('error.already_owned')
+    end
+    giveHouse(house, pData, price)
+    return { price = price, tax = cost.tax, total = cost.total, cid = cid, key = key }
+end
+
 RegisterNetEvent('qb-houses:server:buyHouse', function(house)
     local src = source
     local pData = exports['pfm-core']:GetPlayer(src)
     if not pData or type(house) ~= 'string' or not Config.Houses[house] then return end
     if not nearHouse(src, house, 10.0) then return end
-    local price = tonumber(Config.Houses[house].price) or 0
-    if price <= 0 then return end
-    local cost = purchaseCost(price)
-    local propertyTax = cost.tax
-    local HousePrice = cost.total
-    local bankBalance = pData.PlayerData.money['bank']
+    -- the contract stays until a purchase succeeds: a second click after a "price changed" refusal
+    -- is refused again instead of paying a price the buyer was never shown
+    local quote = doorQuotes[src]
 
-    local isOwned = isHouseOwned(house)
-    if isOwned or buyingHouse[house] then
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.already_owned'), 'error')
-        CancelEvent()
-        return
+    -- The contract's buy button marks the house owned on the buyer's screen; a refusal sends the
+    -- real list back.
+    local function turnDown(msg)
+        TriggerClientEvent('QBCore:Notify', src, msg, 'error')
+        TriggerClientEvent('qb-houses:client:setHouseConfig', src, Config.Houses)
     end
-
-    if (bankBalance >= HousePrice) then
-        -- pay first (the house used to be handed over before the money was taken, unchecked);
-        -- the lock stops a second buyer while this payment is in flight
-        buyingHouse[house] = true
-        local cid = pData.PlayerData.citizenid
-        local key = ('pfm-houses:buy:%s:%s:%s'):format(house, cid, PFPayout.NewId())
-        local paid = PFPayout.Charge(src, 'bank', HousePrice, { key = key, kind = 'purchase', reason = 'House purchase ' .. house })
-        if not paid then
-            buyingHouse[house] = nil
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_enough_money'), 'error')
-            return
-        end
-        if isHouseOwned(house) then -- owned meanwhile by another route: give the money back
-            buyingHouse[house] = nil
-            PFPayout.Pay(cid, 'bank', HousePrice, { key = key .. ':refund', kind = 'refund', reason = 'House no longer for sale' })
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.already_owned'), 'error')
-            return
-        end
-        giveHouse(house, pData)
-        TriggerClientEvent('qb-houses:client:SetClosestHouse', src)
-        TriggerClientEvent('qb-house:client:RefreshHouseTargets', src)
-        buyingHouse[house] = nil
-
-        settlePropertyTax(propertyTax, cid, key, price)
-
-        -- the agency's commission, from the purchase money held by this resource
-        local commission = math.floor(HousePrice * math.random(18, 25)) / 100
-        PFPayout.PaySociety('realestate', commission, { key = key .. ':commission', reason = 'House purchase commission' })
-        TriggerEvent('qb-log:server:CreateLog', 'house', Lang:t('log.house_purchased'), 'green', Lang:t('log.house_purchased_by', { house = house:upper(), price = HousePrice, firstname = pData.PlayerData.charinfo.firstname, lastname = pData.PlayerData.charinfo.lastname }))
-        TriggerClientEvent('QBCore:Notify', src, ('House purchased. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(price, propertyTax, HousePrice), 'success', 5000)
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_enough_money'), 'error')
+    -- one sale or reprice of a house at a time, taken before the first wait
+    if not PFHouses.Lock(house) then return turnDown(Lang:t('error.already_owned')) end
+    local ok, sale, why = pcall(payForHouse, src, pData, house, quote)
+    PFHouses.Unlock(house)
+    if not ok then
+        print(('^1[pfm-houses]^7 door purchase of %s failed: %s'):format(house, tostring(sale)))
+        return turnDown(Lang:t('error.something_wrong'))
     end
+    if not sale then return turnDown(why) end
+    doorQuotes[src] = nil -- a contract is used once
+
+    TriggerClientEvent('qb-houses:client:SetClosestHouse', src)
+    TriggerClientEvent('qb-house:client:RefreshHouseTargets', src)
+    settlePropertyTax(sale.tax, sale.cid, sale.key, sale.price)
+
+    -- the agency's commission, from the purchase money held by this resource
+    local commission = math.floor(sale.total * math.random(18, 25)) / 100
+    PFPayout.PaySociety('realestate', commission, { key = sale.key .. ':commission', reason = 'House purchase commission' })
+    TriggerEvent('qb-log:server:CreateLog', 'house', Lang:t('log.house_purchased'), 'green', Lang:t('log.house_purchased_by', { house = house:upper(), price = sale.total, firstname = pData.PlayerData.charinfo.firstname, lastname = pData.PlayerData.charinfo.lastname }))
+    TriggerClientEvent('QBCore:Notify', src, ('House purchased. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(sale.price, sale.tax, sale.total), 'success', 5000)
 end)
 
 -- Locking and unlocking: a key holder at the door, or on-duty police at the door (raid / re-lock).
@@ -1185,7 +1234,9 @@ QBCore.Commands.Add('sellhouse', Lang:t('info.sellhouse_cmd'), { { name = 'id', 
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.sell_stash_full'), 'error', 6000)
         return
     end
-    local basePrice = tonumber(Config.Houses[house].price) or 0
+    -- a share of what the city was paid for the house, not of the listing price (agents reprice
+    -- listings); the listing price only for a house with nothing recorded
+    local basePrice = PFHouses.PricePaid(house) or tonumber(Config.Houses[house].price) or 0
     local payout = math.floor(basePrice * (Config.HouseSellBackPercent or 70) / 100)
     if houseownercid[house] ~= Player.PlayerData.citizenid then buyingHouse[house] = nil return end
 
@@ -1199,6 +1250,7 @@ QBCore.Commands.Add('sellhouse', Lang:t('info.sellhouse_cmd'), { { name = 'id', 
     houseowneridentifier[house] = nil
     houseownercid[house] = nil
     housekeyholders[house] = nil
+    housePaid[house] = nil
     MySQL.query('DELETE FROM player_houses WHERE house = ?', { house })
     MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 0, house })
     Config.Houses[house].owned = false
@@ -1298,6 +1350,7 @@ end)
 AddEventHandler('playerDropped', function()
     local src = source
     pendingHouseSales[src] = nil
+    doorQuotes[src] = nil
     decorating[src] = nil
     for _, guests in pairs(houseGuests) do guests[src] = nil end
     for _, rings in pairs(doorRings) do rings[src] = nil end
@@ -1312,6 +1365,7 @@ AddEventHandler('pfm-core:server:characterDeleted', function(citizenid)
     for house, owner in pairs(houseownercid) do
         if owner == citizenid then
             houseownercid[house], houseowneridentifier[house], housekeyholders[house] = nil, nil, nil
+            housePaid[house] = nil
             furnitureCredit[house] = nil
             if Config.Houses[house] then Config.Houses[house].owned = false end
             MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 0, house })

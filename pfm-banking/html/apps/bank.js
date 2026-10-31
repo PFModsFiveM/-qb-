@@ -1,7 +1,8 @@
 // Bank (pfm-banking) on pf-devices: personal, shared and society accounts, ledger statements, transfers,
 // loans, credit and cards. Everything comes from the server and every action is checked there; the
 // module only sends what the player chose (account refs, amount, note) and a per-action `ref` that
-// makes a retried request safe (the server never moves the same ref twice).
+// makes a retried request safe (the server never moves the same ref twice; a changed transfer gets a
+// new ref).
 (function () {
     const ERRORS = {
         bad_request: 'That request was not valid', bad_amount: 'Enter a whole amount of at least $1',
@@ -16,8 +17,10 @@
         rate_limited: 'Too many requests, slow down', server_error: 'The bank had a problem. Try again.',
         request_failed: 'No answer from the bank. Try again: it will not be sent twice.', timeout: 'No answer from the bank. Try again: it will not be sent twice.',
         not_authorized_app: 'You cannot use the bank app', no_player: 'You are not signed in',
+        in_progress: 'That transaction is still being processed. Try again in a moment.',
     };
-    const RETRYABLE = { request_failed: true, timeout: true };
+    // answers after which the action may still run or was not run at all: the same action keeps its ref
+    const RETRYABLE = { request_failed: true, timeout: true, in_progress: true, busy: true, slow_down: true, rate_limited: true };
     const KINDS = [
         ['', 'All types'], ['transfer', 'Transfers'], ['deposit', 'Deposits'], ['withdraw', 'Withdrawals'],
         ['wage', 'Wages'], ['purchase', 'Purchases'], ['sale', 'Sales'], ['fee', 'Fees'],
@@ -31,6 +34,16 @@
     function newRef() {
         const rnd = Math.random().toString(36).slice(2, 12);
         return ('b' + Date.now().toString(36) + '-' + rnd).slice(0, 40);
+    }
+    // The ref of one transfer. It is reused only to resend the exact same transfer (same fingerprint)
+    // after a retryable answer; a changed transfer always gets a fresh ref, so it can never be answered
+    // with the earlier transfer's result.
+    function refKeeper() {
+        let kept = null;
+        return {
+            take(print) { return kept && kept.print === print ? kept.ref : newRef(); },
+            settle(ref, print, res) { kept = !(res && res.ok) && (!res || RETRYABLE[res.error]) ? { ref, print } : null; },
+        };
     }
     function when(at) {
         if (!at) return '';
@@ -53,9 +66,10 @@
                 tab: (params && params.tab) || 'overview',
                 data: null, finance: null, busy: false, timers: [],
                 st: { account: 'personal', direction: '', kind: '', days: '30', search: '', rows: [], hasMore: false, nextBefore: null, summary: null, loading: false },
-                tr: { ref: newRef(), from: 'personal', toType: 'own', toAccount: '', iban: '', citizenid: '', amount: '', note: '', review: false },
+                tr: { from: 'personal', toType: 'own', toAccount: '', iban: '', citizenid: '', amount: '', note: '', review: false },
                 dialog: null,
             };
+            const refs = refKeeper();
             if (params) applyParams(params);
 
             const sub = h('div.pf-app-sub', 'Your accounts');
@@ -302,12 +316,16 @@
                     ? 'Moves between your own accounts.'
                     : `Up to ${money(lim.maxTransfer)} per payment · ${money(left)} of ${money(lim.dailyLimit)} left today`));
 
+                // read when used: typing does not re-render, so values taken at render time would be stale
+                const destinationOf = () => (t.toType === 'own' ? (accountByRef(t.toAccount) || {}).label
+                    : (t.toType === 'iban' ? t.iban.toUpperCase().replace(/\s/g, '') : (t.citizenid.trim() ? 'citizen ' + t.citizenid.toUpperCase().trim() : '')));
                 const amount = Math.floor(Number(t.amount));
-                const destination = t.toType === 'own' ? (accountByRef(t.toAccount) || {}).label : (t.toType === 'iban' ? t.iban.toUpperCase().replace(/\s/g, '') : 'citizen ' + t.citizenid.toUpperCase().trim());
+                const destination = destinationOf();
                 if (!t.review) {
                     form.appendChild(h('div.pfb-actions', h('button.pf-btn.primary', { disabled: state.busy, onclick: () => {
-                        if (!(amount >= 1) || amount !== Number(t.amount)) { ctx.notify(ERRORS.bad_amount, 'error'); return; }
-                        if (!destination) { ctx.notify('Choose where the money goes', 'error'); return; }
+                        const typed = Math.floor(Number(t.amount));
+                        if (!(typed >= 1) || typed !== Number(t.amount)) { ctx.notify(ERRORS.bad_amount, 'error'); return; }
+                        if (!destinationOf()) { ctx.notify('Choose where the money goes', 'error'); return; }
                         t.review = true; render();
                     } }, 'Review')));
                 } else {
@@ -326,16 +344,22 @@
                     : (t.toType === 'iban' ? { type: 'iban', iban: t.iban.trim() } : { type: 'citizen', citizenid: t.citizenid.trim() });
                 state.busy = true;
                 render();
-                const res = await ctx.rpc('transfer', { ref: t.ref, from: t.from, to, amount: Math.floor(Number(t.amount)), note: t.note || undefined });
+                const payload = { from: t.from, to, amount: Math.floor(Number(t.amount)), note: t.note || undefined };
+                // everything that makes it this transfer: source, recipient (as the server reads it), amount and note
+                const recipient = to.type === 'own' ? to.account : String(to.iban || to.citizenid || '').toUpperCase().replace(/\s/g, '');
+                const print = JSON.stringify([payload.from, to.type, recipient, payload.amount, payload.note || '']);
+                const ref = refs.take(print);
+                payload.ref = ref;
+                const res = await ctx.rpc('transfer', payload);
+                refs.settle(ref, print, res);
                 state.busy = false;
                 if (res && res.ok) {
-                    ctx.notify(res.message || 'Done', 'success');
-                    state.tr = { ref: newRef(), from: t.from, toType: t.toType, toAccount: t.toAccount, iban: '', citizenid: '', amount: '', note: '', review: false };
+                    // a resent transfer: the server answered with the first one, nothing moved again
+                    ctx.notify(res.duplicate ? 'Already done earlier: ' + (res.message || 'the transfer went through') : (res.message || 'Done'), 'success');
+                    state.tr = { from: t.from, toType: t.toType, toAccount: t.toAccount, iban: '', citizenid: '', amount: '', note: '', review: false };
                     await reload();
                     return;
                 }
-                // the same ref is kept only when the answer was lost: the server then returns the first result
-                if (!(res && RETRYABLE[res.error])) t.ref = newRef();
                 t.review = false;
                 ctx.notify(errorText(res), 'error');
                 render();

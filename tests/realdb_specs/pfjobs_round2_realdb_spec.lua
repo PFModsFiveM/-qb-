@@ -77,11 +77,16 @@ local function count(sql, params) return tonumber(MySQL.scalar.await(sql, params
 describe('pf-jobs migrations', function()
     it('apply over the old tables and rerun as a no-op', function()
         assert_true(PFJobsSchema.Run())
-        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-jobs'"), 3)
+        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-jobs'"), 4)
+        -- v4 again after an interrupted run: its column steps must be rerun-safe
+        MySQL.query.await("DELETE FROM pf_schema_migrations WHERE resource = 'pf-jobs' AND version = 4")
         assert_true(PFJobsSchema.Run())
-        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-jobs'"), 3)
+        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-jobs'"), 4)
         for _, t in ipairs({ 'bus_stats', 'bus_routes_log', 'pf_gruppe6_xp', 'pf_gruppe6_upgrades', 'pf_tow_stats', 'pf_tow_rentals' }) do
             assert_eq(count('SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', { t }), 1, t)
+        end
+        for _, c in ipairs({ 'truck_lost', 'truck_health' }) do
+            assert_eq(count("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_tow_rentals' AND COLUMN_NAME = ?", { c }), 1, c)
         end
     end)
 end)
@@ -129,6 +134,37 @@ describe('Gruppe 6 upgrades on the database', function()
         local offers = Mock.clientEventsNamed('pf-jobs:gruppe6:contracts')
         assert_eq(offers[#offers].args[1][1].tier, 2)
     end)
+
+    it('a refused or failed charge does not lock the upgrade: the retry charges once under a new key', function()
+        local p = player(D, 'RDG60002', { cash = 0, bank = 4000 })
+        MySQL.query.await('INSERT INTO pf_gruppe6_xp (citizenid, xp, level) VALUES (?, 1200, 2)', { 'RDG60002' })
+        local cost = Config.Gruppe6.Upgrades.tier_2.cost
+        local keys = "SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pf-jobs:gruppe6:upgrade:RDG60002:%'"
+        -- not enough money: refused before the ledger writes anything
+        local ok, why = PFJobsG6.BuyUpgrade(D, 'tier_2')
+        assert_eq(ok, false)
+        assert_eq(why, 'insufficient_funds')
+        assert_eq(count(keys), 0)
+        -- the debit fails after the check (money spent meanwhile): the first key is closed as failed
+        p.PlayerData.money.bank = 50000
+        local realRemove = p.Functions.RemoveMoney
+        p.Functions.RemoveMoney = function() return false end
+        assert_eq(select(2, PFJobsG6.BuyUpgrade(D, 'tier_2')), 'insufficient_funds')
+        p.Functions.RemoveMoney = realRemove
+        assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = 'pf-jobs:gruppe6:upgrade:RDG60002:tier_2:bank' AND state = 'failed'"), 1)
+        -- the next try uses the next key and pays once
+        assert_eq(PFJobsG6.BuyUpgrade(D, 'tier_2'), true)
+        assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = 'pf-jobs:gruppe6:upgrade:RDG60002:tier_2:2:bank' AND state = 'completed'"), 1)
+        assert_eq(p.PlayerData.money.bank, 50000 - cost)
+        assert_eq(count('SELECT COUNT(*) FROM pf_gruppe6_upgrades WHERE citizenid = ? AND upgrade_id = ?', { 'RDG60002', 'tier_2' }), 1)
+        -- the paid upgrade row lost (a failed write): buying again records it without a second charge
+        MySQL.query.await('DELETE FROM pf_gruppe6_upgrades WHERE citizenid = ?', { 'RDG60002' })
+        PFJobsG6.ForgetCitizen('RDG60002')
+        assert_eq(PFJobsG6.BuyUpgrade(D, 'tier_2'), true)
+        assert_eq(p.PlayerData.money.bank, 50000 - cost)
+        assert_eq(count(keys), 2)
+        assert_eq(count('SELECT price FROM pf_gruppe6_upgrades WHERE citizenid = ? AND upgrade_id = ?', { 'RDG60002', 'tier_2' }), cost)
+    end)
 end)
 
 describe('tow rentals on the database', function()
@@ -153,6 +189,54 @@ describe('tow rentals on the database', function()
         assert_eq(count('SELECT COUNT(*) FROM pf_tow_rentals WHERE citizenid = ?', { 'RDTOW001' }), 0)
         assert_eq(PFJobsTow.Return(E, true).error, 'no_rental')
         assert_eq(p.PlayerData.money.bank, 250)
+    end)
+
+    local function rentAtBay(cid)
+        local p = player(E, cid, { cash = 1000, bank = 0 })
+        p.PlayerData.job = { name = 'tow', onduty = true }
+        local bay = Config.Tow.FlatbedSpawn
+        Mock.coords[E] = vector3(bay.x, bay.y, bay.z)
+        assert_eq(PFJobsTow.Rent(E, 'flatbed', true).ok, true)
+        return p, Mock.nextNetId
+    end
+
+    it('a disconnect with the truck far from the bay is stored as lost and keeps the deposit after a restart', function()
+        local p, truck = rentAtBay('RDTOW002')
+        Mock.coords[truck] = vector3(2000.0, 2000.0, 30.0)
+        PFJobsTow.Dropped(E)
+        local row = MySQL.single.await('SELECT truck_lost FROM pf_tow_rentals WHERE citizenid = ?', { 'RDTOW002' })
+        assert_eq(tonumber(row.truck_lost), 1)
+        loadJobs()
+        TriggerEvent('pf-jobs:server:schemaReady')
+        assert_eq(PFJobsTow.View(E).rental.lost, true)
+        local res = PFJobsTow.Return(E, true)
+        assert_eq(res.ok, true)
+        assert_eq(res.refund, 0)
+        assert_eq(p.PlayerData.money.bank, 0)
+        assert_eq(count('SELECT COUNT(*) FROM pf_tow_rentals WHERE citizenid = ?', { 'RDTOW002' }), 0)
+        assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pf-jobs:tow:rent:%:refund' AND actor = 'RDTOW002'"), 0)
+    end)
+
+    it('a disconnect with a damaged truck at the bay stores its health; the refund is reduced after a restart', function()
+        local p = rentAtBay('RDTOW003')
+        local engine = GetVehicleEngineHealth
+        GetVehicleEngineHealth = function() return 500.0 end
+        PFJobsTow.Dropped(E)
+        GetVehicleEngineHealth = engine
+        local row = MySQL.single.await('SELECT truck_lost, truck_health FROM pf_tow_rentals WHERE citizenid = ?', { 'RDTOW003' })
+        assert_eq(tonumber(row.truck_lost), 0)
+        assert_near(tonumber(row.truck_health), 0.5, 0.001)
+        loadJobs()
+        TriggerEvent('pf-jobs:server:schemaReady')
+        local due = 250 - math.floor(250 * 0.5 * Config.Tow.DamageDeduction)
+        assert_eq(PFJobsTow.Return(E, true).refund, due)
+        assert_eq(p.PlayerData.money.bank, due)
+        -- a row left behind (its delete failed) must not hand its recorded state to the next rental
+        MySQL.query.await("INSERT INTO pf_tow_rentals (citizenid, rental_id, model, plate, deposit, truck_lost, truck_health) VALUES ('RDTOW003', 'stale-1', 'flatbed', 'TOWR1', 250, 1, 0)")
+        assert_eq(PFJobsTow.Rent(E, 'flatbed', true).ok, true)
+        row = MySQL.single.await('SELECT truck_lost, truck_health FROM pf_tow_rentals WHERE citizenid = ?', { 'RDTOW003' })
+        assert_eq(row.truck_lost, nil)
+        assert_eq(row.truck_health, nil)
     end)
 end)
 

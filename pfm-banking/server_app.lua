@@ -354,13 +354,36 @@ end
 local SOCIETY_ERRORS = {
     insufficient_funds = 'Insufficient balance', not_authorized = 'No permission', bad_amount = 'Invalid amount',
     already_processed = 'This transaction was already processed', unknown_account = 'Account not found',
+    in_progress = 'That transaction is still being processed',
 }
+
+-- The ledger account an IBAN names (a shared account first, then a citizen's personal one), as the
+-- transfer itself resolves it.
+local function ibanLedger(iban)
+    local acct = MySQL.single.await('SELECT id, label, iban FROM bank_accounts_v2 WHERE iban = ?', { iban })
+    if acct then return 'acct:' .. acct.id end
+    local owner = MySQL.scalar.await('SELECT citizenid FROM bank_personal_iban WHERE iban = ?', { iban })
+    return owner and ('player:%s:bank'):format(owner) or nil
+end
+
+-- A ref that was already used must name the same move: same accounts, same amount. Otherwise the
+-- earlier result would be reported as this request's.
+local function sameMove(prior, fromLedger, toLedger, amount)
+    local stored = tonumber(prior.amount)
+    return stored ~= nil and prior.from_account == fromLedger and prior.to_account == toLedger and math.abs(stored - amount) < 0.005
+end
+
+-- ledger amounts are floats ('500.0'): whole dollars without decimals, cents with two
+local function dollars(n)
+    n = tonumber(n) or 0
+    return n % 1 == 0 and ('%d'):format(n) or ('%.2f'):format(n)
+end
 
 local function society(src, name, direction, amount, key)
     local res = BankingInternal.SocietyTransfer(src, { society = name, direction = direction, account = 'bank', amount = amount, key = key })
     if res.ok then
         return { ok = true, txId = res.txId, duplicate = res.duplicate,
-            message = (direction == 'deposit' and 'Deposited $%s' or 'Withdrew $%s'):format(res.amount) }
+            message = (direction == 'deposit' and 'Deposited $%s' or 'Withdrew $%s'):format(dollars(res.amount)) }
     end
     return { ok = false, error = res.error, message = SOCIETY_ERRORS[res.error] or L.Message(res.error) }
 end
@@ -389,7 +412,10 @@ function App.Transfer(src, p)
         local toOthers = to.kind == 'acct' and not to.owner
         if amount > (toOthers and cfg('maxTransfer', 250000) or cfg('maxInternal', 10000000)) then return { ok = false, error = 'over_limit' } end
         local key = ('bankapp:%s:%s:%s'):format(cid, toOthers and 'x' or 'i', ref)
-        if not L.GetTransaction(key) then
+        local prior = L.GetTransaction(key)
+        if prior then
+            if not sameMove(prior, from.ledger, to.ledger, amount) then return { ok = false, error = 'already_processed' } end
+        else
             if toOthers and App.DailyUsed(cid) + amount > cfg('dailyTransferLimit', 1000000) then return { ok = false, error = 'daily_limit' } end
             if onCooldown(cid) then return { ok = false, error = 'slow_down' } end
         end
@@ -423,8 +449,12 @@ function App.Transfer(src, p)
             if not iban then return { ok = false, error = 'server_error' } end
         end
         local key = ('bankapp:%s:x:%s'):format(cid, ref)
-        -- a retry of an action already recorded skips the limits: the ledger returns the first result
-        if not L.GetTransaction(key) then
+        -- a retry of an action already recorded skips the limits: the ledger returns the first result,
+        -- but only for the same payment (same source, recipient and amount)
+        local prior = L.GetTransaction(key)
+        if prior then
+            if not sameMove(prior, from.ledger, ibanLedger(iban), amount) then return { ok = false, error = 'already_processed' } end
+        else
             if App.DailyUsed(cid) + amount > cfg('dailyTransferLimit', 1000000) then return { ok = false, error = 'daily_limit' } end
             if onCooldown(cid) then return { ok = false, error = 'slow_down' } end
         end

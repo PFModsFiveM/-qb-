@@ -10,7 +10,8 @@ function GetResourceState(name) return states[name] or 'started' end
 vec3 = vec3 or vector3
 vec4 = vec4 or vector4
 CancelEvent = CancelEvent or function() end
-QBCoreMock.Commands.Add = function() end
+local commands = {}
+QBCoreMock.Commands.Add = function(name, _, _, _, fn) commands[name] = fn end
 QBCoreMock.Player = QBCoreMock.Player or {}
 
 RealDB.exec('pfm-core/qbcore.sql')
@@ -98,9 +99,23 @@ describe('an agency sale', function()
         assert_eq(tonumber(sale.agent_commission), 9000)
         assert_eq(tonumber(sale.agency_commission), 30000)
         assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM pfm_house_sales WHERE house = ?', { HOUSE })), 1)
+        -- the price paid is kept with the house, for the state sell-back
+        assert_eq(tonumber(MySQL.scalar.await('SELECT purchase_price FROM player_houses WHERE house = ?', { HOUSE })), 300000)
         local view = PFHouses.AgencyData(AGENT)
         assert_true(view.stats.count >= 1)
         assert_true(view.stats.mine >= 9000)
+    end)
+    it('the state sell-back pays 70% of the price paid, not of the listing price', function()
+        local offer = PFHouses.AgentOffer(AGENT, { house = HOUSE, target = BUYER })
+        assert_true(PFHouses.AnswerAgentOffer(BUYER, offer.offer.id, true).ok)
+        assert_eq(PFHouses.SetListingPrice(AGENT, { house = HOUSE, price = 100000000 }).error, 'not_for_sale')
+        Config.Houses[HOUSE].price = 100000000          -- the listing changed by any route
+        Mock.coords[BUYER] = vector3(1.0, 2.0, 3.0)
+        local before = bank(BUYER)
+        commands.sellhouse(BUYER, {})
+        assert_eq(bank(BUYER) - before, 210000)
+        assert_eq(PFHouses.OwnerOf(HOUSE), nil)
+        assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM player_houses WHERE house = ?', { HOUSE })), 0)
     end)
     it('a declined or unaffordable offer moves nothing', function()
         local before = agencyBalance()

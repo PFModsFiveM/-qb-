@@ -171,6 +171,66 @@ describe('flatbed rental', function()
         assert_eq(money(T, 'bank'), 250)
     end)
 
+    it('a disconnect with the truck away from the bay keeps the whole deposit', function()
+        local truck = rentTruck()
+        Mock.coords[truck] = vector3(2000, 2000, 30)
+        PFJobsTow.Dropped(T)
+        assert_eq(alive[truck], nil, 'the truck is still removed')
+        assert_eq(rented().orphaned, true)
+        assert_eq(rented().lost, true)
+        assert_eq(rented().refund, 0)
+        Mock.coords[T] = BAY
+        local res = PFJobsTow.Return(T, true)
+        assert_eq(res.ok, true)
+        assert_eq(res.refund, 0)
+        assert_eq(money(T, 'bank'), 0)
+        assert_eq(rented(), nil, 'the rental is closed')
+        assert_eq(#LedgerEnv.paid('pf-jobs:tow:rent:'), 1, 'only the deposit charge')
+        assert_eq(PFJobsTow.Return(T, true).error, 'no_rental')
+        assert_eq(money(T, 'bank'), 0)
+    end)
+
+    it('a server restart (txAdmin drops everyone first) still refunds the whole deposit', function()
+        local truck = rentTruck()
+        Mock.coords[truck] = vector3(2000, 2000, 30)     -- out on a job when the restart comes
+        Mock.invokingResource = 'some-other-resource'
+        TriggerEvent('txAdmin:events:serverShuttingDown')
+        assert_true(not PFJobsTow.shuttingDown, 'only txAdmin itself can announce it')
+        Mock.invokingResource = 'monitor'
+        TriggerEvent('txAdmin:events:serverShuttingDown')
+        Mock.invokingResource = nil
+        PFJobsTow.Dropped(T)
+        PFJobsTow.shuttingDown = nil
+        assert_eq(alive[truck], nil)
+        assert_true(rented().lost ~= true, 'not counted as lost')
+        Mock.coords[T] = BAY
+        assert_eq(PFJobsTow.Return(T, true).refund, 250)
+    end)
+
+    it('a disconnect after the truck was destroyed or lost keeps the whole deposit', function()
+        local truck = rentTruck()
+        alive[truck] = nil
+        PFJobsTow.Dropped(T)
+        assert_eq(rented().lost, true)
+        Mock.coords[T] = BAY
+        assert_eq(PFJobsTow.Return(T, true).refund, 0)
+        assert_eq(money(T, 'bank'), 0)
+    end)
+
+    it('a disconnect with a damaged truck at the bay gets the damage deduction', function()
+        local truck = rentTruck()
+        Mock.coords[truck] = BAY
+        health = 500.0
+        PFJobsTow.Dropped(T)
+        assert_eq(rented().lost, false)
+        health = 1000.0 -- the truck is gone; what counts is its state when the player left
+        Mock.coords[T] = BAY
+        local due = 250 - math.floor(250 * 0.5 * C.DamageDeduction)
+        assert_eq(rented().refund, due)
+        assert_eq(PFJobsTow.Return(T, true).refund, due)
+        assert_eq(money(T, 'bank'), due)
+    end)
+
     it('a lost truck closes the rental and keeps the deposit', function()
         local truck = rentTruck()
         assert_eq(PFJobsTow.ReportLost(T, true).error, 'truck_exists')

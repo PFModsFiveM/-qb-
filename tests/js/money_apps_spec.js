@@ -246,6 +246,147 @@ function bankHandlers(extra) {
         eq(env.win.__xss, undefined);
     });
 
+    // A ref kept after a lost answer stands for that one action: resending the same action reuses it (also
+    // after "still running" answers), any change (amount, direction, scope, recipient, note, mode, coins,
+    // wallet) gets a fresh ref, and a duplicate answer is shown as the earlier action, not a new one.
+    await it('management: the ref is kept only for the same action; a changed action gets a new one', async () => {
+        const answers = [];
+        const next = () => answers.shift() || { ok: false, error: 'timeout' };
+        const env = makeWindow('tablet', {
+            'boss.overview': () => ({ ok: true, paycheck: { minutes: 10 },
+                job: { scope: 'job', name: 'mechanic', label: 'Mechanic', grade: { level: 4, name: 'Owner' }, grades: [], balance: 1000 },
+                gang: { scope: 'gang', name: 'ballas', label: 'Ballas', grade: { level: 3, name: 'Boss' }, grades: [], balance: 400 } }),
+            'boss.members': () => ({ ok: true, members: [] }),
+            'boss.society': () => ({ ok: true, balance: 1000, atOffice: false, rows: [] }),
+            'boss.deposit': next, 'boss.withdraw': next,
+        });
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('boss');
+        await settle();
+        const root = env.$('.pfm');
+        env.tab(root, 'Society account').click();
+        await settle();
+        const sent = () => env.rpcs.filter((r) => r.method === 'deposit' || r.method === 'withdraw');
+        const move = async (label, value) => {
+            const input = root.querySelector('.pfm-money input');
+            input.value = String(value);
+            env.button(root, label).click();
+            await settle();
+            env.button(root, 'Confirm').click();
+            await settle();
+            return sent()[sent().length - 1].payload.ref;
+        };
+        const a = await move('Deposit', 300);
+        answers.push({ ok: false, error: 'in_progress' });
+        eq(await move('Deposit', 300), a, 'a lost answer keeps the ref for the same deposit');
+        eq(await move('Deposit', 300), a, 'still running: the same deposit keeps its ref');
+        const b = await move('Withdraw', 300);
+        ok(b !== a, 'a withdrawal never reuses the deposit’s ref');
+        const c = await move('Deposit', 500);
+        ok(c !== a && c !== b, 'another amount gets a new ref');
+        env.button(root, 'Gang: Ballas').click();
+        await settle();
+        env.tab(root, 'Society account').click();
+        await settle();
+        answers.push({ ok: true, duplicate: true, amount: 500, balance: 900 });
+        const d = await move('Deposit', 500);
+        eq(sent()[sent().length - 1].payload.scope, 'gang');
+        ok(d !== c, 'the other scope gets a new ref');
+        ok(env.notes.some((n) => n.t === 'success' && n.m.startsWith('Already done earlier')), 'a duplicate is shown as the earlier action');
+        answers.push({ ok: true, amount: 500 });
+        ok(await move('Deposit', 500) !== d, 'after a real answer the next action is new');
+    });
+
+    await it('bank: the transfer ref is kept only for the same transfer; busy keeps it', async () => {
+        const answers = [];
+        const env = makeWindow('tablet', bankHandlers({ 'bank.transfer': () => answers.shift() || { ok: false, error: 'timeout' } }));
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('bank', { to: { type: 'iban', iban: 'PF00000001' }, amount: 200 });
+        await settle();
+        const root = env.$('.pfb');
+        const type = (sel, value) => {
+            const input = root.querySelector('.pfb-form ' + sel);
+            input.value = value;
+            input.dispatchEvent(new env.win.Event('input'));
+        };
+        const send = async () => {
+            env.button(root, 'Review').click();
+            await settle();
+            env.button(root, 'Confirm').click();
+            await settle();
+            const all = env.rpcs.filter((r) => r.method === 'transfer');
+            return all[all.length - 1].payload.ref;
+        };
+        const a = await send();
+        answers.push({ ok: false, error: 'busy' });
+        eq(await send(), a);
+        eq(await send(), a, 'busy (the first call still running) keeps the ref');
+        type('input[type="number"]', '250');
+        const b = await send();
+        ok(b !== a, 'another amount gets a new ref');
+        type('input[placeholder="PF12345678"]', 'PF00000002');
+        const c = await send();
+        ok(c !== b, 'another recipient gets a new ref');
+        type('input[maxlength="100"]', 'rent');
+        const d = await send();
+        ok(d !== c, 'another note gets a new ref');
+        type('input[placeholder="PF12345678"]', 'pf 00000002');
+        answers.push({ ok: true, duplicate: true, message: 'Transferred $250 to PF00000002' });
+        eq(await send(), d, 'the same IBAN typed differently is the same transfer');
+        ok(env.notes.some((n) => n.t === 'success' && n.m === 'Already done earlier: Transferred $250 to PF00000002'), 'a duplicate is shown as the earlier transfer');
+    });
+
+    await it('crypto: the trade ref is kept only for the same trade; busy keeps it', async () => {
+        const answers = [];
+        const next = () => answers.shift() || { ok: false, error: 'timeout' };
+        const env = makeWindow('computer', {
+            'crypto.market': () => ({ ok: true, coin: 'qbit', label: 'Qbit', price: 100, refreshMinutes: 10, maxCoins: 10000, history: [],
+                wallet: { coins: 5, value: 500, walletId: 'MINE' }, bank: 1000, exchange: { x: 0, y: 0, rebooting: false } }),
+            'crypto.history': () => ({ ok: true, trades: [], transfers: [] }),
+            'crypto.buy': next, 'crypto.sell': next, 'crypto.send': next,
+        });
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('crypto');
+        await settle();
+        const root = env.$('.pfx');
+        const type = (sel, value) => {
+            const input = root.querySelector('.pfx-trade ' + sel);
+            input.value = value;
+            input.dispatchEvent(new env.win.Event('input'));
+        };
+        const trade = async (review, confirm) => {
+            env.button(root, review).click();
+            await settle();
+            env.button(root, confirm).click();
+            await settle();
+            const trades = env.rpcs.filter((r) => ['buy', 'sell', 'send'].includes(r.method));
+            return trades[trades.length - 1];
+        };
+        type('input[type="number"]', '1.5');
+        const a = (await trade('Review purchase', 'Confirm buy')).payload.ref;
+        answers.push({ ok: false, error: 'busy' });
+        eq((await trade('Review purchase', 'Confirm buy')).payload.ref, a);
+        eq((await trade('Review purchase', 'Confirm buy')).payload.ref, a, 'busy keeps the ref');
+        type('input[type="number"]', '2');
+        const b = (await trade('Review purchase', 'Confirm buy')).payload.ref;
+        ok(b !== a, 'other coins get a new ref');
+        env.button(root, 'Sell').click();
+        await settle();
+        const sell = await trade('Review sale', 'Confirm sell');
+        eq(sell.method, 'sell');
+        ok(sell.payload.ref !== b, 'a sale never reuses the purchase’s ref');
+        answers.push({ ok: true, duplicate: true, coins: 2, total: 200 });
+        eq((await trade('Review sale', 'Confirm sell')).payload.ref, sell.payload.ref);
+        ok(env.notes.some((n) => n.t === 'success' && n.m.startsWith('Already done earlier: Sold 2 QBit')), 'a duplicate is shown as the earlier trade');
+        env.button(root, 'Send').click();
+        await settle();
+        type('input[type="number"]', '1');
+        type('input.pfx-mono', 'WALLET-A');
+        const c = (await trade('Review transfer', 'Confirm send')).payload.ref;
+        type('input.pfx-mono', 'WALLET-B');
+        ok((await trade('Review transfer', 'Confirm send')).payload.ref !== c, 'another wallet gets a new ref');
+    });
+
     console.log(`money_apps_spec.js  (${passed} passed, ${failed} failed)`);
     failures.forEach((f) => console.log('  - ' + f));
     process.exit(failed ? 1 : 0);

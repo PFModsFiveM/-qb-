@@ -8,7 +8,10 @@ function GetResourceState(name) return started[name] and 'started' or 'missing' 
 -- the coin transfer record and the wallet lookup (the real SQL runs in crypto_app_realdb_spec.lua)
 local transfers = {}
 FakeDB.extraPatterns = {
-    { 'SELECT coins FROM pf_crypto_transfers WHERE transfer_key = ?', function(p) return transfers[p[1]] end },
+    { 'FROM pf_crypto_transfers WHERE transfer_key = ?', function(p)
+        local t = transfers[p[1]]
+        return t and { coins = t.coins, to_cid = t.to } or nil
+    end },
     { 'INSERT INTO pf_crypto_transfers', function(p)
         if transfers[p[1]] then error('Duplicate entry for key uq_transfer_key') end
         transfers[p[1]] = { coins = p[5], from = p[2], to = p[3] }
@@ -154,6 +157,57 @@ describe('sending coins from the app', function()
         assert_eq(rpc(ME, 'send', { walletId = 'WALLETOT', coins = 50, ref = ref() }).error, 'insufficient_coins')
         assert_eq(money(ME).crypto, 5)
         assert_eq(money(OTHER).crypto, 0)
+    end)
+end)
+
+-- A ref kept after a lost answer must only ever stand for the same trade: the server answers a reused
+-- ref with what that trade did, and refuses it for another amount, side or wallet.
+describe('a reused trade id', function()
+    it('a buy answers with the stored coins and cost, and refuses another amount', function()
+        local r = ref()
+        assert_true(rpc(ME, 'buy', { coins = 1, ref = r }).ok)
+        local bigger = rpc(ME, 'buy', { coins = 5, ref = r })
+        assert_false(bigger.ok, 'a different amount under the same id was reported as bought')
+        assert_eq(bigger.error, 'already_processed')
+        Crypto.Worth['qbit'] = 200
+        local again = rpc(ME, 'buy', { coins = 1, ref = r })
+        assert_true(again.ok and again.duplicate)
+        assert_eq(again.total, 100, 'the stored cost, not one at the new price')
+        assert_eq(again.price, 100)
+        assert_eq(again.coins, 1)
+        assert_eq(money(ME).bank, 900)
+        assert_eq(money(ME).crypto, 1)
+        assert_eq(#LedgerEnv.paid('pfm-crypto:buy:ME001:'), 1)
+    end)
+    it('a sale answers with the stored coins and payout, and refuses another amount', function()
+        money(ME).crypto = 5
+        local r = ref()
+        assert_true(rpc(ME, 'sell', { coins = 2, ref = r }).ok)
+        local other = rpc(ME, 'sell', { coins = 1, ref = r })
+        assert_false(other.ok)
+        assert_eq(other.error, 'already_processed')
+        local again = rpc(ME, 'sell', { coins = 2, ref = r })
+        assert_true(again.duplicate)
+        assert_eq(again.coins, 2)
+        assert_eq(again.total, 200)
+        assert_eq(money(ME).crypto, 3)
+        assert_eq(money(ME).bank, 1200)
+    end)
+    it('a send refuses another amount or another wallet under the same id', function()
+        local third = Mock.newPlayer(3, 'TH001')
+        third.PlayerData.money = { cash = 0, bank = 0, crypto = 0 }
+        third.PlayerData.metadata.walletid = 'WALLETTH'
+        money(ME).crypto = 10
+        local r = ref()
+        assert_true(rpc(ME, 'send', { walletId = 'WALLETOT', coins = 2, ref = r }).ok)
+        assert_eq(rpc(ME, 'send', { walletId = 'WALLETOT', coins = 3, ref = r }).error, 'already_processed')
+        assert_eq(rpc(ME, 'send', { walletId = 'WALLETTH', coins = 2, ref = r }).error, 'already_processed')
+        local again = rpc(ME, 'send', { walletId = 'WALLETOT', coins = 2, ref = r })
+        assert_true(again.ok and again.duplicate)
+        assert_eq(again.coins, 2)
+        assert_eq(money(ME).crypto, 8)
+        assert_eq(money(OTHER).crypto, 2)
+        assert_eq(money(3).crypto, 0)
     end)
 end)
 

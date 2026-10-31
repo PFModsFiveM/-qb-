@@ -290,7 +290,7 @@ describe("driver wear and mileage reports ('pf_mech:server:setState')", function
         assert_eq(st(CAR).partDamage.brakes, 100, 'capped at 100')
     end)
 
-    it("someone else's car: only an empty car, from beside it", function()
+    it("someone else's car: never from outside it (work-order cars: mechanic_workorder_wear_spec)", function()
         st(CAR).partDamage = { brakes = 30 }
         st(OTHER_CAR).partDamage = { brakes = 30 }
         report(OTHER, OTHER_CAR, 'partDamage', { brakes = 90 })       -- far away
@@ -299,8 +299,9 @@ describe("driver wear and mileage reports ('pf_mech:server:setState')", function
         report(OTHER, CAR, 'partDamage', { brakes = 90 })             -- someone drives it
         assert_eq(st(CAR).partDamage.brakes, 30)
         Mock.vehicleOf[ME], drivers[CAR] = nil, nil
-        report(OTHER, CAR, 'partDamage', { brakes = 90 })             -- job wear on a parked car
-        assert_eq(st(CAR).partDamage.brakes, 90)
+        report(OTHER, CAR, 'partDamage', { brakes = 90 })             -- a parked car, from beside it
+        report(ME, CAR, 'partDamage', { brakes = 90 })                -- an on-duty mechanic, no work order
+        assert_eq(st(CAR).partDamage.brakes, 30)
     end)
 
     it('mileage: the driver only, never down, never faster than a car drives', function()
