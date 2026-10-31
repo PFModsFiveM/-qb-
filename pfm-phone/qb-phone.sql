@@ -31,18 +31,34 @@ CREATE TABLE IF NOT EXISTS `phone_messages` (
   KEY `number` (`number`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4;
 
+-- One mailbox for the phone, the tablet and the computer: pf-citizen adds the columns after `button`
+-- with a migration on existing servers (folders, threads, the sender's server identity, attachments).
 CREATE TABLE IF NOT EXISTS `player_mails` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `citizenid` varchar(50) DEFAULT NULL,
-  `sender` varchar(50) DEFAULT NULL,
-  `subject` varchar(50) DEFAULT NULL,
+  `sender` varchar(80) DEFAULT NULL,
+  `subject` varchar(128) DEFAULT NULL,
   `message` text DEFAULT NULL,
   `read` tinyint(4) DEFAULT 0,
   `mailid` int(11) DEFAULT NULL,
   `date` timestamp NULL DEFAULT current_timestamp(),
   `button` text DEFAULT NULL,
+  `folder` varchar(12) NOT NULL DEFAULT 'inbox',
+  `thread` varchar(40) DEFAULT NULL,
+  `sender_type` varchar(16) NOT NULL DEFAULT 'system',
+  `sender_cid` varchar(50) DEFAULT NULL,
+  `sender_address` varchar(120) DEFAULT NULL,
+  `recipients` varchar(400) DEFAULT NULL,
+  `attachments` text DEFAULT NULL,
+  `ref` varchar(100) DEFAULT NULL,
+  `prev_folder` varchar(12) DEFAULT NULL,
+  `moved_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `citizenid` (`citizenid`)
+  KEY `citizenid` (`citizenid`),
+  KEY `idx_mail_box` (`citizenid`, `folder`, `id`),
+  KEY `idx_mail_thread` (`citizenid`, `thread`),
+  KEY `idx_mail_ref` (`ref`),
+  UNIQUE KEY `uq_mail_ref` (`citizenid`, `ref`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `crypto_transactions` (

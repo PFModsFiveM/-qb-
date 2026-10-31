@@ -234,37 +234,68 @@ local function GenerateOwnerName()
 end
 
 
-local function sendNewMailToOffline(citizenid, mailData)
-    local Player = QBCore.Functions.GetPlayerByCitizenId(citizenid)
-    if Player then
-        local src = Player.PlayerData.source
-        if mailData.button == nil then
-            MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
-            TriggerClientEvent('qb-phone:client:NewMailNotify', src, mailData)
-        else
-            MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`, `button`) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0, json.encode(mailData.button) })
-            TriggerClientEvent('qb-phone:client:NewMailNotify', src, mailData)
-        end
-        SetTimeout(200, function()
-            local mails = MySQL.query.await(
-                'SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` ASC', { Player.PlayerData.citizenid })
-            if mails[1] ~= nil then
-                for k, _ in pairs(mails) do
-                    if mails[k].button ~= nil then
-                        mails[k].button = json.decode(mails[k].button)
-                    end
-                end
-            end
+-- One mailbox for the phone, the tablet and the computer: while pf-citizen runs, mail is stored and
+-- announced by it (exports['pf-citizen']:SendMail) in this same player_mails table, and it calls
+-- RefreshMails below to update the phone. Without pf-citizen the phone stores mail itself as before.
 
-            TriggerClientEvent('qb-phone:client:UpdateMails', src, mails)
-        end)
-    else
-        if mailData.button == nil then
-            MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
-        else
-            MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`, `button`) VALUES (?, ?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0, json.encode(mailData.button) })
+--- The phone's inbox: pf-citizen keeps sent mail, drafts and trash in the same table, the phone
+--- shows only the inbox (rows from before pf-citizen have no folder).
+local function PhoneMails(citizenid, newestFirst)
+    local rows = MySQL.query.await('SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` ' .. (newestFirst and 'DESC' or 'ASC'), { citizenid }) or {}
+    local mails = {}
+    for _, mail in ipairs(rows) do
+        if mail.folder == nil or mail.folder == 'inbox' then
+            if mail.button ~= nil and mail.button ~= '' then
+                local ok, button = pcall(json.decode, mail.button)
+                mail.button = ok and button or nil
+            elseif mail.button == '' then
+                mail.button = nil
+            end
+            mails[#mails + 1] = mail
         end
     end
+    return mails
+end
+
+--- Sends the phone of an online citizen its inbox (and a new-mail notification when mailData is given).
+local function RefreshMails(citizenid, mailData, newestFirst)
+    local Player = QBCore.Functions.GetPlayerByCitizenId(citizenid)
+    if not Player then return false end
+    local src = Player.PlayerData.source
+    if type(mailData) == 'table' then TriggerClientEvent('qb-phone:client:NewMailNotify', src, mailData) end
+    SetTimeout(200, function()
+        TriggerClientEvent('qb-phone:client:UpdateMails', src, PhoneMails(citizenid, newestFirst))
+    end)
+    return true
+end
+exports('RefreshMails', function(citizenid, mailData) return RefreshMails(citizenid, mailData) end)
+
+--- Stores a mail through pf-citizen. True when pf-citizen took it (stored or refused as invalid);
+--- false when it is not running, so the caller stores it the old way.
+local function CitizenMail(citizenid, mailData)
+    if GetResourceState('pf-citizen') ~= 'started' then return false end
+    local ok = pcall(function()
+        return exports['pf-citizen']:SendMail(citizenid, {
+            sender = mailData.sender, subject = mailData.subject, message = mailData.message or mailData.subject,
+            button = mailData.button, senderType = 'system',
+        })
+    end)
+    return ok
+end
+
+local function StoreMail(citizenid, mailData)
+    if mailData.button == nil then
+        MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
+    else
+        MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`, `button`) VALUES (?, ?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0, json.encode(mailData.button) })
+    end
+end
+
+local function sendNewMailToOffline(citizenid, mailData)
+    if type(citizenid) ~= 'string' or type(mailData) ~= 'table' then return end
+    if CitizenMail(citizenid, mailData) then return end
+    StoreMail(citizenid, mailData)
+    RefreshMails(citizenid, mailData)
 end
 exports('sendNewMailToOffline', sendNewMailToOffline)
 
@@ -389,15 +420,7 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetPhoneData', function(source,
             TWData = Tweets
         end
 
-        local mails = MySQL.query.await('SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` ASC', { Player.PlayerData.citizenid })
-        if mails[1] ~= nil then
-            for k, _ in pairs(mails) do
-                if mails[k].button ~= nil then
-                    mails[k].button = json.decode(mails[k].button)
-                end
-            end
-            PhoneData.Mails = mails
-        end
+        PhoneData.Mails = PhoneMails(Player.PlayerData.citizenid)
 
         local transactions = MySQL.query.await('SELECT * FROM crypto_transactions WHERE citizenid = ? ORDER BY `date` ASC', { Player.PlayerData.citizenid })
         if transactions[1] ~= nil then
@@ -419,23 +442,43 @@ end)
 -- Paying a bill: the amount, the business and the biller come from the stored invoice. (They came
 -- from the client, so a bill could be paid with $1, to any business, with the commission sent to
 -- any player; the commission was also paid before the payment was checked.) Every step is keyed by
--- the invoice id, so paying the same bill twice moves money once.
-QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, cb, _, _, invoiceId)
-    local Ply = exports['pfm-core']:GetPlayer(source)
+-- the invoice id, so paying the same bill twice moves money once. The phone, the tablet and the
+-- computer (pf-citizen's Bills app, through the PayInvoice export) all pay through PayInvoice below.
+
+--- Charges the invoice on the ledger. One key per invoice, so a replayed or doubled request is charged
+--- once; a key whose attempt failed (not enough money) stays failed in the ledger, so a later attempt
+--- moves on to the next key instead of failing forever. Returns true or false, error.
+local function ChargeInvoice(src, invoiceId, amount, society)
+    local base = 'pfm-phone:invoice:' .. invoiceId
+    for attempt = 1, 20 do
+        local key = attempt == 1 and base or (base .. ':retry' .. attempt)
+        local account, res = PFPayout.Charge(src, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society })
+        if account then return true end
+        if not (type(res) == 'table' and res.duplicate) then return false, type(res) == 'table' and res.error or 'payment_failed' end
+    end
+    return false, 'payment_failed'
+end
+
+--- Pays invoice `invoiceId` of the player `src`. Returns true, or false and an error code.
+--- `elsewhere`: paid from another device, so the phone is told to reload its invoices.
+local function PayInvoice(src, invoiceId, elsewhere)
+    local Ply = exports['pfm-core']:GetPlayer(src)
     invoiceId = tonumber(invoiceId)
-    if not Ply or not invoiceId then return cb(false) end
+    if not Ply or not invoiceId or invoiceId ~= math.floor(invoiceId) then return false, 'bad_request' end
     local cid = Ply.PlayerData.citizenid
     local rows = MySQL.query.await('SELECT * FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
     local invoice = rows and rows[1]
     local amount = invoice and IsValidAmount(invoice.amount)
     local society = invoice and tostring(invoice.society or '')
-    if not amount or society == '' then return cb(false) end
+    if not amount or society == '' then return false, 'not_found' end
 
+    local charged, err = ChargeInvoice(src, invoiceId, amount, society)
+    if not charged then return false, err == 'insufficient_funds' and 'insufficient_funds' or (err or 'payment_failed') end
+    local deleted = MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
+    -- a doubled request reaches this point too (its charge was the same ledger entry); only the one
+    -- that removed the invoice sends the mails
+    local first = not (type(deleted) == 'table' and tonumber(deleted.affectedRows) == 0)
     local key = 'pfm-phone:invoice:' .. invoiceId
-    if not PFPayout.Charge(source, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society }) then
-        return cb(false)
-    end
-    MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
     local ok = PFPayout.PaySociety(society, amount, { key = key .. ':society', reason = 'Phone invoice' })
     if not ok then print(('^1[pfm-phone]^7 invoice %d: payment to %s not credited yet (key %s:society)'):format(invoiceId, society, key)) end
 
@@ -445,32 +488,46 @@ QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, c
         if commission > 0 then
             PFPayout.Pay(invoice.sendercitizenid, 'bank', commission, { key = key .. ':commission', kind = 'wage', reason = 'Billing commission', quiet = true })
         end
-        exports['pfm-phone']:sendNewMailToOffline(invoice.sendercitizenid, {
-            sender = 'Billing Department',
-            subject = 'Commission Received',
-            message = string.format('You received a commission check of $%s when %s %s paid a bill of $%s.', commission, Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
-        })
-    end
-    TriggerEvent('qb-phone:server:paidInvoice', source, invoiceId)
-    notifyBillingSociety(society, Ply, amount, true)
-    cb(true)
-end)
-
-QBCore.Functions.CreateCallback('qb-phone:server:DeclineInvoice', function(source, cb, _, _, invoiceId)
-    local Ply = exports['pfm-core']:GetPlayer(source)
-    if Ply then
-        local rows = MySQL.query.await('SELECT amount, society FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, Ply.PlayerData.citizenid, 1 })
-
-        if rows and rows[1] then
-            TriggerEvent('qb-phone:server:declinedInvoice', source, invoiceId)
-            notifyBillingSociety(rows[1].society, Ply, rows[1].amount, false)
-            MySQL.query('DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, Ply.PlayerData.citizenid, 1 })
-            cb(true)
-            return
+        if first then
+            exports['pfm-phone']:sendNewMailToOffline(invoice.sendercitizenid, {
+                sender = 'Billing Department',
+                subject = 'Commission Received',
+                message = string.format('You received a commission check of $%s when %s %s paid a bill of $%s.', commission, Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
+            })
         end
     end
+    if first then
+        TriggerEvent('qb-phone:server:paidInvoice', src, invoiceId)
+        TriggerEvent('pfm-phone:server:invoiceSettled', invoice, 'paid')
+        notifyBillingSociety(society, Ply, amount, true)
+        if elsewhere then TriggerClientEvent('qb-phone:RefreshPhone', src) end
+    end
+    return true
+end
+exports('PayInvoice', function(src, invoiceId) return PayInvoice(src, invoiceId, true) end)
 
-    cb(false)
+QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, cb, _, _, invoiceId)
+    cb(PayInvoice(source, invoiceId) == true)
+end)
+
+--- Declines a declinable invoice of the player `src`. Returns true, or false and an error code.
+local function DeclineInvoice(src, invoiceId)
+    local Ply = exports['pfm-core']:GetPlayer(src)
+    invoiceId = tonumber(invoiceId)
+    if not Ply or not invoiceId then return false, 'bad_request' end
+    local cid = Ply.PlayerData.citizenid
+    local rows = MySQL.query.await('SELECT amount, society FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, cid, 1 })
+    if not (rows and rows[1]) then return false, 'not_declinable' end
+    TriggerEvent('qb-phone:server:declinedInvoice', src, invoiceId)
+    notifyBillingSociety(rows[1].society, Ply, rows[1].amount, false)
+    MySQL.query('DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, cid, 1 })
+    TriggerEvent('pfm-phone:server:invoiceSettled', { id = invoiceId, citizenid = cid, amount = rows[1].amount, society = rows[1].society }, 'declined')
+    return true
+end
+exports('DeclineInvoice', function(src, invoiceId) return DeclineInvoice(src, invoiceId) end)
+
+QBCore.Functions.CreateCallback('qb-phone:server:DeclineInvoice', function(source, cb, _, _, invoiceId)
+    cb(DeclineInvoice(source, invoiceId) == true)
 end)
 
 -- Contact pictures: looked up by the exact phone number, at most MAX_PICTURE_LOOKUPS per request (the
@@ -786,19 +843,14 @@ RegisterNetEvent('qb-phone:server:RemoveMail', function(MailId)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if type(MailId) ~= 'number' and type(MailId) ~= 'string' then return end
-    -- citizenid match in the query enforces that players can only delete their own mail
-    MySQL.query('DELETE FROM player_mails WHERE mailid = ? AND citizenid = ?', { MailId, Player.PlayerData.citizenid })
-    SetTimeout(100, function()
-        local mails = MySQL.query.await('SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` ASC', { Player.PlayerData.citizenid })
-        if mails[1] ~= nil then
-            for k, _ in pairs(mails) do
-                if mails[k].button ~= nil then
-                    mails[k].button = json.decode(mails[k].button)
-                end
-            end
-        end
-        TriggerClientEvent('qb-phone:client:UpdateMails', src, mails)
-    end)
+    -- citizenid match in the query enforces that players can only delete their own mail. With
+    -- pf-citizen it goes to the trash, as on the tablet and the computer (emptied after 30 days).
+    if GetResourceState('pf-citizen') == 'started' then
+        MySQL.update.await("UPDATE player_mails SET prev_folder = folder, folder = 'trash', moved_at = NOW() WHERE mailid = ? AND citizenid = ? AND folder = 'inbox'", { MailId, Player.PlayerData.citizenid })
+    else
+        MySQL.query.await('DELETE FROM player_mails WHERE mailid = ? AND citizenid = ?', { MailId, Player.PlayerData.citizenid })
+    end
+    RefreshMails(Player.PlayerData.citizenid)
 end)
 
 -- A mail to the sender's own phone (job and mission scripts send these from the client).
@@ -811,68 +863,29 @@ RegisterNetEvent('qb-phone:server:sendNewMail', function(mailData)
     mailData.message = type(mailData.message) == 'string' and mailData.message ~= '' and mailData.message:sub(1, 4000) or nil
     if not mailData.sender or not mailData.subject or not mailData.message then return end
     if mailData.button ~= nil and (type(mailData.button) ~= 'table' or EncodedSize(mailData.button) > 2000) then return end
-    if mailData.button == nil then
-        MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
-    else
-        MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`, `button`) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0, json.encode(mailData.button) })
-    end
-    TriggerClientEvent('qb-phone:client:NewMailNotify', src, mailData)
-    SetTimeout(200, function()
-        local mails = MySQL.query.await('SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` DESC',
-            { Player.PlayerData.citizenid })
-        if mails[1] ~= nil then
-            for k, _ in pairs(mails) do
-                if mails[k].button ~= nil then
-                    mails[k].button = json.decode(mails[k].button)
-                end
-            end
-        end
-
-        TriggerClientEvent('qb-phone:client:UpdateMails', src, mails)
-    end)
+    -- only these four fields go on: the mail lands in the sender's own inbox, as a system mail
+    local mail = { sender = mailData.sender, subject = mailData.subject, message = mailData.message, button = mailData.button }
+    if CitizenMail(Player.PlayerData.citizenid, mail) then return end
+    StoreMail(Player.PlayerData.citizenid, mail)
+    RefreshMails(Player.PlayerData.citizenid, mail, true)
 end)
 
 -- Server-only: a mail to any citizen. It was a net event, so any client could put a mail (with a
 -- button that runs an event of its choosing when clicked) into anyone's inbox. No client sends it.
 AddEventHandler('qb-phone:server:sendNewEventMail', function(citizenid, mailData)
     if type(citizenid) ~= 'string' or type(mailData) ~= 'table' then return end
-    local Player = QBCore.Functions.GetPlayerByCitizenId(citizenid)
-    if mailData.button == nil then
-        MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`) VALUES (?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0 })
-    else
-        MySQL.insert('INSERT INTO player_mails (`citizenid`, `sender`, `subject`, `message`, `mailid`, `read`, `button`) VALUES (?, ?, ?, ?, ?, ?, ?)', { citizenid, mailData.sender, mailData.subject, mailData.message, GenerateMailId(), 0, json.encode(mailData.button) })
-    end
-    SetTimeout(200, function()
-        local mails = MySQL.query.await('SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` ASC', { citizenid })
-        if mails[1] ~= nil then
-            for k, _ in pairs(mails) do
-                if mails[k].button ~= nil then
-                    mails[k].button = json.decode(mails[k].button)
-                end
-            end
-        end
-        if Player then
-            TriggerClientEvent('qb-phone:client:UpdateMails', Player.PlayerData.source, mails)
-        end
-    end)
+    if CitizenMail(citizenid, mailData) then return end
+    StoreMail(citizenid, mailData)
+    RefreshMails(citizenid)
 end)
 
 RegisterNetEvent('qb-phone:server:ClearButtonData', function(mailId)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    MySQL.update('UPDATE player_mails SET button = ? WHERE mailid = ? AND citizenid = ?', { '', mailId, Player.PlayerData.citizenid })
-    SetTimeout(200, function()
-        local mails = MySQL.query.await('SELECT * FROM player_mails WHERE citizenid = ? ORDER BY `date` ASC', { Player.PlayerData.citizenid })
-        if mails[1] ~= nil then
-            for k, _ in pairs(mails) do
-                if mails[k].button ~= nil then
-                    mails[k].button = json.decode(mails[k].button)
-                end
-            end
-        end
-        TriggerClientEvent('qb-phone:client:UpdateMails', src, mails)
-    end)
+    if type(mailId) ~= 'number' and type(mailId) ~= 'string' then return end
+    MySQL.update.await('UPDATE player_mails SET button = ? WHERE mailid = ? AND citizenid = ?', { '', mailId, Player.PlayerData.citizenid })
+    RefreshMails(Player.PlayerData.citizenid)
 end)
 
 --- A tweet as everyone else sees it, built by the server: the author is the sender, the text and links
