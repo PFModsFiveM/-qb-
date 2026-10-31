@@ -73,10 +73,114 @@ end)
 DropHolders = {}
 local DROP_REACH = 3.0
 
+-- ── inv_busy (server-owned) ───────────────────────────────────────
+-- `inv_busy` is the player state other code reads to refuse opening an inventory. Only the server
+-- writes it (sv_stateBagStrictMode): it is true while the server has an inventory open for the
+-- player, while the player is logged out, or while the player holds an action lock (planting,
+-- corner selling, fitting a harness...). A client may add or drop its OWN action locks through
+-- 'qb-inventory:server:setActionBusy', but it can never clear the server's open-inventory flag:
+-- a client that clears a lock only ends the restriction it asked for itself.
+local BUSY_LOCK_TTL = 30 * 60     -- safety net: a lock a client never released ends after 30 min
+local BUSY_MAX_LOCKS = 8
+local BUSY_RATE_WINDOW, BUSY_RATE_MAX = 10, 30
+local InventoryOpenBusy = {}      -- [src] = true while the server has an inventory open for src
+local BusyLogout = {}             -- [src] = true between logout and the next character load
+local BusyLocks = {}              -- [src] = { [reason] = expiresAt (os.time) }
+local BusyRate = {}               -- [src] = { start, count }
+
+local function hasBusyLock(src)
+    local locks = BusyLocks[src]
+    if not locks then return false end
+    local now = os.time()
+    for reason, expiresAt in pairs(locks) do
+        if expiresAt <= now then locks[reason] = nil end
+    end
+    if next(locks) == nil then BusyLocks[src] = nil return false end
+    return true
+end
+
+local function writeBusy(src)
+    local busy = InventoryOpenBusy[src] == true or BusyLogout[src] == true or hasBusyLock(src)
+    Player(src).state.inv_busy = busy
+    return busy
+end
+
+--- The server opened (true) or closed (false) an inventory for `src`.
+function SetInventoryBusy(src, open)
+    src = tonumber(src)
+    if not src then return false end
+    InventoryOpenBusy[src] = open == true or nil
+    return writeBusy(src)
+end
+
+--- Adds (busy = true) or removes an action lock for `src`. `reason` names the action.
+function SetBusyLock(src, reason, busy, ttl)
+    src = tonumber(src)
+    if not src or type(reason) ~= 'string' then return false end
+    local locks = BusyLocks[src] or {}
+    if busy == true then
+        if locks[reason] == nil then
+            local n = 0
+            for _ in pairs(locks) do n = n + 1 end
+            if n >= BUSY_MAX_LOCKS then return false end
+        end
+        ttl = math.min(BUSY_LOCK_TTL, math.max(1, math.floor(tonumber(ttl) or BUSY_LOCK_TTL)))
+        locks[reason] = os.time() + ttl
+        BusyLocks[src] = locks
+    else
+        locks[reason] = nil
+        BusyLocks[src] = next(locks) and locks or nil
+    end
+    writeBusy(src)
+    return true
+end
+
+--- Ends every lock whose time ran out (called every minute; also usable by tests).
+function PurgeExpiredBusyLocks()
+    for src in pairs(BusyLocks) do writeBusy(src) end
+    -- pfm-core raises OnPlayerUnload from inside playerDropped, so a dropped player can leave a
+    -- logout mark behind; forget it once the player is gone
+    for src in pairs(BusyLogout) do
+        if not GetPlayerName(src) then BusyLogout[src] = nil end
+    end
+end
+
+local function clearBusyState(src)
+    InventoryOpenBusy[src], BusyLocks[src], BusyRate[src], BusyLogout[src] = nil, nil, nil, nil
+end
+
+exports('SetBusyLock', function(src, reason, busy, ttl) return SetBusyLock(src, reason, busy, ttl) end)
+
+-- A client asks to hold (true) or release (false) its own action lock while a progress bar or an
+-- activity runs. Only a short name and a boolean are taken, from a logged-in player, rate limited.
+RegisterNetEvent('qb-inventory:server:setActionBusy', function(reason, busy)
+    local src = source
+    if type(reason) ~= 'string' or #reason < 1 or #reason > 32 or not reason:match('^[%w_%-%.:]+$') then return end
+    if type(busy) ~= 'boolean' then return end
+    if not QBCore.Functions.GetPlayer(src) then return end
+    local now = os.time()
+    local rate = BusyRate[src]
+    if not rate or now - rate.start >= BUSY_RATE_WINDOW then
+        rate = { start = now, count = 0 }
+        BusyRate[src] = rate
+    end
+    rate.count = rate.count + 1
+    if rate.count > BUSY_RATE_MAX then return end
+    SetBusyLock(src, 'client:' .. reason, busy)
+end)
+
+CreateThread(function()
+    while true do
+        Wait(60000)
+        PurgeExpiredBusyLocks()
+    end
+end)
+
 -- Handlers
 
 AddEventHandler('playerDropped', function()
     local src = source
+    clearBusyState(src)
     for _, inv in pairs(Inventories) do
         if inv.isOpen == src then
             inv.isOpen = false
@@ -112,6 +216,10 @@ RegisterNetEvent('QBCore:Server:UpdateObject', function()
 end)
 
 AddEventHandler('QBCore:Server:PlayerLoaded', function(Player)
+    -- a freshly loaded character starts with no inventory open and no action locks
+    -- (the client used to clear its own flag here)
+    clearBusyState(Player.PlayerData.source)
+    writeBusy(Player.PlayerData.source)
     QBCore.Functions.AddPlayerMethod(Player.PlayerData.source, 'AddItem', function(item, amount, slot, info, reason)
         return AddItem(Player.PlayerData.source, item, amount, slot, info, reason)
     end)
@@ -173,8 +281,18 @@ AddEventHandler('onResourceStart', function(resourceName)
             SetInventory(k, items)
         end)
 
-        Player(k).state.inv_busy = false
+        SetInventoryBusy(k, false)
     end
+end)
+
+-- Logged out: no inventory may be opened until the next character loads (the client used to set
+-- this flag itself on unload).
+AddEventHandler('QBCore:Server:OnPlayerUnload', function(src)
+    src = tonumber(src)
+    if not src then return end
+    clearBusyState(src)
+    BusyLogout[src] = true
+    writeBusy(src)
 end)
 
 AddEventHandler('onResourceStop', function(resourceName)
@@ -252,14 +370,14 @@ RegisterNetEvent('qb-inventory:server:closeInventory', function(inventory)
     local src = source
     local QBPlayer = QBCore.Functions.GetPlayer(src)
     if not QBPlayer then return end
-    Player(source).state.inv_busy = false
+    SetInventoryBusy(src, false)
     if type(inventory) ~= 'string' then return end
     if inventory:find('shop%-') then return end
     if inventory:find('^otherplayer%-') then
         local targetId = tonumber(inventory:match('^otherplayer%-(.+)'))
         if not targetId or InventoryViewers[targetId] ~= src then return end
         InventoryViewers[targetId] = nil
-        Player(targetId).state.inv_busy = false
+        SetInventoryBusy(targetId, false)
         return
     end
     if Drops[inventory] then
@@ -974,5 +1092,17 @@ CreateThread(function()
             sunny = okW and okT and PFFreshness.IsSunny(weather, hour) or false
         end
         pcall(PFFreshness.UpdateDropSunlight, Drops, sunny)
+        -- cars out in that sun: their gloveboxes and trunks heat up
+        local plates = {}
+        if sunny then
+            for _, veh in ipairs(GetAllVehicles()) do
+                local plate = GetVehicleNumberPlateText(veh)
+                if type(plate) == 'string' then
+                    plate = plate:gsub('^%s+', ''):gsub('%s+$', '')
+                    if plate ~= '' then plates[plate] = true end
+                end
+            end
+        end
+        pcall(PFFreshness.UpdateVehicleHeat, Inventories, plates, sunny)
     end
 end)

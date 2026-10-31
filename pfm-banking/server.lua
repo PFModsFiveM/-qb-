@@ -48,6 +48,12 @@ local function bankTransfer(src, citizenid, from, to, amount, kind, reason)
     })
 end
 
+-- A counter or ATM inside a branch closed after a robbery (server_branches.lua) refuses service.
+-- The player's position is read on the server.
+local function closedHere(src)
+    return BankBranches and BankBranches.ClosedMessageAt and BankBranches.ClosedMessageAt(src) or nil
+end
+
 -- Functions
 
 local function getPlayerAndCitizenId(playerId)
@@ -198,12 +204,91 @@ local function GetAccountBalance(accountName)
 end
 exports('GetAccountBalance', GetAccountBalance)
 
+-- ── society moves (Bank app, Boss app) ─────────────────────────────
+--- Moves money between a player and a society account they may use (the boss of that job or gang, or
+--- a listed user of a legacy shared account), through the ledger under the caller's stable key.
+--- opts = { society, direction = 'deposit'|'withdraw', account = 'bank'|'cash', amount, key, reason }
+--- 'cash' is only for callers that checked on the server that the player stands at a counter (the boss
+--- office); remote callers use 'bank'. Nothing is created: a deposit leaves the player's balance, a
+--- withdrawal leaves the society's, and the ledger refuses an overdraft.
+--- @return table { ok, txId, duplicate, amount, balance } or { ok = false, error }
+local function SocietyTransfer(src, opts)
+    local Player, citizenid = getPlayerAndCitizenId(src)
+    if not Player then return { ok = false, error = 'no_player' } end
+    if type(opts) ~= 'table' then return { ok = false, error = 'bad_request' } end
+    local name = opts.society
+    if type(name) ~= 'string' or #name > 50 or not name:match('^[%w_%-%.]+$') then return { ok = false, error = 'unknown_account' } end
+    local direction = opts.direction
+    if direction ~= 'deposit' and direction ~= 'withdraw' then return { ok = false, error = 'bad_request' } end
+    local money = opts.account or 'bank'
+    if money ~= 'bank' and money ~= 'cash' then return { ok = false, error = 'bad_request' } end
+    local amount = PFLedger.Amount(opts.amount)
+    if not amount then return { ok = false, error = 'bad_amount' } end
+    if type(opts.key) ~= 'string' or opts.key == '' or #opts.key > 120 then return { ok = false, error = 'bad_request' } end
+
+    local account = Accounts[name]
+    if not account then
+        -- a boss's own job or gang account is created on first use, as the bank screen does
+        local pd = Player.PlayerData
+        if (pd.job and pd.job.name == name and pd.job.isboss) or (pd.gang and pd.gang.name == name and pd.gang.isboss) then
+            PFLedger.EnsureSociety(name)
+            account = Accounts[name]
+        end
+    end
+    if not account or not canUseAccount(Player, account) then return { ok = false, error = 'not_authorized' } end
+
+    local playerRef = ('player:%s:%s'):format(citizenid, money)
+    local societyRef = 'society:' .. name
+    local reason = type(opts.reason) == 'string' and (opts.reason:gsub('[%c]', ' ')):sub(1, 50) or ''
+    if reason == '' then reason = direction == 'deposit' and 'Society deposit' or 'Society withdrawal' end
+    local res = PFLedger.Transfer({
+        from = direction == 'deposit' and playerRef or societyRef,
+        to = direction == 'deposit' and societyRef or playerRef,
+        amount = amount, key = opts.key, kind = 'society_' .. direction, reason = reason, actor = citizenid,
+    })
+    if not res.ok then
+        return { ok = false, error = res.duplicate and 'already_processed' or (res.error or 'failed'), txId = res.txId }
+    end
+    if not res.duplicate then
+        appendAccountStatement(name, amount, reason, direction)
+        if money == 'bank' then
+            CreateBankStatement(src, 'checking', amount, reason, direction == 'deposit' and 'withdraw' or 'deposit', 'player')
+        end
+        TriggerEvent('qb-log:server:CreateLog', 'banking', 'Society ' .. direction, direction == 'deposit' and 'green' or 'red',
+            ('**%s** %s $%s (%s) %s **%s**'):format(GetPlayerName(src), direction == 'deposit' and 'deposited' or 'withdrew', amount, money,
+                direction == 'deposit' and 'into' or 'from', name))
+    end
+    return { ok = true, txId = res.txId, duplicate = res.duplicate, amount = amount, balance = GetAccountBalance(name) }
+end
+exports('SocietyTransfer', SocietyTransfer)
+
+-- Shared with the other server files of this resource (the Bank app, branches, character deletion).
+BankingInternal = {
+    Accounts = Accounts,
+    canUseAccount = canUseAccount,
+    appendAccountStatement = appendAccountStatement,
+    CreateBankStatement = CreateBankStatement,
+    SocietyTransfer = SocietyTransfer,
+    -- a deleted character's in-memory statements and legacy shared accounts (the core deleted the rows)
+    forgetCitizen = function(citizenid)
+        Statements[citizenid] = nil
+        for name, acc in pairs(Accounts) do
+            if acc.account_type == 'shared' and acc.citizenid == citizenid then Accounts[name] = nil end
+        end
+    end,
+}
+
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-banking:server:openBank', function(source, cb)
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return end
+    local closed = closedHere(src)
+    if closed then
+        TriggerClientEvent('QBCore:Notify', src, closed, 'error')
+        return cb(false)
+    end
     local job = Player.PlayerData.job
     local gang = Player.PlayerData.gang
     local accounts = {}
@@ -234,6 +319,11 @@ QBCore.Functions.CreateCallback('qb-banking:server:openATM', function(source, cb
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return end
+    local closed = closedHere(src)
+    if closed then
+        TriggerClientEvent('QBCore:Notify', src, closed, 'error')
+        return cb(false)
+    end
     local bankCards = exports['pfm-inventory']:GetItemsByName(src, 'bank_card') -- inventory method, not on Player API
     if not bankCards then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.card'), 'error') end
     local acceptablePins = {}
@@ -261,6 +351,8 @@ QBCore.Functions.CreateCallback('qb-banking:server:withdraw', function(source, c
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
+    local closed = closedHere(src)
+    if closed then return cb({ success = false, message = closed }) end
     local accountName = data.accountName
     local withdrawAmount = PFLedger.Amount(data.amount)
     if not withdrawAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
@@ -285,6 +377,8 @@ QBCore.Functions.CreateCallback('qb-banking:server:deposit', function(source, cb
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
+    local closed = closedHere(src)
+    if closed then return cb({ success = false, message = closed }) end
     local accountName = data.accountName
     local depositAmount = PFLedger.Amount(data.amount)
     if not depositAmount then return cb({ success = false, message = Lang:t('error.amount') }) end
@@ -386,6 +480,8 @@ QBCore.Functions.CreateCallback('qb-banking:server:orderCard', function(source, 
     local src = source
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
+    local closed = closedHere(src)
+    if closed then return cb({ success = false, message = closed }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.pin') }) end
     local cardNumber = math.random(1000000000000000, 9999999999999999)
     local pinNumber = tonumber(data.pin)

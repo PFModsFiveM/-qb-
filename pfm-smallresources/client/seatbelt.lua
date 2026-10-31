@@ -18,6 +18,12 @@ local veloc
 
 -- Functions
 
+-- The inventory stays closed while a harness is fitted or removed. The server owns inv_busy
+-- (sv_stateBagStrictMode); the client only asks it to hold or release this action's lock.
+local function setBusy(busy)
+    TriggerServerEvent('qb-inventory:server:setActionBusy', 'harness', busy == true)
+end
+
 local function ejectFromVehicle()
     local ped = PlayerPedId()
     local veh = GetVehiclePedIsIn(ped, false)
@@ -235,31 +241,36 @@ RegisterNetEvent('seatbelt:client:UseHarness', function(ItemData) -- On Item Use
     local inVeh = IsPedInAnyVehicle(ped, false)
     local class = GetVehicleClass(GetVehiclePedIsUsing(ped))
     if inVeh and class ~= 8 and class ~= 13 and class ~= 14 then
+        -- a cancelled bar releases the lock too (it used to stay held until the next login)
         if not harnessOn then
-            LocalPlayer.state:set('inv_busy', true, true)
+            setBusy(true)
             QBCore.Functions.Progressbar('harness_equip', Lang:t('seatbelt.use_harness_progress'), 5000, false, true, {
                 disableMovement = false,
                 disableCarMovement = false,
                 disableMouse = false,
                 disableCombat = true,
             }, {}, {}, {}, function()
-                LocalPlayer.state:set('inv_busy', false, true)
+                setBusy(false)
                 toggleHarness()
                 TriggerServerEvent('equip:harness', ItemData)
+            end, function()
+                setBusy(false)
             end)
             harnessHp = ItemData.info.uses
             harnessData = ItemData
             TriggerEvent('hud:client:UpdateHarness', harnessHp)
         else
-            LocalPlayer.state:set('inv_busy', true, true)
+            setBusy(true)
             QBCore.Functions.Progressbar('harness_equip', Lang:t('seatbelt.remove_harness_progress'), 5000, false, true, {
                 disableMovement = false,
                 disableCarMovement = false,
                 disableMouse = false,
                 disableCombat = true,
             }, {}, {}, {}, function()
-                LocalPlayer.state:set('inv_busy', false, true)
+                setBusy(false)
                 toggleHarness()
+            end, function()
+                setBusy(false)
             end)
         end
     else

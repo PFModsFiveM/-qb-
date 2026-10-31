@@ -77,3 +77,28 @@ Config.creditCards = {
         { id = 'pacific_black',  label = 'Pacific Black',  minScore = 760, limit = 250000, apr = 9.0,  gradient = { '#0a0a0e', '#2c2c38' } },
     },
 }
+
+-- ── Branches ─────────────────────────────────────────────────────────
+-- One name per Config.locations index (shown in the Bank app and in city events).
+Config.branchNames = { 'Legion Square', 'Alta', 'Hawick Ave', 'Del Perro Blvd', 'Great Ocean Hwy', 'Route 68', 'Vinewood', 'Paleto Bay' }
+
+-- A robbed branch closes (pfm-bankrobbery fires qb-banking:server:SetBankClosed). While closed, its
+-- counter and the ATMs within `radius` refuse service on the server; it reopens by itself.
+Config.BranchClosure = {
+    minutes = 20,          -- how long a robbed branch stays closed
+    maxMinutes = 180,      -- longest closure the /bankbranch admin command may set
+    radius = 30.0,         -- counters and ATMs this close to a closed branch are closed too
+}
+
+-- pfm-bankrobbery bank ids (Config.SmallBanks index, 'paleto', 'pacific') -> Config.locations index.
+Config.RobberyBranches = { [1] = 2, [2] = 1, [3] = 3, [4] = 4, [5] = 5, [6] = 6, paleto = 8, pacific = 7 }
+
+-- ── Bank app (tablet and computer, pf-devices) ──────────────────────
+-- Remote banking moves money between bank accounts only; cash stays at the counter and the ATM.
+Config.App = {
+    maxTransfer = 250000,          -- largest single payment to someone else
+    maxInternal = 10000000,        -- largest single move between your own accounts / your society
+    dailyTransferLimit = 1000000,  -- total sent to other people from the app in 24 hours
+    statementPageSize = 25,
+    cooldownMs = 1500,             -- minimum time between two money actions of one player
+}

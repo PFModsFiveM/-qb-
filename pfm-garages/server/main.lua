@@ -2,16 +2,55 @@ local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local sharedVehicles = exports['pfm-core']:GetShared('Vehicles')
 local OutsideVehicles = {}
 
+-- Shared with server/apps.lua (the Garages app on the tablet and the computer).
+PFGarages = PFGarages or {}
+PFGarages.dbReady = false   -- true once this resource's own tables exist (migrations ran)
+
+PFGarages.Migrations = {
+    { version = 1, name = 'impound releases paid in advance', up = {
+        [[CREATE TABLE IF NOT EXISTS `pfm_garage_depot_releases` (
+            `id` INT NOT NULL AUTO_INCREMENT,
+            `plate` VARCHAR(16) NOT NULL,
+            `citizenid` VARCHAR(50) NOT NULL,
+            `fee` INT NOT NULL DEFAULT 0,
+            `paid` INT NOT NULL DEFAULT 0,
+            `attempt` INT NOT NULL DEFAULT 1,
+            `state` VARCHAR(12) NOT NULL DEFAULT 'open',
+            `ledger_key` VARCHAR(128) DEFAULT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `paid_at` TIMESTAMP NULL DEFAULT NULL,
+            `used_at` TIMESTAMP NULL DEFAULT NULL,
+            PRIMARY KEY (`id`),
+            KEY `plate_state` (`plate`, `state`),
+            KEY `citizenid` (`citizenid`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
+    } },
+}
+
+function PFGarages.Start()
+    local ok, done, err = pcall(function() return exports['pfm-core']:RunMigrations(GetCurrentResourceName(), PFGarages.Migrations) end)
+    PFGarages.dbReady = ok and done == true
+    if not PFGarages.dbReady then
+        print('^1[pfm-garages]^7 migrations failed, impound fees paid ahead are kept in memory only: ' .. tostring(ok and err or done))
+    end
+    if Config['AutoRespawn'] then
+        MySQL.update('UPDATE player_vehicles SET state = 1 WHERE state = 0', {})
+    else
+        MySQL.update('UPDATE player_vehicles SET depotprice = ? WHERE state = 0', { Config.DepotPrice or 500 })
+    end
+    if PFGarages.RegisterApps then PFGarages.RegisterApps() end
+end
+
 -- Handler
 
 AddEventHandler('onResourceStart', function(resource)
+    if resource == 'pf-devices' then
+        if PFGarages.RegisterApps then PFGarages.RegisterApps() end
+        return
+    end
     if resource == GetCurrentResourceName() then
         Wait(100)
-        if Config['AutoRespawn'] then
-            MySQL.update('UPDATE player_vehicles SET state = 1 WHERE state = 0', {})
-        else
-            MySQL.update('UPDATE player_vehicles SET depotprice = ? WHERE state = 0', { Config.DepotPrice or 500 })
-        end
+        PFGarages.Start()
     end
 end)
 
@@ -125,6 +164,172 @@ local function withoutFleet(vehicles)
     return out
 end
 
+PFGarages.FleetPlateSet = fleetPlateSet
+PFGarages.IsFleetPlate = isFleetPlate
+PFGarages.VehicleClasses = vehicleClasses
+
+-- ── impound release fee ─────────────────────────────────────────────────────────────────────────
+-- One payment path for the depot NUI and the Garages app. The fee is read from the player's own
+-- car row; it is charged through the pfm-banking ledger (cash, then bank) under keys derived from
+-- the release record, so a retried or interrupted payment never charges twice. A paid release is
+-- stored (pfm_garage_depot_releases) and lets the owner take the car out at a depot later, also
+-- after a restart; taking the car out uses it up.
+
+-- Impound fees paid and not yet used to take the car out: [plate] = citizenid (also in the table)
+local paidRelease = {}
+local payingDepot = {}   -- [plate] = true while a fee for that car is being paid
+
+--- Charges `amount` from the player's accounts in order under keys base:<n>:<account>, starting at
+--- attempt `first`. A key the ledger already closed without moving money (not enough money that
+--- time) is skipped, so the player can pay later; a key that completed counts as paid, so a retry
+--- after a crash never pays twice; a key still in flight stops the attempt.
+--- @return string|false account, string key, table result, number nextAttempt
+local function stableCharge(cid, accounts, amount, base, opts, first)
+    local attempt = math.max(1, math.floor(tonumber(first) or 1))
+    for _ = 1, 50 do
+        local key = base .. ':' .. attempt
+        local spent, last = 0, nil
+        for _, account in ipairs(accounts) do
+            local res = PFPayout.Transfer({
+                from = ('player:%s:%s'):format(cid, account), to = PFPayout.SYSTEM, amount = amount,
+                key = key .. ':' .. account, kind = opts.kind or 'fee', reason = opts.reason, actor = cid,
+            })
+            if res.ok then return account, key, res, attempt + 1 end
+            last = res
+            if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' or res.error == 'in_progress' then
+                return false, key, res, attempt
+            end
+            if res.duplicate then
+                if res.state ~= 'failed' and res.state ~= 'compensated' then return false, key, res, attempt end
+                spent = spent + 1
+            end
+        end
+        if spent < #accounts then return false, key, last, attempt + 1 end
+        attempt = attempt + 1
+    end
+    return false, nil, { ok = false, error = 'too_many_attempts' }, attempt
+end
+
+local function releaseRow(plate)
+    return MySQL.single.await("SELECT id, citizenid, fee, paid, attempt, state FROM pfm_garage_depot_releases WHERE plate = ? AND state IN ('open', 'paid') ORDER BY id DESC LIMIT 1", { plate })
+end
+
+-- The open release of this car for this owner, created when there is none. A release left by a
+-- previous owner is voided.
+local function openRelease(plate, cid, fee)
+    local row = releaseRow(plate)
+    if row and row.citizenid ~= cid then
+        MySQL.update.await("UPDATE pfm_garage_depot_releases SET state = 'void' WHERE id = ?", { row.id })
+        row = nil
+    end
+    if row then return row end
+    local id = MySQL.insert.await('INSERT INTO pfm_garage_depot_releases (plate, citizenid, fee) VALUES (?, ?, ?)', { plate, cid, fee })
+    if not id then return nil end
+    return { id = id, citizenid = cid, fee = fee, paid = 0, attempt = 1, state = 'open' }
+end
+
+--- True when this owner already paid the current fee of this car.
+function PFGarages.ReleasePaid(plate, cid, fee)
+    if paidRelease[plate] == cid then return true end
+    if not PFGarages.dbReady then return false end
+    local row = releaseRow(plate)
+    return row ~= nil and row.state == 'paid' and row.citizenid == cid and (tonumber(row.paid) or 0) >= (tonumber(fee) or 0)
+end
+
+--- The car left the depot: its paid release is used up.
+function PFGarages.ConsumeRelease(plate)
+    paidRelease[plate] = nil
+    if PFGarages.dbReady then
+        MySQL.update.await("UPDATE pfm_garage_depot_releases SET state = 'used', used_at = NOW() WHERE plate = ? AND state IN ('open', 'paid')", { plate })
+    end
+end
+
+--- Paid releases of this owner's cars: [plate] = amount paid.
+function PFGarages.PaidReleases(cid)
+    local out = {}
+    for plate, owner in pairs(paidRelease) do if owner == cid then out[plate] = true end end
+    if PFGarages.dbReady then
+        for _, r in ipairs(MySQL.query.await("SELECT plate, paid FROM pfm_garage_depot_releases WHERE citizenid = ? AND state = 'paid'", { cid }) or {}) do
+            out[r.plate] = tonumber(r.paid) or true
+        end
+    end
+    return out
+end
+
+--- A paid release whose car no longer has a fee (released another way) must not pay for a later impound.
+function PFGarages.VoidStaleRelease(plate)
+    paidRelease[plate] = nil
+    if PFGarages.dbReady then
+        MySQL.update.await("UPDATE pfm_garage_depot_releases SET state = 'void' WHERE plate = ? AND state IN ('open', 'paid')", { plate })
+    end
+end
+
+local function payDepotLocked(Player, plate, fee)
+    local cid = Player.PlayerData.citizenid
+    local release, base, first, paidBefore = nil, nil, 1, 0
+    if PFGarages.dbReady then
+        release = openRelease(plate, cid, fee)
+        if not release then return { ok = false, error = 'server_error' } end
+        paidBefore = tonumber(release.paid) or 0
+        if paidBefore >= fee then
+            paidRelease[plate] = cid
+            return { ok = true, already = true, paid = 0, fee = fee }
+        end
+        base = ('pfm-garages:depot:%d:%d:%d'):format(tonumber(release.id), paidBefore, fee - paidBefore)
+        first = tonumber(release.attempt) or 1
+    else
+        -- without the table the release is remembered until a restart, as before
+        base = ('pfm-garages:depot:%s:%s'):format(plate, PFPayout.NewId())
+    end
+    local due = fee - paidBefore
+    local account, key, res, nextAttempt = stableCharge(cid, { 'cash', 'bank' }, due, base, { kind = 'fee', reason = 'Impound release ' .. plate }, first)
+    if not account then
+        if release then MySQL.update.await('UPDATE pfm_garage_depot_releases SET attempt = ? WHERE id = ?', { nextAttempt, release.id }) end
+        local err = res and res.error or 'payment_failed'
+        if err == 'failed' then err = 'insufficient_funds' end
+        return { ok = false, error = err }
+    end
+    if release then
+        MySQL.update.await("UPDATE pfm_garage_depot_releases SET paid = paid + ?, fee = ?, state = 'paid', attempt = 1, ledger_key = ?, paid_at = NOW() WHERE id = ?",
+            { due, fee, key, release.id })
+    end
+    paidRelease[plate] = cid
+    -- the city treasury is credited only for a fee that was paid, once per payment key
+    if GetResourceState('pf-government') == 'started' then
+        pcall(function()
+            exports['pf-government']:DepositToTreasury(due, 'impound', ('Impound release fee (%s)'):format(plate), cid, key .. ':treasury')
+        end)
+    end
+    return { ok = true, paid = due, fee = fee, account = account }
+end
+
+--- Pays the impound release fee of the player's own car. Returns { ok, paid, fee, already } or
+--- { ok = false, error }: bad_plate, not_owned, fleet, seized, nothing_due, in_progress,
+--- insufficient_funds, bank_unavailable.
+function PFGarages.PayDepot(src, plate)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return { ok = false, error = 'no_player' } end
+    if type(plate) ~= 'string' or plate == '' or #plate > 16 then return { ok = false, error = 'bad_plate' } end
+    -- a fleet car could not be taken out after paying
+    if isFleetPlate(plate) then return { ok = false, error = 'fleet' } end
+    local cid = Player.PlayerData.citizenid
+    -- the fee is read from the player's own car; nothing the client sends is used
+    local row = MySQL.single.await('SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
+    if not row then return { ok = false, error = 'not_owned' } end
+    if tonumber(row.state) == 2 then return { ok = false, error = 'seized' } end
+    local fee = math.floor(tonumber(row.depotprice) or 0)
+    if fee <= 0 then return { ok = false, error = 'nothing_due' } end
+    if payingDepot[plate] then return { ok = false, error = 'in_progress' } end
+    payingDepot[plate] = true
+    local ok, res = pcall(payDepotLocked, Player, plate, fee)
+    payingDepot[plate] = nil
+    if not ok then
+        print(('^1[pfm-garages]^7 impound fee for %s failed: %s'):format(plate, tostring(res)))
+        return { ok = false, error = 'server_error' }
+    end
+    return res
+end
+
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-garages:server:getHouseGarage', function(_, cb, house)
@@ -190,6 +395,17 @@ QBCore.Functions.CreateCallback('qb-garages:server:GetGarageVehicles', function(
         cb(nil)
         return
     end
+    if garageType == 'depot' or type == 'depot' then
+        -- a fee paid ahead in the Garages app shows as paid; the spawn checks it again
+        local paid = PFGarages.PaidReleases(citizenId)
+        for _, v in pairs(vehicles) do
+            local amount = paid[v.plate]
+            if amount and (amount == true or amount >= (tonumber(v.depotprice) or 0)) then
+                v.depotprice = 0
+                v.depotPaid = true
+            end
+        end
+    end
     if Config.ClassSystem then
         local filteredVehicles = filterVehiclesByCategory(vehicles, category)
         cb(filteredVehicles)
@@ -218,13 +434,26 @@ local function GetVehicleTypeByModel(model)
 end
 -- Backwards Compat
 
--- Impound fees paid and not yet used to take the car out: [plate] = citizenid
-local paidRelease = {}
-
 local function isOutside(plate)
     local out = OutsideVehicles[plate]
     return out ~= nil and out.entity ~= nil and DoesEntityExist(out.entity)
 end
+
+PFGarages.IsOutside = isOutside
+
+--- The car with this plate in the world (the one this resource spawned, else any with that plate).
+function PFGarages.FindVehicle(plate)
+    if isOutside(plate) then return OutsideVehicles[plate].entity end
+    local want = tostring(plate):gsub('^%s+', ''):gsub('%s+$', ''):upper()
+    for _, veh in ipairs(GetAllVehicles and GetAllVehicles() or {}) do
+        local text = GetVehicleNumberPlateText(veh)
+        if text and tostring(text):gsub('^%s+', ''):gsub('%s+$', ''):upper() == want then return veh end
+    end
+    return nil
+end
+
+--- Forgets a car this resource tracked as out (it was parked by a tow).
+function PFGarages.ForgetOutside(plate) OutsideVehicles[plate] = nil end
 
 -- Spawns a vehicle and returns its network ID and properties.
 -- Only a car that is in the garage (state 1, no impound fee), or whose impound fee was just paid, and
@@ -253,11 +482,11 @@ QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(sourc
     end
     local fee = tonumber(ownedVehicle.depotprice) or 0
     if fee > 0 then
-        if paidRelease[plate] ~= cid then
+        if not PFGarages.ReleasePaid(plate, cid, fee) then
             cb(nil, nil, nil)
             return
         end
-        paidRelease[plate] = nil
+        PFGarages.ConsumeRelease(plate)
         MySQL.update('UPDATE player_vehicles SET depotprice = 0 WHERE plate = ? AND citizenid = ?', { plate, cid })
     elseif tonumber(ownedVehicle.state) ~= 1 then
         cb(nil, nil, nil)
@@ -380,42 +609,30 @@ RegisterNetEvent('qb-garages:server:trackVehicle', function(plate)
     end
 end)
 
+local DEPOT_ERRORS = {
+    fleet = 'This vehicle is in a job fleet. Take it from the job garage.',
+    seized = 'This vehicle was seized. Only the police can release it.',
+    insufficient_funds = 'not_enough',
+    bank_unavailable = 'The bank did not respond. Nothing was charged.',
+    ledger_unavailable = 'The bank did not respond. Nothing was charged.',
+    in_progress = 'That payment is already being processed',
+}
+
+-- The depot NUI: pay the release fee (or use one paid ahead in the Garages app), then take the car out.
 RegisterNetEvent('qb-garages:server:PayDepotPrice', function(data)
     local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player or type(data) ~= 'table' or type(data.plate) ~= 'string' then return end
-    if isFleetPlate(data.plate) then   -- it could not be taken out after paying
-        TriggerClientEvent('QBCore:Notify', src, 'This vehicle is in a job fleet. Take it from the job garage.', 'error')
+    if type(data) ~= 'table' or type(data.plate) ~= 'string' then return end
+    local res = PFGarages.PayDepot(src, data.plate)
+    if res.ok or res.error == 'nothing_due' then
+        TriggerClientEvent('qb-garages:client:takeOutGarage', src, data)
+        if res.ok and PFGarages.PushChanged then PFGarages.PushChanged(src) end
         return
     end
-    local cashBalance = Player.PlayerData.money['cash']
-    local bankBalance = Player.PlayerData.money['bank']
-    -- Price is read from the database for the player's own vehicle only; the client-sent amount is ignored
-    MySQL.scalar('SELECT depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ?', { data.plate, Player.PlayerData.citizenid }, function(result)
-        if result then
-            local depotPrice = math.floor(tonumber(result) or 0)
-            if depotPrice <= 0 then
-                TriggerClientEvent('qb-garages:client:takeOutGarage', src, data)
-                return
-            end
-
-            -- cash, then bank, through the pfm-banking ledger; the city treasury is credited only for a
-            -- fee that was paid (the balance used to be read before this lookup and the payment result
-            -- was not checked)
-            local key = ('pfm-garages:depot:%s:%s'):format(tostring(data.plate), PFPayout.NewId())
-            if PFPayout.Charge(Player, { 'cash', 'bank' }, depotPrice, { key = key, kind = 'fee', reason = 'Impound release ' .. tostring(data.plate) }) then
-                paidRelease[data.plate] = Player.PlayerData.citizenid
-                if GetResourceState('pf-government') == 'started' then
-                    pcall(function()
-                        exports['pf-government']:DepositToTreasury(depotPrice, 'impound', ('Impound release fee (%s)'):format(data.plate), Player.PlayerData.citizenid, key .. ':treasury')
-                    end)
-                end
-                TriggerClientEvent('qb-garages:client:takeOutGarage', src, data)
-            else
-                TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_enough'), 'error')
-            end
-        end
-    end)
+    local msg = DEPOT_ERRORS[res.error]
+    if msg == 'not_enough' or msg == nil then msg = Lang:t('error.not_enough') end
+    if res.error ~= 'not_owned' and res.error ~= 'bad_plate' then
+        TriggerClientEvent('QBCore:Notify', src, msg, 'error')
+    end
 end)
 
 -- House Garages

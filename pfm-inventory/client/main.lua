@@ -4,14 +4,14 @@ local hotbarShown = false
 
 -- Handlers
 
+-- inv_busy is set by the server only (load, unload, open inventories, action locks), so a client
+-- cannot clear it while the server has an inventory open (sv_stateBagStrictMode).
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
-    LocalPlayer.state:set('inv_busy', false, true)
     PlayerData = QBCore.Functions.GetPlayerData()
     GetDrops()
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
-    LocalPlayer.state:set('inv_busy', true, true)
     PlayerData = nil
 end)
 

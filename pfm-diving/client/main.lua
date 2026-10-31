@@ -146,18 +146,24 @@ local function setDivingLocation(divingLocation)
     end
 end
 
+-- The inventory stays closed while the buyer checks the pockets. The server owns inv_busy
+-- (sv_stateBagStrictMode); the client only asks it to hold or release this action's lock.
+local function setBusy(busy)
+    TriggerServerEvent('qb-inventory:server:setActionBusy', 'diving', busy == true)
+end
+
 local function sellCoral()
     local playerPed = PlayerPedId()
-    LocalPlayer.state:set('inv_busy', true, true)
+    setBusy(true)
     TaskStartScenarioInPlace(playerPed, 'WORLD_HUMAN_STAND_IMPATIENT', 0, true)
     QBCore.Functions.Progressbar('sell_coral_items', Lang:t('info.checking_pockets'), math.random(2000, 4000), false, true, {}, {}, {}, {}, function() -- Done
         ClearPedTasks(playerPed)
         TriggerServerEvent('qb-diving:server:SellCorals')
-        LocalPlayer.state:set('inv_busy', false, true)
+        setBusy(false)
     end, function() -- Cancel
         ClearPedTasksImmediately(playerPed)
         QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
-        LocalPlayer.state:set('inv_busy', false, true)
+        setBusy(false)
     end)
 end
 

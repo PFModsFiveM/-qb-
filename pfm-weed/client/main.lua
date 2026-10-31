@@ -1,6 +1,12 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local housePlants, currentHouse, plantSpawned, closestPlant = {}, nil, false, 0
 
+-- The inventory stays closed while planting or feeding. The server owns inv_busy
+-- (sv_stateBagStrictMode); the client only asks it to hold or release this action's lock.
+local function setBusy(busy)
+    TriggerServerEvent('qb-inventory:server:setActionBusy', 'weed', busy == true)
+end
+
 local function drawText3Ds(x, y, z, text)
     SetTextScale(0.35, 0.35)
     SetTextFont(4)
@@ -191,7 +197,8 @@ RegisterNetEvent('qb-weed:client:placePlant', function(type, item)
         ['plantLabel'] = QBWeed.Plants[type]['label']
     }
 
-    LocalPlayer.state:set('inv_busy', true, true)
+    -- (the lock used to be released again inside the animation table, so it never held)
+    setBusy(true)
     QBCore.Functions.Progressbar('plant_weed_plant', Lang:t('text.planting'), 8000, false, true, {
         disableMovement = true,
         disableCarMovement = true,
@@ -201,15 +208,15 @@ RegisterNetEvent('qb-weed:client:placePlant', function(type, item)
         animDict = 'amb@world_human_gardener_plant@male@base',
         anim = 'base',
         flags = 16,
-        LocalPlayer.state:set('inv_busy', false, true)
     }, {}, {}, function() -- Done
         ClearPedTasks(ped)
+        setBusy(false)
         -- the server uses up the seed when it places the plant
         TriggerServerEvent('qb-weed:server:placePlant', json.encode(plantData['plantCoords']), type, currentHouse)
     end, function() -- Cancel
         ClearPedTasks(ped)
         QBCore.Functions.Notify(Lang:t('error.process_canceled'), 'error')
-        LocalPlayer.state:set('inv_busy', false, true)
+        setBusy(false)
     end)
 end)
 
@@ -222,7 +229,7 @@ RegisterNetEvent('qb-weed:client:foodPlant', function()
         if plantData['plantStats']['food'] == 100 then
             QBCore.Functions.Notify(Lang:t('error.not_need_nutrition'), 'error', 3500)
         else
-            LocalPlayer.state:set('inv_busy', true, true)
+            setBusy(true)
             QBCore.Functions.Progressbar('plant_weed_plant', Lang:t('text.feeding_plant'), math.random(4000, 8000), false, true, {
                 disableMovement = true,
                 disableCarMovement = true,
@@ -232,15 +239,14 @@ RegisterNetEvent('qb-weed:client:foodPlant', function()
                 animDict = 'timetable@gardener@filling_can',
                 anim = 'gar_ig_5_filling_can',
                 flags = 16,
-
-                LocalPlayer.state:set('inv_busy', false, true)
             }, {}, {}, function() -- Done
                 ClearPedTasks(ped)
+                setBusy(false)
                 local newFood = math.random(40, 60)
                 TriggerServerEvent('qb-weed:server:foodPlant', currentHouse, newFood, plantData['plantSort']['name'], plantData['plantStats']['plantId'])
             end, function() -- Cancel
                 ClearPedTasks(ped)
-                LocalPlayer.state:set('inv_busy', false, true)
+                setBusy(false)
                 QBCore.Functions.Notify(Lang:t('error.process_canceled'), 'error')
             end)
         end

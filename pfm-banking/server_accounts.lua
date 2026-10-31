@@ -6,6 +6,14 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local L = PFLedger
 
+-- Every callback is also kept in BankingCallbacks, so the Bank app (server_app.lua) runs the very same
+-- code as the bank screen.
+BankingCallbacks = BankingCallbacks or {}
+local function callback(name, fn)
+    BankingCallbacks[name] = fn
+    QBCore.Functions.CreateCallback(name, fn)
+end
+
 -- ── helpers ──────────────────────────────────────────────────────────
 local function getPlayer(src)
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -109,7 +117,7 @@ local function locked(citizenid, cb, fn)
 end
 
 -- ── snapshot callback ────────────────────────────────────────────────
-QBCore.Functions.CreateCallback('qb-banking:server:getAccountsData', function(source, cb)
+callback('qb-banking:server:getAccountsData', function(source, cb)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb(nil) end
     local myName = playerName(Player)
@@ -159,7 +167,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:getAccountsData', function(so
 end)
 
 -- ── account lifecycle ────────────────────────────────────────────────
-QBCore.Functions.CreateCallback('qb-banking:server:createAccount', function(source, cb, data)
+callback('qb-banking:server:createAccount', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -213,7 +221,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:createAccount', function(sour
     end)
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:accountRename', function(source, cb, data)
+callback('qb-banking:server:accountRename', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -225,7 +233,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountRename', function(sour
     cb({ success = true, message = 'Account renamed' })
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:accountColor', function(source, cb, data)
+callback('qb-banking:server:accountColor', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -237,7 +245,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountColor', function(sourc
     cb({ success = true, message = 'Color updated' })
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:accountDelete', function(source, cb, data)
+callback('qb-banking:server:accountDelete', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -253,63 +261,85 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountDelete', function(sour
 end)
 
 -- ── money movement ───────────────────────────────────────────────────
-QBCore.Functions.CreateCallback('qb-banking:server:accountDeposit', function(source, cb, data)
+-- Deposit, withdraw and IBAN transfer are shared by the bank screen (callbacks below, a fresh key per
+-- click) and the Bank app (server_app.lua, a stable key per action so a retry never moves money twice).
+-- Each returns { success, message, error, txId, duplicate }. A duplicate is the earlier result of the
+-- same key: no money moves and no history line is written again.
+BankingAccountOps = BankingAccountOps or {}
+local Ops = BankingAccountOps
+
+local function lockedResult(citizenid, fn)
+    local out
+    local status = L.WithLock('bank:' .. citizenid, function() out = fn() end)
+    if status == 'busy' then return { success = false, error = 'busy', message = 'Please wait for your last transaction' } end
+    if status == 'error' or out == nil then return { success = false, error = 'server_error', message = 'Error' } end
+    return out
+end
+
+local function refused(err, message) return { success = false, error = err, message = message } end
+
+local function ledgerRefusal(res, insufficientMessage)
+    if res.duplicate then return refused('already_processed', 'This transaction was already processed') end
+    if res.error == 'insufficient_funds' then return refused('insufficient_funds', insufficientMessage) end
+    return refused(res.error or 'failed', L.Message(res.error))
+end
+
+function Ops.deposit(source, data, key)
     local Player, citizenid = getPlayer(source)
-    if not Player then return cb({ success = false, message = 'Error' }) end
-    data = data or {}
+    if not Player then return refused('no_player', 'Error') end
+    data = type(data) == 'table' and data or {}
     local amount = sanitizeAmount(data.amount)
-    if not amount then return cb({ success = false, message = 'Invalid amount' }) end
+    if not amount then return refused('bad_amount', 'Invalid amount') end
     local account, perms = getAccountAccess(data.accountId, citizenid)
-    if not account or not perm(perms, 'can_deposit') then return cb({ success = false, message = 'No permission' }) end
-    locked(citizenid, cb, function()
+    if not account or not perm(perms, 'can_deposit') then return refused('not_authorized', 'No permission') end
+    return lockedResult(citizenid, function()
         local res = L.Transfer({
             from = personalRef(citizenid), to = accountRef(account.id), amount = amount,
-            key = L.AutoKey('acctdep'), kind = 'deposit', reason = 'Deposit to ' .. account.iban, actor = citizenid,
+            key = key or L.AutoKey('acctdep'), kind = 'deposit', reason = 'Deposit to ' .. account.iban, actor = citizenid,
         })
-        if not res.ok then
-            local msg = res.error == 'insufficient_funds' and 'Insufficient bank balance' or L.Message(res.error)
-            return cb({ success = false, message = msg })
+        if not res.ok then return ledgerRefusal(res, 'Insufficient bank balance') end
+        if not res.duplicate then
+            local name = playerName(Player)
+            logTx('personal:' .. citizenid, citizenid, name, 'withdraw', amount, 'Deposit to ' .. account.label)
+            logTx('acc:' .. account.id, citizenid, name, 'deposit', amount, 'Deposit')
         end
-        local name = playerName(Player)
-        logTx('personal:' .. citizenid, citizenid, name, 'withdraw', amount, 'Deposit to ' .. account.label)
-        logTx('acc:' .. account.id, citizenid, name, 'deposit', amount, 'Deposit')
-        cb({ success = true, message = ('Deposited $%s into %s'):format(amount, account.label), txId = res.txId })
+        return { success = true, message = ('Deposited $%s into %s'):format(amount, account.label), txId = res.txId, duplicate = res.duplicate, amount = amount }
     end)
-end)
+end
 
-QBCore.Functions.CreateCallback('qb-banking:server:accountWithdraw', function(source, cb, data)
+function Ops.withdraw(source, data, key)
     local Player, citizenid = getPlayer(source)
-    if not Player then return cb({ success = false, message = 'Error' }) end
-    data = data or {}
+    if not Player then return refused('no_player', 'Error') end
+    data = type(data) == 'table' and data or {}
     local amount = sanitizeAmount(data.amount)
-    if not amount then return cb({ success = false, message = 'Invalid amount' }) end
+    if not amount then return refused('bad_amount', 'Invalid amount') end
     local account, perms = getAccountAccess(data.accountId, citizenid)
-    if not account or not perm(perms, 'can_withdraw') then return cb({ success = false, message = 'No permission' }) end
-    locked(citizenid, cb, function()
+    if not account or not perm(perms, 'can_withdraw') then return refused('not_authorized', 'No permission') end
+    return lockedResult(citizenid, function()
         local res = L.Transfer({
             from = accountRef(account.id), to = personalRef(citizenid), amount = amount,
-            key = L.AutoKey('acctwd'), kind = 'withdraw', reason = 'Withdrawal from ' .. account.iban, actor = citizenid,
+            key = key or L.AutoKey('acctwd'), kind = 'withdraw', reason = 'Withdrawal from ' .. account.iban, actor = citizenid,
         })
-        if not res.ok then
-            local msg = res.error == 'insufficient_funds' and 'Insufficient account balance' or L.Message(res.error)
-            return cb({ success = false, message = msg })
+        if not res.ok then return ledgerRefusal(res, 'Insufficient account balance') end
+        if not res.duplicate then
+            local name = playerName(Player)
+            logTx('acc:' .. account.id, citizenid, name, 'withdraw', amount, 'Withdrawal')
+            logTx('personal:' .. citizenid, citizenid, name, 'deposit', amount, 'Withdrawal from ' .. account.label)
         end
-        local name = playerName(Player)
-        logTx('acc:' .. account.id, citizenid, name, 'withdraw', amount, 'Withdrawal')
-        logTx('personal:' .. citizenid, citizenid, name, 'deposit', amount, 'Withdrawal from ' .. account.label)
-        cb({ success = true, message = ('Withdrew $%s from %s'):format(amount, account.label), txId = res.txId })
+        return { success = true, message = ('Withdrew $%s from %s'):format(amount, account.label), txId = res.txId, duplicate = res.duplicate, amount = amount }
     end)
-end)
+end
 
-QBCore.Functions.CreateCallback('qb-banking:server:accountTransfer', function(source, cb, data)
+--- data = { fromRef = 'personal' | <account id>, toIban, amount, note }
+function Ops.transfer(source, data, key)
     local Player, citizenid = getPlayer(source)
-    if not Player then return cb({ success = false, message = 'Error' }) end
-    data = data or {}
+    if not Player then return refused('no_player', 'Error') end
+    data = type(data) == 'table' and data or {}
     local amount = sanitizeAmount(data.amount)
-    if not amount then return cb({ success = false, message = 'Invalid amount' }) end
+    if not amount then return refused('bad_amount', 'Invalid amount') end
     local note = sanitizeNote(data.note)
     local toIban = type(data.toIban) == 'string' and data.toIban:upper():gsub('%s', '') or ''
-    if not toIban:match('^PF%d+$') or #toIban > 24 then return cb({ success = false, message = 'Invalid IBAN' }) end
+    if not toIban:match('^PF%d+$') or #toIban > 24 then return refused('bad_iban', 'Invalid IBAN') end
     local name = playerName(Player)
 
     -- resolve destination first (no money moved yet)
@@ -317,21 +347,21 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountTransfer', function(so
     local destCitizen = nil
     if not destAccount then
         destCitizen = MySQL.scalar.await('SELECT citizenid FROM bank_personal_iban WHERE iban = ?', { toIban })
-        if not destCitizen then return cb({ success = false, message = 'No account found for that IBAN' }) end
+        if not destCitizen then return refused('unknown_iban', 'No account found for that IBAN') end
     end
 
     -- resolve and authorise the source (no money moved yet)
     local fromRef = data.fromRef
     local fromLedger, sourceRefStr, sourceLabel
     if fromRef == 'personal' then
-        if destCitizen == citizenid then return cb({ success = false, message = 'That is your own account' }) end
+        if destCitizen == citizenid then return refused('same_account', 'That is your own account') end
         fromLedger = personalRef(citizenid)
         sourceRefStr = 'personal:' .. citizenid
         sourceLabel = name
     else
         local account, perms = getAccountAccess(fromRef, citizenid)
-        if not account or not perm(perms, 'can_withdraw') then return cb({ success = false, message = 'No permission' }) end
-        if destAccount and destAccount.id == account.id then return cb({ success = false, message = 'That is the same account' }) end
+        if not account or not perm(perms, 'can_withdraw') then return refused('not_authorized', 'No permission') end
+        if destAccount and destAccount.id == account.id then return refused('same_account', 'That is the same account') end
         fromLedger = accountRef(account.id)
         sourceRefStr = 'acc:' .. account.id
         sourceLabel = account.label
@@ -348,32 +378,38 @@ QBCore.Functions.CreateCallback('qb-banking:server:accountTransfer', function(so
         destLabel = toIban
     end
 
-    locked(citizenid, cb, function()
+    return lockedResult(citizenid, function()
         -- one ledger transfer: the recipient may be offline; if they cannot be credited the source is refunded
         local res = L.Transfer({
             from = fromLedger, to = toLedger, amount = amount,
-            key = L.AutoKey('ibantx'), kind = 'transfer', reason = 'Transfer to ' .. toIban, actor = citizenid,
+            key = key or L.AutoKey('ibantx'), kind = 'transfer', reason = 'Transfer to ' .. toIban, actor = citizenid,
             metadata = note and { note = note } or nil,
         })
         if not res.ok then
-            local msg
-            if res.state == 'compensated' then msg = 'Recipient could not be credited — transfer refunded'
-            elseif res.error == 'insufficient_funds' then msg = fromRef == 'personal' and 'Insufficient bank balance' or 'Insufficient account balance'
-            else msg = L.Message(res.error) end
-            return cb({ success = false, message = msg })
-        end
-        if destCitizen then
-            local Target = QBCore.Functions.GetPlayerByCitizenId(destCitizen)
-            if Target and Target.PlayerData.source then
-                TriggerClientEvent('QBCore:Notify', Target.PlayerData.source, ('You received a transfer of $%s'):format(amount), 'success')
+            if res.state == 'compensated' and not res.duplicate then
+                return refused('recipient_unavailable', 'Recipient could not be credited — transfer refunded')
             end
+            return ledgerRefusal(res, fromRef == 'personal' and 'Insufficient bank balance' or 'Insufficient account balance')
         end
-        logTx(sourceRefStr, citizenid, name, 'transfer_out', amount, note or ('To ' .. toIban))
-        logTx(destRefStr, citizenid, name, 'transfer_in', amount, note or ('From ' .. sourceLabel))
-        TriggerEvent('qb-log:server:CreateLog', 'banking', 'Transfer', 'green', ('**%s** transferred $%s from %s to %s'):format(GetPlayerName(source), amount, sourceLabel, destLabel))
-        cb({ success = true, message = ('Transferred $%s to %s'):format(amount, toIban), txId = res.txId })
+        if not res.duplicate then
+            if destCitizen then
+                local Target = QBCore.Functions.GetPlayerByCitizenId(destCitizen)
+                if Target and Target.PlayerData.source then
+                    TriggerClientEvent('QBCore:Notify', Target.PlayerData.source, ('You received a transfer of $%s'):format(amount), 'success')
+                end
+            end
+            logTx(sourceRefStr, citizenid, name, 'transfer_out', amount, note or ('To ' .. toIban))
+            logTx(destRefStr, citizenid, name, 'transfer_in', amount, note or ('From ' .. sourceLabel))
+            TriggerEvent('qb-log:server:CreateLog', 'banking', 'Transfer', 'green', ('**%s** transferred $%s from %s to %s'):format(GetPlayerName(source), amount, sourceLabel, destLabel))
+        end
+        return { success = true, message = ('Transferred $%s to %s'):format(amount, toIban), txId = res.txId, duplicate = res.duplicate,
+            amount = amount, recipient = destCitizen, toAccount = destAccount and destAccount.id or nil }
     end)
-end)
+end
+
+callback('qb-banking:server:accountDeposit', function(source, cb, data) cb(Ops.deposit(source, data)) end)
+callback('qb-banking:server:accountWithdraw', function(source, cb, data) cb(Ops.withdraw(source, data)) end)
+callback('qb-banking:server:accountTransfer', function(source, cb, data) cb(Ops.transfer(source, data)) end)
 
 -- ── members & permissions ────────────────────────────────────────────
 local function cleanPerms(perms)
@@ -382,7 +418,7 @@ local function cleanPerms(perms)
     return bit(perms.can_withdraw), bit(perms.can_deposit), bit(perms.can_cards), bit(perms.can_manage)
 end
 
-QBCore.Functions.CreateCallback('qb-banking:server:addMember', function(source, cb, data)
+callback('qb-banking:server:addMember', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -405,7 +441,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:addMember', function(source, 
     cb({ success = true, message = ('%s added to %s'):format(targetName, account.label) })
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:updateMember', function(source, cb, data)
+callback('qb-banking:server:updateMember', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -421,7 +457,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:updateMember', function(sourc
     cb({ success = true, message = 'Permissions updated' })
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:removeMember', function(source, cb, data)
+callback('qb-banking:server:removeMember', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -439,7 +475,7 @@ end)
 -- ── cards ────────────────────────────────────────────────────────────
 local CARD_DESIGNS = { classic = true, midnight = true, gold = true, ruby = true, ocean = true }
 
-QBCore.Functions.CreateCallback('qb-banking:server:createCard', function(source, cb, data)
+callback('qb-banking:server:createCard', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -485,7 +521,7 @@ local function getCardAccess(cardId, citizenid)
     return nil
 end
 
-QBCore.Functions.CreateCallback('qb-banking:server:cancelCard', function(source, cb, data)
+callback('qb-banking:server:cancelCard', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     local card = getCardAccess(data and data.cardId, citizenid)
@@ -494,7 +530,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:cancelCard', function(source,
     cb({ success = true, message = 'Card cancelled' })
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:toggleCardLock', function(source, cb, data)
+callback('qb-banking:server:toggleCardLock', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     local card = getCardAccess(data and data.cardId, citizenid)
@@ -503,3 +539,11 @@ QBCore.Functions.CreateCallback('qb-banking:server:toggleCardLock', function(sou
     MySQL.update('UPDATE bank_account_cards SET locked = ? WHERE id = ?', { newLocked, card.id })
     cb({ success = true, message = newLocked == 1 and 'Card locked' or 'Card unlocked', locked = newLocked })
 end)
+
+-- Shared with server_app.lua and server_characters.lua (same resource).
+BankingAccountsInternal = {
+    getAccountAccess = getAccountAccess,
+    getPersonalIban = getPersonalIban,
+    perm = perm,
+    playerName = playerName,
+}

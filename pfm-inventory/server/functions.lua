@@ -569,13 +569,13 @@ exports('HasItem', HasItem)
 
 -- CloseInventory function closes the inventory for a given source and identifier.
 -- It sets the isOpen flag of the inventory identified by the given identifier to false.
--- It also sets the inv_busy flag of the player identified by the given source to false.
--- Finally, it triggers the 'qb-inventory:client:closeInv' event for the given source.
+-- It also clears the server's open-inventory part of the player's inv_busy flag (an action lock
+-- the player holds stays). Finally, it triggers the 'qb-inventory:client:closeInv' event.
 function CloseInventory(source, identifier)
     if identifier and Inventories[identifier] then
         Inventories[identifier].isOpen = false
     end
-    Player(source).state.inv_busy = false
+    SetInventoryBusy(source, false)
     TriggerClientEvent('qb-inventory:client:closeInv', source)
 end
 
@@ -602,7 +602,7 @@ function OpenInventoryById(source, targetId)
     if TriggerHook('InventoryOpened', 'player', hookData) == false then return end
     Wait(1500)
     InventoryViewers[tonumber(targetId)] = source
-    Player(targetId).state.inv_busy = true
+    SetInventoryBusy(targetId, true)
     formattedInventory.inventory = ItemsForClient(tonumber(targetId), targetItems, TargetPlayer)
     TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, playerItems, QBPlayer), formattedInventory)
     TriggerListener('InventoryOpened', 'player', hookData)
@@ -704,7 +704,7 @@ function OpenInventory(source, identifier, data)
     if not identifier then
         local hookData = buildHookData('InventoryOpened', source, QBPlayer)
         if TriggerHook('InventoryOpened', nil, hookData) == false then return end
-        Player(source).state.inv_busy = true
+        SetInventoryBusy(source, true)
         TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, QBPlayer.PlayerData.items, QBPlayer))
         TriggerListener('InventoryOpened', nil, hookData)
         return

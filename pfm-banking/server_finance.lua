@@ -6,6 +6,13 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local L = PFLedger
 
+-- Kept in BankingCallbacks as well, so the Bank app runs exactly these handlers.
+BankingCallbacks = BankingCallbacks or {}
+local function callback(name, fn)
+    BankingCallbacks[name] = fn
+    QBCore.Functions.CreateCallback(name, fn)
+end
+
 local function bankRef(citizenid) return 'player:' .. citizenid .. ':bank' end
 
 local function locked(citizenid, cb, fn)
@@ -100,7 +107,7 @@ local function notify(src, msg, kind)
 end
 
 -- ── finance snapshot for the UI ──────────────────────────────────────
-QBCore.Functions.CreateCallback('qb-banking:server:getFinance', function(source, cb)
+callback('qb-banking:server:getFinance', function(source, cb)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb(nil) end
     local score = GetCreditScore(citizenid)
@@ -118,7 +125,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:getFinance', function(source,
 end)
 
 -- ── loans ────────────────────────────────────────────────────────────
-QBCore.Functions.CreateCallback('qb-banking:server:applyLoan', function(source, cb, data)
+callback('qb-banking:server:applyLoan', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
 
@@ -203,7 +210,7 @@ local function collectLoanPayment(loan, amount, key, reason, kind)
     return true, math.max(0, newBalance)
 end
 
-QBCore.Functions.CreateCallback('qb-banking:server:payLoan', function(source, cb, data)
+callback('qb-banking:server:payLoan', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -230,7 +237,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:payLoan', function(source, cb
     end)
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:payoffLoan', function(source, cb, data)
+callback('qb-banking:server:payoffLoan', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -257,7 +264,7 @@ local function getCardProduct(id)
     end
 end
 
-QBCore.Functions.CreateCallback('qb-banking:server:orderCreditCard', function(source, cb, data)
+callback('qb-banking:server:orderCreditCard', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     local product = type(data) == 'table' and getCardProduct(data.cardId) or nil
@@ -281,7 +288,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:orderCreditCard', function(so
     cb({ success = true, message = ('%s approved'):format(product.label) })
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:cardAdvance', function(source, cb, data)
+callback('qb-banking:server:cardAdvance', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}
@@ -314,7 +321,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:cardAdvance', function(source
     end)
 end)
 
-QBCore.Functions.CreateCallback('qb-banking:server:payCard', function(source, cb, data)
+callback('qb-banking:server:payCard', function(source, cb, data)
     local Player, citizenid = getPlayer(source)
     if not Player then return cb({ success = false, message = 'Error' }) end
     data = data or {}

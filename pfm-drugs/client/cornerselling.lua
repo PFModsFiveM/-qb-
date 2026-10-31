@@ -9,6 +9,12 @@ local CurrentCops = 0
 local textDrawn = false
 local zoneMade = false
 
+-- The inventory stays closed while corner selling. The server owns inv_busy
+-- (sv_stateBagStrictMode); the client only asks it to hold or release this action's lock.
+local function setBusy(busy)
+    TriggerServerEvent('qb-inventory:server:setActionBusy', 'cornerselling', busy == true)
+end
+
 -- Functions
 local function LoadAnimDict(dict)
     RequestAnimDict(dict)
@@ -19,7 +25,7 @@ end
 
 local function TooFarAway()
     QBCore.Functions.Notify(Lang:t('error.too_far_away'), 'error')
-    LocalPlayer.state:set('inv_busy', false, true)
+    setBusy(false)
     cornerselling = false
     hasTarget = false
     availableDrugs = {}
@@ -344,7 +350,7 @@ end
 local function ToggleSelling()
     if not cornerselling then
         cornerselling = true
-        LocalPlayer.state:set('inv_busy', true, true)
+        setBusy(true)
         QBCore.Functions.Notify(Lang:t('info.started_selling_drugs'))
         local startLocation = GetEntityCoords(PlayerPedId())
         CreateThread(function()
@@ -375,7 +381,7 @@ local function ToggleSelling()
         stealingPed = nil
         stealData = {}
         cornerselling = false
-        LocalPlayer.state:set('inv_busy', false, true)
+        setBusy(false)
         QBCore.Functions.Notify(Lang:t('info.stopped_selling_drugs'))
     end
 end
@@ -392,7 +398,7 @@ RegisterNetEvent('qb-drugs:client:cornerselling', function()
                     ToggleSelling()
                 else
                     QBCore.Functions.Notify(Lang:t('error.has_no_drugs'), 'error')
-                    LocalPlayer.state:set('inv_busy', false, true)
+                    setBusy(false)
                 end
             end
         else
@@ -410,6 +416,6 @@ RegisterNetEvent('qb-drugs:client:refreshAvailableDrugs', function(items)
     if availableDrugs == nil or #availableDrugs <= 0 then
         QBCore.Functions.Notify(Lang:t('error.no_drugs_left'), 'error')
         cornerselling = false
-        LocalPlayer.state:set('inv_busy', false, true)
+        setBusy(false)
     end
 end)
