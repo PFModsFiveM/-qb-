@@ -40,6 +40,7 @@ BeforeEach = function()
     Mock.players = {}
     PFDevices.__reset()
     PFDevices.__resetInstalls()
+    PFDevices.__resetPush()
     invoking = 'pf-jobs'
     govPerms = {}
 end
@@ -141,11 +142,16 @@ describe('pf-devices registry', function()
         assert_true((PFDevices.RegisterApp({ id = 'taxi', entry = 'b.js' }, 'pf-other')))
     end)
 
-    it('tells clients when the list changes', function()
+    it('tells clients when the list changes, coalescing a burst of registrations', function()
         PFDevices.RegisterApp({ id = 'taxi', entry = 'a.js' }, 'pf-jobs')
+        PFDevices.RegisterApp({ id = 'bus', entry = 'a.js' }, 'pf-jobs')
+        PFDevices.RegisterApp({ id = 'gruppe6', entry = 'a.js' }, 'pf-jobs')
         local pushes = Mock.clientEventsNamed('pf-devices:client:appsChanged')
-        assert_true(#pushes >= 1)
+        assert_eq(#pushes, 1, 'one broadcast for the burst (the trailing one is scheduled)')
         assert_eq(pushes[1].target, -1)
+        PFDevices.NotifyAppsChanged(4)
+        pushes = Mock.clientEventsNamed('pf-devices:client:appsChanged')
+        assert_eq(pushes[2].target, 4, 'a single player is told at once')
     end)
 
     it('sorts by order then name', function()
