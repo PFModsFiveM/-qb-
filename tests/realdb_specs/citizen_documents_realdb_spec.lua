@@ -34,6 +34,7 @@ Mock.exportsByResource['pf-government'] = {
     ManagesBusiness = function(_, src, id) return manages[src] ~= nil and manages[src][id] == true end,
     GetBusinessEmployees = function(_, id) return { ok = true, employees = staff[id] or {} } end,
 }
+load_resource('tests/lua/gov_registry_exports.lua')
 
 function GetCurrentResourceName() return 'pf-citizen' end
 for _, f in ipairs({ 'shared/config.lua', 'server/schema.lua', 'server/util.lua', 'server/mail.lua', 'server/bills.lua',
@@ -136,5 +137,26 @@ describe('documents', function()
         assert_eq(D.Delete(A, { id = id }).deleted, true)
         assert_eq(D.Get(C3, { id = id }).error, 'not_found')
         for _, d in ipairs(D.List(C3).shared) do assert_true(d.id ~= id, 'still listed') end
+    end)
+end)
+
+describe('documents when a character is deleted', function()
+    it('private documents go; documents shared with others stay with them; their access to others goes', function()
+        local cleanup = Mock.eventHandlers['pfm-core:server:characterDeleted']
+        assert_true(type(cleanup) == 'function', 'pf-citizen listens for deleted characters')
+        local private = D.Save(A, { title = 'Diary', body = 'Private notes' }).id
+        local contract = D.Save(A, { title = 'Sale contract', body = 'A sells the boat to B' }).id
+        assert_true(D.Share(A, { id = contract, to = '5550002', mode = 'link' }).ok)
+        local fromC = D.Save(C3, { title = 'Invite', body = 'Party on Friday' }).id
+        assert_true(D.Share(C3, { id = fromC, to = '5550001', mode = 'link' }).ok)
+        MySQL.query.await("INSERT INTO pf_citizen_bill_history (citizenid, source, ref, title, amount) VALUES ('CID1', 'phone', 'r1', 'Old bill', 10)")
+
+        cleanup({})            -- ignored
+        cleanup('CID1')
+        assert_eq(D.Get(B, { id = contract }).document.title, 'Sale contract', 'B keeps the shared contract')
+        assert_true(MySQL.scalar.await('SELECT deleted_at FROM pf_citizen_documents WHERE id = ?', { private }) ~= nil, 'private document deleted')
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_citizen_document_shares WHERE citizenid = 'CID1'")), 0)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_citizen_bill_history WHERE citizenid = 'CID1'")), 0)
+        assert_eq(D.Get(C3, { id = fromC }).document.title, 'Invite', 'C keeps their own document')
     end)
 end)

@@ -30,7 +30,7 @@ QBCoreMock.Shared.Jobs = { government = { label = 'Government' } }
 Config = nil
 load_resource('pfm-banking/payouts.lua')
 for _, f in ipairs({ 'config.lua', 'server/core.lua', 'server/treasury.lua', 'server/taxes.lua', 'server/utilities.lua',
-    'server/bills.lua', 'server/businesses.lua', 'server/audit.lua', 'server/licenses.lua', 'server/integrations.lua',
+    'server/bills.lua', 'server/businesses.lua', 'server/registry_views.lua', 'server/audit.lua', 'server/licenses.lua', 'server/integrations.lua',
     'server/staff.lua', 'server/callbacks.lua' }) do
     load_resource('[pfscripts]/pf-government/' .. f)
 end
@@ -178,5 +178,34 @@ describe('ownership transfers', function()
         assert_false(ok)
         assert_eq(err, 'job_business')
         assert_false(TransferBusinessOwnership('restaurant:nowhere', 'CID3', 'New'))
+    end)
+end)
+
+describe('registry exports for other resources', function()
+    it('give one business, the businesses an owner holds, and the public list, without the table', function()
+        local X = Mock.exportsByResource['__self']
+        RegisterBusiness('store:reg_a', 'Alpha Store', 'store', 'CIDREG', 'Reg Owner', 'society:store_reg_a')
+        RegisterBusiness('mechanic:regshop', 'Reg Shop', 'mechanic', 'job:regshop', nil, 'society:regshop')
+        local b = X.GetBusiness('store:reg_a')
+        assert_eq(b.name, 'Alpha Store')
+        assert_eq(b.ownerId, 'CIDREG')
+        assert_eq(b.account, 'society:store_reg_a')
+        assert_eq(b.status, 'active')
+        assert_eq(X.GetBusiness('store:none'), nil)
+        assert_eq(X.GetBusiness(''), nil)
+        assert_eq(X.GetBusiness({}), nil)
+        local mine = X.GetBusinessesOwnedBy({ 'CIDREG', 'job:regshop' })
+        assert_eq(#mine, 2)
+        assert_eq(#X.GetBusinessesOwnedBy('CIDREG'), 1, 'a single owner id works too')
+        assert_eq(#X.GetBusinessesOwnedBy({}, { 'mechanic:regshop' }), 1, 'by business id')
+        assert_eq(#X.GetBusinessesOwnedBy({ 'x\'; DROP', 5 }), 0)
+        assert_eq(#X.GetBusinessesOwnedBy({}), 0)
+        MySQL.update.await("UPDATE pf_gov_businesses SET business_status = 'closed' WHERE business_id = 'store:reg_a'")
+        assert_eq(X.GetBusiness('store:reg_a').status, 'closed')
+        local all = X.ListBusinesses({ limit = 1000 })
+        local seen = {}
+        for _, v in ipairs(all) do seen[v.id] = true end
+        assert_true(seen['store:reg_a'] and seen['mechanic:regshop'])
+        assert_true(#X.ListBusinesses({ limit = 1 }) == 1)
     end)
 end)

@@ -50,6 +50,7 @@ Mock.exportsByResource['pf-devices'] = {
     RegisterSite = function(_, def) siteDefs[def.host] = def return true end,
     RegisterSiteHandler = function(_, host, method, fn) siteHandlers[host] = siteHandlers[host] or {}; siteHandlers[host][method] = fn return true end,
     Broadcast = function(_, app, ev, p) broadcasts[#broadcasts + 1] = { app = app, event = ev, payload = p } return true end,
+    BroadcastSite = function(_, host, ev, p) broadcasts[#broadcasts + 1] = { site = host, event = ev, payload = p } return true end,
     PushToJob = function(_, job, app, ev, p) pushes[#pushes + 1] = { job = job, app = app, event = ev } return 1 end,
     PushToCitizen = function() return true end,
     Push = function(_, src, app, ev) pushes[#pushes + 1] = { src = src, app = app, event = ev } return true end,
@@ -205,7 +206,23 @@ on(SQL.trimOpenLeads, function() return 0 end)
 on(SQL.activeLeads, function() return where(DB.leads, function(l) return l.status == 'open' or l.status == 'claimed' end) end)
 -- ads
 on(SQL.getAd, function(p) return copy(DB.ads[p[1]]) end)
-on(SQL.registryOwned, function(p) return where(DB.gov, function(b) return b.owner_id == p[1] or b.owner_id == p[2] end) end)
+-- the business registry comes from pf-government's export (pf-news never reads its table)
+states['pf-government'] = 'started'
+Mock.exportsByResource['pf-government'] = {
+    GetBusinessesOwnedBy = function(_, owners)
+        local out = {}
+        for _, b in pairs(DB.gov) do
+            for _, o in ipairs(owners) do
+                if b.owner_id == o then
+                    out[#out + 1] = { id = b.business_id, name = b.business_name, ownerId = b.owner_id, account = b.account_ref,
+                        status = b.business_status == 'closed' and 'closed' or 'active' }
+                    break
+                end
+            end
+        end
+        return out
+    end,
+}
 on(SQL.countActiveAds, function(p) return count(DB.ads, function(a) return (a.status == 'pending' or a.status == 'active') and (not a.ends_at or a.ends_at > p[1]) end) end)
 on(SQL.countBusinessAds, function(p) return count(DB.ads, function(a) return a.business_id == p[1] and (a.status == 'pending' or a.status == 'active') and (not a.ends_at or a.ends_at > p[2]) end) end)
 on(SQL.insertAd, function(p)
@@ -395,7 +412,7 @@ describe('pf-news City Desk', function()
         assert_eq(count(DB.articles), 2)
         -- both the news app and the news.ls site get the push
         local site = false
-        for _, b in ipairs(broadcasts) do if b.app == 'site-news-ls' and b.event == 'published' then site = true end end
+        for _, b in ipairs(broadcasts) do if b.site == 'news.ls' and b.event == 'published' then site = true end end
         assert_true(site, 'open news.ls pages refresh too')
     end)
 

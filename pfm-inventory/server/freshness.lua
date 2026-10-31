@@ -231,6 +231,29 @@ function F.UpdateDropSunlight(drops, sunny, now)
     end
 end
 
+--- Cars standing in the midday sun heat up (Config.Freshness.VehicleHeat): while `sunny`, the
+--- glovebox and trunk of every car whose plate is in `plates` (cars spawned in the world; a car
+--- in a garage is not) switch to the heat storage types. Shelf life used so far is settled at the
+--- old rate first, as for ground drops.
+function F.UpdateVehicleHeat(inventories, plates, sunny, now)
+    now = now or F.now()
+    local heat = (cfg() or {}).VehicleHeat or {}
+    plates = type(plates) == 'table' and plates or {}
+    for id, inv in pairs(inventories or {}) do
+        id = tostring(id)
+        local part, plate = id:match('^(glovebox)%-(.+)$')
+        if not part then part, plate = id:match('^(trunk)%-(.+)$') end
+        if part then
+            local want = nil
+            if sunny and plates[plate] and knownStorage(heat[part]) then want = heat[part] end
+            if F.StorageOverrides[id] ~= want then
+                F.SetStorageOverride(id, want)
+                if type(inv) == 'table' and inv.items then F.EnsureItems(inv.items, id, now) end
+            end
+        end
+    end
+end
+
 --- Freshness record for an item that starts at `pct` percent of its shelf life left (e.g. a dish made
 --- from ingredients that were not fresh any more). Returns an info table, or nil for non-perishables.
 function F.InfoAtPercent(itemName, pct, now)

@@ -67,6 +67,9 @@ Config.Freshness = {
     DeliveryStorage = 'outdoor',
     -- Ground drops use the 'sunlight' rate in these weathers between these game hours
     Sunlight = { Weathers = { EXTRASUNNY = true, CLEAR = true }, FromHour = 11, ToHour = 16 },
+    -- A car out in the world (not stored in a garage) heats up in that same sun: its glovebox uses
+    -- the 'hot' rate and its trunk the 'sunlight' rate. Set a part to false to leave it alone.
+    VehicleHeat = { glovebox = 'hot', trunk = 'sunlight' },
 
     -- Freshness bands, highest first. Spoiled food is never deleted; it stays usable with penalties.
     States = {

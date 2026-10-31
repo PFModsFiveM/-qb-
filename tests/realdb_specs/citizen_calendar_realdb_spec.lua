@@ -35,6 +35,7 @@ Mock.exportsByResource['pf-government'] = {
     ManagesBusiness = function(_, src, id) return manages[src] ~= nil and manages[src][id] == true end,
     GetBusinessEmployees = function(_, id) return { ok = true, employees = staff[id] or {} } end,
 }
+load_resource('tests/lua/gov_registry_exports.lua')
 
 function GetCurrentResourceName() return 'pf-citizen' end
 for _, f in ipairs({ 'shared/config.lua', 'server/schema.lua', 'server/util.lua', 'server/mail.lua', 'server/bills.lua',

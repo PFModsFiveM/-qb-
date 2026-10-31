@@ -161,16 +161,17 @@ describe('store robbery', function()
         Config = StoreCfg
         for _, reg in pairs(Config.Registers) do reg.robbed = false end
         started['pf-stores'] = true
-        Mock.exportsByResource['pf-stores'] = { GetStoreConfig = function() return { Stores = {
-            twentyfourseven_2 = { id = 'twentyfourseven_2', label = '24/7 Innocence', npc = { coords = vector4(24.50, -1347.28, 29.50, 268.93) } },
-        } } end }
-        local realScalar = MySQL.scalar
-        MySQL.scalar = { await = function(q, p) if q:find('FROM pf_stores', 1, true) and p[1] == 'twentyfourseven_2' then return 'OWNERCID' end end }
+        -- the owner comes from pf-stores' GetStoreOwner export, not from its table
+        Mock.exportsByResource['pf-stores'] = {
+            GetStoreConfig = function() return { Stores = {
+                twentyfourseven_2 = { id = 'twentyfourseven_2', label = '24/7 Innocence', npc = { coords = vector4(24.50, -1347.28, 29.50, 268.93) } },
+            } } end,
+            GetStoreOwner = function(_, id) if id == 'twentyfourseven_2' then return 'OWNERCID' end end,
+        }
         Mock.newPlayer(OWNER, 'OWNERCID')
         give(R, 'lockpick')
         at(R, Config.Registers[8][1])
         Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 8)
-        MySQL.scalar = realScalar
         local told = 0
         for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do if e.target == OWNER then told = told + 1 end end
         assert_eq(told, 1)

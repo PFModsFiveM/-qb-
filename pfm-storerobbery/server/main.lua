@@ -97,7 +97,7 @@ local function TellStoreOwner(coords, name)
         for storeId, def in pairs((cfg and cfg.Stores) or {}) do
             local c = def.npc and def.npc.coords
             if c and #(vector3(c.x, c.y, c.z) - coords) <= (Config.OwnedStoreRadius or 25.0) then
-                local owner = MySQL.scalar.await('SELECT owner_citizenid FROM pf_stores WHERE store_id = ? LIMIT 1', { def.id or storeId })
+                local owner = exports['pf-stores']:GetStoreOwner(tostring(def.id or storeId))
                 local Owner = type(owner) == 'string' and owner ~= '' and QBCore.Functions.GetPlayerByCitizenId(owner)
                 if Owner then
                     TriggerClientEvent('QBCore:Notify', Owner.PlayerData.source, ('Your store %s is being robbed!'):format(def.label or name), 'error', 10000)

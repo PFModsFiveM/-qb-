@@ -39,6 +39,7 @@ function IsGovernmentEmployee() return false end
 function DebugPrint() end
 local govX = Mock.exportsByResource['__self']
 Mock.exportsByResource['pf-government'] = govX
+load_resource('tests/lua/gov_registry_exports.lua')
 Mock.exportsByResource['__self'] = nil
 InitializeTreasury()
 InitializeTaxes()

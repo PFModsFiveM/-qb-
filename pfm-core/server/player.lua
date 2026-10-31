@@ -560,6 +560,15 @@ local playertables = {
     { table = 'player_vehicles' },
 }
 
+-- Tables above belong to the framework. Every other resource keeps its own per-character rows,
+-- and some of them are optional, so they are not listed here (one missing table would make the
+-- whole delete fail). Instead each resource listens for this server-only event and clears or
+-- anonymises its own rows:
+--   AddEventHandler('pfm-core:server:characterDeleted', function(citizenid) ... end)
+local function notifyCharacterDeleted(citizenid)
+    TriggerEvent('pfm-core:server:characterDeleted', citizenid)
+end
+
 function QBCore.Player.DeleteCharacter(source, citizenid)
     local license = QBCore.Functions.GetIdentifier(source, 'license')
     local result  = MySQL.scalar.await('SELECT license FROM players where citizenid = ?', { citizenid })
@@ -573,6 +582,7 @@ function QBCore.Player.DeleteCharacter(source, citizenid)
             if result2 then
                 TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Deleted', 'red',
                     '**' .. GetPlayerName(source) .. '** ' .. license .. ' deleted **' .. citizenid .. '**..')
+                notifyCharacterDeleted(citizenid)
             end
         end)
     else
@@ -601,6 +611,7 @@ function QBCore.Player.ForceDeleteCharacter(citizenid)
         if result2 then
             TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Force Deleted', 'red',
                 'Character **' .. citizenid .. '** got deleted')
+            notifyCharacterDeleted(citizenid)
         end
     end)
 end

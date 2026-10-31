@@ -25,6 +25,7 @@ assert(PFLedger.Start(), 'ledger start')
 local bankConfig = Config
 -- the business registry pf-news reads for owners
 RealDB.exec('[pfscripts]/pf-government/sql/install.sql')
+load_resource('tests/lua/gov_registry_exports.lua')
 Mock.exportsByResource['pfm-core'].RunMigrations = function(_, resource, list) return RunMigrations(resource, list) end
 
 -- pf-devices and pf-services stand-ins
@@ -33,6 +34,7 @@ Mock.exportsByResource['pf-devices'] = {
     RegisterApp = function() return true end, RegisterAppHandlers = function() return true end,
     RegisterSite = function() return true end, RegisterSiteHandler = function() return true end,
     Broadcast = function(_, app, ev, p) broadcasts[#broadcasts + 1] = { app = app, event = ev, payload = p } return true end,
+    BroadcastSite = function(_, host, ev, p) broadcasts[#broadcasts + 1] = { site = host, event = ev, payload = p } return true end,
     PushToJob = function() return 0 end, PushToCitizen = function() return true end, Push = function() return true end,
     IsAppInstalled = function() return false end,
 }
@@ -248,9 +250,9 @@ describe('pf-news ads on a real database', function()
 
     it('a registered owner buys from the business account; without money there is no ad', function()
         people()
-        -- pf-government adds account_ref at start (EnsureBusinessSchema); business_status is left out on
-        -- purpose: pf-news falls back to the older registry shape
-        MySQL.query.await('ALTER TABLE pf_gov_businesses ADD COLUMN account_ref VARCHAR(96) NULL DEFAULT NULL')
+        -- pf-government adds account_ref and business_status at start (EnsureBusinessSchema); pf-news
+        -- reads the registry through pf-government's GetBusinessesOwnedBy export
+        MySQL.query.await('ALTER TABLE pf_gov_businesses ADD COLUMN IF NOT EXISTS account_ref VARCHAR(96) NULL DEFAULT NULL')
         MySQL.query.await([[INSERT INTO pf_gov_businesses (business_id, business_name, business_type, owner_id, owner_name, account_ref)
             VALUES ('store:ltd_grove', 'LTD Grove', 'store', 'LTDOWN', 'Owner', 'society:store_ltd_grove')]])
         fund('store_ltd_grove', 100)
@@ -269,5 +271,38 @@ describe('pf-news ads on a real database', function()
         Mock.clock = Mock.clock + 25 * 3600
         PFNews.Sweep()
         assert_eq(scalar('SELECT status FROM pf_news_ads WHERE id = ?', { ok.id }), 'expired')
+    end)
+end)
+
+describe('pf-news when a character is deleted', function()
+    it('drops their drafts, keeps their published bylines, and frees their leads', function()
+        Mock.clock = Mock.clock + 1000
+        people()
+        local cleanup = Mock.eventHandlers['pfm-core:server:characterDeleted']
+        assert_true(type(cleanup) == 'function', 'pf-news listens for deleted characters')
+        local body = string.rep('The council met late into the night over the new budget. ', 10)
+        local draft = room('save', SENIOR, { title = 'Council budget fight', summary = 'Draft', body = body, category = 'politics' })
+        assert_true(draft.ok, tostring(draft.error))
+        local story = room('save', SENIOR, { title = 'Council passes the budget', summary = 'Final', body = body, category = 'politics' })
+        assert_true(room('publish', EDITOR, { id = story.id }).ok)
+        emit(city(2901, 'crime.robbery.store', { store = 'LTD Mirror Park' }, { district = 'mirror' }))
+        local lead = MySQL.single.await('SELECT id FROM pf_news_leads WHERE event_id = 2901')
+        assert_true(room('claimLead', SENIOR, { id = lead.id }).ok)
+        reader('article', SENIOR, { id = story.id })
+
+        cleanup('')            -- ignored
+        cleanup(nil)
+        assert_eq(n('SELECT COUNT(*) FROM pf_news_articles WHERE id = ?', { draft.id }), 1)
+        cleanup('NEWS2')
+        assert_eq(n('SELECT COUNT(*) FROM pf_news_articles WHERE id = ?', { draft.id }), 0, 'draft removed')
+        local kept = MySQL.single.await('SELECT status, author_cid, author_name FROM pf_news_articles WHERE id = ?', { story.id })
+        assert_eq(kept.status, 'published')
+        assert_eq(kept.author_cid, nil, 'link to the character dropped')
+        assert_true(kept.author_name ~= nil and kept.author_name ~= '', 'byline kept')
+        local freed = MySQL.single.await('SELECT status, claimed_cid FROM pf_news_leads WHERE id = ?', { lead.id })
+        assert_eq(freed.status, 'open')
+        assert_eq(freed.claimed_cid, nil)
+        assert_eq(n("SELECT COUNT(*) FROM pf_news_views WHERE citizenid = 'NEWS2'"), 0)
+        assert_true(room('claimLead', JUNIOR, { id = lead.id }).ok, 'another reporter can take the lead')
     end)
 end)

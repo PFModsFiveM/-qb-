@@ -17,7 +17,7 @@ const pf = (...p) => path.join(RES, '[pfscripts]', ...p);
 const PREREQS = [qb('pfm-core', 'qbcore.sql'), qb('pfm-garages', 'player_vehicles.sql'), qb('pfm-inventory', 'qb-inventory.sql')];
 const CHECKED = [
     qb('pfm-vehicleshop', 'vehshop.sql'),
-    pf('pf-garageuionly', 'sql', 'garage.sql'),
+    pf('pf-jobgarages', 'sql', 'pf_jobgarages.sql'),
 ];
 
 function statements(file) {

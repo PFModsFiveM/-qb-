@@ -260,3 +260,35 @@ describe('closing without a worker', function()
         assert_eq(PFServices.GetRequest(res.id).status, 'completed')
     end)
 end)
+
+describe('service requests when a character is deleted', function()
+    it('their own open requests are cancelled and refunded once; jobs they had accepted go back to the queue', function()
+        local cleanup = Mock.eventHandlers['pfm-core:server:characterDeleted']
+        assert_true(type(cleanup) == 'function', 'pf-services listens for deleted characters')
+        local mine = PFServices.CitizenRequest(CITIZEN, 'tow.recovery', 'Flat tyre')
+        assert_true(mine.ok, mine.error)
+        assert_eq(bank(CITIZEN), 1000 - 175)
+        -- TOW1 holds someone else's job
+        Mock.newPlayer(9, 'CIT9').PlayerData.money = { cash = 0, bank = 1000 }
+        Mock.players[9].PlayerData.source = 9
+        Mock.coords[9] = vector3(1.0, 2.0, 3.0)
+        local other = PFServices.CitizenRequest(9, 'ems.patient', 'Hurt')
+        assert_true(other.ok, other.error)
+        local ems = Mock.newPlayer(10, 'EMS1')
+        ems.PlayerData.job = { name = 'ambulance', onduty = true, grade = { level = 0 } }
+        ems.PlayerData.source = 10
+        assert_true(PFServices.AcceptRequest(10, other.id).ok)
+
+        cleanup('CIT1')
+        assert_eq(req(mine.id).status, 'cancelled')
+        assert_eq(req(mine.id).escrow, 'refunded')
+        assert_eq(bank(CITIZEN), 1000, 'refunded')
+        cleanup('CIT1')
+        assert_eq(bank(CITIZEN), 1000, 'refunded once')
+
+        cleanup('EMS1')
+        local back = req(other.id)
+        assert_eq(back.status, 'open', 'the patient call goes back to the queue')
+        assert_eq(back.assignee, nil)
+    end)
+end)

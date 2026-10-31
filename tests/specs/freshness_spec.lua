@@ -215,4 +215,28 @@ describe('sunlight on ground drops', function()
         F.UpdateDropSunlight({}, true, NOW)
         assert_eq(F.StorageOverrides['drop-2'], nil)
     end)
+    it('a car out in the sun heats up: glovebox at the hot rate, trunk at the sunlight rate, a stored car not at all', function()
+        local function food(id) return { items = { { name = 'sandwich', amount = 1, info = F.Prepare('sandwich', nil, F.StorageFor(id), NOW) } } } end
+        local inv = { ['glovebox-SUN1'] = food('glovebox-SUN1'), ['trunk-SUN1'] = food('trunk-SUN1'),
+            ['glovebox-GAR1'] = food('glovebox-GAR1'), ['stash-1'] = food('stash-1') }
+        F.UpdateVehicleHeat(inv, { SUN1 = true }, true, NOW + HOUR)   -- SUN1 is out in the world, GAR1 is in a garage
+        local g = inv['glovebox-SUN1'].items[1].info.fresh
+        assert_eq(g.storage, 'hot')
+        assert_eq(g.used, math.floor(HOUR * Config.Freshness.Storage.glovebox), 'the hour before is settled at the glovebox rate')
+        assert_eq(F.CurrentUsed(g, NOW + 2 * HOUR), math.floor(HOUR * Config.Freshness.Storage.glovebox + HOUR * Config.Freshness.Storage.hot))
+        assert_eq(inv['trunk-SUN1'].items[1].info.fresh.storage, 'sunlight')
+        assert_eq(inv['glovebox-GAR1'].items[1].info.fresh.storage, 'glovebox', 'a stored car stays cool')
+        assert_eq(inv['stash-1'].items[1].info.fresh.storage, 'stash', 'other inventories are not touched')
+        F.UpdateVehicleHeat(inv, {}, false, NOW + 2 * HOUR)            -- clouds
+        assert_eq(inv['glovebox-SUN1'].items[1].info.fresh.storage, 'glovebox')
+        assert_eq(F.StorageOverrides['glovebox-SUN1'], nil)
+        assert_eq(F.StorageOverrides['trunk-SUN1'], nil)
+        local saved = Config.Freshness.VehicleHeat
+        Config.Freshness.VehicleHeat = { glovebox = false, trunk = 'sunlight' }
+        F.UpdateVehicleHeat(inv, { SUN1 = true }, true, NOW + 3 * HOUR)
+        assert_eq(F.StorageOverrides['glovebox-SUN1'], nil, 'a part switched off stays at its own rate')
+        assert_eq(F.StorageOverrides['trunk-SUN1'], 'sunlight')
+        F.UpdateVehicleHeat(inv, {}, false, NOW + 3 * HOUR)
+        Config.Freshness.VehicleHeat = saved
+    end)
 end)
