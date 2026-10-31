@@ -31,6 +31,21 @@ Two shared services in `[pfscripts]/pf-services` carry every link:
 | Citizen → Mechanic | The Services app: "Roadside repair" | A `mechanic.roadside` request to every mechanic shop (mechanic, Benny's, Beeker's). The $100 call-out fee is paid when the citizen confirms the job. | `pf-services` catalog and `CitizenRequest` | Mechanics get call-outs. Parts and labour are still billed at the register. |
 | Citizen → EMS, Police, Taxi | The Services app | `ems.patient`, `police.assist` and `taxi.ride` requests at the citizen's server position, with no fee | `pf-services` | One place to call any emergency or service, on the tablet or the computer. |
 | Any event marked `police` → Police | Robberies, prison escapes (emitted by the robbery and prison resources) | A `police.assist` dispatch request at the event position, one per incident | `pf-services/server/main.lua` (`OnEvent`) | Alarms become dispatch calls officers can accept and navigate to. |
+| Bank robbery → Police + News | The vault opens after the hack, keycard and police-count checks | `crime.robbery.bank`: a dispatch request and an automatic breaking bulletin | `pfm-bankrobbery/server/main.lua` | A major heist is public news, and police get a call they can navigate to. |
+| Power grid sabotage → News | Every power station is hit (thermite seen by the server) | `crime.blackout`: an automatic bulletin | `pfm-bankrobbery/server/main.lua` | A city-wide blackout is news. |
+| Store robbery → Police + Newsroom | A register is lockpicked or the safe opened (once per store per 15 min) | `crime.robbery.store`: a dispatch request and a reporter lead | `pfm-storerobbery/server/main.lua` | Police respond; a reporter can cover it. |
+| Store robbery → Store owner | The same, at a player-owned pf-stores shop | A notification to the owner | `pfm-storerobbery/server/main.lua` → `pf_stores` owner | The owner can call the police or come and defend the shop. |
+| House burglary → Police + Newsroom | The burglar alarm, now rolled on the server when the lockpick starts (once per house per 10 min) | `crime.robbery.house` ("a home on <street>"): a dispatch request and a lead | `pfm-houserobbery/server/main.lua` | A modified client can't skip the alarm any more. |
+| Armored truck → Police + Newsroom | The guard alert, or the loot being taken (once per mission) | `crime.robbery.truck`: a dispatch request and a lead | `pfm-truckrobbery/server/main.lua` | Skipping the client alert no longer means robbing in silence. |
+| Jewelry heist → Police + News | The first display case really emptied | `crime.robbery.jewelry`: a dispatch request and an automatic bulletin | `pfm-jewelery/server/main.lua` | One heist, one bulletin. |
+| Downed player → EMS | The player's state changes from up to down (last stand or death), at the server position | One `ems.patient` request in the medics' Dispatch app. Revive and first aid close it as done; respawn, check-in, admin revive, getting up and logging off close it as cancelled. | `pf-ambulancejob/server/main.lua`, `treatment.lua` | Medics see every downed player on the map, with no stale calls. |
+| 911 → Police and EMS | `/911p` or `/911e` (server position) | `police.assist` / `ems.patient` requests from the caller, one open call per caller | `pfm-policejob/server/commands.lua`, `pf-ambulancejob/server/main.lua` | 911 calls arrive in the Dispatch app with a location. |
+| Police jail and MDT sentences → Newsroom | `/jail` by an on-duty officer next to the target; an MDT sentence carried out | `police.sentenced` (name, months, charges): a court lead | `pfm-policejob/server/interactions.lua`, `pf-policemdt-DEV/server/main.lua` | Court reporting. |
+| MDT warrant → Newsroom | `pf_mdt:createWarrant` (officers only) | `police.warrant` (suspect, charge titles; no narrative or witnesses): a lead | `pf-policemdt-DEV/server/main.lua` | Wanted-person stories. |
+| Officer seizes drugs → Newsroom | An on-duty officer takes listed drugs from another player (moves within 60 s combined) | `crime.drugs.bust` (items, total; the suspect isn't named): a lead | `pfm-policejob/server/evidence.lua` | Busts become stories. |
+| Prison escape → Police + News | Sentence cut short while the server sees the inmate far from the prison | `crime.prison.escape`: a dispatch request and an automatic bulletin | `pfm-prison/server/main.lua` | A manhunt plus a public warning. |
+| Weather → News | The weather changes into thunder or a blizzard | `weather.severe`: an automatic bulletin | `pfm-weathersync/server/server.lua` | Storm warnings. |
+| Street and lap races → Newsroom | A winner judged on the server, with 2 or more racers | `race.finished` (winner, time, racers, pot): a lead | `pfm-streetraces`, `pfm-lapraces` | Racing stories. |
 | City Hall → News | Every government decision (taxes, laws, budgets, power and water cuts, utility cut-offs, business registration, closure, transfer, failed inspections, loan defaults, announcements, appointments) | An automatic article from a preset, with no mayor action | `pf-government` emits → `pf-news` | Owner requirement: city-hall changes are reported automatically. |
 | Crime, court, business events → Newsroom | Store and house robberies, drug seizures, sentences, warrants, store sales, supply shortages, races | A lead for reporters, never published automatically | emitters → `pf-news` leads | Reporters have stories to chase, so the news job stays meaningful. |
 | Businesses → News | A business boss buys an ad | The ad price moves from the business account to the news company account (`society:reporter`) | `pf-news` | Businesses advertise; the news company earns money. |
@@ -50,4 +65,12 @@ Two shared services in `[pfscripts]/pf-services` carry every link:
 
 ## Candidates (not built yet)
 
-To be filled from the remaining agents' reports.
+| From → To | Why not yet |
+|---|---|
+| Bank robbery → Fleeca branch closed | `Config.OnRobberyStart` already fires `qb-banking:server:SetBankClosed`, but pfm-banking doesn't handle it yet. |
+| Script alerts (drug sales, "suspicious activity") → Dispatch | These would need de-duplication against the robbery events, or every robbery would create two requests. |
+| MDT dispatch and the pf-services Dispatch app | Two dispatch systems now exist (the MDT has its own callouts and 911 board). The owner should pick the main one. |
+| Armored truck hit → Gruppe 6 | The Gruppe 6 job could be told when one of its trucks is hit. |
+| Vineyard → Restaurants (wine, grape juice) | Restaurants need drink recipes and per-item supply prices first. Wine is $1 a unit in today's category price. |
+| Scrapyard materials → Mechanic parts | Parts orders could accept scrap metal from player suppliers through the Supplier app once mechanic catalogs list materials. |
+| Gruppe 6 / Garbage crew splits | Splits are stored but the payouts ignore them (every member gets 1.5×); this needs an owner decision. |
