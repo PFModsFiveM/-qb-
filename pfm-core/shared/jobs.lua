@@ -4,7 +4,20 @@ QBCore.Shared.Jobs = {
 	bus = { label = 'Bus', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Driver', payment = 50 } } },
 	judge = { label = 'Honorary', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Judge', payment = 100 } } },
 	lawyer = { label = 'Law Firm', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Associate', payment = 50 } } },
-	reporter = { label = 'Reporter', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Journalist', payment = 50 } } },
+	-- pf-news newsroom roles by grade: 0-1 write and submit, 2 publish directly, 3+ edit (review,
+	-- breaking, pin, retract); the boss grade runs the news company account
+	reporter = {
+		label = 'Weazel News',
+		defaultDuty = true,
+		offDutyPay = false,
+		grades = {
+			['0'] = { name = 'Journalist', payment = 50 },
+			['1'] = { name = 'Reporter', payment = 65 },
+			['2'] = { name = 'Senior Reporter', payment = 80 },
+			['3'] = { name = 'Editor', payment = 100 },
+			['4'] = { name = 'Editor-in-Chief', isboss = true, payment = 125 },
+		},
+	},
 	trucker = { label = 'Trucker', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Driver', payment = 50 } } },
 	tow = { label = 'Towing', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Driver', payment = 50 } } },
 	garbage = { label = 'Garbage', defaultDuty = true, offDutyPay = false, grades = { ['0'] = { name = 'Collector', payment = 50 } } },
