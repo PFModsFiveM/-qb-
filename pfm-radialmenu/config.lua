@@ -515,27 +515,28 @@ Config.JobInteractions = {
         }
     }
     },
+    -- the taxi job is pf-jobs (the Taxi app on the tablet and computer); pfm-taxijob was removed
     ['taxi'] = {
         {
             id = 'togglemeter',
-            title = 'Show/Hide Meter',
-            icon = 'eye-slash',
-            type = 'client',
-            event = 'qb-taxi:client:toggleMeter',
-            shouldClose = false
+            title = 'Start/Stop Meter',
+            icon = 'hourglass-start',
+            type = 'command',
+            event = 'taximeter',
+            shouldClose = true
         }, {
-        id = 'togglemouse',
-        title = 'Start/Stop Meter',
-        icon = 'hourglass-start',
-        type = 'client',
-        event = 'qb-taxi:client:enableMeter',
+        id = 'npc_mission',
+        title = 'Take Next Call',
+        icon = 'taxi',
+        type = 'command',
+        event = 'taxistart',
         shouldClose = true
     }, {
-        id = 'npc_mission',
-        title = 'NPC Mission',
-        icon = 'taxi',
-        type = 'client',
-        event = 'qb-taxi:client:DoTaxiNpc',
+        id = 'complete_ride',
+        title = 'Complete Ride',
+        icon = 'flag-checkered',
+        type = 'command',
+        event = 'taxicomplete',
         shouldClose = true
     }
     },
