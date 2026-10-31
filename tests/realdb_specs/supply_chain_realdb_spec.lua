@@ -421,3 +421,40 @@ describe('store ownership from the government', function()
         Mock.invokingResource = nil
     end)
 end)
+
+-- The Supplier app (pf-devices) runs the same supplier flow from the tablet and the computer.
+describe('Supplier app', function()
+    local app = {}
+    Mock.exportsByResource['pf-devices'] = {
+        RegisterApp = function(_, def) app.def = def return true end,
+        RegisterAppHandlers = function(_, id, map) app.id, app.h = id, map return true end,
+    }
+    load_resource('[pfscripts]/pf-stores/server_supplier_app.lua')
+    Mock.eventHandlers['pf-devices:server:ready']()
+
+    it('registers an installable app and runs the supplier flow through it', function()
+        assert_eq(app.def.id, 'supplier')
+        assert_true(app.def.access.installable)
+        MySQL.update.await("DELETE FROM pf_supplier_offers")
+        MySQL.update.await("DELETE FROM pf_suppliers WHERE citizenid = 'SUP1'")
+        assert_false(app.h.status(SUPP, {}).supplier, 'not a supplier yet')
+        assert_eq(app.h.setOffer(SUPP, { item = 'lockpick', price = 20 }).error, 'not_a_supplier')
+        assert_true(app.h.register(SUPP, { name = 'Grapeseed Farms' }).ok)
+        assert_true(app.h.setOffer(SUPP, { item = 'lockpick', price = 20 }).ok)
+        assert_true(Mock.selfExport('AddItem')(SUPP, 'lockpick', 60, false, false, 'test'))
+        local st = app.h.status(SUPP, {})
+        assert_eq(st.name, 'Grapeseed Farms')
+        assert_eq(st.offers[1].item, 'lockpick')
+        assert_eq(st.carried.lockpick.items, 60)
+        assert_eq(app.h.stock(SUPP, { item = 'lockpick', cases = 70 }).error, 'missing_items')
+        assert_true(app.h.stock(SUPP, { item = 'lockpick', cases = 60 }).ok)
+        fundStore(1150)
+        local id = order().data.orderId
+        st = app.h.status(SUPP, {})
+        assert_eq(#st.orders, 1)
+        assert_eq(st.orders[1].orderId, id)
+        assert_true(app.h.accept(SUPP, { orderId = id }).ok)
+        assert_false(app.h.accept(SUPP, { orderId = id }).ok, 'once')
+        assert_eq(status(id), 'awaiting_delivery')
+    end)
+end)
