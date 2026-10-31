@@ -89,3 +89,35 @@ describe('pf-services events', function()
         assert_false((PFServices.RegisterEventKind('bad kind!', {})))
     end)
 end)
+
+describe('police and EMS dispatch is their MDT', function()
+    it('a police or EMS request becomes a call on that MDT; the Dispatch app is not theirs while it runs', function()
+        local calls = {}
+        local mdtStarted = { ['pf-policemdt-DEV'] = true, ['pf-emsmdt'] = true }
+        local realState = GetResourceState
+        GetResourceState = function(name) if mdtStarted[name] then return 'started' end return realState(name) end
+        Mock.exportsByResource['pf-policemdt-DEV'] = { CreateDispatchCall = function(_, c) calls[#calls + 1] = { mdt = 'police', call = c } return c end }
+        Mock.exportsByResource['pf-emsmdt'] = { CreateDispatchCall = function(_, c) calls[#calls + 1] = { mdt = 'ems', call = c } return c end }
+        local fire = Mock.eventHandlers['pf-services:requestChanged']
+        fire({ id = 1, kind = 'police.assist', title = 'Robbery at Ltd', coords = { x = 1, y = 2, z = 3 }, from = { name = 'Alarm' } }, 'created')
+        fire({ id = 2, kind = 'ems.patient', title = 'Person down', coords = { x = 4, y = 5, z = 6 } }, 'created')
+        fire({ id = 3, kind = 'tow.recovery', title = 'Tow' }, 'created')
+        fire({ id = 1, kind = 'police.assist' }, 'accepted')
+        assert_eq(#calls, 2, 'only police and EMS creations')
+        assert_eq(calls[1].mdt, 'police')
+        assert_eq(calls[1].call.title, 'Robbery at Ltd')
+        assert_eq(calls[1].call.coords.x, 1)
+        assert_eq(calls[2].mdt, 'ems')
+        assert_eq(calls[2].call.priority, 1)
+        PFServices.RegisterApps()
+        local p = Mock.newPlayer(9)
+        p.PlayerData.job = { name = 'police', onduty = true, grade = { level = 1 } }
+        assert_false(handlers.dispatch.__access(9), 'police use the MDT app')
+        p.PlayerData.job = { name = 'tow', onduty = true, grade = { level = 0 } }
+        assert_true(handlers.dispatch.__access(9), 'tow keeps the Dispatch app')
+        mdtStarted['pf-policemdt-DEV'] = nil
+        p.PlayerData.job = { name = 'police', onduty = true, grade = { level = 1 } }
+        assert_true(handlers.dispatch.__access(9), 'without the MDT police fall back to the Dispatch app')
+        GetResourceState = realState
+    end)
+end)

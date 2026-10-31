@@ -106,7 +106,8 @@
 | Job links (see `JOB_LINKS.md`) | AWAITING TEST | Candidates listed there |
 | Citizen apps (`pf-citizen`): mail, bills, documents, calendar on phone, tablet, computer | AWAITING TEST | One mailbox in `player_mails`; government bills via `PayBillFromPlayer` (refunds what it cannot apply); phone invoices via pfm-phone exports |
 | Computer without fake data (job board, business manager, persistence, security fixes) | AWAITING TEST | Restaurants on the Job Board can only "accept" (needs a pf-restaurants staff export) |
-| Duplicate jobs (pfm-taxijob / pfm-garbagejob next to pf-jobs) | NOT | Owner decision: which one stays |
+| pf over pfm duplicates | AWAITING TEST | pfm-cityhall, pfm-hud, pfm-taxijob, pfm-garbagejob removed; pfm-busjob, pfm-towjob, pfm-shops, pfm-garages kept (pf version incomplete) |
+| Police and EMS MDT inside the tablet and computer (1:1, same page) with their dispatch | AWAITING TEST | Requests from pf-services land on the MDT dispatch board |
 
 ## 8. Security
 

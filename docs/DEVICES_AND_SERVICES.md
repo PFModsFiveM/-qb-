@@ -17,7 +17,7 @@ apps and systems that register with them:
    pf-jobs (taxi, bus, garbage, Gruppe6, tow checks)   pf-mechanicjob (work orders, register, management)
    pf-news (newsroom, News app + news.ls)              pf-government (fines, inspections, requests, budget...)
    pf-citizen (mail, bills, documents, calendar)       pf-services (Dispatch, Services, Directory)
-   MDT launchers (police, EMS)                         pf-computer's own apps (browser, business manager...)
+   police and EMS MDTs (their own page in a device window) pf-computer's own apps (browser, business manager...)
 ```
 
 ## pf-devices: one app, every device
@@ -31,7 +31,11 @@ apps and systems that register with them:
 - **Live updates:** the server can push updates to an open app.
 - **App Store:** some apps must be installed first, for example News and the side-job apps. Paid apps are charged once on the ledger.
 - **Websites:** a website registered once looks the same in the tablet browser and the computer browser. news.ls is the first one.
-- **Launchers:** an app can open an existing full-screen system instead of a window. The police and EMS MDTs work this way.
+- **MDTs inside the devices:** the police and EMS MDTs are apps on both devices. The window shows the MDT's own page, so the code and the screens are 1:1 the same as the full-screen MDT. While the app is open:
+  - the MDT's messages go to the window;
+  - the device keeps focus;
+  - closing the MDT closes only the window.
+- **Launchers:** an app can still open another full-screen screen instead of a window. pf-government's own management UI opens from any computer this way.
 - **Developer guide:** `[pfscripts]/pf-devices/README.md`.
 
 ## pf-services: jobs relying on each other
@@ -39,7 +43,7 @@ apps and systems that register with them:
   - The news listens: city-hall decisions become articles automatically; crime and court events become reporter leads.
   - The police listen too: alarms become dispatch requests.
 - **Service requests:** one job, a citizen or the city asks another job to do something.
-  - The job's workers see it in **Dispatch**.
+  - The job's workers see it in **Dispatch**. Police and EMS see it on the dispatch board of their MDT app instead: their dispatch is the MDT.
   - Citizens call for help from **Services**.
   - Paid work is held from the payer up front, paid to the worker only when the work is proven, and refunded otherwise.
 - **Directory:** shows which businesses are open and which services are on duty.

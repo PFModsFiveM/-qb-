@@ -1888,3 +1888,40 @@ See `FINAL_TEST_PLAN.md` section 3b. Also:
 - **Two dispatch systems:** the MDT's own callouts and 911 board, and the pf-services Dispatch app. Pick the main one.
 - **Crew splits:** Gruppe 6 and Garbage splits are stored but ignored in payouts. Gruppe 6 upgrades have no server effect.
 - **Retire pf-governmentwebsiteonly:** it writes government tables directly, so its changes emit no events.
+
+### Batch 10b — 2026-10-31: pf over pfm, the MDT inside the devices
+Owner decisions:
+- if a script exists in both pf and pfm, keep pf and remove pfm, but only where the pf version really covers it;
+- the police and EMS dispatch is the MDT, 1:1 the same code and screens, as an app on the tablet and the computer.
+
+**Removed** (-qb- 002fe57):
+- `pfm-cityhall`: pf-government's civil services replaced it.
+- `pfm-hud`: pf-hud is the full HUD with the same events; both were drawn on screen.
+- `pfm-taxijob`: replaced by pf-jobs Taxi. The radial taxi buttons now run the pf-jobs commands.
+- `pfm-garbagejob`: replaced by pf-jobs Garbage.
+
+**Kept, because the pf version is not complete:**
+- `pfm-busjob`: pf-jobs Bus ships with no routes, prices or levels.
+- `pfm-towjob`: pf-jobs only has the tow request checks.
+- `pfm-shops`: pf-stores covers five player-owned stores, not every NPC shop.
+- `pfm-garages`: pf-garageuionly is only a UI copy and pf-jobgarages only covers job garages.
+- `pfm-newsjob`: it works with pf-news; it is not a duplicate.
+
+**MDT in the devices** (pf-policemdt-DEV, pf-emsmdt):
+- **The app is the MDT's own page:** each MDT registers `html/index.html?embed=1&device={device}` as a pf-devices iframe app for its jobs (`server/devices.lua`).
+- **Fitting the window:** `html/device_embed.js` / `.css` fit the page to the window. They make callbacks reach the MDT resource (inside an iframe, `GetParentResourceName` names the device) and tell the client when the window opens and closes.
+- **Device mode** (`client/device_mode.lua`, loaded first):
+  - the MDT's messages go to the window; overlays (dispatch pop-ups, custody timer, CCTV) still go to the full-screen frame;
+  - focus is left to the device;
+  - the MDT's close button closes only the window;
+  - putting the device away ends device mode.
+- **Launchers removed:** the old MDT launchers are gone from `pf-devices/shared/config.lua`.
+- **One dispatch:** pf-services puts `police.assist` and `ems.patient` requests on the MDT's dispatch board (`CreateDispatchCall`). Police and EMS don't get the separate Dispatch app while their MDT runs; tow, mechanic, taxi, government and reporters keep it.
+- **Tests:**
+  - `mdt_device_mode_spec.lua` (6): registration, routing, focus, close, for both MDTs;
+  - `js/mdt_embed_spec.js` (6): the real embed script, embedded and full-screen;
+  - `pfservices_load_spec` MDT routing (1).
+- **Totals:** mocked 882 passed, 0 failed; real-DB 245 passed, 0 failed.
+- **Check in game:**
+  - every MDT page inside both device windows: the map, CCTV (it uses a scripted camera), evidence camera mode and the citation paper;
+  - sizes at the tablet's 760x640.
