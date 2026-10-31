@@ -1,6 +1,9 @@
 local Translations = {
     notifications = {
         ["char_deleted"] = "Character deleted!",
+        ["char_in_use"] = "This character is in use and cannot be deleted right now.",
+        ["char_unpaid_debt"] = "This character still owes the bank (a loan, a credit card balance or an overdrawn account). Pay it off before deleting the character.",
+        ["char_delete_failed"] = "The character could not be deleted. Please try again later.",
         ["deleted_other_char"] = "You successfully deleted the character with citizen id %{citizenid}.",
         ["forgot_citizenid"] = "You forgot to input a citizen id!",
     },

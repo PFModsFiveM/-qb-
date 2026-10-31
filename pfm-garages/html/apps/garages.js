@@ -8,7 +8,7 @@
         in_progress: 'A payment for this vehicle is already being processed', insufficient_funds: 'Not enough money (cash or bank)',
         bank_unavailable: 'The bank is not responding. Nothing was charged.', ledger_unavailable: 'The bank is not responding. Nothing was charged.',
         not_found: 'The vehicle is not in the city right now', not_out: 'Only a vehicle that is out can be towed',
-        occupied: 'Someone is driving that vehicle', already_there: 'The vehicle is already at that garage', tow_exists: 'A tow is already on its way for this vehicle',
+        occupied: 'Someone is driving that vehicle', already_there: 'The vehicle is already at that garage', tow_exists: 'A tow is already on its way for this vehicle', already_accepted: 'A tow driver has already taken this job', superseded: 'Police have ordered this vehicle impounded',
         bad_garage: 'Choose one of your garages', cooldown: 'Wait a moment before asking for another tow', tow_unavailable: 'No tow service is available',
         too_many_open: 'You already have open service requests', bad_request: 'Something was missing from that request', rate_limited: 'Slow down a little',
     };

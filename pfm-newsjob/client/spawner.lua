@@ -1,3 +1,5 @@
+-- Asks the server to put the issued vehicle away; the server checks it is at the garage, deletes it
+-- and tells us (pfm-newsjob:client:vehicleStored).
 function StoreCurrentVehicle()
     local veh = GetVehiclePedIsIn(PlayerPedId(), false)
     if veh == 0 then return end
@@ -5,40 +7,43 @@ function StoreCurrentVehicle()
     local plate = QBCore.Functions.GetPlate(veh)
     if not CurrentPlate[plate] then return end
 
-    TriggerServerEvent('qb-vehiclekeys:server:RemoveVehicleKeys', plate)
-    CurrentPlate[plate] = nil
-    DeleteVehicle(veh)
     TriggerServerEvent('pfm-newsjob:server:vehicleStored')
 end
 
--- The server picks the plate and grants a one-time spawn ticket for the model; the client only spawns it.
+RegisterNetEvent('pfm-newsjob:client:vehicleStored', function(plate)
+    if type(plate) ~= 'string' then return end
+    TriggerServerEvent('qb-vehiclekeys:server:RemoveVehicleKeys', plate)
+    CurrentPlate[plate] = nil
+end)
+
+-- The server checks the request, spawns the vehicle, sets its plate and stocks the van's trunk; the
+-- client only asks, then sets fuel, keys and livery on the vehicle it is given.
 local function RequestReporterVehicle(args)
     TriggerServerEvent('pfm-newsjob:server:requestVehicle', args.location, args.vehicle)
 end
 
-RegisterNetEvent('pfm-newsjob:client:spawnVehicle', function(location, model, plate, modLivery)
+RegisterNetEvent('pfm-newsjob:client:spawnVehicle', function(location, model, plate, modLivery, netId)
     local garage = Config.Locations[location]
-    if not garage or type(model) ~= 'string' or type(plate) ~= 'string' then return end
-    local coords = garage.coords
-    QBCore.Functions.TriggerCallback('QBCore:Server:SpawnVehicle', function(netId)
-        if not netId then return end
-        local veh = NetToVeh(netId)
-        SetVehicleNumberPlateText(veh, plate)
-        CurrentPlate[plate] = true
-        SetEntityHeading(veh, coords.w)
-        exports['LegacyFuel']:SetFuel(veh, 100.0)
-        TaskWarpPedIntoVehicle(PlayerPedId(), veh, -1)
-        TriggerEvent('vehiclekeys:client:SetOwner', plate)
-        SetVehicleEngineOn(veh, true, true, false)
-        if modLivery then
-            local livery = GetVehicleLiveryCount(veh) < 0 and modLivery - 1 or modLivery
-            QBCore.Functions.SetVehicleProperties(veh, { modLivery = livery })
-        end
-        if Config.UseableItems and location == 'vehicle' then
-            Wait(500)
-            TriggerServerEvent('qb-newsjob:server:addVehicleItems', plate)
-        end
-    end, model, coords, true)
+    if not garage or type(model) ~= 'string' or type(plate) ~= 'string' or type(netId) ~= 'number' then return end
+    local tries = 0
+    while not NetworkDoesNetworkIdExist(netId) and tries < 100 do
+        Wait(50)
+        tries = tries + 1
+    end
+    if not NetworkDoesNetworkIdExist(netId) then return end
+    local veh = NetToVeh(netId)
+    if veh == 0 then return end
+    SetVehicleNumberPlateText(veh, plate)
+    CurrentPlate[plate] = true
+    SetEntityHeading(veh, garage.coords.w)
+    exports['LegacyFuel']:SetFuel(veh, 100.0)
+    if GetVehiclePedIsIn(PlayerPedId(), false) ~= veh then TaskWarpPedIntoVehicle(PlayerPedId(), veh, -1) end
+    TriggerEvent('vehiclekeys:client:SetOwner', plate)
+    SetVehicleEngineOn(veh, true, true, false)
+    if modLivery then
+        local livery = GetVehicleLiveryCount(veh) < 0 and modLivery - 1 or modLivery
+        QBCore.Functions.SetVehicleProperties(veh, { modLivery = livery })
+    end
 end)
 
 function MenuGarage(location)

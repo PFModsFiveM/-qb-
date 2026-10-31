@@ -203,7 +203,11 @@ describe('a job asks another job', function()
         assert_eq(PFServices.AcceptRequest(TOW1, res.id).error, 'off_duty')
         Mock.players[TOW1].PlayerData.job.onduty = true
         assert_true(PFServices.AcceptRequest(TOW1, res.id).ok)
-        -- the officer's job may cancel its own order; the city gets its money back
+        -- once a driver took it only the driver can give it back: the officer's job cannot cancel it
+        assert_eq(PFServices.CancelRequest(COP, res.id).error, 'already_accepted')
+        assert_eq(exports['pfm-banking']:GetAccountBalance('government'), 10000 - 250)
+        assert_true(PFServices.ReleaseRequest(TOW1, res.id).ok)
+        -- open again: the officer's job may cancel its own order; the city gets its money back
         assert_true(PFServices.CancelRequest(COP, res.id).ok)
         assert_eq(exports['pfm-banking']:GetAccountBalance('government'), 10000)
     end)

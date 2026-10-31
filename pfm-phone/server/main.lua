@@ -445,27 +445,80 @@ end)
 -- the invoice id, so paying the same bill twice moves money once. The phone, the tablet and the
 -- computer (pf-citizen's Bills app, through the PayInvoice export) all pay through PayInvoice below.
 
---- Charges the invoice on the ledger. One key per invoice, so a replayed or doubled request is charged
---- once; a key whose attempt failed (not enough money) stays failed in the ledger, so a later attempt
---- moves on to the next key instead of failing forever. Returns true, replayed (the charge was made
---- before) or false, error.
+--- Charges the invoice on the ledger. Attempt 1 uses the key pfm-phone:invoice:<id>, attempt n the
+--- key pfm-phone:invoice:<id>:retry<n> (PFPayout.Charge adds ':bank'). A key whose attempt failed
+--- (not enough money) stays failed in the ledger, so a new attempt key is used only when the one
+--- before it ended without moving money (failed, or compensated: refunded). An attempt the ledger is
+--- still settling (pending, or debited: the payer was charged and the credit is left to recovery)
+--- answers 'in_progress' and is never charged again; a completed attempt means the invoice is paid.
+--- There is no attempt limit. Returns true, replayed (the charge was made before) or false, error.
+local InvoiceAttempts = {} -- [invoiceId] = first attempt not known to have ended without moving money
+local SETTLED_UNPAID = { failed = true, compensated = true }
+
 local function ChargeInvoice(src, invoiceId, amount, society)
     local base = 'pfm-phone:invoice:' .. invoiceId
-    for attempt = 1, 20 do
+    local attempt = InvoiceAttempts[invoiceId] or 1
+    while true do
         local key = attempt == 1 and base or (base .. ':retry' .. attempt)
-        local account, res = PFPayout.Charge(src, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society })
-        if account then return true, type(res) == 'table' and res.duplicate == true end
-        if not (type(res) == 'table' and res.duplicate) then return false, type(res) == 'table' and res.error or 'payment_failed' end
+        local found, tx = pcall(function() return exports['pfm-banking']:GetTransaction(key .. ':bank') end)
+        if not found then return false, 'bank_unavailable' end
+        local state = type(tx) == 'table' and tx.state or nil
+        if state == 'completed' then
+            InvoiceAttempts[invoiceId] = attempt
+            return true, true
+        elseif state and SETTLED_UNPAID[state] then
+            attempt = attempt + 1
+            InvoiceAttempts[invoiceId] = attempt
+        elseif state then
+            return false, 'in_progress' -- pending or debited: the ledger (or its recovery) finishes it
+        else
+            local account, res = PFPayout.Charge(src, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society })
+            res = type(res) == 'table' and res or {}
+            if account then
+                InvoiceAttempts[invoiceId] = attempt
+                return true, res.duplicate == true
+            end
+            if res.state and SETTLED_UNPAID[res.state] then
+                -- this attempt is now spent (a fresh failure, or one stored meanwhile by another server)
+                InvoiceAttempts[invoiceId] = attempt + 1
+                if not res.duplicate then return false, res.error or 'payment_failed' end
+                attempt = attempt + 1
+            elseif res.state then
+                return false, 'in_progress'
+            else
+                return false, res.error or 'payment_failed'
+            end
+        end
     end
-    return false, 'payment_failed'
 end
+
+local InvoiceLocks = {} -- ['<citizenid>:<invoiceId>'] = true while a payment of it runs (it yields on the database)
 
 --- Pays invoice `invoiceId` of the player `src`. Returns true, or false and an error code.
 --- `elsewhere`: paid from another device, so the phone is told to reload its invoices.
+local PayInvoiceLocked
+
 local function PayInvoice(src, invoiceId, elsewhere)
     local Ply = exports['pfm-core']:GetPlayer(src)
     invoiceId = tonumber(invoiceId)
     if not Ply or not invoiceId or invoiceId ~= math.floor(invoiceId) then return false, 'bad_request' end
+    -- one payment of an invoice at a time (phone, tablet and computer can ask at once); the lock is
+    -- taken before the first database yield and released however the payment ends. It is keyed by
+    -- the payer too: only the owner's own devices share it, so another player asking for this
+    -- invoice id (a request that ends in not_found) cannot keep the owner from paying.
+    local lockKey = tostring(Ply.PlayerData.citizenid) .. ':' .. invoiceId
+    if InvoiceLocks[lockKey] then return false, 'in_progress' end
+    InvoiceLocks[lockKey] = true
+    local ok, paid, err = pcall(PayInvoiceLocked, src, Ply, invoiceId, elsewhere)
+    InvoiceLocks[lockKey] = nil
+    if not ok then
+        print(('^1[pfm-phone]^7 paying invoice %d failed: %s'):format(invoiceId, tostring(paid)))
+        return false, 'server_error'
+    end
+    return paid, err
+end
+
+PayInvoiceLocked = function(src, Ply, invoiceId, elsewhere)
     local cid = Ply.PlayerData.citizenid
     local rows = MySQL.query.await('SELECT * FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
     local invoice = rows and rows[1]
@@ -473,15 +526,18 @@ local function PayInvoice(src, invoiceId, elsewhere)
     local society = invoice and tostring(invoice.society or '')
     if not amount or society == '' then return false, 'not_found' end
 
-    local charged, replayed = ChargeInvoice(src, invoiceId, amount, society)
-    if not charged then return false, replayed == 'insufficient_funds' and 'insufficient_funds' or (replayed or 'payment_failed') end
+    local charged, err = ChargeInvoice(src, invoiceId, amount, society)
+    if not charged then return false, err == 'insufficient_funds' and 'insufficient_funds' or (err or 'payment_failed') end
     MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
-    -- a replayed request reaches this point too (its charge is the earlier ledger entry); the society
-    -- and commission keys make the payouts idempotent, the mails and events go out only the first time
-    local first = not replayed
+    -- a replayed charge reaches this point too (an earlier ledger entry, e.g. one ledger recovery
+    -- completed after an 'in_progress' answer); the society and commission keys make the payouts
+    -- idempotent. The mails and events go out with the request whose society credit actually moved
+    -- money (not a ledger duplicate), so they go out once per paid invoice: also after a crash
+    -- between the charge and the credit, and never again for a replay or a reused invoice row.
     local key = 'pfm-phone:invoice:' .. invoiceId
-    local ok = PFPayout.PaySociety(society, amount, { key = key .. ':society', reason = 'Phone invoice' })
+    local ok, credit = PFPayout.PaySociety(society, amount, { key = key .. ':society', reason = 'Phone invoice' })
     if not ok then print(('^1[pfm-phone]^7 invoice %d: payment to %s not credited yet (key %s:society)'):format(invoiceId, society, key)) end
+    local first = ok and not (type(credit) == 'table' and credit.duplicate == true)
 
     local rate = Config.BillingCommissions[society]
     if rate and invoice.sendercitizenid and invoice.sendercitizenid ~= '' then
@@ -974,6 +1030,10 @@ RegisterNetEvent('qb-phone:server:SetPhoneAlerts', function(app, alerts)
     if not Player or type(app) ~= 'string' then return end
     QBPhone.SetPhoneAlerts(Player.PlayerData.citizenid, app, alerts)
 end)
+
+-- Drops the cached tweet feed so the next read reloads it (server/characters.lua after a deleted
+-- character's tweets were removed).
+function PFPhoneForgetTweets() TWData = {} end
 
 -- The tweet feed every phone shows is the server's own list (TWData, the recent rows of phone_tweets).
 -- Posting used to broadcast the poster's whole client-side list to everyone, so a client could replace

@@ -121,7 +121,7 @@ describe('pf-computer security fixes', function()
         local deep = {}
         local t = deep
         for _ = 1, 10 do t.x = {} t = t.x end
-        assert_eq(call(CITIZEN, 'browser:website:save', { domain = 'big.ls', state = deep }).error, 'website_too_large')
+        assert_eq(call(CITIZEN, 'browser:website:save', { domain = 'big.ls', state = deep }).error, 'website_too_deep')
         local wide = {}
         for i = 1, 100 do wide['k' .. i] = 'v' end
         assert_eq(call(CITIZEN, 'browser:website:save', { domain = 'big.ls', state = wide }).error, 'website_too_large')

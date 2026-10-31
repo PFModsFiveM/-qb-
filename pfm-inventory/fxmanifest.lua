@@ -30,6 +30,7 @@ server_scripts {
     'server/commands.lua',
     'server/hooks.lua',
     'server/backpack.lua',
+    'server/characters.lua', -- a deleted character's car trunks and gloveboxes
 }
 
 ui_page 'html/index.html'

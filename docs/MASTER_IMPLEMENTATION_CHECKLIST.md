@@ -127,7 +127,7 @@
 | Item | Status | Notes |
 |---|---|---|
 | Server-event sweep (~1,150 handlers) | AWAITING TEST | |
-| Client-replicated state bags (`sv_stateBagStrictMode`) | AWAITING TEST | No client writes left (scan spec); staging config sets `setr sv_stateBagStrictMode true`; the live server.cfg needs the same line |
+| Client-replicated state bags (`sv_stateBagStrictMode`) | BLOCKED | Our resources write state bags on the server only (scan spec). Strict mode stays off: third-party `[standalone]/progressbar` (`inv_busy`) and `[voice]/pma-voice` (radio and voice state) still write from the client. Live server.cfg must also drop `[custom]`, which holds an old pf-mechanicjob |
 
 ## 9. Batch log (newest first)
 - **Batch 8 (2026-10-26):**
@@ -156,7 +156,15 @@
   - bank, crypto, boss, garages, real estate, dealer and used-car apps;
   - bus, tow, recycling and vineyard in pf-jobs (pfm versions removed);
   - character-deletion cleanup;
-  - strict state bags.
+  - state bags written by the server in our resources.
+- **Batch 12 (2026-10-31, branch `main-9hq3gi`):** fixes from the pre-merge review (`REVIEW_main-9hq3gi.md`):
+  - Gruppe 6 contracts finish;
+  - character deletion refused while loaded or in debt, and cleans stores, government, restaurants, mechanic diagnostics, phone, trunks and news;
+  - police impounds replace other tows and apply when untowed;
+  - service payments only on proof; no cancel after acceptance;
+  - announcements need the permission;
+  - website saves, NOS, tow rental, news vehicles, App Store and phone invoices;
+  - strict state bags back off until progressbar and pma-voice are patched.
 
 ## 10. Latest pushed commits
 - **`-qb-` main:** 09be222 at the start of batch 8; then the batch 8 docs and code. See `git log -1 origin/main`.

@@ -1,6 +1,4 @@
--- pfm-newsjob (mocked): vehicles only with a server-granted ticket for a model the grade may take at
--- that garage, on duty and standing there; the trunk is stocked once for the issued plate only; duty
--- is toggled at the duty point; the equipment needs a reporter on duty; the newsroom sees who is out.
+-- pfm-newsjob (mocked): duty at the duty point; the equipment needs a reporter on duty; the newsroom sees who is out.
 load_resource('tests/lua/fivem_mocks.lua')
 function GetCurrentResourceName() return 'pfm-newsjob' end
 Config = nil
@@ -33,51 +31,8 @@ BeforeEach = function()
     Mock.newPlayer(OTHER, 'CIDOTHER').PlayerData.job = { name = 'police', grade = { level = 4 }, onduty = true }
 end
 
-describe('pfm-newsjob vehicles', function()
-    it('grants a ticket only for an allowed model, on duty, at the garage, one at a time', function()
-        at(REP, Config.Locations.vehicle.coords)
-        assert_eq(select(2, NewsJob.RequestVehicle(OTHER, 'vehicle', 'rumpo')), 'not_on_duty')
-        assert_eq(select(2, NewsJob.RequestVehicle(REP, 'vehicle', 'adder')), 'not_allowed')
-        assert_eq(select(2, NewsJob.RequestVehicle(REP, 'vehicle', 'frogger')), 'not_allowed', 'helicopters come from the helipad')
-        Mock.players[REP].PlayerData.job.onduty = false
-        assert_eq(select(2, NewsJob.RequestVehicle(REP, 'vehicle', 'rumpo')), 'not_on_duty')
-        Mock.players[REP].PlayerData.job.onduty = true
-        at(REP, vector3(0, 0, 0))
-        assert_eq(select(2, NewsJob.RequestVehicle(REP, 'vehicle', 'rumpo')), 'too_far')
-        at(REP, Config.Locations.vehicle.coords)
-        assert_true(NewsJob.RequestVehicle(REP, 'vehicle', 'rumpo'))
-        assert_eq(#grants, 1)
-        local spawn = Mock.clientEventsNamed('pfm-newsjob:client:spawnVehicle')[1]
-        assert_eq(spawn.args[2], 'rumpo')
-        local plate = spawn.args[3]
-        assert_true(plate:match('^WZNW%d%d%d%d$') ~= nil, 'the server picks the plate')
-        Mock.clock = Mock.clock + 60
-        assert_eq(select(2, NewsJob.RequestVehicle(REP, 'vehicle', 'rumpo')), 'vehicle_out')
-        assert_eq(fieldStatus().CIDREP.label, 'Rumpo')
-        Mock.fireNet('pfm-newsjob:server:vehicleStored', REP)
-        assert_eq(fieldStatus().CIDREP, nil)
-        assert_true(NewsJob.RequestVehicle(REP, 'vehicle', 'rumpo'))
-        onJob(REP, { name = 'unemployed' })
-        assert_eq(fieldStatus().CIDREP, nil, 'leaving the job ends the field assignment')
-    end)
-
-    it('stocks the trunk once, only for the issued plate the reporter sits in with keys', function()
-        at(REP, Config.Locations.vehicle.coords)
-        assert_true(NewsJob.RequestVehicle(REP, 'vehicle', 'rumpo'))
-        local plate = Mock.clientEventsNamed('pfm-newsjob:client:spawnVehicle')[1].args[3]
-        assert_eq(select(2, NewsJob.StockTrunk(REP, 'OTHER123')), 'not_issued')
-        assert_eq(select(2, NewsJob.StockTrunk(REP, plate)), 'not_in_vehicle')
-        Mock.vehicleOf[REP] = 900
-        Mock.plates[900] = plate .. ' '
-        assert_eq(select(2, NewsJob.StockTrunk(REP, plate)), 'no_keys')
-        keys[REP .. ':' .. plate] = true
-        assert_true(NewsJob.StockTrunk(REP, plate))
-        assert_true(inventories['trunk-' .. plate])
-        assert_eq(#items, 3)
-        assert_eq(select(2, NewsJob.StockTrunk(REP, plate)), 'already_stocked')
-        assert_eq(#items, 3)
-    end)
-end)
+-- The vehicle lock, the server spawn and the trunk stocking are covered by fix9hq_newsjob_vehicle_lock_spec.lua
+-- (the old ticket design these cases tested was replaced).
 
 describe('pfm-newsjob duty and equipment', function()
     it('duty toggles only for reporters at the duty point and tells the server', function()

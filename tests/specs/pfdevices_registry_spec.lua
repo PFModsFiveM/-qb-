@@ -207,7 +207,8 @@ describe('pf-devices installable apps', function()
         assert_true(PFDevices.InstallApp(1, 'paid').ok)
         assert_eq(#charges, 1)
         assert_eq(charges[1].amount, 250)
-        assert_eq(charges[1].key, 'pf-devices:install:' .. p.PlayerData.citizenid .. ':paid', 'idempotent charge key')
+        local prefix = 'pf-devices:install:' .. p.PlayerData.citizenid .. ':paid:'
+        assert_eq(charges[1].key:sub(1, #prefix), prefix, 'a fresh charge key per purchase attempt')
         PFDevices.UninstallApp(1, 'paid')
         PFPayout.Charge = function() return nil end
         assert_eq(PFDevices.InstallApp(1, 'paid').error, 'payment_failed')

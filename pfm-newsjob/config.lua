@@ -6,6 +6,9 @@ Config.Job = 'reporter'
 Config.GarageRange = 8.0     -- metres from a garage point to take a vehicle there
 Config.SpawnCooldown = 10    -- seconds between two vehicle requests
 Config.DutyRange = 2.5       -- metres from the duty point
+Config.StoreRange = 10.0     -- metres from its garage point a news vehicle must be to be put away
+Config.StorePlayerRange = 6.0 -- metres from the vehicle the reporter must be (when not sitting in it)
+Config.WreckedEngineHealth = -3999.0 -- an issued vehicle at or below this engine health is a wreck (exploded = -4000)
 
 Config.Locations = {
     ['main'] = {
@@ -85,3 +88,7 @@ Config.VehicleItems = {
         info = {},
     },
 }
+
+-- A news vehicle the reporter is not in and that is farther than this from them when they ask the
+-- garage for a new one (stolen, sunk, stuck) is deleted by the server and replaced.
+Config.AbandonRange = 50.0

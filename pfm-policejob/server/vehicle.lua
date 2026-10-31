@@ -114,11 +114,40 @@ exports('GetImpoundLots', function()
     return out
 end)
 
---- Called by the tow job when an ordered car reached an impound lot (server-checked there).
-exports('FinalizeImpound', function(plate, opts)
+-- Tow orders (pf-services 'tow.impound' request ids) whose impound was already written: an order
+-- is applied once, whether the tow driver delivered it, it closed untowed, or an officer
+-- impounded the car on the spot while the order was still open.
+local AppliedOrders = {}
+
+local function ApplyImpoundOrder(plate, opts, requestId)
+    requestId = tonumber(requestId)
+    if requestId then
+        if AppliedOrders[requestId] then return false end
+        AppliedOrders[requestId] = true
+    end
+    return ApplyImpound(plate, opts)
+end
+
+--- Called by the tow job when an ordered car reached an impound lot (server-checked there), and
+--- when a tow order ends without a tow (expired, cancelled): the impound is then written directly,
+--- as when no tow driver is on duty. `requestId` (the tow order) makes a second call a no-op.
+exports('FinalizeImpound', function(plate, opts, requestId)
     if type(plate) ~= 'string' or #plate > 16 then return false end
-    return ApplyImpound(plate, type(opts) == 'table' and opts or {})
+    return ApplyImpoundOrder(plate, type(opts) == 'table' and opts or {}, requestId)
 end)
+
+-- An officer impounds on the spot while a tow order for the car is still open: the order is
+-- closed (the city's tow fee refunded) and marked applied, so its close does not impound twice.
+local function CloseOpenImpoundOrder(plate)
+    if GetResourceState('pf-services') ~= 'started' then return end
+    pcall(function()
+        local open = exports['pf-services']:FindOpenByRef('vehicle', TrimPlate(plate):upper(), 'tow.impound')
+        if type(open) == 'table' and tonumber(open.id) and open.kind == 'tow.impound' then
+            AppliedOrders[tonumber(open.id)] = true
+            exports['pf-services']:CancelRequest(nil, open.id, 'impounded_on_site')
+        end
+    end)
+end
 
 RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, body, engine, fuel)
     local src = source
@@ -149,7 +178,8 @@ RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, bo
                 meta = opts,
             })
         end)
-        if ok and res and res.ok then
+        -- only a tow.impound order counts (an open garage or mechanic tow of the car is not one)
+        if ok and type(res) == 'table' and res.ok and type(res.request) == 'table' and res.request.kind == 'tow.impound' then
             if veh then SetVehicleDoorsLocked(veh, 2) end
             TriggerClientEvent('police:client:ImpoundDecision', src, plate, 'tow')
             TriggerClientEvent('QBCore:Notify', src, 'Tow ordered: leave the vehicle, a tow truck is coming', 'success')
@@ -157,6 +187,7 @@ RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, bo
         end
     end
 
+    CloseOpenImpoundOrder(plate)
     ApplyImpound(plate, opts)
     TriggerClientEvent('police:client:ImpoundDecision', src, plate, 'instant')
     if IsVehicleOwned(plate) then

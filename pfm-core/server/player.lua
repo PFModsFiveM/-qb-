@@ -333,19 +333,49 @@ end
 
 -- ─────────────────────────── login / logout ─────────────────────────────────
 
+-- citizenid -> 'login' | 'delete' while a login or a deletion of that character is running. Both
+-- yield on the database, so without it a character could be loaded while it is being deleted (the
+-- loaded copy's next Save would then re-create it with its money).
+-- Keyed by characterKey(citizenid), not by the raw id a client sent: players.citizenid uses the
+-- server's case-insensitive collation, so 'abc12345' reads and deletes the rows of 'ABC12345'.
+local characterBusy = {}
+
+--- The case-folded key of a citizenid, or nil when it is not a plain ASCII letters-and-digits id
+--- (citizenids are generated that way; anything else could match another row under the _ci
+--- collation, e.g. with trailing spaces).
+local function characterKey(citizenid)
+    if type(citizenid) ~= 'string' or citizenid == '' or #citizenid > 50 then return nil end
+    if not citizenid:match('^[A-Za-z0-9]+$') then return nil end
+    return citizenid:upper()
+end
+
+local function loginExisting(source, citizenid)
+    local license    = QBCore.Functions.GetIdentifier(source, 'license')
+    local PlayerData = MySQL.prepare.await('SELECT * FROM players where citizenid = ?', { citizenid })
+    -- the database matches the id case-insensitively: only the stored spelling loads it, so the
+    -- busy lock and the loaded checks (and everything keyed by citizenid) see a single id
+    if PlayerData and PlayerData.citizenid ~= citizenid then return false end
+    if PlayerData and license == PlayerData.license then
+        decodePlayerFields(PlayerData)
+        QBCore.Player.CheckPlayerData(source, PlayerData)
+        return true
+    end
+    DropPlayer(source, Lang:t('info.exploit_dropped'))
+    TriggerEvent('qb-log:server:CreateLog', 'anticheat', 'Anti-Cheat', 'white', GetPlayerName(source) .. ' Has Been Dropped For Character Joining Exploit', false)
+    return false
+end
+
 function QBCore.Player.Login(source, citizenid, newData)
     if source and source ~= '' then
         if citizenid then
-            local license    = QBCore.Functions.GetIdentifier(source, 'license')
-            local PlayerData = MySQL.prepare.await('SELECT * FROM players where citizenid = ?', { citizenid })
-            if PlayerData and license == PlayerData.license then
-                decodePlayerFields(PlayerData)
-                QBCore.Player.CheckPlayerData(source, PlayerData)
-            else
-                DropPlayer(source, Lang:t('info.exploit_dropped'))
-                TriggerEvent('qb-log:server:CreateLog', 'anticheat', 'Anti-Cheat', 'white', GetPlayerName(source) .. ' Has Been Dropped For Character Joining Exploit', false)
-                return false
-            end
+            -- a character being deleted (or already being loaded) cannot be loaded
+            local key = characterKey(citizenid)
+            if not key or characterBusy[key] then return false end
+            characterBusy[key] = 'login'
+            local ok, loaded = pcall(loginExisting, source, citizenid)
+            characterBusy[key] = nil
+            if not ok then error(loaded, 0) end
+            if not loaded then return false end
         else
             QBCore.Player.CheckPlayerData(source, newData)
         end
@@ -566,68 +596,163 @@ local playertables = {
 -- anonymises its own rows:
 --   AddEventHandler('pfm-core:server:characterDeleted', function(citizenid, deleted) ... end)
 -- `deleted` lists what the framework tables held for the character before they were cleared,
--- for resources whose rows are keyed by those (an apartment's stash is keyed by its name):
+-- for resources whose rows are keyed by those (an apartment's stash is keyed by its name, a car's
+-- trunk and glovebox by its plate):
 --   deleted.apartments = { 'apartment1234', ... }
+--   deleted.plates     = { 'ABC12345', ... }   (player_vehicles.plate of every car the character owned)
 local function snapshotBeforeDelete(citizenid)
-    local snap = { apartments = {} }
+    local snap = { apartments = {}, plates = {} }
     local ok, rows = pcall(MySQL.query.await, 'SELECT name FROM apartments WHERE citizenid = ?', { citizenid })
     for _, r in ipairs(ok and type(rows) == 'table' and rows or {}) do
         if type(r.name) == 'string' then snap.apartments[#snap.apartments + 1] = r.name end
+    end
+    local okV, vrows = pcall(MySQL.query.await, 'SELECT plate FROM player_vehicles WHERE citizenid = ?', { citizenid })
+    for _, r in ipairs(okV and type(vrows) == 'table' and vrows or {}) do
+        if type(r.plate) == 'string' and r.plate ~= '' then snap.plates[#snap.plates + 1] = r.plate end
     end
     return snap
 end
 
 local function notifyCharacterDeleted(citizenid, snap)
-    TriggerEvent('pfm-core:server:characterDeleted', citizenid, snap or { apartments = {} })
+    TriggerEvent('pfm-core:server:characterDeleted', citizenid, snap or { apartments = {}, plates = {} })
 end
 
-function QBCore.Player.DeleteCharacter(source, citizenid)
-    local license = QBCore.Functions.GetIdentifier(source, 'license')
-    local result  = MySQL.scalar.await('SELECT license FROM players where citizenid = ?', { citizenid })
-    if license == result then
-        local query   = 'DELETE FROM %s WHERE citizenid = ?'
-        local queries = {}
-        for i = 1, #playertables do
-            queries[i] = { query = query:format(playertables[i].table), values = { citizenid } }
-        end
-        local snap = snapshotBeforeDelete(citizenid)
-        MySQL.transaction(queries, function(result2)
-            if result2 then
-                TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Deleted', 'red',
-                    '**' .. GetPlayerName(source) .. '** ' .. license .. ' deleted **' .. citizenid .. '**..')
-                notifyCharacterDeleted(citizenid, snap)
-            end
-        end)
-    else
-        DropPlayer(source, Lang:t('info.exploit_dropped'))
-        TriggerEvent('qb-log:server:CreateLog', 'anticheat', 'Anti-Cheat', 'white', GetPlayerName(source) .. ' Has Been Dropped For Character Deletion Exploit', true)
-    end
-end
-
-function QBCore.Player.ForceDeleteCharacter(citizenid)
-    local result = MySQL.scalar.await('SELECT license FROM players where citizenid = ?', { citizenid })
-    if not result then return end
-    local query    = 'DELETE FROM %s WHERE citizenid = ?'
-    local queries  = {}
-    local existing = QBCore.Functions.GetPlayerByCitizenId(citizenid)
-    if existing then
-        local src = existing.PlayerData.source
-        -- clear refs to prevent playerDropped from saving
-        QBCore.Players[src] = nil
-        QBCore.PlayersByCitizenId[citizenid] = nil
-        DropPlayer(src, 'An admin deleted the character which you are currently using')
-    end
+local function deleteQueries(citizenid)
+    local query   = 'DELETE FROM %s WHERE citizenid = ?'
+    local queries = {}
     for i = 1, #playertables do
         queries[i] = { query = query:format(playertables[i].table), values = { citizenid } }
     end
+    return queries
+end
+
+--- True while any connected player has this character loaded (compared case-insensitively, as
+--- the database compares it).
+local function isCharacterLoaded(citizenid)
+    local key = characterKey(citizenid)
+    if QBCore.PlayersByCitizenId[citizenid] or (key and QBCore.PlayersByCitizenId[key]) then return true end
+    for _, p in pairs(QBCore.Players) do
+        local cid = p and p.PlayerData and p.PlayerData.citizenid
+        if cid == citizenid or (key and type(cid) == 'string' and cid:upper() == key) then return true end
+    end
+    return false
+end
+
+--- The players row's own citizenid and license (the database matches the id case-insensitively).
+local function storedCharacter(citizenid)
+    local row = MySQL.single.await('SELECT citizenid, license FROM players WHERE citizenid = ? LIMIT 1', { citizenid })
+    if type(row) ~= 'table' or type(row.citizenid) ~= 'string' then return nil end
+    return row
+end
+
+--- pfm-banking decides whether the character still owes the bank (an active loan, a credit card
+--- balance, a negative bank balance). Deleting it would write that debt off, so a player could
+--- borrow on an alt, move the money to a main character and delete the alt. Not running: nothing
+--- of the bank's is cleared either, so the delete may go ahead. Running but the check fails:
+--- refused (fail closed).
+local function bankAllowsDelete(citizenid)
+    local state = GetResourceState('pfm-banking')
+    if state == 'missing' or state == 'stopped' or state == 'uninitialized' or state == 'unknown' then return true end
+    if state ~= 'started' then return false, 'bank_unavailable' end
+    local ok, allowed, reason = pcall(function() return exports['pfm-banking']:CanDeleteCharacter(citizenid) end)
+    if not ok then
+        print(('^1[pfm-core]^7 bank check for deleting %s failed: %s'):format(tostring(citizenid), tostring(allowed)))
+        return false, 'bank_unavailable'
+    end
+    if allowed ~= true then return false, type(reason) == 'string' and reason or 'unpaid_debt' end
+    return true
+end
+
+local function deleteOwnCharacter(source, citizenid)
+    local license = QBCore.Functions.GetIdentifier(source, 'license')
+    local row     = storedCharacter(citizenid)
+    if not license or not row or license ~= row.license then
+        DropPlayer(source, Lang:t('info.exploit_dropped'))
+        TriggerEvent('qb-log:server:CreateLog', 'anticheat', 'Anti-Cheat', 'white', GetPlayerName(source) .. ' Has Been Dropped For Character Deletion Exploit', true)
+        return false, 'not_owner'
+    end
+    -- only the stored spelling: a case variant would match the same rows in the database
+    if row.citizenid ~= citizenid then return false, 'invalid_character' end
+    local allowed, why = bankAllowsDelete(citizenid)
+    if not allowed then return false, why end
+    -- checked again after the database calls above (the busy lock keeps a login out meanwhile)
+    if isCharacterLoaded(citizenid) then return false, 'character_in_use' end
     local snap = snapshotBeforeDelete(citizenid)
-    MySQL.transaction(queries, function(result2)
-        if result2 then
-            TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Force Deleted', 'red',
-                'Character **' .. citizenid .. '** got deleted')
-            notifyCharacterDeleted(citizenid, snap)
-        end
-    end)
+    if not MySQL.transaction.await(deleteQueries(citizenid)) then return false, 'database_error' end
+    TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Deleted', 'red',
+        '**' .. GetPlayerName(source) .. '** ' .. license .. ' deleted **' .. citizenid .. '**..')
+    notifyCharacterDeleted(citizenid, snap)
+    return true
+end
+
+--- A player deleting one of their own characters from the character menu. Returns true, or
+--- false and a reason: 'invalid_character', 'character_in_use' (loaded by someone, or being loaded
+--- or deleted right now), 'not_owner' (the caller was dropped), 'unpaid_debt', 'bank_unavailable',
+--- 'database_error'.
+function QBCore.Player.DeleteCharacter(source, citizenid)
+    local key = characterKey(citizenid)
+    if not key then return false, 'invalid_character' end
+    -- a loaded character keeps its money in memory and its next Save would re-create it
+    if characterBusy[key] or isCharacterLoaded(citizenid) then return false, 'character_in_use' end
+    characterBusy[key] = 'delete'
+    local ok, done, why = pcall(deleteOwnCharacter, source, citizenid)
+    characterBusy[key] = nil
+    if not ok then
+        print(('^1[pfm-core]^7 deleting character %s failed: %s'):format(citizenid, tostring(done)))
+        return false, 'database_error'
+    end
+    return done == true, why
+end
+
+local function forceDelete(typed)
+    local row = storedCharacter(typed)
+    if not row then return false, 'not_found' end
+    -- from here on the stored spelling (an admin may type the id in lower case)
+    local citizenid = row.citizenid
+    local key = characterKey(citizenid)
+    if not key or key ~= characterKey(typed) then return false, 'not_found' end
+    -- drop every player that has this character loaded, whatever the case of its id
+    local drop, seen = {}, {}
+    local function mark(src) if src and not seen[src] then seen[src] = true; drop[#drop + 1] = src end end
+    for src, p in pairs(QBCore.Players) do
+        local cid = p and p.PlayerData and p.PlayerData.citizenid
+        if type(cid) == 'string' and cid:upper() == key then mark(src) end
+    end
+    local existing = QBCore.Functions.GetPlayerByCitizenId(citizenid)
+    if existing and existing.PlayerData then mark(existing.PlayerData.source) end
+    for _, src in ipairs(drop) do
+        -- clear refs to prevent playerDropped from saving
+        QBCore.Players[src] = nil
+        DropPlayer(src, 'An admin deleted the character which you are currently using')
+    end
+    for cid in pairs(QBCore.PlayersByCitizenId) do
+        if type(cid) == 'string' and cid:upper() == key then QBCore.PlayersByCitizenId[cid] = nil end
+    end
+    -- an admin delete goes ahead with unpaid bank debt: pfm-banking writes it off and logs it
+    local debtFree, why = bankAllowsDelete(citizenid)
+    local snap = snapshotBeforeDelete(citizenid)
+    if not MySQL.transaction.await(deleteQueries(citizenid)) then return false, 'database_error' end
+    TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Character Force Deleted', 'red',
+        'Character **' .. citizenid .. '** got deleted' .. (debtFree and '' or (' (bank check: ' .. tostring(why) .. '; its debt is written off)')))
+    notifyCharacterDeleted(citizenid, snap)
+    return true
+end
+
+--- Admin delete (/deletechar): works on a loaded character (its player is dropped first) and with
+--- unpaid debt. Returns true, or false and a reason ('invalid_character', 'character_busy',
+--- 'not_found', 'database_error').
+function QBCore.Player.ForceDeleteCharacter(citizenid)
+    local key = characterKey(citizenid)
+    if not key then return false, 'invalid_character' end
+    if characterBusy[key] then return false, 'character_busy' end
+    characterBusy[key] = 'delete'
+    local ok, done, why = pcall(forceDelete, citizenid)
+    characterBusy[key] = nil
+    if not ok then
+        print(('^1[pfm-core]^7 force deleting character %s failed: %s'):format(citizenid, tostring(done)))
+        return false, 'database_error'
+    end
+    return done == true, why
 end
 
 -- ─────────────────────────── unique ID generators ───────────────────────────

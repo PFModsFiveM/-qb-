@@ -22,7 +22,7 @@ function DoesEntityExist(e) return Mock.plates[e] ~= nil end
 -- pf-services stand-in: records requests and hands back handlers
 local requests, handlers, emits = {}, {}, {}
 Mock.exportsByResource['pf-services'] = {
-    CreateRequest = function(_, opts) requests[#requests + 1] = opts return { ok = true, id = #requests } end,
+    CreateRequest = function(_, opts) requests[#requests + 1] = opts return { ok = true, id = #requests, request = { id = #requests, kind = opts.kind } } end,
     RegisterRequestHandler = function(_, kind, h) handlers[kind] = h return true end,
     Emit = function(_, kind, data, opts) emits[#emits + 1] = { kind = kind, data = data, opts = opts } return 1 end,
 }

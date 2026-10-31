@@ -182,11 +182,28 @@ RegisterNetEvent('qb-multicharacter:server:createCharacter', function(data)
     end
 end)
 
+-- why a delete was refused -> the message the character menu shows
+local deleteRefusals = {
+    unpaid_debt = 'notifications.char_unpaid_debt',
+    character_in_use = 'notifications.char_in_use',
+}
+
 RegisterNetEvent('qb-multicharacter:server:deleteCharacter', function(citizenid)
     local src = source
     if not Config.EnableDeleteButton then return end
-    QBCore.Player.DeleteCharacter(src, citizenid)
-    TriggerClientEvent('QBCore:Notify', src, Lang:t('notifications.char_deleted'), 'success')
+    if type(citizenid) ~= 'string' then return end
+    -- only from the character menu: with a character loaded (possibly this very one, whose next
+    -- save would re-create it) the delete is refused
+    if QBCore.Functions.GetPlayer(src) then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('notifications.char_in_use'), 'error')
+        return
+    end
+    local ok, reason = QBCore.Player.DeleteCharacter(src, citizenid)
+    if ok then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('notifications.char_deleted'), 'success')
+    elseif reason ~= 'not_owner' then -- (a foreign character: the caller was dropped)
+        TriggerClientEvent('QBCore:Notify', src, Lang:t(deleteRefusals[reason] or 'notifications.char_delete_failed'), 'error')
+    end
 end)
 
 -- Callbacks
@@ -258,8 +275,12 @@ end)
 
 QBCore.Commands.Add('deletechar', Lang:t('commands.deletechar_description'), { { name = Lang:t('commands.citizenid'), help = Lang:t('commands.citizenid_help') } }, false, function(source, args)
     if args and args[1] then
-        QBCore.Player.ForceDeleteCharacter(tostring(args[1]))
-        TriggerClientEvent('QBCore:Notify', source, Lang:t('notifications.deleted_other_char', { citizenid = tostring(args[1]) }))
+        local ok = QBCore.Player.ForceDeleteCharacter(tostring(args[1]))
+        if ok then
+            TriggerClientEvent('QBCore:Notify', source, Lang:t('notifications.deleted_other_char', { citizenid = tostring(args[1]) }))
+        else
+            TriggerClientEvent('QBCore:Notify', source, Lang:t('notifications.char_delete_failed'), 'error')
+        end
     else
         TriggerClientEvent('QBCore:Notify', source, Lang:t('notifications.forgot_citizenid'), 'error')
     end

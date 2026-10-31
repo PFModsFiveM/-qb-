@@ -2001,5 +2001,40 @@ Mocked 1190 passed, 0 failed (143 files); real DB 349 passed, 0 failed (38 files
 - **Perishable wine:** with pf-restaurants running, `wine` and `grapejuice` are perishable everywhere, including wine sold in stores.
 - **NOS:** bottles players had saved in vehicle mods (client-written) are not carried over.
 - **Branch closures:** kept in memory; a restart reopens every branch.
-- **Live server.cfg:** add `setr sv_stateBagStrictMode true`, and remove any `ensure` lines for pfm-busjob, pfm-towjob, pfm-recyclejob and pfm-vineyard.
+- **Live server.cfg:** remove any `ensure` lines for pfm-busjob, pfm-towjob, pfm-recyclejob and pfm-vineyard, and `[custom]` (old pf-mechanicjob copy). Do not add `setr sv_stateBagStrictMode true` yet: the third-party progressbar and pma-voice still write state from the client (see batch 12).
 - **Old CSS:** the old Business Manager, Order Supplies and Job Board CSS in `pf-computer/ui/css/style.css` and `pf-tablet/html/style.css` is now unused.
+
+## Batch 12 — 2026-10-31: fixes from the pre-merge review
+
+**Source:** the review of branch `main-9hq3gi` (`docs/REVIEW_main-9hq3gi.md`) found 13 merge blockers. Each was fixed in its own set of files, then checked by two independent reviewers (correctness, and an attacker with a modified client). Two needed a repair round.
+
+**Results on the branch:**
+- mocked 1342 passed (158 files);
+- real database 356 passed (40 files);
+- browser-side 60 passed (8 files);
+- parallel ledger and fresh-install SQL checks pass.
+
+**Nothing has been tested in game.**
+
+| Blocker | Fix |
+|---|---|
+| Gruppe 6 contracts never finish | The vault state local is declared before use. The security panel needs an active contract at the deposit stage, not a non-existent `gruppe6` job. "Open Storage" uses pfm-inventory's inventory command. Deposit is locked per contract, so XP is added once, and a refused bag removal is not paid. |
+| Deleting a character creates money | The character can't be deleted while it is loaded (a per-citizenid lock also covers a login during a delete). A player delete is refused while the character owes the bank (`unpaid_debt`, shown in the character menu). An admin force-delete still writes the debt off and logs it. The multicharacter event works only from the character menu. |
+| Character deletion leaves data | New server-only listeners clear: store ownership (the store's money and stock stay with the store); government staff, registry owner (`unowned`) and properties; restaurant staff (the restaurant re-registers under its next owner); mechanic diagnostics of the plates the character owned; phone photos and tweets (the feed cache reloads); trunk and glovebox stashes of those plates (`characterDeleted` now passes them); pending news payouts and the ad buyer's name. |
+| Police impounds lost | De-duplication matches the request kind. An impound replaces an open garage or mechanic tow of the plate (refunded). A `tow.impound` that ends untowed is applied directly (`FinalizeImpound`), once. |
+| Service payments not proof-based | The requester can cancel only while the request is open. `mechanic.roadside` (and any kind with `confirm`) pays on the citizen's confirmation, or after `Config.Requests.confirmWindow` when the worker was checked on site (`onSiteRange`) without a dispute. A dispute or an expiry without an on-site check refunds. The escrow sweep refunds a request that was cancelled meanwhile. RPCs return the public request view. |
+| Announcements bypass the permission | Every create and delete path needs `Config.GovApps.AnnouncementPermission`, and urgent ones need `UrgentAnnouncementPermission`. The author is the server-side name. Types and lengths are checked. The unused net event was removed. |
+| Strict state bags not ready | Staging no longer sets `sv_stateBagStrictMode`. The cfg and docs name the blockers: third-party `[standalone]/progressbar` (`inv_busy`), `[voice]/pma-voice`, and the old `[custom]/pf-mechanicjob` on live. |
+| Websites with cards or links can't be saved | The depth limit fits every editor module. "Too deep" and "too large" are separate errors. |
+| NOS | NOS state is saved as soon as it changes, so an emptied bottle no longer refills. Wear reports come only from the driver of their own current vehicle, capped by elapsed time. |
+| Tow rental | A per-character lock covers rent and contract requests. Return and report-lost work after leaving the job, with a return-only yard target for players who still hold a rental. |
+| News vehicles | The lock frees when the vehicle is gone or wrecked. On a new request, a vehicle the reporter left more than `Config.AbandonRange` away (stolen, sunk) is retired. Storing is decided by the server. The trunk is stocked once per issued vehicle. |
+| App Store paid installs | A per-character lock and a fresh ledger key per attempt. One charge per app, recorded in `pf_device_app_purchases` (migration v2), with a refund if recording fails. |
+| Phone invoice retry | The previous attempt is checked on the ledger. A new key is used only after a failed attempt, and "in progress" while one is pending. There is no 20-attempt dead end. Mails and events go out only when the business credit really moved money. |
+
+**Known, not fixed here:**
+- **Phone invoice ledger keys:** keyed by invoice id. If `phone_invoices` ids were ever reused (table truncated, or MySQL before 8.0 after a restart), a new invoice could match an old paid key. Fixing it needs a schema change.
+- **`PFPayout.Charge` (cash, then bank):** if the cash transfer ends unclear (debited, waiting for recovery), it still tries the bank, so a deposit could be taken twice once recovery completes. This needs a change in the helper.
+- **NOS garage save:** a periodic garage save in flight during an empty or level save can write older NOS values. This needs a change in `garage_sync.lua`.
+- **Government apps:** pf-computer passes announcement duration in days while pf-government reads seconds. This is older behaviour.
+- **Older issues from the review**, still open: the supplier markup on a cancelled order, Gruppe 6 "end contract" paying the tier maximum, the used-car lot erasing a loan, bank counter proximity, and the lock after an inventory search.

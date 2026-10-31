@@ -63,7 +63,7 @@ apps and systems that register with them:
   - pfm-management staff rules: `IsBoss`, `ListEmployees`, `SetEmployeeGrade`, `FireEmployee`, `HireEmployee`;
   - pf-restaurants staff: `AddStaff`, `RemoveStaff`.
 - **Websites get live updates by host:** `exports['pf-devices']:BroadcastSite('news.ls', event, payload)` reaches every open copy in both browsers.
-- **State bags are written by the server only** (ready for `sv_stateBagStrictMode`):
+- **State bags are written by the server only** in our resources (`sv_stateBagStrictMode` still waits on the third-party progressbar and pma-voice):
   - a client asks with a validated event and the server sets the value;
   - values only that client reads are set locally with `:set(key, value, false)`;
   - `inv_busy` belongs to the inventory server; other resources take an action lock with `exports['pfm-inventory']:SetBusyLock(src, reason, busy, ttl)` (server) or `qb-inventory:server:setActionBusy(reason, busy)` (client);
