@@ -757,17 +757,16 @@ describe('pf-computer action security', function()
         assert_eq(Mock.netHandlers['pf-computer:gov:laws:sync'], nil)
         assert_true(Mock.eventHandlers['pf-computer:gov:laws:sync'] ~= nil, 'still reachable from pf-government')
     end)
-    it("players only see and delete their own mail, and cannot send as someone else", function()
-        local sent = pc('emails:send', OWNER, { to = 'shop1@los-santos.gov', from = 'mayor@los-santos.gov', subject = 'Hi', body = 'hello', mailbox = 'shop1@los-santos.gov' })
-        assert_true(sent.ok)
-        assert_eq(sent.data.from, 'OWN1@los-santos.gov')
-        local mine = pc('emails:list', OWNER, { mailbox = 'shop1@los-santos.gov' })
-        for _, e in ipairs(mine.data) do assert_eq(e.mailbox, 'OWN1@los-santos.gov') end
-        local theirs = pc('emails:list', SHOPPER, {})
-        assert_eq(#theirs.data, 1, 'the recipient gets it')
-        local id = theirs.data[1].id
-        assert_false(pc('emails:delete', OWNER, { emailId = id, mailbox = 'shop1@los-santos.gov' }).ok)
-        assert_true(pc('emails:delete', SHOPPER, { emailId = id }).ok)
+    it("mail is sent by pf-citizen as the player (the computer keeps no mailbox)", function()
+        local sent = {}
+        Mock.exportsByResource['pf-citizen'] = { SendMailAs = function(_, src, mail) sent[#sent + 1] = { src = src, mail = mail } return { ok = true, id = 1 } end }
+        local res = pc('emails:send', OWNER, { to = 'shop1@los-santos.gov', from = 'mayor@los-santos.gov', subject = 'Hi', body = 'hello' })
+        assert_true(res.ok)
+        assert_eq(sent[1].src, OWNER, 'the sender is the player pf-citizen sees, whatever the client says')
+        assert_eq(sent[1].mail.from, nil)
+        assert_eq(sent[1].mail.message, 'hello')
+        assert_eq(pc('emails:list', OWNER, {}).error, 'unknown_action', 'mailboxes are pf-citizen\'s')
+        Mock.exportsByResource['pf-citizen'] = nil
     end)
     it('a domain costs the server price through the ledger, whatever price the client sends', function()
         local before = money(OWNER)

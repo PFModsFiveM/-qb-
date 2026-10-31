@@ -85,14 +85,8 @@ describe('pf-computer', function()
         for i = 1, 60 do if call(P, 'darkweb:chat:join', { room = 'room' .. i }).ok then made = made + 1 end end
         assert_true(made < 60, 'room count capped')
     end)
-    it('job applications need a real post and are bounded', function()
-        assert_eq(call(P, 'jobs:apply', { jobId = 999, name = 'Sam' }).error, 'job_not_found')
-        local job = call(BOSS, 'jobs:create', { title = 'Cook' }).data
-        local res = call(P, 'jobs:apply', { jobId = job.id, name = string.rep('n', 900), message = { 'x' } })
-        assert_true(res.ok)
-        assert_eq(#res.data.name, 60)
-        assert_eq(res.data.message, '')
-    end)
+    -- the job board (identity from the server, hiring) moved to pf-computer/server/jobboard.lua on MySQL:
+    -- computer_jobboard_spec.lua (mocked) and computer_jobboard_realdb_spec.lua
 end)
 
 describe('pf-rentals', function()
