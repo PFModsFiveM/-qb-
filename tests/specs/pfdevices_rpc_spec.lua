@@ -133,7 +133,11 @@ describe('pf-devices built-in apps and sites', function()
         local names = {}
         for _, a in ipairs(view.apps) do names[#names + 1] = a.id end
         table.sort(names)
-        assert_eq(table.concat(names, ','), 'appstore,browser')
+        assert_eq(table.concat(names, ','), 'appstore', 'the computer uses its own browser')
+        local tabletNames = {}
+        for _, a in ipairs(PFDevices.GetAppsFor(1, 'tablet').apps) do tabletNames[#tabletNames + 1] = a.id end
+        table.sort(tabletNames)
+        assert_eq(table.concat(tabletNames, ','), 'appstore,browser')
         local list = PFDevices.HandleRpc(1, 'appstore', 'list', { device = 'computer' })
         assert_eq(#list.store, 1)
         assert_eq(list.store[1].id, 'news')
@@ -170,8 +174,34 @@ describe('pf-devices built-in apps and sites', function()
         PFDevices.RegisterBuiltinApps()
         player(1)
         local result = Mock.callCallback('pf-devices:apps', 1, 'tablet')
-        assert_eq(#result.apps, 2)
+        assert_eq(#result.apps, 2, 'App Store and Browser on the tablet')
         local sites = Mock.callCallback('pf-devices:sites', 1)
         assert_eq(sites.ok, true)
+    end)
+end)
+
+describe('pf-devices launcher apps', function()
+    it('open the owning resource screen after the access check and close the device', function()
+        startedResources['pf-policemdt-DEV'] = true
+        Config.Launchers = {
+            { id = 'policemdt', name = 'Police MDT', resources = { 'pf-policemdt', 'pf-policemdt-DEV' },
+              launch = { event = 'pf-policemdt:client:TriggerMainOpen' }, access = { jobs = { police = 0 } } },
+        }
+        PFDevices.RegisterLaunchers()
+        local app = PFDevices.GetApp('policemdt')
+        assert_eq(app.kind, 'launch')
+        assert_eq(app.resource, 'pf-policemdt-DEV', 'owned by the resource that is started')
+        player(1, 'police'); player(2, 'taxi')
+        local view = PFDevices.GetAppsFor(1, 'tablet')
+        assert_eq(view.apps[1].id, 'policemdt')
+        assert_eq(view.apps[1].entry, nil, 'launchers have no module')
+        assert_eq(PFDevices.HandleLaunch(2, 'policemdt').error, 'not_authorized')
+        assert_eq(#Mock.clientEventsNamed('pf-policemdt:client:TriggerMainOpen'), 0)
+        assert_true(PFDevices.HandleLaunch(1, 'policemdt').ok)
+        assert_eq(Mock.clientEventsNamed('pf-policemdt:client:TriggerMainOpen')[1].target, 1)
+        assert_eq(Mock.clientEventsNamed('pf-devices:client:closeShells')[1].target, 1)
+        assert_eq(PFDevices.HandleRpc(1, 'policemdt', 'x').error, 'unknown_method', 'no rpc on launchers')
+        assert_false((PFDevices.RegisterApp({ id = 'bad', kind = 'launch' }, 'pf-jobs')), 'launch needs an event')
+        startedResources['pf-policemdt-DEV'] = nil
     end)
 end)
