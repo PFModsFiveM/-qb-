@@ -927,3 +927,9 @@ CreateThread(function()
         end)
     end
 end)
+
+-- waypoint from the Hot Dog Stand app
+RegisterNetEvent('qb-hotdogjob:client:waypoint', function(x, y)
+    x, y = tonumber(x), tonumber(y)
+    if x and y then SetNewWaypoint(x + 0.0, y + 0.0) end
+end)

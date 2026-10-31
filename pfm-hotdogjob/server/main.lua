@@ -106,6 +106,11 @@ RegisterNetEvent('qb-hotdogjob:server:Sell', function(coords, amount, price)
     session.sales = saleNo
     session.lastSale = now
     session.streak = session.streak + 1
+    session.earned = (session.earned or 0) + payout
+    session.sold = (session.sold or 0) + sellAmount
+    if GetResourceState('pf-devices') == 'started' then
+        pcall(function() exports['pf-devices']:Push(src, 'hotdogstand', 'sale', { sold = session.sold, earned = session.earned }) end)
+    end
 end)
 
 AddEventHandler('playerDropped', function()
@@ -155,3 +160,47 @@ end)
 QBCore.Commands.Add('removestand', Lang:t('info.command'), {}, false, function(source, _)
     TriggerClientEvent('qb-hotdogjob:staff:DeletStand', source)
 end, 'admin')
+
+-- Hot Dog Stand app (pf-devices, tablet + computer, for the hotdog job): the stand's shift (sales,
+-- earnings, streak), reputation and its levels, the deposit and the depot. Selling stays at the stand.
+local function standStatus(src)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return { ok = false, error = 'no_player' } end
+    local session = Sessions[src]
+    local bail = Bail[Player.PlayerData.citizenid]
+    local rep = Player.GetRep and Player.GetRep('hotdog') or 0
+    return {
+        ok = true,
+        standOut = session ~= nil and bail ~= nil,
+        sold = session and session.sold or 0,
+        sales = session and session.sales or 0,
+        earned = session and session.earned or 0,
+        streak = session and session.streak or 0,
+        reputation = rep, maxReputation = Config.MaxReputation,
+        deposit = Config.StandDeposit,
+    }
+end
+
+local function registerApp()
+    if GetResourceState('pf-devices') ~= 'started' then return end
+    exports['pf-devices']:RegisterApp({
+        id = 'hotdogstand', name = 'Hot Dog Stand', icon = '🌭',
+        entry = 'html/stand_app.js', category = 'jobs', order = 62,
+        access = { jobs = { hotdog = 0 } },
+        description = 'Your stand: sales, earnings and reputation',
+    })
+    exports['pf-devices']:RegisterAppHandlers('hotdogstand', {
+        status = function(src) return standStatus(src) end,
+        waypoint = function(src)
+            local loc = Config.Locations and (Config.Locations['take'] or Config.Locations[1])
+            local c = loc and (loc.coords or loc)
+            if not c or not c.x then return { ok = false, error = 'no_location' } end
+            TriggerClientEvent('qb-hotdogjob:client:waypoint', src, c.x, c.y)
+            return { ok = true }
+        end,
+    })
+end
+AddEventHandler('onResourceStart', function(resource)
+    if resource == GetCurrentResourceName() or resource == 'pf-devices' then registerApp() end
+end)
+AddEventHandler('pf-devices:server:ready', registerApp)

@@ -27,6 +27,7 @@ server_scripts {
 }
 
 files {
+    'html/stand_app.js', -- Hot Dog Stand app (pf-devices)
     'html/ui.html',
     'html/ui.css',
     'html/ui.js',

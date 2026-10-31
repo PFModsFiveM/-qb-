@@ -47,3 +47,33 @@ describe('hot dog stand', function()
         assert_eq(dogs, 10)
     end)
 end)
+
+describe('Hot Dog Stand app', function()
+    local app, pushes = {}, {}
+    local realState = GetResourceState
+    it('shows the shift, reputation and the stand state for the hotdog job, and is pushed on sales', function()
+        GetResourceState = function(name) if name == 'pf-devices' then return 'started' end return realState(name) end
+        Mock.exportsByResource['pf-devices'] = {
+            RegisterApp = function(_, def) app.def = def return true end,
+            RegisterAppHandlers = function(_, id, map) app.h = map return true end,
+            Push = function(_, src, id, event, payload) pushes[#pushes + 1] = { src = src, id = id, event = event, payload = payload } return true end,
+        }
+        Mock.eventHandlers['pf-devices:server:ready']()
+        assert_eq(app.def.id, 'hotdogstand')
+        assert_eq(app.def.access.jobs.hotdog, 0)
+        Mock.players[V].GetRep = function() return 40 end
+        Mock.fireEvent('playerDropped', V)   -- clear the stand an earlier test left out
+        assert_false(app.h.status(V).standOut)
+        assert_true(Mock.callCallback('qb-hotdogjob:server:HasMoney', V))
+        Mock.fireNet('qb-hotdogjob:server:Sell', V, vector3(1.0, 0.0, 0.0), 2, 5)
+        local st = app.h.status(V)
+        assert_true(st.standOut)
+        assert_eq(st.sold, 2)
+        assert_true(st.earned > 0)
+        assert_eq(st.reputation, 40)
+        assert_eq(pushes[1].id, 'hotdogstand')
+        assert_eq(pushes[1].payload.sold, 2)
+        assert_true(app.h.waypoint(V).ok)
+        GetResourceState = realState
+    end)
+end)
