@@ -54,6 +54,24 @@ Nothing in this plan has been run against a live FiveM server with clients yet. 
 | Job fleet | Owner parks a car, adds it to the job fleet; tries the personal garage and the impound; an employee takes it from the job garage; the car is removed from the fleet | Personal garage and impound do not list or release it and charge nothing; the job garage does; after removal the owner gets it back |
 | Tablet Business Manager | Government staff open the registry, view employees, transfer a store; a cook opens My supplies | Real businesses and staff; transfer changes the store owner and appears in Audit; cook sees their restaurant's orders only |
 
+## 3b. Devices, news and job links (batch 10)
+| Loop | Steps | Expect |
+|---|---|---|
+| Same app, both devices | Open Taxi, Dispatch, Services and a mechanic app on the tablet, then on the computer | Same screens and same data on both; actions on one show on the other after a refresh |
+| App visibility | Change job, grade and duty (police, tow, mechanic, unemployed) with the tablet open | The home screen and the desktop update by themselves; apps of the old job disappear and their RPCs are refused |
+| App Store | Install and remove News; buy a paid app with too little money, then with enough | Free install works; paid install charged once (reinstall is free); refused when the bank cannot pay |
+| Launchers | Police open the Police MDT app; EMS open the EMS MDT app; a civilian tries | The device closes and the MDT opens for the right jobs only |
+| Citizen calls a tow | Citizen in a broken car calls "Vehicle recovery" in Services; tow driver accepts in Dispatch, hooks with the flatbed, drives to LS Customs, presses Complete away from the shop, then at the shop | Fee held from the citizen; Complete refused away from a shop; paid to the driver at the shop; the citizen sees "On the way" then "Done" |
+| Police impound with a tow driver | Officer impounds while a tow driver is on duty; tow driver delivers to the Mission Row impound | The car stays (locked) until delivered; the record shows seized/depot only after delivery; the city account paid the driver once |
+| Police impound without a tow driver | Same with no tow driver on duty | Instant impound as before |
+| Mechanic tow order | Mechanic scans a car with engine under 30% | A tow request appears in Dispatch for tow drivers; the shop account holds the fee |
+| Robbery → dispatch → news | Start a store robbery and a bank robbery | A police dispatch request each; the store robbery becomes a newsroom lead only; the bank robbery gets an automatic breaking bulletin |
+| City Hall → news | Mayor changes a tax, publishes a law, cuts a district's power | An automatic article for each (taxes changed together become one article); nothing for a no-op change |
+| Newsroom | Reporter claims a lead, writes and publishes (or submits for review by an editor); a business boss buys an ad; an editor rejects an ad | Article on the News app and on news.ls in both browsers; reporter paid once; ad charged to the business and refunded once on rejection |
+| Government on the tablet | Officer/staff issue a fine to a nearby citizen; inspect a business at its door and away from it; approve a slot request where the business recorded it; set a delivery zone | Fine billed; inspection refused away from the business; slot created at the recorded spot; the next supply order delivers to the zone |
+| Mail and bills everywhere | Send mail tablet → computer → phone; receive a City Hall notice while offline; pay a fine in Bills | One mailbox on all three; notice waiting at login; fine paid once |
+| Computer without fakes | Post a job on the Job Board as a boss, apply as a citizen, hire | Applicant identity from the server; hire sets the job; no fake bills, stock or employee numbers anywhere |
+
 ## 4. Multiplayer and exploits
 | Case | Expect |
 |---|---|
@@ -64,6 +82,9 @@ Nothing in this plan has been run against a live FiveM server with clients yet. 
 | Another business boss opens our pallet / stash / premises | Refused |
 | Forged events from a modified client: payouts, completion, prices, give items, open stashes by id | Refused (see sweep specs for the list) |
 | Freshness reset by moving items between stashes, trunk, glovebox | Freshness kept |
+| Two tow drivers accept the same request | One wins |
+| Forged device RPCs: another job's app, an uninstalled app, oversized payloads, a flood of calls | not_authorized / not_installed / payload_too_large / rate_limited |
+| A worker completes a paid request without doing it | Refused by the job's check; the citizen's confirmation is the only other way to pay |
 
 ## 5. Performance
 - **Profile:** resmon on staging with two clients for 30 minutes. Watch pf-trucking, pf-stores (ticks), pfm-inventory (sunlight tick every 5 minutes), pf-government (simulation tick), pfm-worldobjects.
