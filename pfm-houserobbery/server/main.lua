@@ -63,6 +63,45 @@ local function ResetHouseStateTimer(house)
     end)
 end
 
+-- Burglar alarm: rolled here when a lock pick starts at a door (Config.ChanceToAlertPolice), at most
+-- once per house per Config.AlarmCooldown. Police get the usual alert at the door, and the city
+-- timeline gets one 'crime.robbery.house' event (news lead + police dispatch request).
+local alarmAt = {}        -- [house] = os.time()
+
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
+local function HouseArea(house)
+    local prefix = tostring(house):gsub('%d+$', '')
+    return (Config.HouseAreas and Config.HouseAreas[prefix]) or nil
+end
+
+local function RaiseBurglarAlarm(house)
+    local now = os.time()
+    if alarmAt[house] and now - alarmAt[house] < (Config.AlarmCooldown or 600) then return end
+    if math.random(1, 100) >= (Config.ChanceToAlertPolice or 0) then return end
+    alarmAt[house] = now
+    local c = Config.Houses[house].coords
+    local coords = vector3(c.x, c.y, c.z)
+    local text = Lang:t('info.palert')
+    for _, v in pairs(QBCore.Functions.GetQBPlayers()) do
+        if v and v.PlayerData.job and v.PlayerData.job.type == 'leo' and v.PlayerData.job.onduty then
+            TriggerClientEvent('qb-phone:client:addPoliceAlert', v.PlayerData.source, { title = 'Burglar alarm', coords = { x = c.x, y = c.y, z = c.z }, description = text })
+            TriggerClientEvent('police:client:policeAlert', v.PlayerData.source, coords, text)
+        end
+    end
+    local area = HouseArea(house)
+    local place = area and ('a home on ' .. area) or 'a home'
+    CityEvent('crime.robbery.house', { area = area, location = place, place = place, ref = 'robbery:house:' .. tostring(house), details = 'Burglar alarm at ' .. place }, {
+        title = 'Burglar alarm at ' .. place, coords = coords, dedupe = 'house:' .. tostring(house),
+    })
+end
+
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-houserobbery:server:GetHouseConfig', function(_, cb)
@@ -87,6 +126,7 @@ RegisterNetEvent('qb-houserobbery:server:startLockpick', function(house)
     if GetCopCount() < (Config.PoliceOnDutyRequired or 0) then return end
     if not HasBreakInTools(src) then return end
     pickAttempts[src] = { house = house, at = os.time() }
+    if not Config.Houses[house]['opened'] then RaiseBurglarAlarm(house) end
 end)
 
 RegisterNetEvent('qb-houserobbery:server:enterHouse', function(house)

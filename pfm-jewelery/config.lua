@@ -8,6 +8,7 @@ Config.Timeout = 30 * (60 * 2000)
 Config.RequiredCops = 2
 Config.JewelleryLocation = {
     ['coords'] = vector3(-630.5, -237.13, 38.08),
+    ['label'] = 'Vangelico, Rockford Hills', -- public name in the city timeline / news / police dispatch
 }
 
 Config.WhitelistedWeapons = {

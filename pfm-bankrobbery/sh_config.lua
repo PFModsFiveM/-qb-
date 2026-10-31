@@ -74,7 +74,7 @@ Config.PowerStations = {
 
 Config.SmallBanks = {
     [1] = {
-        ["label"] = "Lol",
+        ["label"] = "Alta",
         ["coords"] = vector3(311.15, -284.49, 54.16),
         ["alarm"] = true,
         ["object"] = `v_ilev_gb_vauldr`,

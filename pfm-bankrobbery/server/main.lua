@@ -104,6 +104,36 @@ local function RaiseAlarm(bankId)
     TriggerClientEvent('qb-bankrobbery:client:robberyCall', -1, typ, vector3(c.x, c.y, c.z))
 end
 
+-- City events (pf-services): the timeline the news desk and police dispatch read. Optional: nothing
+-- happens when pf-services is not running.
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
+local function PublicBankName(bankId)
+    if bankId == 'paleto' or bankId == 'pacific' then
+        return Config.BigBanks[bankId] and Config.BigBanks[bankId]['label'] or tostring(bankId)
+    end
+    local bank = Config.SmallBanks[bankId]
+    return 'Fleeca Bank ' .. (bank and bank['label'] or tostring(bankId))
+end
+
+-- One robbery, one event: raised when the server opened the vault (setBankState passed every check),
+-- at the bank's own coordinates. The event (police = true) also puts a police dispatch request on the
+-- map; news gets a short bulletin.
+local function ReportBankRobbery(bankId)
+    local name = PublicBankName(bankId)
+    local c = BankPanelCoords(bankId)
+    CityEvent('crime.robbery.bank', { bank = name, bankId = tostring(bankId), location = name, place = name, ref = 'robbery:bank:' .. tostring(bankId),
+        details = 'Vault alarm at ' .. name }, {
+        title = 'Bank robbery at ' .. name, coords = c and vector3(c.x, c.y, c.z) or nil, dedupe = 'bank:' .. tostring(bankId),
+    })
+end
+
 -- Functions
 
 --- This will convert a table's keys into an array
@@ -256,6 +286,7 @@ RegisterNetEvent('qb-bankrobbery:server:setBankState', function(bankId)
     TriggerClientEvent('qb-bankrobbery:client:setBankState', -1, bankId)
     robberyBusy = true
     RaiseAlarm(bankId)
+    ReportBankRobbery(bankId)
     Config.OnRobberyStart(bankId)
 end)
 
@@ -526,6 +557,16 @@ RegisterNetEvent('qb-bankrobbery:server:SetStationStatus', function(key, isHit)
     TriggerClientEvent('qb-bankrobbery:client:SetStationStatus', -1, key, isHit)
     if AllStationsHit() then
         exports['pfm-weathersync']:setBlackout(true)
+        -- a city-wide blackout is public news (kind registered here: it is not in the shared catalog)
+        if GetResourceState('pf-services') == 'started' then
+            pcall(function()
+                exports['pf-services']:RegisterEventKind('crime.blackout', { label = 'City-wide blackout', news = 'auto', category = 'crime', bulletin = true })
+            end)
+        end
+        CityEvent('crime.blackout', { minutes = Config.BlackoutTimer, stations = Config.HitsNeeded }, {
+            title = 'Blackout across the city after power stations were sabotaged',
+            coords = Config.PowerStations[key].coords, dedupe = 'blackout',
+        })
         TriggerClientEvent('qb-bankrobbery:client:disableAllBankSecurity', -1)
         Config.OnBlackout(true)
         CreateThread(function()

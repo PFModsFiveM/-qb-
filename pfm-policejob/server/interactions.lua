@@ -4,6 +4,16 @@ local function IsOnDutyLeo(Player)
     return Player and Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty
 end
 
+-- City events (pf-services): a jail sentence is a court record the newsroom may cover (news lead).
+-- Only public facts go out: the name, the sentence length, the prison.
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
 -- seized cash is held here until an officer opens the evidence bag (server/main.lua pays from it)
 EVIDENCE_ACCOUNT = 'system:pfm-policejob-evidence'
 
@@ -237,6 +247,13 @@ RegisterNetEvent('police:server:JailPlayer', function(playerId, time)
     })
     TriggerClientEvent('police:client:SendToJail', OtherPlayer.PlayerData.source, time)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('info.sent_jail_for', { time = time }))
+    local ci = OtherPlayer.PlayerData.charinfo or {}
+    local name = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
+    if name == '' then name = 'A suspect' end
+    CityEvent('police.sentenced', { name = name, months = time, place = 'Bolingbroke Penitentiary', by = 'police' }, {
+        title = ('%s sentenced to %d months'):format(name, time), actor = Player.PlayerData.citizenid,
+        dedupe = OtherPlayer.PlayerData.citizenid,
+    })
 end)
 
 RegisterNetEvent('police:server:SeizeCash', function(playerId)

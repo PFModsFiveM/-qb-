@@ -255,3 +255,74 @@ RegisterNetEvent('evidence:server:AddCasingToInventory', function(casingId, casi
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.have_evidence_bag'), 'error')
     end
 end)
+
+-- ══ Drug seizures → city timeline ═══════════════════════════════════
+-- An on-duty officer moving drugs out of another player's inventory (the search menu opens it as
+-- otherplayer-<id>) into their own is a seizure. pfm-inventory tells us after the move happened
+-- (ItemMoved listener), so only real moves count. Moves by the same officer from the same suspect
+-- within Config.DrugBustWindow are one bust: one 'crime.drugs.bust' news lead with the totals and
+-- the officer's position. The suspect is not named.
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
+local busts = {} -- ['<officer>:<suspect>'] = { officer cid, coords, items = { [label] = amount } }
+
+local function FlushBust(key)
+    local bust = busts[key]
+    busts[key] = nil
+    if not bust then return end
+    local list, total = {}, 0
+    for label, amount in pairs(bust.items) do
+        list[#list + 1] = { label = label, amount = amount }
+        total = total + amount
+    end
+    table.sort(list, function(a, b) return a.amount > b.amount end)
+    CityEvent('crime.drugs.bust', { items = list, total = total }, {
+        title = ('Police seize %d units of drugs'):format(total), coords = bust.coords, actor = bust.officer,
+        dedupe = key .. ':' .. tostring(bust.at),
+    })
+end
+
+function PoliceOnItemMoved(moveType, data)
+    if type(data) ~= 'table' or data.fromType ~= 'player' or data.toType ~= 'player' then return end
+    local officerSrc, suspectSrc = tonumber(data.toId), tonumber(data.fromId)
+    if not officerSrc or not suspectSrc or officerSrc == suspectSrc then return end
+    local Officer = exports['pfm-core']:GetPlayer(officerSrc)
+    local Suspect = exports['pfm-core']:GetPlayer(suspectSrc)
+    if not Officer or not Suspect then return end
+    if Officer.PlayerData.job.type ~= 'leo' or not Officer.PlayerData.job.onduty then return end
+    if Suspect.PlayerData.job and Suspect.PlayerData.job.type == 'leo' and Suspect.PlayerData.job.onduty then return end
+    local items = data.toInventory and data.toInventory.items
+    local item = items and (items[tonumber(data.toSlot)] or items[tostring(data.toSlot)])
+    if type(item) ~= 'table' or not (Config.SeizableDrugs or {})[item.name] then return end
+    local amount = math.floor(tonumber(data.amount) or 0)
+    if amount < 1 then return end
+    local key = Officer.PlayerData.citizenid .. ':' .. Suspect.PlayerData.citizenid
+    local bust = busts[key]
+    if not bust then
+        local p = GetEntityCoords(GetPlayerPed(officerSrc))
+        bust = { officer = Officer.PlayerData.citizenid, coords = vector3(p.x, p.y, p.z), items = {}, at = os.time() }
+        busts[key] = bust
+        SetTimeout((Config.DrugBustWindow or 60) * 1000, function() FlushBust(key) end)
+    end
+    local shared = sharedItems[item.name]
+    local label = (shared and shared.label) or item.label or item.name
+    bust.items[label] = (bust.items[label] or 0) + amount
+end
+
+local function RegisterSeizureListener()
+    if GetResourceState('pfm-inventory') ~= 'started' then return end
+    pcall(function() exports['pfm-inventory']:AddListener('ItemMoved', PoliceOnItemMoved) end)
+end
+
+-- registered once now if the inventory is already running, and again each time it (re)starts (it
+-- forgets listeners when it stops); never both for the same inventory start
+RegisterSeizureListener()
+AddEventHandler('onResourceStart', function(resource)
+    if resource == 'pfm-inventory' then RegisterSeizureListener() end
+end)

@@ -60,6 +60,27 @@ local function MissionAlertCoords(src, eventName)
 	return GetEntityCoords(GetPlayerPed(src))
 end
 
+-- City events (pf-services): one 'crime.robbery.truck' per mission, at the server's position of the
+-- mission truck. Raised when the guards spot the robber (the mission player's own alert, checked by
+-- MissionAlertCoords) and, if that alert never came, when the cash is taken: a robber who skips the
+-- client alert is still reported. (police = true: pf-services also opens a police dispatch request.)
+local function CityEvent(kind, data, opts)
+	if GetResourceState('pf-services') ~= 'started' then return nil end
+	local svc = exports['pf-services']
+	if not svc then return nil end
+	local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+	return ok and id or nil
+end
+
+local function ReportTruckRobbery(coords)
+	if not Mission or Mission.reported or not coords then return end
+	Mission.reported = true
+	CityEvent('crime.robbery.truck', { location = 'Armored cash transport', place = 'Armored cash transport', ref = 'robbery:truck:' .. tostring(Mission.id),
+		details = 'Armored truck under attack' }, {
+		title = 'Armored truck attacked', coords = vector3(coords.x, coords.y, coords.z), dedupe = 'mission:' .. tostring(Mission.id),
+	})
+end
+
 RegisterServerEvent('qb-armoredtruckheist:server:callCops', function(streetLabel)
 	local c = MissionAlertCoords(source, 'callCops')
 	if not c then return end
@@ -96,6 +117,7 @@ RegisterServerEvent('AttackTransport:zawiadompsy', function()
 	local c = MissionAlertCoords(source, 'zawiadompsy')
 	if not c then return end
 	TriggerClientEvent('AttackTransport:InfoForLspd', -1, c.x, c.y, c.z)
+	ReportTruckRobbery(c)
 end)
 
 RegisterServerEvent('AttackTransport:graczZrobilnapad', function(lootTime)
@@ -125,6 +147,7 @@ RegisterServerEvent('AttackTransport:graczZrobilnapad', function(lootTime)
 	local truck = NetworkGetEntityFromNetworkId(Mission.truck)
 	if not truck or truck == 0 or not DoesEntityExist(truck) then return end
 	if #(GetEntityCoords(GetPlayerPed(_source)) - GetEntityCoords(truck)) > LOOT_RANGE then return end
+	ReportTruckRobbery(GetEntityCoords(truck))
 
 	-- Per-player cooldown: prevent duplicate reward calls within the mission window
 	if RewardCooldowns[_source] and now - RewardCooldowns[_source] < Config.ResetTimer then

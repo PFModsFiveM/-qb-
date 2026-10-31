@@ -86,9 +86,28 @@ end
 
 -- The store resets Config.Timeout after the first case is smashed. Started here only (it was a net
 -- event any client could fire).
+-- City events (pf-services): the heist is reported once, when the first case is really emptied (the
+-- server-checked smash above). Police get a dispatch request (police = true) and news a bulletin.
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
+local function ReportHeist()
+    local c = Config.JewelleryLocation and Config.JewelleryLocation.coords
+    local place = Config.JewelleryLocation and Config.JewelleryLocation.label or 'Vangelico, Rockford Hills'
+    CityEvent('crime.robbery.jewelry', { store = place, location = place, place = place, ref = 'robbery:jewelry:vangelico', details = 'Display cases smashed at ' .. place }, {
+        title = 'Jewelry heist at ' .. place, coords = c and vector3(c.x, c.y, c.z) or nil, dedupe = 'vangelico',
+    })
+end
+
 local function startTimeout()
     if timeOut then return end
     timeOut = true
+    ReportHeist()
     TriggerEvent('qb-scoreboard:server:SetActivityBusy', 'jewellery', true)
     Citizen.CreateThread(function()
         Citizen.Wait(Config.Timeout)

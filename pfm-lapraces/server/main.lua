@@ -115,6 +115,40 @@ local function GenerateRaceId()
     return RaceId
 end
 
+-- City events (pf-services): the winner of a race with at least two racers is a news lead. The
+-- finish order is the server's, but the race clock is the client's (UI ticks), so only results the
+-- server can stand behind are reported: the first racer to finish, standing at the finish line by the
+-- server's own position, with the server-measured race time.
+local FINISH_RADIUS = 60.0
+
+local function FinishLine(race, laps)
+    local cps = race.Checkpoints or {}
+    local cp = (tonumber(laps) or 0) > 0 and cps[1] or cps[#cps]
+    local c = cp and cp.coords
+    if type(c) ~= 'table' or not tonumber(c.x) or not tonumber(c.y) then return nil end
+    return vector3(tonumber(c.x), tonumber(c.y), tonumber(c.z) or 0.0)
+end
+
+local function ReportWinner(src, Player, race, laps, racers)
+    if racers < 2 or GetResourceState('pf-services') ~= 'started' then return end
+    local line = FinishLine(race, laps)
+    if not line then return end
+    local p = GetEntityCoords(GetPlayerPed(src))
+    if #(vector3(p.x, p.y, p.z) - line) > FINISH_RADIUS then return end
+    local svc = exports['pf-services']
+    if not svc then return end
+    local ci = Player.PlayerData.charinfo or {}
+    local winner = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
+    local seconds = math.max(0, os.time() - (race.StartedAt or os.time()))
+    pcall(function()
+        svc:Emit('race.finished', { race = race.RaceName, winner = winner, seconds = seconds, time = ('%d:%02d'):format(seconds // 60, seconds % 60),
+            laps = tonumber(laps) or 0, racers = racers }, {
+            title = ('%s wins %s'):format(winner ~= '' and winner or 'A driver', tostring(race.RaceName)), coords = line,
+            actor = Player.PlayerData.citizenid, dedupe = tostring(race.RaceId) .. ':' .. tostring(race.StartedAt),
+        })
+    end)
+end
+
 -- Events
 
 RegisterNetEvent('qb-lapraces:server:FinishPlayer', function(RaceData, TotalTime, TotalLaps, BestLap)
@@ -133,8 +167,14 @@ RegisterNetEvent('qb-lapraces:server:FinishPlayer', function(RaceData, TotalTime
     local elapsed = os.time() - (Races[RaceData.RaceId].StartedAt or os.time())
     if TotalTime < (elapsed - START_SLACK) * MIN_TICKS_PER_SECOND then return end
     if TotalLaps >= 2 and (not BestLap or BestLap ~= BestLap or BestLap <= 0 or BestLap > TotalTime) then return end
+    local first, racers = true, 0
+    for _, r in pairs(Races[RaceData.RaceId].Racers) do
+        racers = racers + 1
+        if r.FinishSent then first = false end
+    end
     racer.FinishSent = true
     racer.Finished = true
+    if first then ReportWinner(src, Player, Races[RaceData.RaceId], AvailableRaces[AvailableKey].Laps, racers) end
     RaceData = { RaceId = RaceData.RaceId, RaceName = Races[RaceData.RaceId].RaceName }
     local PlayersFinished = 0
     local AmountOfRacers = 0

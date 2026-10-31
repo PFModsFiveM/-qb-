@@ -35,6 +35,13 @@ Config.WeatherPatterns = {
     HALLOWEEN  = { { weather = 'HALLOWEEN', weight = 1 } },
 }
 
+-- Weather that goes on the city timeline as 'weather.severe' (an automatic news bulletin), once each
+-- time the weather turns into it. GTA has no heavier rain than RAIN; add it here to report rain too.
+Config.SevereWeather = {
+    THUNDER = 'Thunderstorm',
+    BLIZZARD = 'Blizzard',
+}
+
 Config.AvailableWeatherTypes = { -- DON'T TOUCH EXCEPT IF YOU KNOW WHAT YOU ARE DOING
     'EXTRASUNNY',
     'CLEAR',

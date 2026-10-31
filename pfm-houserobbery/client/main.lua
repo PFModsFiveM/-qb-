@@ -72,11 +72,7 @@ local function leaveRobberyHouse(house)
     end)
 end
 
-local function alertCops()
-    if math.random(1, 100) < Config.ChanceToAlertPolice then
-        TriggerServerEvent('police:server:policeAlert', Lang:t('info.palert'))
-    end
-end
+-- (the burglar alarm is rolled on the server when the lockpick starts: server/main.lua)
 
 local function searchCabin(cabin)
     local ped = PlayerPedId()
@@ -162,7 +158,6 @@ RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
 
                 loadAnimDict('mp_missheist_countrybank@nervous')
                 TaskPlayAnim(PlayerPedId(), 'mp_missheist_countrybank@nervous', 'nervous_idle', 8.0, 8.0, -1, 49, 0.0, false, false, false)
-                alertCops()
                 -- the server only lets us in after it has seen the attempt start at this door
                 TriggerServerEvent('qb-houserobbery:server:startLockpick', closestHouse)
                 if usingAdvanced then

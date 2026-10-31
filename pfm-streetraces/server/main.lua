@@ -163,6 +163,25 @@ function RemoveFromRace(identifier)
     end
 end
 
+-- City events (pf-services): a street race the server judged (entrant at the finish after a
+-- believable drive, see RaceWon) with at least two racers is a news lead: winner, time, field, pot.
+local function ReportRaceResult(src, race)
+    if #race.joined < 2 or GetResourceState('pf-services') ~= 'started' then return end
+    local svc = exports['pf-services']
+    if not svc then return end
+    local Player = exports['pfm-core']:GetPlayer(src)
+    local ci = Player and Player.PlayerData.charinfo or {}
+    local winner = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
+    if winner == '' then winner = 'An unknown driver' end
+    local seconds = math.max(0, os.time() - (race.startedAt or os.time()))
+    pcall(function()
+        svc:Emit('race.finished', { race = 'Street race', winner = winner, seconds = seconds, racers = #race.joined, pot = race.pot }, {
+            title = ('%s wins a street race'):format(winner), coords = vector3(race.endx, race.endy, race.endz),
+            actor = Player and Player.PlayerData.citizenid or nil, dedupe = race.uid,
+        })
+    end)
+end
+
 -- Events
 
 -- The creator's client places the race after /createrace: only the finish line is taken from it.
@@ -230,6 +249,7 @@ RegisterNetEvent('qb-streetraces:RaceWon', function(RaceId)
     end
     SyncRaces()
     TriggerClientEvent('qb-streetraces:RaceDone', -1, RaceId, GetPlayerName(src))
+    ReportRaceResult(src, race)
 end)
 
 RegisterNetEvent('qb-streetraces:JoinRace', function(RaceId)

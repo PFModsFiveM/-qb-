@@ -10,6 +10,17 @@ Config.ChanceToBreakLockPick = 30         -- chance in percent to break a normal
 Config.ChanceToBreakAdvancedLockPick = 15 -- chance in percent to break a advanced lockpick if failed
 Config.ChanceToAlertPolice = 20           -- chance in percent to call the police if a house robbery is in progress
 Config.MinZOffset = 45
+-- The burglar alarm is rolled on the server when a lock is picked (it used to be the burglar's own
+-- client that decided whether police were called). A house alarms at most once per this many seconds.
+Config.AlarmCooldown = 10 * 60
+-- Public area names for the city timeline / police dispatch / news (no house numbers).
+Config.HouseAreas = {
+    perfectdrive = 'Perfect Drive', miltonroad = 'Milton Road', didiondrive = 'Didion Drive',
+    hillcrest = 'Hillcrest Avenue', northsheldon = 'North Sheldon Avenue', wildoats = 'Wild Oats Drive',
+    jamestown = 'Jamestown Street', roylow = 'Roy Lowenstein Boulevard', covenant = 'Covenant Avenue',
+    grove = 'Grove Street', prosperity = 'Prosperity Street', grapeseed = 'Grapeseed',
+    paleto = 'Paleto Bay', paletoHotels = 'Paleto Bay',
+}
 
 Config.Rewards = {
     { -- house tier

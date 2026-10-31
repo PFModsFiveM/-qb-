@@ -376,4 +376,20 @@ QBCore.Commands.Add('911p', Lang:t('commands.police_report'), { { name = 'messag
             TriggerClientEvent('police:client:policeAlert', v.PlayerData.source, coords, message)
         end
     end
+    -- the call also goes to the police Dispatch app (pf-services), under the same ref a Services app
+    -- call uses, so one caller has one open police call at a time
+    local Caller = exports['pfm-core']:GetPlayer(src)
+    if Caller and GetResourceState('pf-services') == 'started' then
+        local cid = Caller.PlayerData.citizenid
+        local ci = Caller.PlayerData.charinfo or {}
+        local name = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
+        pcall(function()
+            exports['pf-services']:CreateRequest({
+                kind = 'police.assist', title = '911 call from ' .. (name ~= '' and name or 'a citizen'),
+                details = tostring(message):gsub('%c', ' '):sub(1, 300), coords = vector3(coords.x, coords.y, coords.z),
+                ref = { type = 'citizen:police.assist', id = cid }, requester = cid,
+                from = { type = 'citizen', id = cid, name = name ~= '' and name or nil },
+            })
+        end)
+    end
 end)

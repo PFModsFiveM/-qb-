@@ -12,6 +12,29 @@ local JailMoneyPaid = {}   -- [citizenid] = true once the jail money was paid fo
 local CheckChanceAt = {}   -- [src] = os.time() of the last phone search
 local LastBreakAt = 0      -- os.time() of the last escape or lockdown by an inmate
 
+-- City events (pf-services). A confirmed escape (the inmate's sentence dropped to 0 while the server
+-- sees them far outside the walls) is reported once: news bulletin + police dispatch request
+-- (crime.prison.escape has police = true) at the spot the inmate was seen, with their public name.
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
+local function ReportEscape(Player, coords)
+    local ci = Player.PlayerData.charinfo or {}
+    local name = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
+    if name == '' then name = 'An inmate' end
+    local cid = Player.PlayerData.citizenid
+    CityEvent('crime.prison.escape', { name = name, count = 1, location = 'Bolingbroke Penitentiary', place = 'Bolingbroke Penitentiary', ref = 'escape:' .. tostring(cid),
+        details = name .. ' escaped from Bolingbroke Penitentiary' }, {
+        title = name .. ' escaped from Bolingbroke Penitentiary', coords = vector3(coords.x, coords.y, coords.z),
+        actor = cid, dedupe = cid,
+    })
+end
+
 RegisterNetEvent('prison:server:SetJailStatus', function(jailTime)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -39,6 +62,7 @@ RegisterNetEvent('prison:server:SetJailStatus', function(jailTime)
             -- an escapee forfeits the stored items (the client could ask for them back afterwards)
             Player.SetMetaData('jailitems', {})
             LastBreakAt = os.time()
+            ReportEscape(Player, coords)
         end
     end
 

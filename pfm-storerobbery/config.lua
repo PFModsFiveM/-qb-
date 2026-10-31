@@ -71,3 +71,31 @@ Config.CopsLootScaling = {
     PerExtraCop = 0.15,    -- +15% cash per on-duty cop above the minimum
     MaxMultiplier = 1.6,
 }
+
+-- Public names of the robbed stores (keyed by the registers' safeKey), used for the city timeline,
+-- the police dispatch request and news leads. Taken from the security camera labels.
+Config.StoreNames = {
+    [1] = 'LTD Gasoline, Grove Street',
+    [2] = "Rob's Liquor, Prosperity Street",
+    [3] = "Rob's Liquor, San Andreas Avenue",
+    [4] = 'LTD Gasoline, Ginger Street',
+    [5] = '24/7 Supermarket, Innocence Boulevard',
+    [6] = "Rob's Liquor, El Rancho Boulevard",
+    [7] = 'LTD Gasoline, West Mirror Drive',
+    [8] = '24/7 Supermarket, Clinton Avenue',
+    [9] = 'LTD Gasoline, Banham Canyon Drive',
+    [10] = "Rob's Liquor, Great Ocean Highway",
+    [11] = '24/7 Supermarket, Ineseno Road',
+    [12] = '24/7 Supermarket, Barbareno Road',
+    [13] = '24/7 Supermarket, Route 68',
+    [14] = "Rob's Liquor, Route 68",
+    [15] = '24/7 Supermarket, Senora Freeway',
+    [16] = '24/7 Supermarket, Alhambra Drive',
+    [17] = '24/7 Supermarket, Mount Chiliad',
+    [18] = 'Del Vecchio Liquor, Paleto Bay',
+    [19] = "Don's Country Store, Paleto Bay",
+}
+-- A register and the safe of one store within this many seconds are one robbery (one city event).
+Config.RobberyReportWindow = 15 * 60
+-- A player-owned pf-stores shop whose counter is this close to the robbed register is told.
+Config.OwnedStoreRadius = 25.0

@@ -213,3 +213,12 @@ Config.ImpoundTow = {
     LotRadius = 40.0,       -- metres around Config.Locations['impound'] that count as the lot
 }
 Config.MaxJailTime = 1440 -- longest sentence an officer can give (same cap as pfm-prison)
+
+-- Drug seizures: an on-duty officer taking these items out of a searched player's inventory is a drug
+-- bust. Moves within this many seconds of the first one are one bust (one 'crime.drugs.bust' news lead).
+Config.SeizableDrugs = {
+    weed_whitewidow = true, weed_skunk = true, weed_purplehaze = true, weed_ogkush = true, weed_amnesia = true,
+    weed_ak47 = true, weed_brick = true, joint = true, cokebaggy = true, coke_brick = true, coke_small_brick = true,
+    crack_baggy = true, xtcbaggy = true, meth = true,
+}
+Config.DrugBustWindow = 60

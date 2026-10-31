@@ -53,12 +53,28 @@ local function pickWeightedWeather()
     return pattern[#pattern].weather
 end
 
+-- City events (pf-services): a change into severe weather is reported once (pf-news bulletin).
+local function reportWeatherChange(previous)
+    local label = Config.SevereWeather and Config.SevereWeather[CurrentWeather]
+    if not label or previous == CurrentWeather then return end
+    if GetResourceState('pf-services') ~= 'started' then return end
+    local svc = exports['pf-services']
+    if not svc then return end
+    pcall(function()
+        svc:Emit('weather.severe', { weather = CurrentWeather, label = label, previous = previous }, {
+            title = label .. ' warning for Los Santos', dedupe = CurrentWeather,
+        })
+    end)
+end
+
 --- Triggers event to switch weather to next stage
 local function nextWeatherStage()
+    local previous = CurrentWeather
     if Config.DynamicWeatherPatterns then
         local nextWeather = pickWeightedWeather()
         if nextWeather then
             CurrentWeather = nextWeather
+            reportWeatherChange(previous)
             TriggerEvent('qb-weathersync:server:RequestStateSync')
             return
         end
@@ -88,6 +104,7 @@ local function nextWeatherStage()
     else
         CurrentWeather = 'CLEAR'
     end
+    reportWeatherChange(previous)
     TriggerEvent('qb-weathersync:server:RequestStateSync')
 end
 
@@ -102,7 +119,9 @@ local function setWeather(weather)
         end
     end
     if not validWeatherType then return false end
+    local previous = CurrentWeather
     CurrentWeather = string.upper(weather)
+    reportWeatherChange(previous)
     newWeatherTimer = Config.NewWeatherTimer
     TriggerEvent('qb-weathersync:server:RequestStateSync')
     return true

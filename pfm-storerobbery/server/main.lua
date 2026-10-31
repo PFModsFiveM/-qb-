@@ -75,6 +75,52 @@ local function GiveMarkedBills(src, bags, range)
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['markedbills'], 'add')
 end
 
+-- ══ city events ═══════════════════════════════════════════════════
+-- A robbery that really started (the server opened a register or a safe) is reported once per store
+-- to pf-services: the timeline, a news lead and (police = true) a police dispatch request at the store.
+local storeReported = {} -- [safeKey] = os.time() of the last report
+
+local function CityEvent(kind, data, opts)
+    if GetResourceState('pf-services') ~= 'started' then return nil end
+    local svc = exports['pf-services']
+    if not svc then return nil end
+    local ok, id = pcall(function() return svc:Emit(kind, data, opts) end)
+    return ok and id or nil
+end
+
+-- The owner of a player-owned pf-stores shop at this spot hears about it (the robbery loot itself is
+-- not taken from the shop: its money lives in its bank account, not in the till).
+local function TellStoreOwner(coords, name)
+    if GetResourceState('pf-stores') ~= 'started' then return end
+    pcall(function()
+        local cfg = exports['pf-stores']:GetStoreConfig()
+        for storeId, def in pairs((cfg and cfg.Stores) or {}) do
+            local c = def.npc and def.npc.coords
+            if c and #(vector3(c.x, c.y, c.z) - coords) <= (Config.OwnedStoreRadius or 25.0) then
+                local owner = MySQL.scalar.await('SELECT owner_citizenid FROM pf_stores WHERE store_id = ? LIMIT 1', { def.id or storeId })
+                local Owner = type(owner) == 'string' and owner ~= '' and QBCore.Functions.GetPlayerByCitizenId(owner)
+                if Owner then
+                    TriggerClientEvent('QBCore:Notify', Owner.PlayerData.source, ('Your store %s is being robbed!'):format(def.label or name), 'error', 10000)
+                end
+                return
+            end
+        end
+    end)
+end
+
+local function ReportStoreRobbery(storeKey, coords)
+    local now = os.time()
+    if storeReported[storeKey] and now - storeReported[storeKey] < (Config.RobberyReportWindow or 900) then return end
+    storeReported[storeKey] = now
+    local name = (Config.StoreNames and Config.StoreNames[storeKey]) or 'a convenience store'
+    coords = vector3(coords.x, coords.y, coords.z)
+    CityEvent('crime.robbery.store', { store = name, storeKey = storeKey, location = name, place = name, ref = 'robbery:store:' .. tostring(storeKey),
+        details = 'Robbery in progress at ' .. name }, {
+        title = 'Store robbery at ' .. name, coords = coords, dedupe = 'store:' .. tostring(storeKey),
+    })
+    TellStoreOwner(coords, name)
+end
+
 -- ══ registers ═════════════════════════════════════════════════════
 
 -- the lockpick minigame succeeded: validate everything server-side and open a session
@@ -95,6 +141,7 @@ RegisterNetEvent('qb-storerobbery:server:setRegisterStatus', function(register)
     reg.time = Config.resetTime
     activeRegisters[register] = { src = src, at = os.time() }
     TriggerClientEvent('qb-storerobbery:client:setRegisterStatus', -1, register, reg)
+    ReportStoreRobbery(reg.safeKey, reg[1])
 end)
 
 RegisterNetEvent('qb-storerobbery:server:takeMoney', function(register, isDone)
@@ -229,6 +276,7 @@ RegisterNetEvent('qb-storerobbery:server:SafeReward', function(safe)
     if not allowed then return end
 
     MarkSafeRobbed(safe)
+    ReportStoreRobbery(safe, safeData[1])
     GiveMarkedBills(src, math.random(1, 3), Config.SafeCash)
     local luck = math.random(1, 100)
     local odd = math.random(1, 100)
