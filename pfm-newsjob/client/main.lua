@@ -2,51 +2,50 @@ QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 PlayerJob = {}
 CurrentPlate = {}
 
-RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
-    PlayerJob = QBCore.Functions.GetPlayerData().job
-    if PlayerJob.name ~= 'reporter' then return end
+-- One garage blip, shown only while in the news job (it used to add a new blip on every job update).
+local garageBlip = nil
 
-    local blip = AddBlipForCoord(Config.Locations['vehicle'].coords.x, Config.Locations['vehicle'].coords.y, Config.Locations['vehicle'].coords.z)
-    SetBlipSprite(blip, 225)
-    SetBlipDisplay(blip, 4)
-    SetBlipScale(blip, 0.6)
-    SetBlipAsShortRange(blip, true)
-    SetBlipColour(blip, 1)
-    BeginTextCommandSetBlipName('STRING')
-    AddTextComponentSubstringPlayerName(Lang:t('text.vehicle'))
-    EndTextCommandSetBlipName(blip)
+local function refreshBlip()
+    local isReporter = PlayerJob and PlayerJob.name == Config.Job
+    if isReporter and not garageBlip then
+        local c = Config.Locations['vehicle'].coords
+        garageBlip = AddBlipForCoord(c.x, c.y, c.z)
+        SetBlipSprite(garageBlip, 225)
+        SetBlipDisplay(garageBlip, 4)
+        SetBlipScale(garageBlip, 0.6)
+        SetBlipAsShortRange(garageBlip, true)
+        SetBlipColour(garageBlip, 1)
+        BeginTextCommandSetBlipName('STRING')
+        AddTextComponentSubstringPlayerName(Lang:t('text.vehicle'))
+        EndTextCommandSetBlipName(garageBlip)
+    elseif not isReporter and garageBlip then
+        RemoveBlip(garageBlip)
+        garageBlip = nil
+    end
+end
+
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    PlayerJob = QBCore.Functions.GetPlayerData().job or {}
+    refreshBlip()
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUpdated', function(key, val)
     if key == 'job' then
-        local JobInfo = val
-        PlayerJob = JobInfo
-        if PlayerJob.name ~= 'reporter' then return end
-
-        local blip = AddBlipForCoord(Config.Locations['vehicle'].coords.x, Config.Locations['vehicle'].coords.y, Config.Locations['vehicle'].coords.z)
-        SetBlipSprite(blip, 225)
-        SetBlipDisplay(blip, 4)
-        SetBlipScale(blip, 0.6)
-        SetBlipAsShortRange(blip, true)
-        SetBlipColour(blip, 1)
-        BeginTextCommandSetBlipName('STRING')
-        AddTextComponentSubstringPlayerName(Lang:t('text.vehicle'))
-        EndTextCommandSetBlipName(blip)
+        PlayerJob = val or {}
+        refreshBlip()
     elseif key == 'all' then
-        local JobInfo = val.job
-        PlayerJob = JobInfo
-        if PlayerJob.name ~= 'reporter' then return end
-
-        local blip = AddBlipForCoord(Config.Locations['vehicle'].coords.x, Config.Locations['vehicle'].coords.y, Config.Locations['vehicle'].coords.z)
-        SetBlipSprite(blip, 225)
-        SetBlipDisplay(blip, 4)
-        SetBlipScale(blip, 0.6)
-        SetBlipAsShortRange(blip, true)
-        SetBlipColour(blip, 1)
-        BeginTextCommandSetBlipName('STRING')
-        AddTextComponentSubstringPlayerName(Lang:t('text.vehicle'))
-        EndTextCommandSetBlipName(blip)
+        PlayerJob = (val and val.job) or {}
+        refreshBlip()
     end
+end)
+
+RegisterNetEvent('QBCore:Client:OnJobUpdate', function(job)
+    PlayerJob = job or {}
+    refreshBlip()
+end)
+
+RegisterNetEvent('QBCore:Client:SetDuty', function(onDuty)
+    if PlayerJob then PlayerJob.onduty = onDuty end
 end)
 
 local function DrawText3D(x, y, z, text)
@@ -70,7 +69,13 @@ CreateThread(function()
         if LocalPlayer.state.isLoggedIn then
             local inRange = false
             local pos = GetEntityCoords(PlayerPedId())
-            if PlayerJob.name == 'reporter' then
+            if PlayerJob.name == Config.Job then
+                local duty = Config.Locations['duty'].coords
+                if #(pos - vector3(duty.x, duty.y, duty.z)) < 1.5 then
+                    inRange = true
+                    DrawText3D(duty.x, duty.y, duty.z, PlayerJob.onduty and Lang:t('text.duty_off') or Lang:t('text.duty_on'))
+                    if IsControlJustReleased(0, 38) then TriggerServerEvent('pfm-newsjob:server:toggleDuty') end
+                end
                 if #(pos - vector3(Config.Locations['vehicle'].coords.x, Config.Locations['vehicle'].coords.y, Config.Locations['vehicle'].coords.z)) < 10.0 then
                     inRange = true
                     DrawMarker(2, Config.Locations['vehicle'].coords.x, Config.Locations['vehicle'].coords.y, Config.Locations['vehicle'].coords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.15, 200, 200, 200, 222, false, false, false, true, false, false, false)

@@ -8,15 +8,21 @@ function StoreCurrentVehicle()
     TriggerServerEvent('qb-vehiclekeys:server:RemoveVehicleKeys', plate)
     CurrentPlate[plate] = nil
     DeleteVehicle(veh)
+    TriggerServerEvent('pfm-newsjob:server:vehicleStored')
 end
 
-local function SpawnReporterVehicle(args)
-    if PlayerJob.name ~= 'reporter' then return end
-    local coords = Config.Locations[args.location].coords
+-- The server picks the plate and grants a one-time spawn ticket for the model; the client only spawns it.
+local function RequestReporterVehicle(args)
+    TriggerServerEvent('pfm-newsjob:server:requestVehicle', args.location, args.vehicle)
+end
 
+RegisterNetEvent('pfm-newsjob:client:spawnVehicle', function(location, model, plate, modLivery)
+    local garage = Config.Locations[location]
+    if not garage or type(model) ~= 'string' or type(plate) ~= 'string' then return end
+    local coords = garage.coords
     QBCore.Functions.TriggerCallback('QBCore:Server:SpawnVehicle', function(netId)
+        if not netId then return end
         local veh = NetToVeh(netId)
-        local plate = 'WZNW' .. math.random(1000, 9999)
         SetVehicleNumberPlateText(veh, plate)
         CurrentPlate[plate] = true
         SetEntityHeading(veh, coords.w)
@@ -24,15 +30,16 @@ local function SpawnReporterVehicle(args)
         TaskWarpPedIntoVehicle(PlayerPedId(), veh, -1)
         TriggerEvent('vehiclekeys:client:SetOwner', plate)
         SetVehicleEngineOn(veh, true, true, false)
-        if args.modLivery then
-            local livery = GetVehicleLiveryCount(veh) < 0 and args.modLivery - 1 or args.modLivery
+        if modLivery then
+            local livery = GetVehicleLiveryCount(veh) < 0 and modLivery - 1 or modLivery
             QBCore.Functions.SetVehicleProperties(veh, { modLivery = livery })
         end
-        if Config.UseableItems and args.location == 'vehicle' then
+        if Config.UseableItems and location == 'vehicle' then
+            Wait(500)
             TriggerServerEvent('qb-newsjob:server:addVehicleItems', plate)
         end
-    end, args.vehicle, coords, true)
-end
+    end, model, coords, true)
+end)
 
 function MenuGarage(location)
     local currentGarrage = Config.Locations[location]
@@ -41,12 +48,17 @@ function MenuGarage(location)
     local grade = QBCore.Functions.GetPlayerData().job.grade.level
     local menu = { { header = Lang:t('text.' .. location), isMenuHeader = true } }
 
-    for veh, vehData in pairs(currentGarrage.vehicles[grade] or {}) do
+    local best
+    for g in pairs(currentGarrage.vehicles) do
+        local n = tonumber(g)
+        if n and n <= grade and (not best or n > best) then best = n end
+    end
+    for veh, vehData in pairs(best and currentGarrage.vehicles[best] or {}) do
         menu[#menu + 1] = {
             header = vehData.label,
             txt = '',
             params = {
-                event = SpawnReporterVehicle,
+                event = RequestReporterVehicle,
                 args = { vehicle = veh, location = location, modLivery = vehData.modLivery },
                 isAction = true
             }

@@ -2,7 +2,7 @@ fx_version 'cerulean'
 game 'gta5'
 lua54 'yes'
 author 'Kakarot'
-description 'Allows players to play as a news reporter and access the equipment for it'
+description 'Weazel News field work: duty point, news van and helicopter (server-granted), camera and mics; connected to the pf-news newsroom'
 version '1.5.0'
 
 shared_scripts {

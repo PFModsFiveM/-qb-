@@ -2,9 +2,18 @@ Config = {}
 
 Config.UseableItems = true -- Set to false if you want to use commands instead of usable items
 
+Config.Job = 'reporter'
+Config.GarageRange = 8.0     -- metres from a garage point to take a vehicle there
+Config.SpawnCooldown = 10    -- seconds between two vehicle requests
+Config.DutyRange = 2.5       -- metres from the duty point
+
 Config.Locations = {
     ['main'] = {
         coords = vector4(-597.89, -929.95, 24.0, 271.5),
+    },
+    -- clock in / out (reporters must be on duty to claim newsroom leads and use the equipment)
+    ['duty'] = {
+        coords = vector4(-600.4, -929.9, 23.86, 90.0),
     },
     ['inside'] = {
         coords = vector4(-77.46, -833.77, 243.38, 67.5),

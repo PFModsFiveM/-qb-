@@ -135,7 +135,7 @@ end)
 
 CreateThread(function()
 	while true do
-		if PlayerJob.name == 'reporter' then
+		if PlayerJob.name == Config.Job then
 			if holdingCam then
 				while not HasAnimDictLoaded(camanimDict) do
 					RequestAnimDict(camanimDict)
@@ -168,7 +168,7 @@ end)
 
 CreateThread(function()
 	while true do
-		if PlayerJob.name == 'reporter' then
+		if PlayerJob.name == Config.Job then
 			if holdingCam then
 				if IsControlJustReleased(1, 244) then
 					movcamera = true
@@ -247,7 +247,7 @@ end)
 
 CreateThread(function()
 	while true do
-		if PlayerJob.name == 'reporter' then
+		if PlayerJob.name == Config.Job then
 			if holdingCam then
 				if IsControlJustReleased(1, 38) then
 					newscamera = true
@@ -377,7 +377,7 @@ end)
 
 CreateThread(function()
 	while true do
-		if PlayerJob.name == 'reporter' then
+		if PlayerJob.name == Config.Job then
 			if holdingBmic then
 				while not HasAnimDictLoaded(bmicanimDict) do
 					RequestAnimDict(bmicanimDict)
