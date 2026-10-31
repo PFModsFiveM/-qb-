@@ -585,7 +585,7 @@ RegisterNetEvent('qb-vehicleshop:client:customTestDrive', function(data)
             SetVehicleEngineOn(veh, true, true, false)
             testDriveVeh = netId
             QBCore.Functions.Notify(Lang:t('general.testdrive_timenoti', { testdrivetime = Config.Shops[tempShop]['TestDriveTimeLimit'] }))
-        end, 'TESTDRIVE', Config.Shops[tempShop]['ShowroomVehicles'][ClosestVehicle].chosenVehicle, Config.Shops[tempShop]['TestDriveSpawn'], true)
+        end, 'TESTDRIVE', type(data) == 'string' and data or Config.Shops[tempShop]['ShowroomVehicles'][ClosestVehicle].chosenVehicle, Config.Shops[tempShop]['TestDriveSpawn'], true)
         createTestDriveReturn()
         startTestDriveTimer(Config.Shops[tempShop]['TestDriveTimeLimit'] * 60, prevCoords)
     else
@@ -1027,6 +1027,9 @@ RegisterNetEvent('qb-vehicleshop:client:confirmPurchase', function(offer)
     local detail = ('$%s'):format(tostring(offer.amount))
     if offer.kind == 'finance' then
         detail = ('$%s down, then %s payments of $%s'):format(tostring(offer.amount), tostring(offer.payments), tostring(offer.perPayment))
+    end
+    if tonumber(offer.tax) and tonumber(offer.tax) > 0 then
+        detail = detail .. (' (incl. $%s purchase tax)'):format(tostring(offer.tax))
     end
     exports['pfm-menu']:openMenu({
         { header = tostring(offer.label), txt = detail .. ' - offered by ' .. tostring(offer.seller), isMenuHeader = true },

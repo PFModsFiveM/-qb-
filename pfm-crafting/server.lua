@@ -137,3 +137,9 @@ for benchType, v in pairs(Config) do
         end)
     end
 end
+
+-- Read-only state for the Crafting app (server_devices.lua).
+CraftingState = {
+    benchOf = function(src) return placedBenches[src] end,
+    maxAmount = MAX_CRAFT_AMOUNT,
+}

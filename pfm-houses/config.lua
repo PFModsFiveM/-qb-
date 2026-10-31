@@ -991,3 +991,19 @@ Config.Furniture = {
 -- ══ Gameplay pack (PF): house selling ════════════════════════════
 Config.HouseSellBackPercent = 70     -- % of the base price paid out when selling back to the state
 Config.PlayerSaleMaxPrice = 10000000 -- cap on player-to-player sale prices
+
+-- Agency sales from the Real Estate agency app (tablet / computer): an on-duty agent offers an
+-- unowned house to a customer standing next to them; the customer accepts on their own screen and
+-- pays price + broker fee + property transfer tax from their bank through the ledger. The agency's
+-- society account and the agent are paid a commission of the price out of that purchase.
+Config.AgentSales = {
+    BrokerFeePercent = 5,          -- paid by the buyer on top of the price
+    AgencyCommissionPercent = 10,  -- of the price, to society:<Society>
+    AgentCommissionPercent = 3,    -- of the price, to the agent's bank
+    Society = 'realestate',
+    MaxDistance = 10.0,            -- agent and customer must be this close (server positions)
+    OfferSeconds = 60,             -- the customer has this long to answer
+    RequireDuty = true,            -- agents act from the app only while on duty
+    MaxPrice = 100000000,          -- listing price bounds when an agent reprices a house
+    MinPrice = 1000,
+}

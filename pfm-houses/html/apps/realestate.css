@@ -1,0 +1,16 @@
+/* Real Estate apps (pf-devices). Base styles come from pf-devices runtime.css; everything here is scoped to .pfr. */
+.pfr .pfr-top:empty { display: none; }
+.pfr .pfr-top { padding: 12px 18px 0; }
+.pfr .pfr-offer { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-color: rgba(56, 189, 248, .45); }
+.pfr .pfr-total { font-size: 18px; font-weight: 700; }
+.pfr .pfr-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.pfr .pfr-card { display: flex; flex-direction: column; gap: 6px; }
+.pfr .pfr-price { font-size: 20px; font-weight: 700; }
+.pfr .pfr-filters .pf-input, .pfr .pfr-filters .pf-select { width: auto; flex: 1; min-width: 120px; }
+.pfr .pfr-stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.pfr .pfr-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.pfr .pfr-price-input { width: 110px; padding: 5px 8px; font-size: 12px; }
+.pfr .pf-table td { vertical-align: middle; }
+@media (max-width: 700px) {
+    .pfr .pf-table th:nth-child(2), .pfr .pf-table td:nth-child(2) { display: none; }
+}

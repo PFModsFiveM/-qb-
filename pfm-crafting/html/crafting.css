@@ -1,0 +1,7 @@
+/* Crafting app (html/crafting.js), on the pf-devices base classes; scoped to .pfm-craft. */
+.pfm-craft .pfm-craft-wrap { flex-wrap: wrap; margin-top: 8px; }
+.pfm-craft .pfm-craft-search { flex: 1 1 200px; }
+.pfm-craft .pfm-craft-list { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.pfm-craft .pfm-craft-recipe { display: flex; flex-direction: column; gap: 8px; }
+.pfm-craft .pfm-craft-reqs { display: flex; flex-wrap: wrap; gap: 6px; }
+.pfm-craft .pfm-craft-reqs .pf-badge:not(.ok) { color: var(--pf-bad); background: rgba(239, 68, 68, .12); }

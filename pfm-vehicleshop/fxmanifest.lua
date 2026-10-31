@@ -24,5 +24,11 @@ client_scripts {
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
     '@pfm-banking/payouts.lua',
-    'server.lua'
+    'server.lua',
+    'server_apps.lua'
+}
+
+files {
+    'html/apps/cardealer.js',
+    'html/apps/cardealer.css'
 }

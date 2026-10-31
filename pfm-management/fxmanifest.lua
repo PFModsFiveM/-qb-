@@ -18,5 +18,12 @@ client_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
-    'server/*.lua'
+    'server/sv_boss.lua', -- the staff rules (PFManagement) and the boss menu
+    'server/sv_gang.lua',
+    'server/sv_app.lua'   -- the Boss app on the tablet and the computer (pf-devices)
+}
+
+files {
+    'html/apps/boss.js',
+    'html/apps/boss.css',
 }

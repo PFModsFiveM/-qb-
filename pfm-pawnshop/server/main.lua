@@ -19,6 +19,22 @@ AddEventHandler('playerDropped', function()
     eventCooldowns[source] = nil
 end)
 
+-- Opening hours (Config.UseTimes) on the server too, from the game clock pfm-weathersync keeps (the
+-- one every client shows). Without it the hours cannot be known here and only the client checks them.
+local function gameTime()
+    if GetResourceState('pfm-weathersync') ~= 'started' then return nil end
+    local ok, hour, minute = pcall(function() return exports['pfm-weathersync']:getTime() end)
+    if not ok or type(hour) ~= 'number' then return nil end
+    return hour, minute
+end
+
+local function isOpen()
+    if not Config.UseTimes then return true end
+    local hour = gameTime()
+    if not hour then return true end
+    return hour >= Config.TimeOpen and hour <= Config.TimeClosed
+end
+
 local function isNearPawnshop(src)
     local playerCoords = GetEntityCoords(GetPlayerPed(src))
     for _, value in pairs(Config.PawnLocation) do
@@ -70,6 +86,7 @@ RegisterNetEvent('qb-pawnshop:server:sellPawnItems', function(itemName, itemAmou
         reportExploit(src, 'sellPawnItems Exploiting')
         return
     end
+    if not isOpen() then return end
     -- recompute the price server-side; the client-sent itemPrice is ignored
     local unitPrice = getPawnPrice(itemName)
     if not unitPrice then return end -- item is not pawnable
@@ -98,6 +115,7 @@ RegisterNetEvent('qb-pawnshop:server:meltItemRemove', function(itemName, itemAmo
     if not Player then return end
     if onCooldown(src, 'melt', 1500) then return end
     if not isNearPawnshop(src) then return end
+    if not isOpen() then return end
     -- only melt items listed in config; client-sent melt time/rewards are ignored
     local meltCfg = getMeltConfig(itemName)
     if not meltCfg then return end
@@ -157,6 +175,22 @@ end)
 
 QBCore.Functions.CreateCallback('qb-pawnshop:server:getInv', function(source, cb)
     local Player = exports['pfm-core']:GetPlayer(source)
-    local inventory = Player.PlayerData.items
-    return cb(inventory)
+    if not Player then return cb({}) end
+    return cb(Player.PlayerData.items)
 end)
+
+-- The prices the server pays, for the sell menu (the client's own config rolls its own random prices).
+QBCore.Functions.CreateCallback('qb-pawnshop:server:getPawnPrices', function(source, cb)
+    local out = {}
+    for _, v in pairs(Config.PawnItems) do out[v.item] = getPawnPrice(v.item) end
+    cb(out)
+end)
+
+-- Read-only state for the Pawn Shop app (server/devices.lua).
+PawnshopState = {
+    price = getPawnPrice,
+    meltConfig = getMeltConfig,
+    meltOf = function(citizenid) return pendingMelts[citizenid] end,
+    gameTime = gameTime,
+    isOpen = isOpen,
+}

@@ -1,0 +1,18 @@
+/* Crypto app (pfm-crypto) on pf-devices, scoped under .pfx. */
+.pfx { position: relative; min-height: 0; }
+.pfx-price { font-size: 30px; font-weight: 800; }
+.pfx-chart { min-height: 60px; }
+.pfx-svg { width: 100%; height: 150px; display: block; }
+.pfx-line { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; stroke: var(--pf-accent); }
+.pfx-line.up { stroke: var(--pf-ok); }
+.pfx-line.down { stroke: var(--pf-bad); }
+.pfx-area { fill: rgba(56, 189, 248, .10); stroke: none; }
+.pfx-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.pfx-coins { font-size: 24px; font-weight: 700; }
+.pfx-mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.pfx-seg { display: flex; gap: 6px; }
+.pfx-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.pfx-note { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: rgba(56, 189, 248, .08); font-size: 12px; color: var(--pf-fg-2); }
+.pfx-in { color: var(--pf-ok); }
+.pfx-out { color: var(--pf-bad); }
+.pfx-quote { min-height: 16px; }

@@ -314,11 +314,15 @@ function PFGarages.PayDepot(src, plate)
     if isFleetPlate(plate) then return { ok = false, error = 'fleet' } end
     local cid = Player.PlayerData.citizenid
     -- the fee is read from the player's own car; nothing the client sends is used
-    local row = MySQL.single.await('SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
-    if not row then return { ok = false, error = 'not_owned' } end
-    if tonumber(row.state) == 2 then return { ok = false, error = 'seized' } end
-    local fee = math.floor(tonumber(row.depotprice) or 0)
+    local fee = MySQL.scalar.await('SELECT depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, cid })
+    if fee == nil then return { ok = false, error = 'not_owned' } end
+    fee = math.floor(tonumber(fee) or 0)
     if fee <= 0 then return { ok = false, error = 'nothing_due' } end
+    if PFGarages.dbReady then
+        -- a seized car is released by the police, not by paying (the spawn refuses it as well)
+        local state = MySQL.scalar.await('SELECT state FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, cid })
+        if tonumber(state) == 2 then return { ok = false, error = 'seized' } end
+    end
     if payingDepot[plate] then return { ok = false, error = 'in_progress' } end
     payingDepot[plate] = true
     local ok, res = pcall(payDepotLocked, Player, plate, fee)
@@ -481,6 +485,10 @@ QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(sourc
         return
     end
     local fee = tonumber(ownedVehicle.depotprice) or 0
+    if tonumber(ownedVehicle.state) == 2 then   -- seized: only the police release it
+        cb(nil, nil, nil)
+        return
+    end
     if fee > 0 then
         if not PFGarages.ReleasePaid(plate, cid, fee) then
             cb(nil, nil, nil)
@@ -725,3 +733,14 @@ local function getAllGarages()
 end
 
 exports('getAllGarages', getAllGarages)
+
+-- A deleted character's cars are gone (pfm-core deletes player_vehicles); so are their paid releases.
+AddEventHandler('pfm-core:server:characterDeleted', function(citizenid)
+    if type(citizenid) ~= 'string' or citizenid == '' or #citizenid > 50 then return end
+    for plate, owner in pairs(paidRelease) do
+        if owner == citizenid then paidRelease[plate] = nil end
+    end
+    if PFGarages.dbReady then
+        MySQL.query.await('DELETE FROM pfm_garage_depot_releases WHERE citizenid = ?', { citizenid })
+    end
+end)

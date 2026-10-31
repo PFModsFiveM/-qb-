@@ -14,8 +14,72 @@ local function IsOnRefuelCooldown(src)
     return false
 end
 
+-- ====================|| SHARED VEHICLE STATE || ==================== --
+-- The fuel level other players see ('qb-fuel' on the vehicle) is a state bag only the server
+-- writes (sv_stateBagStrictMode). Clients report a level and the server checks who is asking:
+-- any client used to be able to set any car's fuel.
+local FUEL_REACH = 10.0         -- metres: refuelling from outside the car (pump, jerry can)
+local SYNC_WINDOW_MS, SYNC_MAX = 10000, 20
+local syncRate = {}             -- [src] = { start, count }
+
+local function syncRateOk(src)
+    local now = GetGameTimer()
+    local r = syncRate[src]
+    if not r or now - r.start >= SYNC_WINDOW_MS then
+        r = { start = now, count = 0 }
+        syncRate[src] = r
+    end
+    r.count = r.count + 1
+    return r.count <= SYNC_MAX
+end
+
+local function vehicleFromNetId(netId)
+    netId = tonumber(netId)
+    if not netId or netId ~= math.floor(netId) or netId <= 0 then return nil end
+    local veh = NetworkGetEntityFromNetworkId(netId)
+    if not veh or veh == 0 or not DoesEntityExist(veh) then return nil end
+    if GetEntityType(veh) ~= 2 then return nil end
+    return veh
+end
+
+local function distanceToVehicle(src, veh)
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 then return math.huge end
+    return #(GetEntityCoords(ped) - GetEntityCoords(veh))
+end
+
+--- Who may set this car's shared fuel level to `level` (0-100):
+---  * its driver, or the client simulating an empty car (network owner): any level, as fuel use
+---    is simulated by that client;
+---  * anyone standing beside it: only a higher level (refuelling), or the first level a newly
+---    spawned car gets.
+local function canSetVehicleFuel(src, veh, level)
+    local ped = GetPlayerPed(src)
+    local driver = GetPedInVehicleSeat(veh, -1)
+    if ped and ped ~= 0 and driver == ped then return true end
+    local empty = not driver or driver == 0
+    if empty and NetworkGetEntityOwner(veh) == src then return true end
+    if distanceToVehicle(src, veh) > FUEL_REACH then return false end
+    local current = tonumber(Entity(veh).state['qb-fuel'])
+    return current == nil or level >= current
+end
+
+RegisterNetEvent('qb-fuel:server:syncFuel', function(netId, level)
+    local src = source
+    if not Config.SyncFuelBetweenPlayers then return end
+    level = tonumber(level)
+    if not level or level ~= level or level == math.huge or level == -math.huge then return end
+    level = math.floor(math.max(0.0, math.min(100.0, level)) * 100 + 0.5) / 100
+    if not syncRateOk(src) then return end
+    local veh = vehicleFromNetId(netId)
+    if not veh or not canSetVehicleFuel(src, veh, level) then return end
+    Entity(veh).state:set('qb-fuel', level + 0.0, true)
+end)
+
 AddEventHandler('playerDropped', function()
-    refuelCooldowns[source] = nil
+    local src = source
+    refuelCooldowns[src] = nil
+    syncRate[src] = nil
 end)
 
 -- ====================|| EVENTS || ==================== --

@@ -4,6 +4,36 @@ local houseownercid = {}
 local housekeyholders = {}
 local housesLoaded = false
 
+-- Shared with server/apps.lua (the Real Estate apps on the tablet and the computer).
+PFHouses = PFHouses or {}
+PFHouses.dbReady = false   -- true once this resource's own tables exist (migrations ran)
+PFHouses.Migrations = {
+    { version = 1, name = 'house sales record', up = {
+        [[CREATE TABLE IF NOT EXISTS `pfm_house_sales` (
+            `id` INT NOT NULL AUTO_INCREMENT,
+            `house` VARCHAR(64) NOT NULL,
+            `address` VARCHAR(128) DEFAULT NULL,
+            `kind` VARCHAR(16) NOT NULL DEFAULT 'agent',
+            `price` INT NOT NULL DEFAULT 0,
+            `broker_fee` INT NOT NULL DEFAULT 0,
+            `tax` DECIMAL(12,2) NOT NULL DEFAULT 0,
+            `total` DECIMAL(12,2) NOT NULL DEFAULT 0,
+            `buyer_cid` VARCHAR(50) DEFAULT NULL,
+            `buyer_name` VARCHAR(100) DEFAULT NULL,
+            `agent_cid` VARCHAR(50) DEFAULT NULL,
+            `agent_name` VARCHAR(100) DEFAULT NULL,
+            `agent_commission` INT NOT NULL DEFAULT 0,
+            `agency_commission` INT NOT NULL DEFAULT 0,
+            `ledger_key` VARCHAR(100) DEFAULT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `ledger_key` (`ledger_key`),
+            KEY `agent_cid` (`agent_cid`),
+            KEY `created_at` (`created_at`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
+    } },
+}
+
 -- Threads
 
 CreateThread(function()
@@ -128,6 +158,26 @@ end
 
 exports('hasKey', hasKey)
 
+PFHouses.HasKey = hasKey
+PFHouses.IsOwner = isHouseOwner
+function PFHouses.OwnerOf(house) return houseownercid[house] end
+function PFHouses.KeyHolders(house) return housekeyholders[house] end
+--- Houses the citizen owns or holds a key to: { [house] = 'owner' | 'key' }.
+function PFHouses.HousesOf(cid)
+    local out = {}
+    for house, owner in pairs(houseownercid) do
+        if owner == cid then out[house] = 'owner' end
+    end
+    for house, holders in pairs(housekeyholders) do
+        if not out[house] and houseownercid[house] then
+            for _, holder in pairs(holders or {}) do
+                if holder == cid then out[house] = 'key' break end
+            end
+        end
+    end
+    return out
+end
+
 -- Money in this resource moves through the pfm-banking ledger (PFPayout, '@pfm-banking/payouts.lua'):
 -- purchases are paid into system:pfm-houses and every payment has a fixed key, so a repeated or
 -- interrupted request never charges or pays twice.
@@ -233,6 +283,52 @@ local function isHouseOwned(house)
     return false
 end
 
+--- Hands an unowned house to `Player` (memory, player_houses, houselocations) and registers it with
+--- pf-government. The money was taken before this is called.
+local function giveHouse(house, Player)
+    houseowneridentifier[house] = Player.PlayerData.license
+    houseownercid[house] = Player.PlayerData.citizenid
+    housekeyholders[house] = { [1] = Player.PlayerData.citizenid }
+    MySQL.insert('INSERT INTO player_houses (house, identifier, citizenid, keyholders) VALUES (?, ?, ?, ?)', { house, Player.PlayerData.license, Player.PlayerData.citizenid, json.encode(housekeyholders[house]) })
+    MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 1, house })
+    Config.Houses[house].owned = true
+    if GetResourceState('pf-government') == 'started' then
+        pcall(function()
+            exports['pf-government']:RegisterProperty(house, Config.Houses[house].adress, Player.PlayerData.citizenid, ('%s %s'):format(Player.PlayerData.charinfo.firstname, Player.PlayerData.charinfo.lastname))
+        end)
+    end
+end
+
+--- The cost of buying a house from the city: price, the 5% broker and 10% bank fees and the
+--- property transfer tax (pf-government's rate when it runs). Rounded to cents.
+local function purchaseCost(price)
+    local brokerfee = (price / 100 * 5)
+    local bankfee = (price / 100 * 10)
+    local propertyTax = (price / 100 * 6)
+    if price > 0 and GetResourceState('pf-government') == 'started' then
+        local okTax, calcTax = pcall(function()
+            return exports['pf-government']:CalculateTax(price, 'property_transfer')
+        end)
+        if okTax then
+            propertyTax = tonumber(calcTax) or propertyTax
+        end
+    end
+    local total = math.floor(((price + brokerfee + bankfee + propertyTax) * 100) + 0.5) / 100
+    return { price = price, broker = brokerfee, bank = bankfee, tax = propertyTax, total = total }
+end
+
+PFHouses.NearHouse = nearHouse
+PFHouses.InsideHouse = insideHouse
+PFHouses.IsRealEstate = isRealEstate
+PFHouses.IsHouseOwned = isHouseOwned
+PFHouses.GiveHouse = giveHouse
+PFHouses.PurchaseCost = purchaseCost
+PFHouses.SettlePropertyTax = settlePropertyTax
+--- One sale of a house at a time (two buyers, or a buyer and a seller-back, could both go through).
+function PFHouses.Lock(house) if buyingHouse[house] then return false end buyingHouse[house] = true return true end
+function PFHouses.Unlock(house) buyingHouse[house] = nil end
+function PFHouses.Locked(house) return buyingHouse[house] == true end
+
 -- Events
 
 RegisterNetEvent('qb-houses:server:setHouses', function()
@@ -256,17 +352,18 @@ local function validHouseCoords(coords)
     return tonumber(e.x) ~= nil and tonumber(e.y) ~= nil and tonumber(e.z) ~= nil
 end
 
-RegisterNetEvent('qb-houses:server:addNewHouse', function(street, coords, price, tier)
-    local src = source
-    if not isRealEstate(exports['pfm-core']:GetPlayer(src)) then return end
-    if type(street) ~= 'string' or street == '' or #street > 64 or not validHouseCoords(coords) then return end
+--- Creates a house listing where the agent stands (the Real Estate agency app and /createhouse).
+--- Returns the new house name, or nil and an error.
+function PFHouses.CreateListing(src, street, coords, price, tier)
+    if not isRealEstate(exports['pfm-core']:GetPlayer(src)) then return nil, 'not_agent' end
+    if type(street) ~= 'string' or street == '' or #street > 64 or street:find('[%c]') or not validHouseCoords(coords) then return nil, 'bad_request' end
     -- the house is created where the agent stands
     local e = coords.enter
-    if #(GetEntityCoords(GetPlayerPed(src)) - vector3(tonumber(e.x), tonumber(e.y), tonumber(e.z))) > 10.0 then return end
+    if #(GetEntityCoords(GetPlayerPed(src)) - vector3(tonumber(e.x), tonumber(e.y), tonumber(e.z))) > 10.0 then return nil, 'too_far' end
     street = street:gsub("%'", '')
     price = math.floor(tonumber(price) or 0)
     tier = math.floor(tonumber(tier) or 0)
-    if price <= 0 or price > 100000000 or tier < 1 or tier > 20 then return end
+    if price <= 0 or price > 100000000 or tier < 1 or tier > 20 then return nil, 'bad_price' end
     local houseCount = GetHouseStreetCount(street)
     local name = street:lower() .. tostring(houseCount)
     local label = street .. ' ' .. tostring(houseCount)
@@ -285,6 +382,11 @@ RegisterNetEvent('qb-houses:server:addNewHouse', function(street, coords, price,
     TriggerClientEvent('qb-houses:client:setHouseConfig', -1, Config.Houses)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('info.added_house', { value = label }))
     TriggerEvent('qb-log:server:CreateLog', 'house', Lang:t('log.house_created'), 'green', Lang:t('log.house_address', { label = label, price = price, tier = tier, agent = GetPlayerName(src) }))
+    return name
+end
+
+RegisterNetEvent('qb-houses:server:addNewHouse', function(street, coords, price, tier)
+    PFHouses.CreateListing(source, street, coords, price, tier)
 end)
 
 RegisterNetEvent('qb-houses:server:addGarage', function(house, coords)
@@ -306,21 +408,9 @@ RegisterNetEvent('qb-houses:server:viewHouse', function(house)
     local src = source
     local pData = exports['pfm-core']:GetPlayer(src)
     if not pData or type(house) ~= 'string' or not Config.Houses[house] then return end
-    local houseprice = Config.Houses[house].price
-    local brokerfee = (houseprice / 100 * 5)
-    local bankfee = (houseprice / 100 * 10)
-    local taxes = (houseprice / 100 * 6)
-
-    if GetResourceState('pf-government') == 'started' then
-        local okTax, calcTax = pcall(function()
-            return exports['pf-government']:CalculateTax(houseprice, 'property_transfer')
-        end)
-        if okTax then
-            taxes = tonumber(calcTax) or taxes
-        end
-    end
-
-    TriggerClientEvent('qb-houses:client:viewHouse', src, houseprice, brokerfee, bankfee, taxes, pData.PlayerData.charinfo.firstname, pData.PlayerData.charinfo.lastname)
+    local houseprice = tonumber(Config.Houses[house].price) or 0
+    local cost = purchaseCost(houseprice)
+    TriggerClientEvent('qb-houses:client:viewHouse', src, houseprice, cost.broker, cost.bank, cost.tax, pData.PlayerData.charinfo.firstname, pData.PlayerData.charinfo.lastname)
 end)
 
 -- A house stash: only that house's, from inside it, for someone who may be in there. (Any client could
@@ -354,20 +444,9 @@ RegisterNetEvent('qb-houses:server:buyHouse', function(house)
     if not nearHouse(src, house, 10.0) then return end
     local price = tonumber(Config.Houses[house].price) or 0
     if price <= 0 then return end
-    local brokerfee = (price / 100 * 5)
-    local bankfee = (price / 100 * 10)
-    local propertyTax = (price / 100 * 6)
-
-    if price > 0 and GetResourceState('pf-government') == 'started' then
-        local okTax, calcTax = pcall(function()
-            return exports['pf-government']:CalculateTax(price, 'property_transfer')
-        end)
-        if okTax then
-            propertyTax = tonumber(calcTax) or propertyTax
-        end
-    end
-
-    local HousePrice = math.floor(((price + brokerfee + bankfee + propertyTax) * 100) + 0.5) / 100
+    local cost = purchaseCost(price)
+    local propertyTax = cost.tax
+    local HousePrice = cost.total
     local bankBalance = pData.PlayerData.money['bank']
 
     local isOwned = isHouseOwned(house)
@@ -395,24 +474,12 @@ RegisterNetEvent('qb-houses:server:buyHouse', function(house)
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.already_owned'), 'error')
             return
         end
-        houseowneridentifier[house] = pData.PlayerData.license
-        houseownercid[house] = pData.PlayerData.citizenid
-        housekeyholders[house] = {
-            [1] = pData.PlayerData.citizenid
-        }
-        MySQL.insert('INSERT INTO player_houses (house, identifier, citizenid, keyholders) VALUES (?, ?, ?, ?)', { house, pData.PlayerData.license, pData.PlayerData.citizenid, json.encode(housekeyholders[house]) })
-        MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 1, house })
+        giveHouse(house, pData)
         TriggerClientEvent('qb-houses:client:SetClosestHouse', src)
         TriggerClientEvent('qb-house:client:RefreshHouseTargets', src)
         buyingHouse[house] = nil
 
         settlePropertyTax(propertyTax, cid, key, price)
-
-        if GetResourceState('pf-government') == 'started' then
-            pcall(function()
-                exports['pf-government']:RegisterProperty(house, Config.Houses[house].adress, pData.PlayerData.citizenid, ('%s %s'):format(pData.PlayerData.charinfo.firstname, pData.PlayerData.charinfo.lastname))
-            end)
-        end
 
         -- the agency's commission, from the purchase money held by this resource
         local commission = math.floor(HousePrice * math.random(18, 25)) / 100
@@ -1134,6 +1201,7 @@ QBCore.Commands.Add('sellhouse', Lang:t('info.sellhouse_cmd'), { { name = 'id', 
     housekeyholders[house] = nil
     MySQL.query('DELETE FROM player_houses WHERE house = ?', { house })
     MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 0, house })
+    Config.Houses[house].owned = false
     furnitureCredit[house] = nil
     buyingHouse[house] = nil
     TriggerClientEvent('qb-houses:client:SetClosestHouse', -1)
@@ -1205,9 +1273,66 @@ RegisterNetEvent('qb-houses:server:RespondHouseSale', function(accepted)
         ('%s sold to %s %s for $%s (+$%s tax)'):format(offer.house, Buyer.PlayerData.charinfo.firstname, Buyer.PlayerData.charinfo.lastname, offer.price, tax))
 end)
 
+-- Decorating blocks the inventory (inv_busy). The server sets that state bag value: with
+-- sv_stateBagStrictMode a client cannot write replicated values. Only a key holder inside the house
+-- turns it on, and this event only turns off what decorating turned on (so it cannot be used to
+-- clear the flag the inventory set while it is open).
+local decorating = {}   -- [src] = house
+
+RegisterNetEvent('qb-houses:server:SetDecorating', function(house, active)
+    local src = source
+    local qbPlayer = exports['pfm-core']:GetPlayer(src)
+    if not qbPlayer then return end
+    if active == true then
+        if type(house) ~= 'string' or not Config.Houses[house] then return end
+        if not hasKey(qbPlayer.PlayerData.license, qbPlayer.PlayerData.citizenid, house) or not insideHouse(src, house) then return end
+        decorating[src] = house
+        Player(src).state.inv_busy = true
+    elseif decorating[src] then
+        decorating[src] = nil
+        Player(src).state.inv_busy = false
+    end
+end)
+
 AddEventHandler('playerDropped', function()
     local src = source
     pendingHouseSales[src] = nil
+    decorating[src] = nil
     for _, guests in pairs(houseGuests) do guests[src] = nil end
     for _, rings in pairs(doorRings) do rings[src] = nil end
+    if PFHouses.OnPlayerDropped then PFHouses.OnPlayerDropped(src) end
+end)
+
+-- A deleted character: pfm-core removed their player_houses rows. Their houses go back on the
+-- market (with an empty stash, so the next owner does not inherit it), and their keys to other
+-- people's houses are taken back.
+AddEventHandler('pfm-core:server:characterDeleted', function(citizenid)
+    if type(citizenid) ~= 'string' or citizenid == '' or #citizenid > 50 then return end
+    for house, owner in pairs(houseownercid) do
+        if owner == citizenid then
+            houseownercid[house], houseowneridentifier[house], housekeyholders[house] = nil, nil, nil
+            furnitureCredit[house] = nil
+            if Config.Houses[house] then Config.Houses[house].owned = false end
+            MySQL.update('UPDATE houselocations SET owned = ? WHERE name = ?', { 0, house })
+            if GetResourceState('pfm-inventory') == 'started' then
+                pcall(function() exports['pfm-inventory']:ClearStash(house) end)
+            end
+            MySQL.query('DELETE FROM inventories WHERE identifier = ?', { house })
+        end
+    end
+    for house, holders in pairs(housekeyholders) do
+        local kept, changed = {}, false
+        for _, holder in pairs(holders or {}) do
+            if holder == citizenid then changed = true else kept[#kept + 1] = holder end
+        end
+        if changed then
+            housekeyholders[house] = kept
+            MySQL.update('UPDATE player_houses SET keyholders = ? WHERE house = ?', { json.encode(kept), house })
+        end
+    end
+    for buyer, offer in pairs(pendingHouseSales) do
+        if offer.sellerCid == citizenid then pendingHouseSales[buyer] = nil end
+    end
+    if PFHouses.OnCharacterDeleted then PFHouses.OnCharacterDeleted(citizenid) end
+    TriggerClientEvent('qb-houses:client:setHouseConfig', -1, Config.Houses)
 end)

@@ -25,7 +25,8 @@ client_scripts {
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
     '@pfm-banking/payouts.lua',
-    'server/main.lua'
+    'server/main.lua',
+    'server/apps.lua'
 }
 
 files {
@@ -33,7 +34,9 @@ files {
     'html/reset.css',
     'html/style.css',
     'html/script.js',
-    'html/img/dynasty8-logo.png'
+    'html/img/dynasty8-logo.png',
+    'html/apps/realestate.js',
+    'html/apps/realestate.css'
 }
 
 dependencies {

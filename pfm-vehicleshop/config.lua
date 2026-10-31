@@ -10,6 +10,17 @@ Config.PreventFinanceSelling = false                  -- allow/prevent players f
 Config.FilterByMake = false                           -- adds a make list before selecting category in shops
 Config.SortAlphabetically = true                      -- will sort make, category, and vehicle selection menus alphabetically
 Config.HideCategorySelectForOne = true                -- will hide the category selection menu if a shop only sells one category of vehicle or a make has only one category
+Config.SaleDistance = 3.0                             -- a dealer sells to a customer standing this close (meters, server positions)
+-- Stock of the managed dealerships (the cardealer job). Each sale takes one car; the dealership buys
+-- new cars from the manufacturer out of its society account in the Dealer app. Free-use shops are
+-- not limited.
+Config.Stock = {
+    Enabled = true,
+    Initial = 3,              -- cars of each model a dealership starts with
+    WholesalePercent = 70,    -- what the dealership pays the manufacturer, % of the list price
+    MaxOrder = 10,            -- cars of one model per order
+    OrderGrade = 2,           -- job grade that may order stock (or the boss)
+}
 Config.Shops = {
     ['pdm'] = {
         ['Type'] = 'free-use', -- no player interaction is required to purchase a car

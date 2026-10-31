@@ -1602,3 +1602,21 @@ RegisterNetEvent('qb-houses:client:ConfirmHouseSale', function(data)
     local accepted = dialog and dialog.confirm and dialog.confirm:upper() == 'YES'
     TriggerServerEvent('qb-houses:server:RespondHouseSale', accepted == true)
 end)
+
+-- ══ Real Estate agency sale: the agent's offer, answered on this player's own screen ═════════════
+-- (the same offer is shown in the Real Estate app; either answer goes to the server, which charges
+-- only after an accept and checks everything again)
+RegisterNetEvent('qb-houses:client:ConfirmAgentSale', function(offer)
+    if type(offer) ~= 'table' or type(offer.id) ~= 'string' then return end
+    local header = ('%s offers you %s: $%s + broker fee $%s + tax $%s = $%s. Type YES to buy.'):format(
+        tostring(offer.agent), tostring(offer.address), tostring(offer.price), tostring(offer.broker), tostring(offer.tax), tostring(offer.total))
+    local dialog = exports['pfm-input']:ShowInput({
+        header = header,
+        submitText = Lang:t('info.sale_confirm_submit'),
+        inputs = {
+            { text = Lang:t('info.sale_confirm_text'), name = 'confirm', type = 'text', isRequired = true },
+        }
+    })
+    local accepted = dialog and dialog.confirm and tostring(dialog.confirm):upper() == 'YES'
+    TriggerServerEvent('qb-houses:server:RespondAgentSale', offer.id, accepted == true)
+end)

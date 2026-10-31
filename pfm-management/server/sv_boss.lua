@@ -1,4 +1,255 @@
-local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
+-- Staff rules shared by the boss menu (this file), the gang menu (sv_gang.lua), the Boss app
+-- (sv_app.lua) and other resources (exports at the bottom). One place decides who may hire, rank and
+-- fire whom:
+--   * only a boss of a job (scope 'job') or gang (scope 'gang') acts, and only on their own group;
+--   * never on someone ranked above them, never to a grade above their own, never on themselves;
+--   * a grade must exist for that job/gang;
+--   * hiring needs the person standing next to the boss (10 m, positions read on the server) and not
+--     already in the group.
+-- Every function reads the boss and the target on the server; callers pass ids only.
+
+PFManagement = PFManagement or {}
+local M = PFManagement
+local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions', 'Config' })
+
+M.HIRE_RANGE = 10.0
+M.OFFICE_RANGE = 3.0
+
+local SCOPES = {
+    job = { field = 'job', none = 'unemployed', set = 'SetJob', shared = 'Jobs', column = 'job', menus = 'BossMenus' },
+    gang = { field = 'gang', none = 'none', set = 'SetGang', shared = 'Gangs', column = 'gang', menus = 'GangMenus' },
+}
+M.SCOPES = SCOPES
+
+local function scopeOf(scope) return SCOPES[scope] end
+
+function M.Player(src) return exports['pfm-core']:GetPlayer(tonumber(src)) end
+
+local function level(group)
+    local g = group and group.grade
+    return tonumber(type(g) == 'table' and g.level or g) or 0
+end
+M.Level = level
+
+local function fullName(Player)
+    local ci = Player and Player.PlayerData and Player.PlayerData.charinfo or {}
+    return (((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', ''))
+end
+M.FullName = fullName
+
+--- The boss's job or gang (PlayerData.job / .gang) when they are its boss, else nil.
+function M.BossGroup(Player, scope)
+    local sc = scopeOf(scope)
+    if not sc or not Player or not Player.PlayerData then return nil end
+    local group = Player.PlayerData[sc.field]
+    if not group or group.isboss ~= true or not group.name or group.name == sc.none then return nil end
+    return group
+end
+
+--- True when src is the boss of their job (scope 'job'), gang ('gang'), or either (nil).
+function M.IsBoss(src, scope)
+    local Player = M.Player(src)
+    if not Player then return false end
+    if scope then return M.BossGroup(Player, scope) ~= nil end
+    return M.BossGroup(Player, 'job') ~= nil or M.BossGroup(Player, 'gang') ~= nil
+end
+
+--- The grade table of a job or gang ({ ['0'] = { name, payment, isboss }, ... }), or nil when unknown.
+function M.Grades(scope, name)
+    local sc = scopeOf(scope)
+    local all = sc and exports['pfm-core']:GetShared(sc.shared) or nil
+    local def = type(all) == 'table' and all[name] or nil
+    return def and def.grades or nil, def
+end
+
+local function lookup(cid)
+    return QBCore.Functions.GetPlayerByCitizenId(cid) or QBCore.Functions.GetOfflinePlayerByCitizenId(cid)
+end
+
+local function decode(v)
+    if type(v) == 'table' then return v end
+    local ok, out = pcall(json.decode, v or '')
+    return ok and type(out) == 'table' and out or {}
+end
+
+--- The members of the boss's job or gang: online ones from live data, the others from their saved
+--- character. nil, 'not_boss' when src is not a boss of that scope.
+function M.ListMembers(src, scope)
+    local sc = scopeOf(scope)
+    local Player = M.Player(src)
+    local group = M.BossGroup(Player, scope)
+    if not group then return nil, 'not_boss' end
+    local name = group.name
+    -- always the boss's own group (the client-sent name was pasted into the SQL)
+    local rows = MySQL.query.await(('SELECT * FROM `players` WHERE `%s` LIKE ?'):format(sc.column), { '%' .. name .. '%' }) or {}
+    local list, seen = {}, {}
+    for _, row in ipairs(rows) do
+        local cid = row.citizenid
+        local Online = cid and QBCore.Functions.GetPlayerByCitizenId(cid)
+        local g, ci
+        if Online then
+            g, ci = Online.PlayerData[sc.field], Online.PlayerData.charinfo
+        else
+            local Offline = cid and QBCore.Functions.GetOfflinePlayerByCitizenId(cid)
+            if Offline then g, ci = Offline.PlayerData[sc.field], Offline.PlayerData.charinfo
+            else g, ci = decode(row[sc.column]), decode(row.charinfo) end
+        end
+        if cid and not seen[cid] and type(g) == 'table' and g.name == name then
+            seen[cid] = true
+            local grade = type(g.grade) == 'table' and g.grade or { level = tonumber(g.grade) or 0 }
+            list[#list + 1] = {
+                citizenid = cid,
+                name = ((ci and ci.firstname or '') .. ' ' .. (ci and ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', ''),
+                grade = { level = tonumber(grade.level) or 0, name = grade.name, payment = tonumber(grade.payment) },
+                isboss = g.isboss == true or grade.isboss == true,
+                online = Online ~= nil and Online.PlayerData.source ~= nil,
+                onduty = Online ~= nil and g.onduty == true or false,
+                me = cid == Player.PlayerData.citizenid,
+            }
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.grade.level ~= b.grade.level then return a.grade.level > b.grade.level end
+        return a.name < b.name
+    end)
+    return list
+end
+
+-- The boss and a member of their own group they may act on.
+local function bossAndMember(src, scope, cid)
+    local sc = scopeOf(scope)
+    if not sc then return nil, 'bad_request' end
+    local Boss = M.Player(src)
+    local group = M.BossGroup(Boss, scope)
+    if not group then return nil, 'not_boss' end
+    if type(cid) ~= 'string' or cid == '' or #cid > 50 then return nil, 'bad_request' end
+    local Member = lookup(cid)
+    local mg = Member and Member.PlayerData and Member.PlayerData[sc.field]
+    if not mg or mg.name ~= group.name then return nil, 'not_member' end
+    if level(mg) > level(group) then return nil, 'outranks_you' end
+    return Boss, nil, Member, group, sc
+end
+
+local function notifyOnline(Player, message, kind)
+    local s = Player and Player.PlayerData and Player.PlayerData.source
+    if s and not Player.Offline then TriggerClientEvent('QBCore:Notify', s, message, kind or 'primary') end
+end
+
+--- Sets a member's grade. Returns true, member or false, error.
+function M.SetGrade(src, scope, cid, grade)
+    local Boss, err, Member, group, sc = bossAndMember(src, scope, cid)
+    if not Boss then return false, err end
+    grade = tonumber(grade)
+    if not grade or grade < 0 or grade % 1 ~= 0 then return false, 'bad_grade' end
+    if Member.PlayerData.citizenid == Boss.PlayerData.citizenid then return false, 'cannot_change_self' end
+    if grade > level(group) then return false, 'grade_above_yours' end
+    local grades = M.Grades(scope, group.name)
+    if grades and not grades[tostring(grade)] then return false, 'unknown_grade' end
+    if not Member.Functions[sc.set](group.name, grade) then return false, 'unknown_grade' end
+    if Member.Functions.Save then Member.Functions.Save() end
+    local g = Member.PlayerData[sc.field]
+    notifyOnline(Member, 'Your rank is now ' .. tostring(g and g.grade and g.grade.name or grade) .. '.', 'success')
+    TriggerEvent('qb-log:server:CreateLog', scope == 'job' and 'bossmenu' or 'gangmenu', 'Grade Change', 'yellow',
+        ('%s set %s to grade %s (%s)'):format(fullName(Boss), fullName(Member), tostring(grade), group.name), false)
+    return true, Member
+end
+
+--- Removes a member from the boss's group. Returns true, member or false, error.
+function M.Fire(src, scope, cid)
+    local Boss, err, Member, group, sc = bossAndMember(src, scope, cid)
+    if not Boss then return false, err end
+    if Member.PlayerData.citizenid == Boss.PlayerData.citizenid then return false, 'cannot_fire_self' end
+    if not Member.Functions[sc.set](sc.none, '0') then return false, 'failed' end
+    if Member.Functions.Save then Member.Functions.Save() end
+    notifyOnline(Member, scope == 'job' and 'You have been fired! Good luck.' or 'You have been expelled from the gang!', 'error')
+    TriggerEvent('qb-log:server:CreateLog', scope == 'job' and 'bossmenu' or 'gangmenu', scope == 'job' and 'Job Fire' or 'Gang Fire', 'red',
+        ('%s successfully fired %s (%s)'):format(fullName(Boss), fullName(Member), group.name), false)
+    if scope == 'job' and GetResourceState('pf-citizen') == 'started' then
+        pcall(function()
+            exports['pf-citizen']:SendMail(Member.PlayerData.citizenid, {
+                sender = group.label or group.name, senderType = 'business', subject = 'Employment ended',
+                message = ('Your employment at %s has ended.'):format(group.label or group.name),
+            })
+        end)
+    end
+    return true, Member
+end
+
+local function distance(a, b)
+    local pa, pb = GetEntityCoords(GetPlayerPed(a)), GetEntityCoords(GetPlayerPed(b))
+    return #(vector3(pa.x, pa.y, pa.z) - vector3(pb.x, pb.y, pb.z))
+end
+
+--- Hires the player with server id `targetSrc` into the boss's group at grade 0. They must stand next
+--- to the boss and not be in the group already. Returns true, target or false, error.
+function M.Hire(src, scope, targetSrc)
+    local sc = scopeOf(scope)
+    if not sc then return false, 'bad_request' end
+    local Boss = M.Player(src)
+    local group = M.BossGroup(Boss, scope)
+    if not group then return false, 'not_boss' end
+    targetSrc = tonumber(targetSrc)
+    local Target = targetSrc and M.Player(targetSrc)
+    if not Target then return false, 'no_player' end
+    if Target.PlayerData.citizenid == Boss.PlayerData.citizenid then return false, 'cannot_hire_self' end
+    -- the same 10 m as the hire list (anyone on the server could be hired from anywhere)
+    if distance(src, Target.PlayerData.source or targetSrc) > M.HIRE_RANGE then return false, 'too_far' end
+    local tg = Target.PlayerData[sc.field]
+    if tg and tg.name == group.name then return false, 'already_member' end
+    if not Target.Functions[sc.set](group.name, 0) then return false, 'failed' end
+    if Target.Functions.Save then Target.Functions.Save() end
+    TriggerEvent('qb-log:server:CreateLog', scope == 'job' and 'bossmenu' or 'gangmenu', 'Recruit', 'lightgreen',
+        ('%s successfully recruited %s (%s)'):format(fullName(Boss), fullName(Target), group.name), false)
+    return true, Target
+end
+
+--- Players next to the boss who could be hired (not already in the group).
+function M.Nearby(src, scope)
+    local sc = scopeOf(scope)
+    local Boss = M.Player(src)
+    local group = M.BossGroup(Boss, scope)
+    if not sc or not group then return nil, 'not_boss' end
+    local out = {}
+    for _, id in pairs(QBCore.Functions.GetPlayers()) do
+        id = tonumber(id)
+        local P = id and id ~= tonumber(src) and M.Player(id)
+        if P and distance(src, id) < M.HIRE_RANGE then
+            local g = P.PlayerData[sc.field]
+            if not (g and g.name == group.name) then out[#out + 1] = { id = id, name = fullName(P) } end
+        end
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return out
+end
+
+--- True when src stands at one of their group's management desks (Config.BossMenus / GangMenus).
+function M.AtOffice(src, scope)
+    local sc = scopeOf(scope)
+    local Player = M.Player(src)
+    local group = M.BossGroup(Player, scope)
+    if not sc or not group then return false end
+    local spots = Config[sc.menus] and Config[sc.menus][group.name]
+    if type(spots) ~= 'table' then return false end
+    local p = GetEntityCoords(GetPlayerPed(src))
+    for _, c in ipairs(spots) do
+        if not (c.x == 0 and c.y == 0) and #(vector3(p.x, p.y, p.z) - c) <= M.OFFICE_RANGE then return true end
+    end
+    return false
+end
+
+function M.PaycheckInfo()
+    local money = QBCore.Config and QBCore.Config.Money or {}
+    return { minutes = tonumber(money.PayCheckTimeOut) or 10, fromSociety = money.PayCheckSociety == true }
+end
+
+-- ── exports for other resources (pf-computer's Business Manager uses the same rules) ──
+exports('IsBoss', function(src, scope) return M.IsBoss(src, scope) end)
+exports('ListEmployees', function(src, scope) return M.ListMembers(src, scope or 'job') end)
+exports('SetEmployeeGrade', function(src, cid, grade, scope) return M.SetGrade(src, scope or 'job', cid, grade) end)
+exports('FireEmployee', function(src, cid, scope) return M.Fire(src, scope or 'job', cid) end)
+exports('HireEmployee', function(src, targetSrc, scope) return M.Hire(src, scope or 'job', targetSrc) end)
+
+-- ── boss menu ───────────────────────────────────────────────────────
 
 function ExploitBan(id, reason)
 	MySQL.insert('INSERT INTO bans (name, license, discord, ip, reason, expire, bannedby) VALUES (?, ?, ?, ?, ?, ?, ?)', {
@@ -14,11 +265,7 @@ function ExploitBan(id, reason)
 	DropPlayer(id, 'You were permanently banned by the server for: Exploiting')
 end
 
--- Get Employees
--- Boss and target must be in the same job.
-local function SameJob(Player, Employee)
-	return Employee and Employee.PlayerData.job and Employee.PlayerData.job.name == Player.PlayerData.job.name
-end
+-- Get Employees (the rules above are shared with the gang menu and the Boss app)
 
 QBCore.Functions.CreateCallback('qb-bossmenu:server:GetEmployees', function(source, cb)
 	local src = source
@@ -31,28 +278,13 @@ QBCore.Functions.CreateCallback('qb-bossmenu:server:GetEmployees', function(sour
 	end
 
 	local employees = {}
-
-	-- always the boss's own job (the client-sent name was pasted into the SQL)
-	local jobname = Player.PlayerData.job.name
-	local players = MySQL.query.await('SELECT * FROM `players` WHERE `job` LIKE ?', { '%' .. jobname .. '%' })
-
-	if players[1] ~= nil then
-		for _, value in pairs(players) do
-			local Target = QBCore.Functions.GetPlayerByCitizenId(value.citizenid) or QBCore.Functions.GetOfflinePlayerByCitizenId(value.citizenid)
-
-			if Target and Target.PlayerData.job.name == jobname then
-				local isOnline = Target.PlayerData.source
-				employees[#employees + 1] = {
-					empSource = Target.PlayerData.citizenid,
-					grade = Target.PlayerData.job.grade,
-					isboss = Target.PlayerData.job.isboss,
-					name = (isOnline and '🟢 ' or '❌ ') .. Target.PlayerData.charinfo.firstname .. ' ' .. Target.PlayerData.charinfo.lastname
-				}
-			end
-		end
-		table.sort(employees, function(a, b)
-			return a.grade.level > b.grade.level
-		end)
+	for _, m in ipairs(M.ListMembers(src, 'job') or {}) do
+		employees[#employees + 1] = {
+			empSource = m.citizenid,
+			grade = m.grade,
+			isboss = m.isboss,
+			name = (m.online and '🟢 ' or '❌ ') .. m.name,
+		}
 	end
 	cb(employees)
 end)
@@ -81,6 +313,12 @@ RegisterNetEvent('qb-bossmenu:server:stash', function()
 end)
 
 -- Grade Change
+local GRADE_MESSAGES = {
+	not_member = 'You cannot change this rank!', outranks_you = 'You cannot change this rank!',
+	cannot_change_self = 'You cannot change your own rank!', grade_above_yours = 'You cannot promote to this rank!',
+	unknown_grade = 'Promotion grade does not exist.', bad_grade = 'Promotion grade does not exist.',
+}
+
 RegisterNetEvent('qb-bossmenu:server:GradeUpdate', function(data)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
@@ -91,35 +329,24 @@ RegisterNetEvent('qb-bossmenu:server:GradeUpdate', function(data)
 		return
 	end
 	if type(data) ~= 'table' or type(data.cid) ~= 'string' then return end
-	data.grade = tonumber(data.grade)
-	if not data.grade or data.grade < 0 or data.grade % 1 ~= 0 then return end
-	local Employee = QBCore.Functions.GetPlayerByCitizenId(data.cid) or QBCore.Functions.GetOfflinePlayerByCitizenId(data.cid)
-	-- only members of the boss's own job, and not someone ranked above the boss
-	if not SameJob(Player, Employee) or Employee.PlayerData.job.grade.level > Player.PlayerData.job.grade.level then
-		TriggerClientEvent('QBCore:Notify', src, 'You cannot change this rank!', 'error')
-		return
-	end
-	if data.grade > Player.PlayerData.job.grade.level then
-		TriggerClientEvent('QBCore:Notify', src, 'You cannot promote to this rank!', 'error')
-		return
-	end
-
-	if Employee then
-		if Employee.Functions.SetJob(Player.PlayerData.job.name, data.grade) then
-			TriggerClientEvent('QBCore:Notify', src, 'Sucessfully promoted!', 'success')
-			Employee.Functions.Save()
-
-			if Employee.PlayerData.source then -- Player is online
-				TriggerClientEvent('QBCore:Notify', Employee.PlayerData.source, 'You have been promoted to ' .. tostring(Employee.PlayerData.job.grade.name or data.grade) .. '.', 'success')
-			end
-		else
-			TriggerClientEvent('QBCore:Notify', src, 'Promotion grade does not exist.', 'error')
-		end
+	local grade = tonumber(data.grade)
+	if not grade or grade < 0 or grade % 1 ~= 0 then return end
+	local ok, err = M.SetGrade(src, 'job', data.cid, grade)
+	if not ok then
+		TriggerClientEvent('QBCore:Notify', src, GRADE_MESSAGES[err] or 'Error..', 'error')
+		if err ~= 'unknown_grade' then return end
+	else
+		TriggerClientEvent('QBCore:Notify', src, 'Sucessfully promoted!', 'success')
 	end
 	TriggerClientEvent('qb-bossmenu:client:OpenMenu', src)
 end)
 
 -- Fire Employee
+local FIRE_MESSAGES = {
+	not_member = 'You cannot fire this citizen!', outranks_you = 'You cannot fire this citizen!',
+	cannot_fire_self = 'You can\'t fire yourself', failed = 'Error..',
+}
+
 RegisterNetEvent('qb-bossmenu:server:FireEmployee', function(target)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
@@ -130,31 +357,12 @@ RegisterNetEvent('qb-bossmenu:server:FireEmployee', function(target)
 		return
 	end
 
-	local Employee = QBCore.Functions.GetPlayerByCitizenId(target) or QBCore.Functions.GetOfflinePlayerByCitizenId(target)
-	-- any citizenid used to be accepted, firing people out of other jobs
-	if Employee and not SameJob(Player, Employee) then
-		TriggerClientEvent('QBCore:Notify', src, 'You cannot fire this citizen!', 'error')
-		return
-	end
-	if Employee then
-		if target == Player.PlayerData.citizenid then
-			TriggerClientEvent('QBCore:Notify', src, 'You can\'t fire yourself', 'error')
-			return
-		elseif Employee.PlayerData.job.grade.level > Player.PlayerData.job.grade.level then
-			TriggerClientEvent('QBCore:Notify', src, 'You cannot fire this citizen!', 'error')
-			return
-		end
-		if Employee.Functions.SetJob('unemployed', '0') then
-			Employee.Functions.Save()
-			TriggerClientEvent('QBCore:Notify', src, 'Employee fired!', 'success')
-			TriggerEvent('qb-log:server:CreateLog', 'bossmenu', 'Job Fire', 'red', Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname .. ' successfully fired ' .. Employee.PlayerData.charinfo.firstname .. ' ' .. Employee.PlayerData.charinfo.lastname .. ' (' .. Player.PlayerData.job.name .. ')', false)
-
-			if Employee.PlayerData.source then -- Player is online
-				TriggerClientEvent('QBCore:Notify', Employee.PlayerData.source, 'You have been fired! Good luck.', 'error')
-			end
-		else
-			TriggerClientEvent('QBCore:Notify', src, 'Error..', 'error')
-		end
+	local ok, err = M.Fire(src, 'job', target)
+	if ok then
+		TriggerClientEvent('QBCore:Notify', src, 'Employee fired!', 'success')
+	elseif FIRE_MESSAGES[err] then
+		TriggerClientEvent('QBCore:Notify', src, FIRE_MESSAGES[err], 'error')
+		if err == 'not_member' then return end
 	end
 	TriggerClientEvent('qb-bossmenu:client:OpenMenu', src)
 end)
@@ -164,21 +372,20 @@ RegisterNetEvent('qb-bossmenu:server:HireEmployee', function(recruit)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
 	if not Player then return end
-	local Target = exports['pfm-core']:GetPlayer(tonumber(recruit))
 
 	if not Player.PlayerData.job.isboss then
 		ExploitBan(src, 'HireEmployee Exploiting')
 		return
 	end
-	-- same 10 m as the hire list (anyone on the server could be hired from anywhere)
-	if Target and #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(Target.PlayerData.source))) > 10.0 then
-		return
-	end
-
-	if Target and Target.Functions.SetJob(Player.PlayerData.job.name, 0) then
-		TriggerClientEvent('QBCore:Notify', src, 'You hired ' .. (Target.PlayerData.charinfo.firstname .. ' ' .. Target.PlayerData.charinfo.lastname) .. ' come ' .. Player.PlayerData.job.label .. '', 'success')
+	-- next to the boss, not already on the staff, never the boss themselves (sv_staff.lua)
+	local ok, res = M.Hire(src, 'job', recruit)
+	local Target, err = ok and res or nil, not ok and res or nil
+	if err == 'too_far' then return end
+	if ok then
+		TriggerClientEvent('QBCore:Notify', src, 'You hired ' .. M.FullName(Target) .. ' come ' .. Player.PlayerData.job.label .. '', 'success')
 		TriggerClientEvent('QBCore:Notify', Target.PlayerData.source, 'You were hired as ' .. Player.PlayerData.job.label .. '', 'success')
-		TriggerEvent('qb-log:server:CreateLog', 'bossmenu', 'Recruit', 'lightgreen', (Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname) .. ' successfully recruited ' .. (Target.PlayerData.charinfo.firstname .. ' ' .. Target.PlayerData.charinfo.lastname) .. ' (' .. Player.PlayerData.job.name .. ')', false)
+	elseif err == 'already_member' then
+		TriggerClientEvent('QBCore:Notify', src, 'This citizen already works here', 'error')
 	end
 	TriggerClientEvent('qb-bossmenu:client:OpenMenu', src)
 end)

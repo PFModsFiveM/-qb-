@@ -1,0 +1,6 @@
+/* Pawn Shop app (html/pawnshop.js), on the pf-devices base classes; scoped to .pfm-pawn. */
+.pfm-pawn .pfm-pawn-top { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.pfm-pawn .pfm-pawn-places { margin-top: 10px; }
+.pfm-pawn .pfm-pawn-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.pfm-pawn .pfm-pawn-scroll { overflow-x: auto; margin-top: 8px; }
+.pfm-pawn .pfm-pawn-have td { color: var(--pf-ok); font-weight: 600; }

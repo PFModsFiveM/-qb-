@@ -1,0 +1,24 @@
+/* Garages app (pf-devices). Base styles come from pf-devices runtime.css; everything here is scoped to .pfg. */
+.pfg .pfg-stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.pfg .pfg-warn { color: var(--pf-warn); }
+.pfg .pfg-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.pfg .pfg-card { display: flex; flex-direction: column; gap: 10px; }
+.pfg .pfg-card.pfg-impounded { border-color: rgba(245, 158, 11, .35); }
+.pfg .pfg-card.pfg-seized { border-color: rgba(239, 68, 68, .35); }
+.pfg .pfg-head { gap: 4px; min-width: 0; }
+.pfg .pfg-plate {
+    font-family: Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 700; letter-spacing: .08em;
+    padding: 1px 6px; border-radius: 4px; background: #f8fafc; color: #0f172a; border: 1px solid #cbd5e1;
+}
+.pfg .pfg-bars { display: grid; gap: 8px; grid-template-columns: repeat(3, 1fr); }
+.pfg .pfg-bar-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--pf-fg-2); margin-bottom: 3px; }
+.pfg .pfg-bar-track { height: 6px; border-radius: 3px; background: var(--pf-bg-3); overflow: hidden; }
+.pfg .pfg-bar-fill { height: 100%; border-radius: 3px; }
+.pfg .pfg-bar-fill.ok { background: var(--pf-ok); }
+.pfg .pfg-bar-fill.warn { background: var(--pf-warn); }
+.pfg .pfg-bar-fill.bad { background: var(--pf-bad); }
+.pfg .pfg-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.pfg .pfg-select { width: auto; min-width: 150px; max-width: 220px; padding: 5px 8px; font-size: 12px; }
+@media (max-width: 700px) {
+    .pfg .pfg-list { grid-template-columns: 1fr; }
+}

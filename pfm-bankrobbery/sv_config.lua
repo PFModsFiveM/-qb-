@@ -13,7 +13,7 @@ end
 function Config.OnRobberyStart(bankId)
     local bankName = type(bankId) == "number" and "bankrobbery" or bankId
     TriggerEvent('qb-scoreboard:server:SetActivityBusy', bankName, true)
-    if bankName ~= "bankrobbery" then return end
+    -- every robbed bank closes its branch (pfm-banking maps the id: Fleeca index, 'paleto', 'pacific')
     TriggerEvent('qb-banking:server:SetBankClosed', bankId, true)
 end
 
@@ -23,7 +23,6 @@ end
 function Config.OnRobberyTimeoutEnd(bankId)
     local bankName = type(bankId) == "number" and "bankrobbery" or bankId
     TriggerEvent('qb-scoreboard:server:SetActivityBusy', bankName, false)
-    if bankName ~= "bankrobbery" then return end
     TriggerEvent('qb-banking:server:SetBankClosed', bankId, false)
 end
 

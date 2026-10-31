@@ -22,7 +22,8 @@ client_scripts {
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
     '@pfm-banking/payouts.lua',
-    'server/main.lua'
+    'server/main.lua',
+    'server/apps.lua'
 }
 
 ui_page 'html/index.html'
@@ -32,4 +33,6 @@ files {
     'html/script.js',
     'html/style.css',
     'html/logo.png',
+    'html/apps/garages.js',
+    'html/apps/garages.css',
 }

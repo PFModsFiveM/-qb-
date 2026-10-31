@@ -22,6 +22,7 @@ end
 
 local function OpenBank()
     QBCore.Functions.TriggerCallback('qb-banking:server:openBank', function(accounts, statements, playerData)
+        if not accounts then return end -- refused by the server (e.g. the branch is closed); it said why
         QBCore.Functions.TriggerCallback('qb-banking:server:getFinance', function(finance)
             QBCore.Functions.TriggerCallback('qb-banking:server:getAccountsData', function(accountsData)
                 local brandId, brandStyle = GetNearestBrand()
@@ -57,6 +58,7 @@ local function OpenATM()
         rotation = vector3(0.0, 0.0, 180.0),
     }, {}, function()
         QBCore.Functions.TriggerCallback('qb-banking:server:openATM', function(accounts, playerData, acceptablePins)
+            if not accounts then return end
             SetNuiFocus(true, true)
             SendNUIMessage({
                 action = 'openATM',
@@ -186,6 +188,31 @@ CreateThread(function()
     end
 end)
 
+-- Branches closed after a robbery (the server refuses service there; this only changes the prompt)
+local closedBranches = {}
+
+local function branchPrompt()
+    local coords = GetEntityCoords(PlayerPedId())
+    for id in pairs(closedBranches) do
+        local c = Config.locations[id]
+        if c and #(coords - c) <= (Config.BranchClosure and Config.BranchClosure.radius or 30.0) then return 'Bank closed' end
+    end
+    return 'Open Bank'
+end
+
+RegisterNetEvent('qb-banking:client:branchState', function(id, closed)
+    id = tonumber(id)
+    if not id then return end
+    closedBranches[id] = closed == true or nil
+end)
+
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    QBCore.Functions.TriggerCallback('qb-banking:server:getBranchStates', function(list)
+        closedBranches = {}
+        for _, b in ipairs(list or {}) do closedBranches[b.id] = true end
+    end)
+end)
+
 -- Events
 
 RegisterNetEvent('qb-banking:client:useCard', function()
@@ -268,7 +295,7 @@ if not Config.useTarget then
         combo:onPlayerInOut(function(isPointInside)
             isPlayerInsideBankZone = isPointInside
             if isPlayerInsideBankZone then
-                exports['pfm-core']:DrawText('Open Bank')
+                exports['pfm-core']:DrawText(branchPrompt())
                 CreateThread(function()
                     while isPlayerInsideBankZone do
                         Wait(0)

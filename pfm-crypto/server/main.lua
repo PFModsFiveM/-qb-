@@ -123,6 +123,7 @@ local function HandlePriceChance()
     end
 
     Crypto.Worth[coin] = currentValue
+    if CryptoApp and CryptoApp.OnPrice then CryptoApp.OnPrice(coin, currentValue) end
 
     local history = json.encode(Crypto.History[coin])
     local props = {
@@ -175,6 +176,7 @@ QBCore.Commands.Add('setcryptoworth', 'Set crypto value', { { name = 'crypto', h
 
                 TriggerClientEvent('QBCore:Notify', src, 'You have changed the value of ' .. Crypto.Labels[crypto] .. ' from: $' .. Crypto.Worth[crypto] .. ' to: $' .. NewWorth .. ' (' .. ChangeLabel .. ' ' .. PercentageChange .. '%)')
                 Crypto.Worth[crypto] = NewWorth
+                if CryptoApp and CryptoApp.OnPrice then CryptoApp.OnPrice(crypto, NewWorth) end
                 TriggerClientEvent('qb-crypto:client:UpdateCryptoWorth', -1, crypto, NewWorth)
                 MySQL.insert('INSERT INTO crypto (worth, history) VALUES (:worth, :history) ON DUPLICATE KEY UPDATE worth = :worth, history = :history', {
                     ['worth'] = NewWorth,
@@ -321,107 +323,201 @@ QBCore.Functions.CreateCallback('qb-crypto:server:GetCryptoData', function(sourc
     cb(CryptoData)
 end)
 
-QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, cb, data)
-    local Player = exports['pfm-core']:GetPlayer(source)
-    local coins = sanitizeCoins(data and data.Coins)
-    if not Player or not coins then return cb(false) end
-    if onCooldown(source, 'buy', 1000) then return cb(false) end
-    -- rounded up: rounding down let tiny buys cost less than they were worth, over and over
-    local total_price = math.ceil(coins * tonumber(Crypto.Worth['qbit']))
-    if total_price > 0 and Player.PlayerData.money.bank >= total_price then
-        local CryptoData = {
-            History = Crypto.History['qbit'],
-            Worth = Crypto.Worth['qbit'],
-            Portfolio = Player.PlayerData.money.crypto + coins,
-            WalletId = Player.PlayerData.metadata['walletid'],
-        }
+-- ── trades ───────────────────────────────────────────────────────────
+-- Buy, sell and send are shared by the phone callbacks (a fresh id per click) and the Crypto app
+-- (server/app.lua, the app's id for the action), so the same rules apply everywhere:
+--   * the price is the server's (Crypto.Worth); a buy rounds the cost up, a sale rounds the payout down;
+--   * the bank side is one ledger transfer whose key names the trade ('pfm-crypto:buy|sell:<cid>:<id>'),
+--     so a repeated id is never charged or paid twice, and its coins move once;
+--   * buy: the bank is charged first, then the coins are credited; sell: the coins are taken first and
+--     given back if the bank cannot pay;
+--   * coins sent to another wallet are recorded in pf_crypto_transfers (unique per id).
+-- Each returns { ok = true, coins, price, total, portfolio, duplicate } or { ok = false, error }.
+CryptoTrade = CryptoTrade or {}
+local T = CryptoTrade
+local busy = {}
+
+local function withLock(cid, fn)
+    if busy[cid] then return { ok = false, error = 'busy' } end
+    busy[cid] = true
+    local ok, res = pcall(fn)
+    busy[cid] = nil
+    if not ok then
+        print(('^1[pfm-crypto]^7 trade failed for %s: %s'):format(tostring(cid), tostring(res)))
+        return { ok = false, error = 'server_error' }
+    end
+    return res
+end
+
+local function bankUp() return GetResourceState('pfm-banking') == 'started' end
+
+local idSeq = 0
+local function newId()
+    idSeq = idSeq + 1
+    return ('%d-%d-%d'):format(os.time(), idSeq, math.random(100000, 999999))
+end
+
+local function tradeId(ref)
+    if type(ref) == 'string' and #ref >= 8 and #ref <= 40 and ref:match('^[%w%-]+$') then return ref end
+    return nil
+end
+
+function T.Buy(src, coins, ref)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return { ok = false, error = 'no_player' } end
+    coins = sanitizeCoins(coins)
+    ref = tradeId(ref)
+    if not coins then return { ok = false, error = 'bad_amount' } end
+    if not ref then return { ok = false, error = 'bad_request' } end
+    local cid = Player.PlayerData.citizenid
+    return withLock(cid, function()
+        local price = tonumber(Crypto.Worth[coin])
+        -- rounded up: rounding down let tiny buys cost less than they were worth, over and over
+        local total = math.ceil(coins * price)
+        if total <= 0 then return { ok = false, error = 'bad_amount' } end
+        local key = ('pfm-crypto:buy:%s:%s'):format(cid, ref)
+        local existing = bankUp() and exports['pfm-banking']:GetTransaction(key .. ':bank') or nil
+        if not existing and (tonumber(Player.PlayerData.money.bank) or 0) < total then return { ok = false, error = 'insufficient_funds' } end
         -- the bank side goes through the pfm-banking ledger (coins are their own balance, which the
         -- ledger does not carry: it only moves bank and cash in cents)
-        if not PFPayout.Charge(Player, 'bank', total_price, {
-            key = ('pfm-crypto:buy:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Bought Qbit',
-        }) then return cb(false) end
-        TriggerClientEvent('qb-phone:client:AddTransaction', source, nil, nil, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
+        local account, res = PFPayout.Charge(Player, 'bank', total, {
+            key = key, kind = 'purchase', reason = 'Bought Qbit', metadata = { coin = coin, coins = coins, price = price },
+        })
+        if not account then
+            return { ok = false, error = (res and res.duplicate) and 'already_processed' or (res and res.error) or 'failed' }
+        end
+        if res.duplicate then
+            -- this purchase was charged and its coins credited the first time
+            return { ok = true, duplicate = true, coins = coins, price = price, total = total, portfolio = Player.PlayerData.money.crypto }
+        end
         Player.AddMoney('crypto', coins, 'bought crypto')
-        cb(CryptoData)
-    else
-        cb(false)
-    end
+        TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
+        return { ok = true, coins = coins, price = price, total = total, portfolio = Player.PlayerData.money.crypto }
+    end)
+end
+
+function T.Sell(src, coins, ref)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return { ok = false, error = 'no_player' } end
+    coins = sanitizeCoins(coins)
+    ref = tradeId(ref)
+    if not coins then return { ok = false, error = 'bad_amount' } end
+    if not ref then return { ok = false, error = 'bad_request' } end
+    if not bankUp() then return { ok = false, error = 'bank_unavailable' } end
+    local cid = Player.PlayerData.citizenid
+    return withLock(cid, function()
+        local price = tonumber(Crypto.Worth[coin])
+        local key = ('pfm-crypto:sell:%s:%s'):format(cid, ref)
+        local prior = exports['pfm-banking']:GetTransaction(key)
+        if prior then
+            if prior.state == 'completed' then
+                return { ok = true, duplicate = true, coins = coins, price = price, total = tonumber(prior.amount), portfolio = Player.PlayerData.money.crypto }
+            end
+            return { ok = false, error = 'already_processed' }
+        end
+        local amount = math.floor(coins * price)
+        if amount < 1 then return { ok = false, error = 'bad_amount' } end
+        if (tonumber(Player.PlayerData.money.crypto) or 0) < coins then return { ok = false, error = 'insufficient_coins' } end
+        if not Player.RemoveMoney('crypto', coins, 'sold crypto') then return { ok = false, error = 'insufficient_coins' } end
+        -- paid through the ledger; if the bank cannot pay, the coins are given back
+        local paid, res = PFPayout.Pay(Player, 'bank', amount, {
+            key = key, kind = 'sale', reason = 'Sold Qbit', metadata = { coin = coin, coins = coins, price = price },
+        })
+        if not paid then
+            Player.AddMoney('crypto', coins, 'sold crypto: bank unavailable')
+            return { ok = false, error = res and res.error or 'bank_unavailable' }
+        end
+        TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, Lang:t('debit.you_have_sold', { dataCoins = coins }), 'Debit')
+        return { ok = true, coins = coins, price = price, total = amount, portfolio = Player.PlayerData.money.crypto }
+    end)
+end
+
+local function cleanWallet(v)
+    local w = tostring(v or '')
+    for _, c in pairs(bannedCharacters) do w = w:gsub('%' .. c, '') end
+    return w
+end
+
+--- Sends coins to another wallet. `ref` (the app's id) makes a retry safe; the phone passes none.
+function T.Send(src, walletId, coins, ref)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return { ok = false, error = 'no_player' } end
+    coins = sanitizeCoins(coins)
+    walletId = cleanWallet(walletId)
+    if not coins then return { ok = false, error = 'bad_amount' } end
+    if walletId == '' or #walletId > 64 then return { ok = false, error = 'unknown_wallet' } end
+    if walletId == Player.PlayerData.metadata['walletid'] then return { ok = false, error = 'own_wallet' } end
+    if ref ~= nil and not tradeId(ref) then return { ok = false, error = 'bad_request' } end
+    local cid = Player.PlayerData.citizenid
+    return withLock(cid, function()
+        local key = ref and ('pfm-crypto:send:%s:%s'):format(cid, ref) or nil
+        if key then
+            local prior = MySQL.single.await('SELECT coins FROM pf_crypto_transfers WHERE transfer_key = ? LIMIT 1', { key })
+            if prior then return { ok = true, duplicate = true, coins = tonumber(prior.coins), portfolio = Player.PlayerData.money.crypto } end
+        end
+        if (tonumber(Player.PlayerData.money.crypto) or 0) < coins then return { ok = false, error = 'insufficient_coins' } end
+        -- exact wallet match (a LIKE pattern let '_' and '%' match other people's wallets)
+        local result = MySQL.query.await("SELECT * FROM `players` WHERE JSON_UNQUOTE(JSON_EXTRACT(`metadata`, '$.walletid')) = ? LIMIT 1", { walletId })
+        local target = result and result[1]
+        if not target then return { ok = false, error = 'unknown_wallet' } end
+        if target.citizenid == cid then return { ok = false, error = 'own_wallet' } end
+        if not Player.RemoveMoney('crypto', coins, 'transfer crypto') then return { ok = false, error = 'insufficient_coins' } end
+        -- the record; an app transfer's key is unique, so a racing retry is stopped here
+        local recorded = pcall(MySQL.insert.await, 'INSERT INTO pf_crypto_transfers (transfer_key, from_cid, to_cid, coin, coins) VALUES (?, ?, ?, ?, ?)',
+            { key or ('pfm-crypto:send:%s:%s'):format(cid, newId()), cid, target.citizenid, coin, coins })
+        if not recorded and key then
+            Player.AddMoney('crypto', coins, 'transfer crypto: not recorded')
+            return { ok = false, error = 'server_error' }
+        end
+        TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, 'You have ' .. coins .. " Qbit('s) transferred!", 'Debit')
+        local Target = QBCore.Functions.GetPlayerByCitizenId(target.citizenid)
+        if Target ~= nil then
+            Target.Functions.AddMoney('crypto', coins, 'transfer crypto')
+            -- the phone only reads the message and title (the sender's whole player object, with
+            -- their money, items and personal data, used to be sent to the receiver)
+            TriggerClientEvent('qb-phone:client:AddTransaction', Target.PlayerData.source, nil, nil, 'There are ' .. coins .. " Qbit('s) credited!", 'Credit')
+        else
+            -- one atomic update (read-then-write could lose coins if the player logged in meanwhile)
+            MySQL.update.await([[UPDATE players SET money = JSON_SET(money, '$.crypto',
+                COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(money, '$.crypto')) AS DECIMAL(20,6)), 0) + ?) WHERE citizenid = ?]],
+                { coins, target.citizenid })
+        end
+        return { ok = true, coins = coins, portfolio = Player.PlayerData.money.crypto, recipient = target.citizenid }
+    end)
+end
+
+local function cryptoData(Player)
+    return {
+        History = Crypto.History['qbit'],
+        Worth = Crypto.Worth['qbit'],
+        Portfolio = Player.PlayerData.money.crypto,
+        WalletId = Player.PlayerData.metadata['walletid'],
+    }
+end
+
+QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, cb, data)
+    local Player = exports['pfm-core']:GetPlayer(source)
+    if not Player or not sanitizeCoins(data and data.Coins) then return cb(false) end
+    if onCooldown(source, 'buy', 1000) then return cb(false) end
+    local res = T.Buy(source, data.Coins, newId())
+    if not res.ok then return cb(false) end
+    cb(cryptoData(Player))
 end)
 
 QBCore.Functions.CreateCallback('qb-crypto:server:SellCrypto', function(source, cb, data)
     local Player = exports['pfm-core']:GetPlayer(source)
-    local coins = sanitizeCoins(data and data.Coins)
-    if not Player or not coins then return cb(false) end
-
-    if Player.PlayerData.money.crypto >= coins then
-        local CryptoData = {
-            History = Crypto.History['qbit'],
-            Worth = Crypto.Worth['qbit'],
-            Portfolio = Player.PlayerData.money.crypto - coins,
-            WalletId = Player.PlayerData.metadata['walletid'],
-        }
-        if not Player.RemoveMoney('crypto', coins, 'sold crypto') then return cb(false) end
-        local amount = math.floor(coins * tonumber(Crypto.Worth['qbit']))
-        -- paid through the ledger; if the bank cannot pay, the coins are given back
-        if amount > 0 and not PFPayout.Pay(Player, 'bank', amount, {
-            key = ('pfm-crypto:sell:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'sale', reason = 'Sold Qbit',
-        }) then
-            Player.AddMoney('crypto', coins, 'sold crypto: bank unavailable')
-            return cb(false)
-        end
-        TriggerClientEvent('qb-phone:client:AddTransaction', source, nil, nil, Lang:t('debit.you_have_sold', { dataCoins = coins }), 'Debit')
-        cb(CryptoData)
-    else
-        cb(false)
-    end
+    if not Player or not sanitizeCoins(data and data.Coins) then return cb(false) end
+    local res = T.Sell(source, data.Coins, newId())
+    if not res.ok then return cb(false) end
+    cb(cryptoData(Player))
 end)
 
 QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(source, cb, data)
     if type(data) ~= 'table' then return cb('notvalid') end
     if onCooldown(source, 'transfer', 2000) then return cb('notvalid') end
-    local newCoin = tostring(data.Coins)
-    local newWalletId = tostring(data.WalletId)
-    for _, v in pairs(bannedCharacters) do
-        newCoin = string.gsub(newCoin, '%' .. v, '')
-        newWalletId = string.gsub(newWalletId, '%' .. v, '')
-    end
-    data.WalletId = newWalletId
-    data.Coins = sanitizeCoins(newCoin)
-    local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player or not data.Coins then return cb('notvalid') end
-    if data.WalletId == '' or #data.WalletId > 64 or data.WalletId == Player.PlayerData.metadata['walletid'] then return cb('notvalid') end
-    if Player.PlayerData.money.crypto >= tonumber(data.Coins) then
-        -- exact wallet match (a LIKE pattern let '_' and '%' match other people's wallets)
-        local result = MySQL.query.await("SELECT * FROM `players` WHERE JSON_UNQUOTE(JSON_EXTRACT(`metadata`, '$.walletid')) = ? LIMIT 1", { data.WalletId })
-        if result[1] ~= nil then
-            local CryptoData = {
-                History = Crypto.History['qbit'],
-                Worth = Crypto.Worth['qbit'],
-                Portfolio = Player.PlayerData.money.crypto - tonumber(data.Coins),
-                WalletId = Player.PlayerData.metadata['walletid'],
-            }
-            if not Player.RemoveMoney('crypto', tonumber(data.Coins), 'transfer crypto') then return cb('notenough') end
-            TriggerClientEvent('qb-phone:client:AddTransaction', source, nil, nil, 'You have ' .. tonumber(data.Coins) .. " Qbit('s) transferred!", 'Debit')
-            local Target = QBCore.Functions.GetPlayerByCitizenId(result[1].citizenid)
-
-            if Target ~= nil then
-                Target.Functions.AddMoney('crypto', tonumber(data.Coins), 'transfer crypto')
-                -- the phone only reads the message and title (the sender's whole player object, with
-                -- their money, items and personal data, used to be sent to the receiver)
-                TriggerClientEvent('qb-phone:client:AddTransaction', Target.PlayerData.source, nil, nil, 'There are ' .. tonumber(data.Coins) .. " Qbit('s) credited!", 'Credit')
-            else
-                -- one atomic update (read-then-write could lose coins if the player logged in meanwhile)
-                MySQL.update([[UPDATE players SET money = JSON_SET(money, '$.crypto',
-                    COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(money, '$.crypto')) AS DECIMAL(20,6)), 0) + ?) WHERE citizenid = ?]],
-                    { tonumber(data.Coins), result[1].citizenid })
-            end
-            cb(CryptoData)
-        else
-            cb('notvalid')
-        end
-    else
-        cb('notenough')
-    end
+    local res = T.Send(source, data.WalletId, cleanWallet(data.Coins))
+    if not res.ok then return cb(res.error == 'insufficient_coins' and 'notenough' or 'notvalid') end
+    cb(cryptoData(exports['pfm-core']:GetPlayer(source)))
 end)
 
 -- Threads

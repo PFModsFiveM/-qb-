@@ -16,10 +16,17 @@ local loadAnimDict = function(dict)
     end
 end
 
+-- 'hasNozzle' and 'nozzleAttached' are local state values (not replicated, so they work under
+-- sv_stateBagStrictMode): only the client holding the nozzle acts on them. Another player's
+-- "remove nozzle" target found no nozzle of its own to remove, so nothing else needs them.
+local setNozzleOnVehicle = function(veh, attached)
+    Entity(veh).state:set('nozzleAttached', attached == true, false)
+end
+
 local removeObjects = function()
     CurrentPump = nil
     if CurrentVehicle then
-        Entity(CurrentVehicle).state:set('nozzleAttached', false, true)
+        setNozzleOnVehicle(CurrentVehicle, false)
         FreezeEntityPosition(CurrentVehicle, false)
         CurrentVehicle = nil
     end
@@ -33,7 +40,7 @@ local removeObjects = function()
         RopeUnloadTextures()
         CurrentObjects.rope = nil
     end
-    LocalPlayer.state:set('hasNozzle', false, true)
+    LocalPlayer.state:set('hasNozzle', false, false)
 end
 
 local refuelVehicle = function(veh)
@@ -90,7 +97,7 @@ local grabFuelFromPump = function(ent)
 
     local nozzlePos = GetOffsetFromEntityInWorldCoords(CurrentObjects.nozzle, 0.0, -0.033, -0.195)
     AttachEntitiesToRope(CurrentObjects.rope, CurrentPump, CurrentObjects.nozzle, pump.x, pump.y, pump.z + 1.45, nozzlePos.x, nozzlePos.y + 0.02, nozzlePos.z, 5.0, false, false, '', '')
-    LocalPlayer.state:set('hasNozzle', true, true)
+    LocalPlayer.state:set('hasNozzle', true, false)
 
     CreateThread(function()
         while DoesRopeExist(CurrentObjects.rope) do
@@ -175,7 +182,7 @@ local nozzleToVehicle = function(veh)
     local divisor = (dimMax - dimMin).z < 1.4 and (1.87 * (dimMax - dimMin).z) / 1.24 or (2.7 * (dimMax - dimMin).z) / 2.3
     local zCoords = diff / divisor
 
-    LocalPlayer.state:set('hasNozzle', false, true)
+    LocalPlayer.state:set('hasNozzle', false, false)
 
     if isBike then
         AttachEntityToEntity(CurrentObjects.nozzle, veh, tankBone, 0.0 + nozzleModifiedPosition.x, -0.2 + nozzleModifiedPosition.y, 0.2 + nozzleModifiedPosition.z, -80.0, 0.0, 0.0, true, true, false, false, 1, true)
@@ -183,7 +190,7 @@ local nozzleToVehicle = function(veh)
         AttachEntityToEntity(CurrentObjects.nozzle, veh, tankBone, -0.18 + nozzleModifiedPosition.x, 0.0 + nozzleModifiedPosition.y, zCoords, -125.0, -90.0, -90.0, true, true, false, false, 1, true)
     end
 
-    Entity(veh).state:set('nozzleAttached', true, true)
+    setNozzleOnVehicle(veh, true)
     CurrentVehicle = veh
     FreezeEntityPosition(CurrentObjects.nozzle, true)
     FreezeEntityPosition(CurrentVehicle, true)

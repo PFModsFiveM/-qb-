@@ -1259,6 +1259,22 @@ RegisterNetEvent('qb-phone:server:getImageFromGallery', function()
     TriggerClientEvent('qb-phone:refreshImages', src, images)
 end)
 
+--- Server-only: a character's newest gallery photos for other resources (pf-computer shows them as
+--- wallpapers): { { image = url, date = 'YYYY-MM-DD HH:MM:SS' } }, newest first, at most `limit` (1-100).
+exports('GetGallery', function(citizenid, limit)
+    if type(citizenid) ~= 'string' or citizenid == '' or #citizenid > 64 then return {} end
+    limit = math.floor(tonumber(limit) or 50)
+    if limit < 1 then limit = 1 elseif limit > 100 then limit = 100 end
+    local rows = MySQL.query.await('SELECT image, `date` FROM phone_gallery WHERE citizenid = ? ORDER BY `date` DESC LIMIT ?', { citizenid, limit }) or {}
+    local out = {}
+    for _, r in ipairs(rows) do
+        if type(r.image) == 'string' and r.image ~= '' then
+            out[#out + 1] = { image = r.image, date = r.date ~= nil and tostring(r.date) or nil }
+        end
+    end
+    return out
+end)
+
 RegisterNetEvent('qb-phone:server:RemoveImageFromGallery', function(data)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)

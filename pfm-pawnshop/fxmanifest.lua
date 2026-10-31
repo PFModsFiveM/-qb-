@@ -15,8 +15,11 @@ shared_scripts {
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
     '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
-    'server/main.lua'
+    'server/main.lua',
+    'server/devices.lua' -- Pawn Shop app on the tablet and the computer (pf-devices)
 }
+
+files { 'html/pawnshop.js', 'html/pawnshop.css' }
 
 client_scripts {
     '@PolyZone/client.lua',

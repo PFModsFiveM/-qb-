@@ -1,0 +1,16 @@
+/* Management app (pfm-management) on pf-devices, scoped under .pfm. */
+.pfm { position: relative; min-height: 0; }
+.pfm-scopes { display: flex; gap: 6px; padding: 8px 18px 0; background: var(--pf-bg-2); flex-wrap: wrap; }
+.pfm-scopes:empty { display: none; }
+.pfm .pf-list-item { flex-wrap: wrap; }
+.pfm-who { gap: 3px; min-width: 0; flex: 1; }
+.pfm-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.pfm-rank { width: auto; min-width: 140px; }
+.pfm-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pf-fg-3); display: inline-block; }
+.pfm-dot.on { background: var(--pf-ok); }
+.pfm-money { flex-wrap: wrap; }
+.pfm-money > * { flex: 1; min-width: 140px; }
+.pfm-in { color: var(--pf-ok); }
+.pfm-out { color: var(--pf-bad); }
+.pfm-overlay { position: absolute; inset: 0; background: rgba(2, 6, 23, .55); display: flex; align-items: center; justify-content: center; z-index: 5; padding: 14px; }
+.pfm-dialog { background: var(--pf-bg); border: 1px solid var(--pf-line); border-radius: 14px; width: min(460px, 100%); padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }

@@ -13,4 +13,9 @@ shared_scripts {
 }
 
 client_script 'client.lua'
-server_script 'server.lua'
+server_scripts {
+    'server.lua',
+    'server_devices.lua' -- Crafting app on the tablet and the computer (pf-devices)
+}
+
+files { 'html/crafting.js', 'html/crafting.css' }

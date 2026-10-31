@@ -165,6 +165,11 @@ RegisterNetEvent('qb-pawnshop:client:openMenu', function()
 end)
 
 RegisterNetEvent('qb-pawnshop:client:openPawn', function(data)
+    -- the server's prices: this client's config rolled its own random ones
+    local prices = {}
+    local p = promise.new()
+    QBCore.Functions.TriggerCallback('qb-pawnshop:server:getPawnPrices', function(list) prices = list or {} p:resolve() end)
+    Citizen.Await(p)
     QBCore.Functions.TriggerCallback('qb-pawnshop:server:getInv', function(inventory)
         local PlyInv = inventory
         local pawnMenu = {
@@ -175,15 +180,15 @@ RegisterNetEvent('qb-pawnshop:client:openPawn', function(data)
         }
         for _, v in pairs(PlyInv) do
             for i = 1, #data.items do
-                if v.name == data.items[i].item then
+                if v.name == data.items[i].item and prices[v.name] then
                     pawnMenu[#pawnMenu + 1] = {
                         header = sharedItems[v.name].label,
-                        txt = Lang:t('info.sell_items', { value = data.items[i].price }),
+                        txt = Lang:t('info.sell_items', { value = prices[v.name] }),
                         params = {
                             event = 'qb-pawnshop:client:pawnitems',
                             args = {
                                 label = sharedItems[v.name].label,
-                                price = data.items[i].price,
+                                price = prices[v.name],
                                 name = v.name,
                                 amount = v.amount
                             }

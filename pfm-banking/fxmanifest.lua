@@ -28,7 +28,10 @@ server_scripts {
     'server.lua',
     'server_finance.lua',
     'server_accounts.lua',
-    'server_shared_migration.lua'
+    'server_shared_migration.lua',
+    'server_branches.lua',   -- branch closures after robberies
+    'server_characters.lua', -- clean-up when a character is deleted
+    'server_app.lua'         -- the Bank app on the tablet and the computer (pf-devices)
 }
 
 ui_page 'html/index.html'
@@ -37,4 +40,6 @@ files {
     'html/index.html',
     'html/script.js',
     'html/style.css',
+    'html/apps/bank.js',
+    'html/apps/bank.css',
 }

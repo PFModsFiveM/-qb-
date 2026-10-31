@@ -14,6 +14,12 @@ local function CreateApartmentId(type)
         local result = MySQL.query.await('SELECT COUNT(*) as count FROM apartments WHERE name = ?', { tostring(type .. AparmentId) })
         if result[1].count == 0 then
             UniqueFound = true
+            -- the stash of a deleted character's apartment outlives it (pfm-core deletes the
+            -- apartments row, the stash is pfm-inventory's): never hand that id out again
+            local ok, stash = pcall(function()
+                return MySQL.query.await('SELECT COUNT(*) as count FROM inventories WHERE identifier = ?', { tostring(type .. AparmentId) })
+            end)
+            if ok and stash and stash[1] and (tonumber(stash[1].count) or 0) > 0 then UniqueFound = false end
         end
     end
     return AparmentId
@@ -307,4 +313,19 @@ QBCore.Functions.CreateCallback('apartments:GetOutfits', function(source, cb)
             cb(nil)
         end
     end
+end)
+
+--- The citizen's apartment for other resources (the Real Estate app): { id, label, building,
+--- coords = { x, y } } or nil. Server-only export; the caller passes a citizen id it verified.
+exports('GetCitizenApartment', function(citizenid)
+    if type(citizenid) ~= 'string' or citizenid == '' then return nil end
+    local row = MySQL.query.await('SELECT name, type, label FROM apartments WHERE citizenid = ? LIMIT 1', { citizenid })
+    row = row and row[1]
+    if not row then return nil end
+    local loc = Apartments.Locations[row.type]
+    local enter = loc and loc.coords and loc.coords.enter
+    return {
+        id = row.name, label = row.label, building = loc and loc.label or row.type,
+        coords = enter and { x = math.floor(enter.x * 100 + 0.5) / 100, y = math.floor(enter.y * 100 + 0.5) / 100 } or nil,
+    }
 end)

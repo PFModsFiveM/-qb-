@@ -1,0 +1,38 @@
+/* Bank app (pfm-banking) on pf-devices. Everything is scoped under .pfb so nothing leaks into the
+   shells or other apps; .pfb-narrow is set by the module for small windows (the tablet). */
+.pfb { position: relative; min-height: 0; }
+.pfb .pf-app-body { min-height: 0; }
+.pfb-tabs { overflow-x: auto; }
+.pfb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.pfb-good { color: var(--pf-ok); }
+.pfb-bad { color: var(--pf-bad); }
+.pfb-section { margin-top: 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--pf-fg-2); }
+.pfb-account { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+.pfb-account-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
+.pfb-balance { font-size: 20px; font-weight: 700; }
+.pfb-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+.pfb-perms { flex-wrap: wrap; gap: 4px; }
+.pfb-iban { width: 140px; padding: 3px 8px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.pfb-note { padding: 8px 12px; border-radius: 9px; background: rgba(56, 189, 248, .08); color: var(--pf-fg-2); font-size: 12px; }
+.pfb-filters .pf-select, .pfb-filters .pf-input { width: auto; min-width: 120px; flex: 1; }
+.pfb-table-wrap { overflow-x: auto; }
+.pfb-when { white-space: nowrap; color: var(--pf-fg-2); font-size: 12px; }
+.pfb-amount { text-align: right !important; white-space: nowrap; font-weight: 700; }
+.pfb-form { max-width: 640px; }
+.pfb-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.pfb-two { align-items: flex-end; }
+.pfb-two > * { flex: 1; min-width: 0; }
+.pfb-confirm { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--pf-accent); border-radius: 10px; background: rgba(56, 189, 248, .08); }
+.pfb-score-value { font-size: 30px; font-weight: 800; }
+.pfb-bar { height: 8px; border-radius: 999px; background: var(--pf-bg-3); overflow: hidden; margin-top: 8px; }
+.pfb-bar-fill { height: 100%; background: linear-gradient(90deg, var(--pf-bad), var(--pf-warn), var(--pf-ok)); }
+.pfb-mini { width: 100px; }
+.pfb-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--pf-fg-2); }
+.pfb-overlay { position: absolute; inset: 0; background: rgba(2, 6, 23, .55); align-items: center; justify-content: center; z-index: 5; padding: 14px; }
+.pfb-dialog { background: var(--pf-bg); border: 1px solid var(--pf-line); border-radius: 14px; width: min(680px, 100%); max-height: 100%; overflow: auto; padding: 16px 18px; }
+
+.pfb.pfb-narrow .pf-app-body { padding: 12px; }
+.pfb.pfb-narrow .pfb-account { flex-direction: column; align-items: stretch; }
+.pfb.pfb-narrow .pfb-actions { justify-content: flex-start; }
+.pfb.pfb-narrow .pfb-two { flex-direction: column; align-items: stretch; }
+.pfb.pfb-narrow .pfb-balance { font-size: 18px; }

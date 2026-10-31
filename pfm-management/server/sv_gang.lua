@@ -1,10 +1,7 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 
--- Get Employees
--- Boss and target must be in the same gang.
-local function SameGang(Player, Employee)
-	return Employee and Employee.PlayerData.gang and Employee.PlayerData.gang.name == Player.PlayerData.gang.name
-end
+-- Get Employees (the staff rules are in sv_boss.lua, shared with the boss menu and the Boss app)
+local M = PFManagement
 
 QBCore.Functions.CreateCallback('qb-gangmenu:server:GetEmployees', function(source, cb)
 	local src = source
@@ -17,23 +14,13 @@ QBCore.Functions.CreateCallback('qb-gangmenu:server:GetEmployees', function(sour
 	end
 
 	local employees = {}
-	-- always the boss's own gang (the client-sent name was pasted into the SQL)
-	local gangname = Player.PlayerData.gang.name
-	local players = MySQL.query.await('SELECT * FROM `players` WHERE `gang` LIKE ?', { '%' .. gangname .. '%' })
-	if players[1] ~= nil then
-		for _, value in pairs(players) do
-			local Target = QBCore.Functions.GetPlayerByCitizenId(value.citizenid) or QBCore.Functions.GetOfflinePlayerByCitizenId(value.citizenid)
-
-			if Target and Target.PlayerData.gang.name == gangname then
-				local isOnline = Target.PlayerData.source
-				employees[#employees + 1] = {
-					empSource = Target.PlayerData.citizenid,
-					grade = Target.PlayerData.gang.grade,
-					isboss = Target.PlayerData.gang.isboss,
-					name = (isOnline and '🟢 ' or '❌ ') .. Target.PlayerData.charinfo.firstname .. ' ' .. Target.PlayerData.charinfo.lastname
-				}
-			end
-		end
+	for _, m in ipairs(M.ListMembers(src, 'gang') or {}) do
+		employees[#employees + 1] = {
+			empSource = m.citizenid,
+			grade = m.grade,
+			isboss = m.isboss,
+			name = (m.online and '🟢 ' or '❌ ') .. m.name,
+		}
 	end
 	cb(employees)
 end)
@@ -62,6 +49,12 @@ RegisterNetEvent('qb-gangmenu:server:stash', function()
 end)
 
 -- Grade Change
+local GRADE_MESSAGES = {
+	not_member = 'You cannot change this rank!', outranks_you = 'You cannot change this rank!',
+	cannot_change_self = 'You cannot change your own rank!', grade_above_yours = 'You cannot promote to this rank!',
+	unknown_grade = 'Grade does not exist.', bad_grade = 'Grade does not exist.',
+}
+
 RegisterNetEvent('qb-gangmenu:server:GradeUpdate', function(data)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
@@ -72,35 +65,24 @@ RegisterNetEvent('qb-gangmenu:server:GradeUpdate', function(data)
 		return
 	end
 	if type(data) ~= 'table' or type(data.cid) ~= 'string' then return end
-	data.grade = tonumber(data.grade)
-	if not data.grade or data.grade < 0 or data.grade % 1 ~= 0 then return end
-	local Employee = QBCore.Functions.GetPlayerByCitizenId(data.cid) or QBCore.Functions.GetOfflinePlayerByCitizenId(data.cid)
-	-- only members of the boss's own gang, and not someone ranked above the boss
-	if not SameGang(Player, Employee) or Employee.PlayerData.gang.grade.level > Player.PlayerData.gang.grade.level then
-		TriggerClientEvent('QBCore:Notify', src, 'You cannot change this rank!', 'error')
-		return
-	end
-	if data.grade > Player.PlayerData.gang.grade.level then
-		TriggerClientEvent('QBCore:Notify', src, 'You cannot promote to this rank!', 'error')
-		return
-	end
-
-	if Employee then
-		if Employee.Functions.SetGang(Player.PlayerData.gang.name, data.grade) then
-			TriggerClientEvent('QBCore:Notify', src, 'Successfully promoted!', 'success')
-			Employee.Functions.Save()
-
-			if Employee.PlayerData.source then
-				TriggerClientEvent('QBCore:Notify', Employee.PlayerData.source, 'You have been promoted to ' .. tostring(Employee.PlayerData.gang.grade.name or data.grade) .. '.', 'success')
-			end
-		else
-			TriggerClientEvent('QBCore:Notify', src, 'Grade does not exist.', 'error')
-		end
+	local grade = tonumber(data.grade)
+	if not grade or grade < 0 or grade % 1 ~= 0 then return end
+	local ok, err = M.SetGrade(src, 'gang', data.cid, grade)
+	if not ok then
+		TriggerClientEvent('QBCore:Notify', src, GRADE_MESSAGES[err] or 'Error.', 'error')
+		if err ~= 'unknown_grade' then return end
+	else
+		TriggerClientEvent('QBCore:Notify', src, 'Successfully promoted!', 'success')
 	end
 	TriggerClientEvent('qb-gangmenu:client:OpenMenu', src)
 end)
 
 -- Fire Member
+local FIRE_MESSAGES = {
+	not_member = 'You cannot fire this citizen!', outranks_you = 'You cannot fire this citizen!',
+	cannot_fire_self = 'You can\'t kick yourself out of the gang!', failed = 'Error.',
+}
+
 RegisterNetEvent('qb-gangmenu:server:FireMember', function(target)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
@@ -111,31 +93,12 @@ RegisterNetEvent('qb-gangmenu:server:FireMember', function(target)
 		return
 	end
 
-	local Employee = QBCore.Functions.GetPlayerByCitizenId(target) or QBCore.Functions.GetOfflinePlayerByCitizenId(target)
-	-- any citizenid used to be accepted, firing people out of other gangs
-	if Employee and not SameGang(Player, Employee) then
-		TriggerClientEvent('QBCore:Notify', src, 'You cannot fire this citizen!', 'error')
-		return
-	end
-	if Employee then
-		if target == Player.PlayerData.citizenid then
-			TriggerClientEvent('QBCore:Notify', src, 'You can\'t kick yourself out of the gang!', 'error')
-			return
-		elseif Employee.PlayerData.gang.grade.level > Player.PlayerData.gang.grade.level then
-			TriggerClientEvent('QBCore:Notify', src, 'You cannot fire this citizen!', 'error')
-			return
-		end
-		if Employee.Functions.SetGang('none', '0') then
-			Employee.Functions.Save()
-			TriggerEvent('qb-log:server:CreateLog', 'gangmenu', 'Gang Fire', 'orange', Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname .. ' successfully fired ' .. Employee.PlayerData.charinfo.firstname .. ' ' .. Employee.PlayerData.charinfo.lastname .. ' (' .. Player.PlayerData.gang.name .. ')', false)
-			TriggerClientEvent('QBCore:Notify', src, 'Gang Member fired!', 'success')
-
-			if Employee.PlayerData.source then -- Player is online
-				TriggerClientEvent('QBCore:Notify', Employee.PlayerData.source, 'You have been expelled from the gang!', 'error')
-			end
-		else
-			TriggerClientEvent('QBCore:Notify', src, 'Error.', 'error')
-		end
+	local ok, err = M.Fire(src, 'gang', target)
+	if ok then
+		TriggerClientEvent('QBCore:Notify', src, 'Gang Member fired!', 'success')
+	elseif FIRE_MESSAGES[err] then
+		TriggerClientEvent('QBCore:Notify', src, FIRE_MESSAGES[err], 'error')
+		if err == 'not_member' then return end
 	end
 	TriggerClientEvent('qb-gangmenu:client:OpenMenu', src)
 end)
@@ -145,21 +108,19 @@ RegisterNetEvent('qb-gangmenu:server:HireMember', function(recruit)
 	local src = source
 	local Player = exports['pfm-core']:GetPlayer(src)
 	if not Player then return end
-	local Target = exports['pfm-core']:GetPlayer(tonumber(recruit))
 
 	if not Player.PlayerData.gang.isboss then
 		ExploitBan(src, 'HireEmployee Exploiting')
 		return
 	end
-	-- same 10 m as the hire list (anyone on the server could be hired from anywhere)
-	if Target and #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(Target.PlayerData.source))) > 10.0 then
-		return
-	end
-
-	if Target and Target.Functions.SetGang(Player.PlayerData.gang.name, 0) then
-		TriggerClientEvent('QBCore:Notify', src, 'You hired ' .. (Target.PlayerData.charinfo.firstname .. ' ' .. Target.PlayerData.charinfo.lastname) .. ' come ' .. Player.PlayerData.gang.label .. '', 'success')
+	local ok, res = M.Hire(src, 'gang', recruit)
+	local Target, err = ok and res or nil, not ok and res or nil
+	if err == 'too_far' then return end
+	if ok then
+		TriggerClientEvent('QBCore:Notify', src, 'You hired ' .. M.FullName(Target) .. ' come ' .. Player.PlayerData.gang.label .. '', 'success')
 		TriggerClientEvent('QBCore:Notify', Target.PlayerData.source, 'You have been hired as ' .. Player.PlayerData.gang.label .. '', 'success')
-		TriggerEvent('qb-log:server:CreateLog', 'gangmenu', 'Recruit', 'yellow', (Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname) .. ' successfully recruited ' .. Target.PlayerData.charinfo.firstname .. ' ' .. Target.PlayerData.charinfo.lastname .. ' (' .. Player.PlayerData.gang.name .. ')', false)
+	elseif err == 'already_member' then
+		TriggerClientEvent('QBCore:Notify', src, 'This citizen is already in the gang', 'error')
 	end
 	TriggerClientEvent('qb-gangmenu:client:OpenMenu', src)
 end)
