@@ -175,6 +175,7 @@ RegisterNetEvent('qb-diving:server:TakeCoral', function(area, coral, _)
             newLocation = math.random(1, #Config.CoralLocations)
         end
         currentDivingArea = newLocation
+        TriggerEvent('pfm-diving:server:areaChanged')
         TriggerClientEvent('qb-diving:client:NewLocations', -1)
     end
 end)
@@ -205,3 +206,60 @@ end)
 QBCore.Functions.CreateUseableItem('diving_fill', function(source)
     TriggerClientEvent('qb-diving:client:SetOxygenLevel', source)
 end)
+
+-- Dive Guide app (pf-devices, tablet + computer, installed from the App Store): the current dive
+-- area, how much coral is left there, what the buyer pays and where. Diving itself stays in the water.
+local function diveGuide()
+    local area = Config.CoralLocations[currentDivingArea]
+    local left, total = 0, 0
+    for _, c in pairs(area and area.coords.Coral or {}) do
+        total = total + 1
+        if not c.PickedUp then left = left + 1 end
+    end
+    local corals = {}
+    for _, t in pairs(Config.CoralTypes) do
+        corals[#corals + 1] = { item = t.item, label = sharedItems[t.item] and sharedItems[t.item].label or t.item, price = t.price }
+    end
+    local buyers = {}
+    for i in pairs(Config.SellLocations) do buyers[#buyers + 1] = { id = i, label = ('Coral buyer %d'):format(i) } end
+    local tiers = {}
+    for _, t in ipairs(Config.BonusTiers or {}) do tiers[#tiers + 1] = { from = t.minAmount, to = t.maxAmount, bonus = ('%d-%d%%'):format(t.minBonus, t.maxBonus) } end
+    return { ok = true, area = area and area.label or nil, left = left, total = total, corals = corals, buyers = buyers, tiers = tiers }
+end
+
+local function registerApp()
+    if GetResourceState('pf-devices') ~= 'started' then return end
+    exports['pf-devices']:RegisterApp({
+        id = 'diveguide', name = 'Dive Guide', icon = '🤿',
+        entry = 'html/diveguide.js', category = 'jobs', order = 61,
+        access = { installable = true },
+        store = { description = 'Where the coral is today, how much is left and what the buyer pays.', publisher = 'Pacific Bluffs Dive Co.' },
+        description = 'Coral diving: area, prices, buyers',
+    })
+    exports['pf-devices']:RegisterAppHandlers('diveguide', {
+        status = function() return diveGuide() end,
+        waypoint = function(src, p)
+            local x, y
+            if p.target == 'area' then
+                local area = Config.CoralLocations[currentDivingArea]
+                if area then x, y = area.coords.Area.x, area.coords.Area.y end
+            else
+                local loc = Config.SellLocations[tonumber(p.id) or 0]
+                if loc then x, y = loc.coords.x, loc.coords.y end
+            end
+            if not x then return { ok = false, error = 'unknown_place' } end
+            TriggerClientEvent('qb-diving:client:waypoint', src, x, y)
+            return { ok = true }
+        end,
+    })
+end
+
+AddEventHandler('pfm-diving:server:areaChanged', function()
+    if GetResourceState('pf-devices') == 'started' then
+        pcall(function() exports['pf-devices']:Broadcast('diveguide', 'changed', {}) end)
+    end
+end)
+AddEventHandler('onResourceStart', function(resource)
+    if resource == GetCurrentResourceName() or resource == 'pf-devices' then registerApp() end
+end)
+AddEventHandler('pf-devices:server:ready', registerApp)

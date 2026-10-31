@@ -17,6 +17,8 @@ server_scripts {
     'server/main.lua'
 }
 
+files { 'html/diveguide.js' } -- Dive Guide app (pf-devices)
+
 client_scripts {
     '@PolyZone/client.lua',
     '@PolyZone/BoxZone.lua',
