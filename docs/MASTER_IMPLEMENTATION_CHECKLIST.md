@@ -94,6 +94,20 @@
 | PF Computer government apps through pf-government permissions | AWAITING TEST | |
 | PF Tablet: job apps, business list, Business Manager | AWAITING TEST | Business Manager reads the real registry and the player's supply orders (batch 8). Ordering and unpacking stay on PF Computer |
 
+## 7b. Devices, news, government field work, job links (batch 10)
+
+| System | Status | Notes |
+|---|---|---|
+| App platform for both devices (`pf-devices`): registry, access rules, RPC, pushes, App Store, websites, launchers | AWAITING TEST | Mocked, real-DB and jsdom runtime tests |
+| Tablet and computer as shells; job, mechanic, MDT, trucking apps from the platform | AWAITING TEST | The tablet's hardcoded job wiring is gone |
+| City events and service requests (`pf-services`), Dispatch / Services / Directory apps | AWAITING TEST | Real-DB: escrow, racing workers, verification, refunds, expiry |
+| News (`pf-news`): City Desk presets, leads, newsroom, bonuses, ads, News app + news.ls | AWAITING TEST | Reporter grades 0-4 added to pfm-core |
+| Government field apps and City Hall Requests; delivery zones in supply orders | AWAITING TEST | |
+| Job links (see `JOB_LINKS.md`) | AWAITING TEST | Candidates listed there |
+| Citizen apps (`pf-citizen`): mail, bills, documents, calendar on phone, tablet, computer | IN PROGRESS | |
+| Computer without fake data (job board, business manager, persistence, security fixes) | IN PROGRESS | |
+| Duplicate jobs (pfm-taxijob / pfm-garbagejob next to pf-jobs) | NOT | Owner decision: which one stays |
+
 ## 8. Security
 
 | Item | Status | Notes |
@@ -113,6 +127,16 @@
   - registry employees;
   - standalone repositories synced.
 - **After batch 9:** job fleet cars only from the job garage (owner decision).
+- **Batch 10 (2026-10-31, branch `main-9hq3gi`):**
+  - one app platform for the tablet and the computer;
+  - city events and job-to-job requests;
+  - news run by the news job;
+  - government field apps on the tablet;
+  - job links (`JOB_LINKS.md`);
+  - citizen apps;
+  - computer clean-up.
+
+  See `DEVICES_AND_SERVICES.md` and the report.
 - **Open:** state-bag strict mode (owner, needs refactor first).
 
 ## 10. Latest pushed commits

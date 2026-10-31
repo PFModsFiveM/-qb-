@@ -1761,3 +1761,70 @@ Checks run: parse checks on every changed file, plus the government real-DB spec
 - **Loans used the wrong account:** grant and repayment moved money to or from `society:<business_id>` (for example `society:restaurant:bs`), which is not the business's account. They now use the registry's `account_ref`.
 - **A crash the new test caught:** loans.lua called a function that is local to callbacks.lua, so it would have crashed in game. Fixed.
 - **Installment idempotency keys:** keys for two due dates in the same second could collide, so the ledger replayed the earlier payment instead of charging. Each key is now unique; the guarded claim prevents double processing.
+
+## Batch 10 — 2026-10-31: one app platform for the tablet and the computer, news, government field work, job links
+
+The owner's brief: apps on both devices share code, pf-jobs feeds the job apps, the computer is
+connected to every system, news is run by the news job and automatic for city-hall changes (but
+not for everything), government field work is on the tablet, and jobs rely on other jobs, with a
+full list of the links. Branch `main-9hq3gi` in both repositories. Nothing was tested with a game
+client.
+
+### New resources ([pfscripts])
+| Resource | What it is |
+|---|---|
+| `pf-devices` | The app platform. One server-side registry (access by job and grade, duty, government permission, admin, custom check); one JS module per app, mounted by whichever shell is open; an RPC bridge with the real player id, rate limit and size limit; a push channel; installable apps with an App Store (paid installs on the ledger, `pf_device_apps`); websites shown identically in both browsers; launcher apps for screens that stay full-screen (the MDTs). Developer guide: `pf-devices/README.md` |
+| `pf-services` | City events (one timeline, `pf_city_events`; news and police listen) and service requests between jobs (`pf_service_requests`: atomic accept, verified completion, rewards held from the payer and paid on the ledger). Apps: Dispatch (workers), Services (citizens), Directory |
+| `pf-news` | The newsroom and the News app / news.ls website (same UI) |
+| `pf-citizen` | Mail, Bills, Documents, Calendar for the phone, tablet and computer (see below) |
+
+### What changed, by owner requirement
+| Requirement | Done | Commits |
+|---|---|---|
+| Apps share code on both devices | pf-tablet and pf-computer are shells. Platform apps run as one module in both: Taxi, Gruppe 6, Garbage, Bus, Trucking, mechanic Work Orders / Cash Register / Management, Dispatch, Services, Directory, Supplier, Scrap List, Dive Guide, Hot Dog Stand, News, Newsroom, the government apps, the citizen apps, the App Store. The police and EMS MDTs open from either device. The tablet's hardcoded job wiring (about 40 callbacks and forwards) is gone | -pfscripts- 9f17e9c, 5e58d41, 3a4d045 |
+| pf-jobs feeds the devices | pf-jobs registers its apps; app actions run the existing hardened job code for the real player | 3a4d045 |
+| Computer connected | Platform apps on the desktop and start menu; platform websites in the computer browser; computer clean-up (see below) | 9f17e9c, see below |
+| News run by the news job, automatic for city hall, not for everything | City Desk articles from presets for `auto` events (bursts become one digest, exactly once across restarts); `lead` events become reporter leads; the newsroom with grades (write, publish, edit); reporter bonuses; business ads. pfm-newsjob vehicles, duty and equipment are server-checked. Reporter grades 0-4 added | cb97962, -qb- 60bfc61 |
+| News public with the app installed, and a website in both | The News app is installable; news.ls is the same module | cb97962 |
+| Government on the tablet | Fines (nearby people only), Inspections (only at the business), Business Requests, City Budget, Announcements, Business Setup (equipment positions and delivery zones where the official stands); City Hall Requests for owners; delivery zones used by supply orders | cb97962, 1005687 |
+| Jobs rely on jobs, with a full list | `docs/JOB_LINKS.md`: police → tow → impound lot, mechanic → tow, citizen services, robberies → police dispatch + news, downed players → EMS, 911 → Dispatch, court and warrants → newsroom, weather and races, City Hall → news, business → news ads, business → City Hall requests, store robbery → owner | e686e9f, 58b0dee, -qb- 512bc9d, 19c1d62 |
+
+### Defects found and fixed on the way
+- **pf-computer manifest:** the manifest never shipped `cityhall.js` or `domains-theme.css`, so the City Hall app and the domains theme never loaded in game.
+- **pf-jobs bus:** the bus server used a global `QBCore` that no file sets, so every bus event errored.
+- **pf-jobs Gruppe 6 client:** a syntax error (`while … then`) stopped the whole Gruppe 6 client from loading.
+- **pf-jobs taxi:** the raw taxi events now need the taxi job. A random VIP call made the payout spec flaky.
+- **pf-jobs Gruppe 6 app:** the app received every party on the server; it now gets only the player's own.
+- **pf-tablet:** removed a dead client-total cash register, which had no server handler.
+- **pf-mechanicjob:** the mechanic's tow request sent client values to events nothing handled. It is now a real request.
+- **pfm-houserobbery:** the burglar alarm was rolled on the client. It is now rolled on the server.
+- **pf-government:** bill waivers wrote a column that did not exist, so they failed silently. Announcements could be posted by any government grade; they now need the announcement permission.
+- **pf-services review:**
+  - a paid request closed by the system before anyone took it now refunds the payer;
+  - request details sent to clients are whitelisted, so internal ids stay on the server.
+
+### Database migrations (all through `pf_schema_migrations`, rerun-safe)
+- **pf-devices v1:** `pf_device_apps`.
+- **pf-services v1:** `pf_city_events`, `pf_service_requests`.
+- **pf-news v1:** `pf_news_articles`, `pf_news_events`, `pf_news_leads`, `pf_news_views`, `pf_news_ads`, `pf_news_payouts`.
+- **pf-government v1:**
+  - new tables `pf_gov_delivery_zones` and `pf_gov_business_requests`;
+  - new columns: `district` on businesses, `follow_up_at` and `request_id` on inspections, `notes` on bills.
+- **pf-citizen and pf-computer:** see below.
+
+### Tests
+Mocked and real-database suites were green after each finished part (latest full runs: mocked 850 passed, 0 failed; real-DB 193 passed, 0 failed), plus the jsdom runtime spec (7 passed). The citizen apps and the computer clean-up are still in progress at the time of writing; their counts are added when they land.
+
+### Still to check in game
+See `FINAL_TEST_PLAN.md` section 3b. Also:
+- yielding exports called through pf-devices;
+- MDT launchers on the live resource names;
+- the news duty-point position, which is a guess;
+- slot and zone headings;
+- layouts at the real tablet size.
+
+### Owner decisions raised by this batch
+- **Duplicate jobs:** pfm-taxijob and pfm-garbagejob still run beside the pf-jobs Taxi and Garbage. pfm-busjob is the only working bus job: pf-jobs Bus ships disabled with no routes. Pick one of each.
+- **Two dispatch systems:** the MDT's own callouts and 911 board, and the pf-services Dispatch app. Pick the main one.
+- **Crew splits:** Gruppe 6 and Garbage splits are stored but ignored in payouts. Gruppe 6 upgrades have no server effect.
+- **Retire pf-governmentwebsiteonly:** it writes government tables directly, so its changes emit no events.

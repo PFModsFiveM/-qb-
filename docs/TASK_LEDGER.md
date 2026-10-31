@@ -112,6 +112,8 @@ The working list for the whole project. Read this first in every session, then `
 
 ## Session log
 
+- **2026-10-31 (batch 10):** pf-devices (one app platform for the tablet and the computer), pf-services (city events + service requests between jobs), pf-news, the government field apps, pf-citizen, the computer clean-up and job links across robberies, police, EMS, mechanic, tow, prison, weather and races. Branch `main-9hq3gi` in both repos. Details: report Batch 10, `DEVICES_AND_SERVICES.md`, `JOB_LINKS.md`.
+
 - **2026-10-25 (batch 7):** end-to-end supply chain test across the real resources; restaurants order on PF Computer; duplicate-order guard; premises and equipment; Business Manager shows real stock; dish freshness from ingredients. See report Batch 7.
 - **2026-10-25 (decisions):** licenses record-only; government transfers drive ownership (done, b5d22d2); auto-bans replaced by refuse-and-log (e86e9e8); store prices left to you.
 - **2026-10-25 (end):** staging restart found a start-order/concurrency bug in the government schema; fixed (be48b94). Remaining work is listed as decisions in 2.2, 4.2, 6.2, 7.2 and the sweep table, and external blockers in 0.7, 1.2, 1.3.
