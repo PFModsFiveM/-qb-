@@ -447,13 +447,14 @@ end)
 
 --- Charges the invoice on the ledger. One key per invoice, so a replayed or doubled request is charged
 --- once; a key whose attempt failed (not enough money) stays failed in the ledger, so a later attempt
---- moves on to the next key instead of failing forever. Returns true or false, error.
+--- moves on to the next key instead of failing forever. Returns true, replayed (the charge was made
+--- before) or false, error.
 local function ChargeInvoice(src, invoiceId, amount, society)
     local base = 'pfm-phone:invoice:' .. invoiceId
     for attempt = 1, 20 do
         local key = attempt == 1 and base or (base .. ':retry' .. attempt)
         local account, res = PFPayout.Charge(src, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society })
-        if account then return true end
+        if account then return true, type(res) == 'table' and res.duplicate == true end
         if not (type(res) == 'table' and res.duplicate) then return false, type(res) == 'table' and res.error or 'payment_failed' end
     end
     return false, 'payment_failed'
@@ -472,12 +473,12 @@ local function PayInvoice(src, invoiceId, elsewhere)
     local society = invoice and tostring(invoice.society or '')
     if not amount or society == '' then return false, 'not_found' end
 
-    local charged, err = ChargeInvoice(src, invoiceId, amount, society)
-    if not charged then return false, err == 'insufficient_funds' and 'insufficient_funds' or (err or 'payment_failed') end
-    local deleted = MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
-    -- a doubled request reaches this point too (its charge was the same ledger entry); only the one
-    -- that removed the invoice sends the mails
-    local first = not (type(deleted) == 'table' and tonumber(deleted.affectedRows) == 0)
+    local charged, replayed = ChargeInvoice(src, invoiceId, amount, society)
+    if not charged then return false, replayed == 'insufficient_funds' and 'insufficient_funds' or (replayed or 'payment_failed') end
+    MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
+    -- a replayed request reaches this point too (its charge is the earlier ledger entry); the society
+    -- and commission keys make the payouts idempotent, the mails and events go out only the first time
+    local first = not replayed
     local key = 'pfm-phone:invoice:' .. invoiceId
     local ok = PFPayout.PaySociety(society, amount, { key = key .. ':society', reason = 'Phone invoice' })
     if not ok then print(('^1[pfm-phone]^7 invoice %d: payment to %s not credited yet (key %s:society)'):format(invoiceId, society, key)) end
