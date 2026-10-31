@@ -1803,6 +1803,25 @@ client.
   - a paid request closed by the system before anyone took it now refunds the payer;
   - request details sent to clients are whitelisted, so internal ids stay on the server.
 
+### Citizen apps (`pf-citizen`, with pfm-phone)
+- **Mail:**
+  - one mailbox per citizen in the phone's `player_mails` table, so the phone, tablet and computer show the same mail;
+  - folders, threads, search and an address book;
+  - offline delivery, and broadcasts reach each citizen once;
+  - the sender's identity always comes from the server, with rate limits;
+  - pf-citizen handles City Hall announcements and laws itself, so offline citizens get them too.
+- **Bills:**
+  - one view of government bills and fines (including those of businesses the player manages) and phone invoices;
+  - each is paid through its owner's path: the new `PayBillFromPlayer` export (one lock shared with the City Hall terminal, and a refund of anything it could not apply) or the phone's new `PayInvoice` / `DeclineInvoice` exports;
+  - new bills arrive by push and by mail.
+- **Documents:** stored on the server, with read-only links or copies, signatures (server identity and a fingerprint), and mail attachments.
+- **Calendar:**
+  - personal events;
+  - city events (government `events` permission);
+  - business events for staff;
+  - reminders.
+- **Fixed:** a phone invoice became unpayable forever after one failed attempt, because the failed ledger key was final. Later attempts now use retry keys and still charge once.
+
 ### Database migrations (all through `pf_schema_migrations`, rerun-safe)
 - **pf-devices v1:** `pf_device_apps`.
 - **pf-services v1:** `pf_city_events`, `pf_service_requests`.
@@ -1810,7 +1829,12 @@ client.
 - **pf-government v1:**
   - new tables `pf_gov_delivery_zones` and `pf_gov_business_requests`;
   - new columns: `district` on businesses, `follow_up_at` and `request_id` on inspections, `notes` on bills.
-- **pf-citizen and pf-computer:** see below.
+- **pf-citizen v1:** `player_mails` extended (folders, threads, sender identity, attachments, refs). New tables:
+  - `pf_citizen_mail_broadcasts`, `pf_citizen_broadcast_receipts`;
+  - `pf_citizen_documents`, `pf_citizen_document_shares`, `pf_citizen_document_signatures`;
+  - `pf_citizen_events`, `pf_citizen_event_subs`, `pf_citizen_event_reminders`;
+  - `pf_citizen_bill_history`.
+- **pf-computer:** see below.
 
 ### Tests
 Mocked and real-database suites were green after each finished part (latest full runs: mocked 850 passed, 0 failed; real-DB 193 passed, 0 failed), plus the jsdom runtime spec (7 passed). The citizen apps and the computer clean-up are still in progress at the time of writing; their counts are added when they land.

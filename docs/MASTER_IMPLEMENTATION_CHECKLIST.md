@@ -104,7 +104,7 @@
 | News (`pf-news`): City Desk presets, leads, newsroom, bonuses, ads, News app + news.ls | AWAITING TEST | Reporter grades 0-4 added to pfm-core |
 | Government field apps and City Hall Requests; delivery zones in supply orders | AWAITING TEST | |
 | Job links (see `JOB_LINKS.md`) | AWAITING TEST | Candidates listed there |
-| Citizen apps (`pf-citizen`): mail, bills, documents, calendar on phone, tablet, computer | IN PROGRESS | |
+| Citizen apps (`pf-citizen`): mail, bills, documents, calendar on phone, tablet, computer | AWAITING TEST | One mailbox in `player_mails`; government bills via `PayBillFromPlayer` (refunds what it cannot apply); phone invoices via pfm-phone exports |
 | Computer without fake data (job board, business manager, persistence, security fixes) | IN PROGRESS | |
 | Duplicate jobs (pfm-taxijob / pfm-garbagejob next to pf-jobs) | NOT | Owner decision: which one stays |
 
