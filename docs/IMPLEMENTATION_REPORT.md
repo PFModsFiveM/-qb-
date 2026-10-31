@@ -1822,6 +1822,35 @@ client.
   - reminders.
 - **Fixed:** a phone invoice became unpayable forever after one failed attempt, because the failed ledger key was final. Later attempts now use retry keys and still charge once.
 
+### The computer without fake data (`pf-computer`)
+The final code is in -pfscripts- 97ed938, the last snapshot commit; its message still says WIP.
+- **Gone:** the fake Mail (localStorage, with plaintext passwords), the six hardcoded Bills, local Documents and the broken Calendar. Those icons open the pf-citizen apps.
+- **Job Board on MySQL:**
+  - posts must belong to a business the poster really manages;
+  - applicant identity comes from the server;
+  - the boss is mailed about each applicant;
+  - hiring is real: an online applicant accepts the offer, an offline one gets the job at next login;
+  - "Jobs in the city" lists the job catalogue.
+- **Business Manager, from real tables:**
+  - employees, with promote, demote and fire done by pfm-management's rules;
+  - stock from the real stock stashes;
+  - analytics from the ledger and the government's revenue reports;
+  - wages paid through the pfm-core job grades.
+- **Persistence:** everything that mattered in `pc_data.json` moved to MySQL, imported once.
+- **Security fixes:**
+  - server identity on job applications and chat;
+  - domain transfers go only to verified characters;
+  - owners' citizen ids are no longer listed;
+  - website saves are bounded in size;
+  - business blips must be placed near the boss;
+  - external programs launch on their own resource;
+  - `OpenComputer` / `CloseComputer` exports;
+  - pickup runs survive a restart.
+- **Other:**
+  - the fake City Hall and the dark-web market are removed; government staff open pf-government's own UI from any computer through launcher apps;
+  - announcements go through pf-government;
+  - order supplies use the government delivery zones.
+
 ### Database migrations (all through `pf_schema_migrations`, rerun-safe)
 - **pf-devices v1:** `pf_device_apps`.
 - **pf-services v1:** `pf_city_events`, `pf_service_requests`.
@@ -1834,10 +1863,17 @@ client.
   - `pf_citizen_documents`, `pf_citizen_document_shares`, `pf_citizen_document_signatures`;
   - `pf_citizen_events`, `pf_citizen_event_subs`, `pf_citizen_event_reminders`;
   - `pf_citizen_bill_history`.
-- **pf-computer:** see below.
+- **pf-computer:**
+  - v1: `pf_computer_businesses`, `pf_computer_wage_caps`, `pf_computer_domains`, `pf_computer_chat`, `pf_computer_pickup_runs`, `pf_computer_meta`, `pf_computer_job_posts`, `pf_computer_job_applications`;
+  - v2: the one-time import from `pc_data.json`, which is kept as a backup.
 
 ### Tests
-Mocked and real-database suites were green after each finished part (latest full runs: mocked 850 passed, 0 failed; real-DB 193 passed, 0 failed), plus the jsdom runtime spec (7 passed). The citizen apps and the computer clean-up are still in progress at the time of writing; their counts are added when they land.
+Final runs with everything in:
+- **Mocked:** 882 passed, 0 failed (119 spec files).
+- **Real database:** 245 passed, 0 failed (24 spec files, MariaDB 10.11).
+- **Browser (jsdom):** pf-devices runtime 7 passed; citizen apps 5 passed.
+- **Syntax:** all 184 changed Lua files parse, and every app module passes `node --check`.
+- **Starting point:** batch 9 ended at 695 mocked and 149 real-database tests.
 
 ### Still to check in game
 See `FINAL_TEST_PLAN.md` section 3b. Also:

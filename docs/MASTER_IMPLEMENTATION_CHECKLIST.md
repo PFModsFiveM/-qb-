@@ -105,7 +105,7 @@
 | Government field apps and City Hall Requests; delivery zones in supply orders | AWAITING TEST | |
 | Job links (see `JOB_LINKS.md`) | AWAITING TEST | Candidates listed there |
 | Citizen apps (`pf-citizen`): mail, bills, documents, calendar on phone, tablet, computer | AWAITING TEST | One mailbox in `player_mails`; government bills via `PayBillFromPlayer` (refunds what it cannot apply); phone invoices via pfm-phone exports |
-| Computer without fake data (job board, business manager, persistence, security fixes) | IN PROGRESS | |
+| Computer without fake data (job board, business manager, persistence, security fixes) | AWAITING TEST | Restaurants on the Job Board can only "accept" (needs a pf-restaurants staff export) |
 | Duplicate jobs (pfm-taxijob / pfm-garbagejob next to pf-jobs) | NOT | Owner decision: which one stays |
 
 ## 8. Security
