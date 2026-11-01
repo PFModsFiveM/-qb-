@@ -2315,10 +2315,14 @@ Batch 13b fixed the late fees, the house utility bills, the police invoice inser
 - **Second rounds:** five areas went back for a second round: phone invoices, fuel and cruise, vehicles, jobs and mechanic, citizen and government. The skeptic then checked them again.
 - **Commits:** `-qb-` 734fd96, `-pfscripts-` 95987df. A "WIP batch 13b" snapshot came first (`-qb-` beecf51, `-pfscripts-` b00d7a9).
 
-**Results on the commits:**
-- mocked 1977 passed, 0 failed (196 files);
-- real database 495 passed, 0 failed (51 files);
-- browser-side: all 12 JS spec files green;
+- **Export boundary:** committed after the area fixes, on top of WIP snapshots (`-qb-` fc19d59, 08d45f2; `-pfscripts-` 5c1eaef). See "Export boundary" below.
+
+**Results on the area commits:** mocked 1977 passed, 0 failed (196 files); real database 495 / 0 (51 files); all 12 JS spec files green; parallel ledger and fresh-install SQL checks pass.
+
+**Results after the export boundary (end of batch 13b):**
+- mocked 2029 passed, 0 failed (205 files);
+- real database 503 passed, 0 failed (53 files);
+- browser-side: all JS spec files green;
 - parallel ledger and fresh-install SQL checks pass.
 
 **Nothing has been tested in game.**
@@ -2556,7 +2560,8 @@ Batch 13b fixed the late fees, the house utility bills, the police invoice inser
 - **New real-DB specs:** `fix13b_fuel_first_level`, `fix13b_garages_fuel_clamp`, `fix13b_jobgarages_fleet`, `fix13b_vehiclesales_settle`, `fix13b_vehicleshop_settle`, `government_house_bills`. Extended: `phone_invoice_tokens`, `citizen_phone`, `citizen_documents`, `supply_chain`, `supply_chain_e2e`, `computer_orders`, `government_property_tax`, `fix9hq2_dispatch_visibility`.
 - **Changed expectations:** the two `fix9hq2_phonekeys` tests that expected a new key after an unverified charge now expect a wait. Specs that placed tiny deliveries now order more, or set `MinDeliveryGoods = 0`. The Gruppe 6 specs send the inventory move as a net event.
 - Each new test fails on the code before its fix (the agents and the skeptics ran them on copies of the older code).
-- Mocked 1977 / 0 (196 files), real DB 495 / 0 (51 files), the 12 JS spec files green; `ledger_parallel` and `sql_install_check` pass.
+- Area commits: mocked 1977 / 0 (196 files), real DB 495 / 0 (51 files). After the export boundary: mocked 2029 / 0 (205 files), real DB 503 / 0 (53 files); every JS spec green; `ledger_parallel` and `sql_install_check` pass.
+- **Export boundary specs:** `boundary_mock`, `boundary_funcref_scan`, `boundary_devices`, `boundary_migrations`, `boundary_mdt`, `boundary_mechanic`, `boundary_mechanic_progress`, `boundary_hotdog`, `boundary_weapons_jam`, and the real-DB `boundary_services_handlers` and `boundary_services_onclosed`; `sweep_mdt_jail`, `crafting_app`, `crypto_app` and `boss_app` extended.
 
 ### Behaviour changes owners must know about
 - **Pumps off the station list stop selling.** A pump more than 60 m from the 27 listed stations, such as a custom-map pump, answers "Fuel is only sold at a gas station" until its spot is added to `Config.ExtraPumps`. Jerry cans still pour anywhere.

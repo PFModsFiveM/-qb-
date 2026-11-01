@@ -118,6 +118,26 @@ describe('licences of an online citizen', function()
         assert_eq(live().licences.driver, true)
         assert_eq(live().licences.business, true, 'and the lifted suspension')
     end)
+    -- the two below start from a row without the new licence (the test above suspends first, which
+    -- writes it into the row), so each handler is checked on its own
+    it('a removal alone keeps a licence granted since the last save', function()
+        live().licences.business = true
+        Mock.fireNet('pf_mdt:removeLicense', OFFICER, { citizenId = 'CID2', licenseType = 'weapon' })
+        assert_eq(live().licences.weapon, false)
+        assert_eq(live().licences.business, true, 'the removal kept the new licence')
+        assert_eq(stored.CID2.licences.business, true, 'and stored it')
+    end)
+    it('lifting a suspension alone keeps a licence granted since the last save', function()
+        local fut = os.date('%Y-%m-%d %H:%M:%S', os.time() + 86400)
+        live().licences.driver = false
+        live().licenseSuspensions = { driver = fut }
+        live().licences.business = true
+        stored.CID2 = { licences = { driver = false, weapon = true }, licenseSuspensions = { driver = fut } }
+        Mock.fireNet('pf_mdt:unsuspendLicense', OFFICER, { citizenId = 'CID2', licenseType = 'driver' })
+        assert_eq(live().licences.driver, true)
+        assert_eq(live().licences.business, true, 'lifting the suspension kept the new licence')
+        assert_eq(stored.CID2.licences.business, true, 'and stored it')
+    end)
     it('a suspension that ran out is lifted on the live player when the profile is opened', function()
         local past = os.date('%Y-%m-%d %H:%M:%S', os.time() - 3600)
         live().licences.driver = false

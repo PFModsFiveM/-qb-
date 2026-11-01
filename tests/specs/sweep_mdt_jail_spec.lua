@@ -71,6 +71,13 @@ BeforeEach = function()
         table.insert(p.PlayerData.items, { name = name, amount = amount, slot = slot })
         return true
     end
+    -- the MDT keeps the jail and the confiscated items in locals: end a sentence an earlier test left
+    -- running (a stash already held is not taken again)
+    now = realTime() + 3600
+    Mock.fireNet('pf_mdt:server:mdtSentenceReleased', PRISONER)
+    now = realTime()
+    p.PlayerData.items = { { name = 'phone', amount = 1, slot = 1 } }
+    Mock.reset()
 end
 
 local function sentence()
@@ -95,5 +102,45 @@ describe('MDT jail inventory', function()
         sentence()
         Mock.fireNet('pf_mdt:server:mdtSentenceReleased', PRISONER)
         assert_eq(#inv(), 0)
+    end)
+    -- P comes from pfm-core, so RemoveItem and ClearInventory are function references here: the two
+    -- tests below fail if either step tests them with type() == 'function' (it is skipped).
+    it('items a one-call clear leaves in the hotbar are taken one by one', function()
+        local p = Mock.players[PRISONER]
+        p.PlayerData.items = { { name = 'phone', amount = 1, slot = 1 }, { name = 'lockpick', amount = 2, slot = 7 } }
+        -- an inventory whose clear keeps the hotbar (slots 1-5)
+        p.Functions.ClearInventory = function()
+            local kept = {}
+            for _, it in pairs(p.PlayerData.items) do if it.slot <= 5 then kept[#kept + 1] = it end end
+            p.PlayerData.items = kept
+        end
+        p.Functions.RemoveItem = function(name, amount, slot)
+            for i, it in pairs(p.PlayerData.items) do
+                if it.name == name and (slot == nil or it.slot == slot) and it.amount >= amount then
+                    it.amount = it.amount - amount
+                    if it.amount == 0 then table.remove(p.PlayerData.items, i) end
+                    return true
+                end
+            end
+            return false
+        end
+        assert_eq(sentence().success, true)
+        assert_eq(count('phone'), 0, 'the hotbar item was confiscated')
+        assert_eq(count('lockpick'), 0)
+        now = now + 11 * 60
+        Mock.fireNet('pf_mdt:server:mdtSentenceReleased', PRISONER)
+        assert_eq(count('phone'), 1)
+        assert_eq(count('lockpick'), 2)
+    end)
+    it('the release clears what the prisoner holds before the confiscated items come back', function()
+        sentence()
+        assert_eq(count('phone'), 0)
+        -- the inventory came back from the last save (a reconnect in jail), and a jail item
+        local p = Mock.players[PRISONER]
+        p.PlayerData.items = { { name = 'phone', amount = 1, slot = 1 }, { name = 'prison_spoon', amount = 1, slot = 2 } }
+        now = now + 11 * 60
+        Mock.fireNet('pf_mdt:server:mdtSentenceReleased', PRISONER)
+        assert_eq(count('phone'), 1, 'one phone, not two')
+        assert_eq(count('prison_spoon'), 0)
     end)
 end)
