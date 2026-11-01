@@ -274,9 +274,13 @@ describe('pf-jobs device apps: gruppe 6', function()
         assert_eq(res.view.contract.locationPool, nil)
         assert_eq(res.view.contract.payoutId, nil)
         assert_eq(rpc(GUARD, 'gruppe6', 'startSearch').error, 'contract_active')
+        -- ended before any bag was collected: no vault trip (it would refuse an empty deposit and
+        -- the contract could never close); the contract ends with no pay and the truck goes back
         res = rpc(GUARD, 'gruppe6', 'endContract')
         assert_eq(res.ok, true)
-        assert_eq(#eventsTo('pf-jobs:gruppe6:goToDeposit', GUARD), 1)
+        assert_eq(res.view.contract, nil)
+        assert_eq(#eventsTo('pf-jobs:gruppe6:goToDeposit', GUARD), 0)
+        assert_eq(#eventsTo('pf-jobs:gruppe6:returnWithoutBags', GUARD), 1)
     end)
 
     it('refuses bad gruppe 6 payloads', function()

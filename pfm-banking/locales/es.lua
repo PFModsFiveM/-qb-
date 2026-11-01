@@ -24,6 +24,7 @@ local Translations = {
         card = 'No se encontró tarjeta bancaria',
         amount = 'Monto inválido',
         toofar = 'Estás demasiado lejos',
+        atm = 'Este cajero automático está fuera de servicio',
     },
     progress = {
         atm = 'Accediendo al cajero automático',

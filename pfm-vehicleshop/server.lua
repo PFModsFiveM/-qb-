@@ -272,12 +272,14 @@ end)
 -- ── Money ───────────────────────────────────────────────────────────────────────────────────────
 -- Every payment goes through the pfm-banking ledger (PFPayout, '@pfm-banking/payouts.lua') under a
 -- fixed key, and is taken BEFORE the car is handed over (the car used to be written first and the
--- payment never checked). The amounts are as before: a showroom purchase is paid to the shop
--- (system:pfm-vehicleshop); a dealer sale pays the dealership's account the full price and the
--- salesperson a commission; for a financed car the shop (acting as the lender) pays the dealership
--- the part not yet paid, and later finance payments go back to the shop.
+-- payment never checked). A showroom purchase is paid to the shop (system:pfm-vehicleshop). A
+-- dealer sale splits the price: the salesperson's commission comes out of it and the dealership's
+-- account gets the rest (the commission used to be paid on top of the full price, which created
+-- money). For a financed car the shop, acting as the lender, pays out the part not yet paid, and
+-- later finance payments go back to the shop.
 -- Dealer sales and paid /transfervehicle need the customer to accept the offer on their own screen
--- (a nearby player used to be charged without being asked).
+-- (a nearby player used to be charged without being asked). A paid transfer goes through the shop's
+-- account: the buyer pays in, the car changes hands, then the seller is paid (or the buyer refunded).
 
 local OFFER_SECONDS = 60
 local pendingOffers = {}  -- [customer source] = offer
@@ -305,6 +307,47 @@ local function isFleetPlate(plate)
     if not ok then return true end
     return fleet
 end
+
+--- The condition an ownership change adds, so a car put in a fleet after the check does not change
+--- hands in the same moment (one statement). Returns sql, params.
+local function notInFleet(plate)
+    local ok, exists = pcall(fleetTableExists)
+    if ok and exists then
+        return ' AND NOT EXISTS (SELECT 1 FROM job_garage_vehicles WHERE plate = ? AND active = 1)', { plate }
+    end
+    return '', {}
+end
+
+-- [plate] = true while the car is changing hands (/transfervehicle gift, an accepted paid transfer):
+-- the ownership check and the change are separated by database and ledger waits.
+local plateBusy = {}
+
+--- Why the car cannot go from `sellerCid` to another player now, or nil: not theirs any more,
+--- financed (when Config.PreventFinanceSelling), owing more than the buyer was shown, or a fleet car.
+local function transferRefusal(plate, sellerCid, loanShown)
+    local row = MySQL.single.await('SELECT citizenid, balance FROM player_vehicles WHERE plate = ?', { plate })
+    if not row or row.citizenid ~= sellerCid then return 'not_owned' end
+    local balance = tonumber(row.balance) or 0
+    if balance > 0 and Config.PreventFinanceSelling then return 'financed' end
+    -- a loan comes with the car: the buyer accepts the balance their offer showed, not a larger one
+    if loanShown and balance > loanShown then return 'vehicle_changed' end
+    if isFleetPlate(plate) then return 'fleet_vehicle' end
+    return nil
+end
+
+--- Moves the car to the new owner only in the state that was checked: still the seller's, the loan
+--- not above what the buyer saw, not in a fleet. Returns true when it moved.
+local function claimTransfer(plate, sellerCid, buyerCid, buyerLicense, loanShown)
+    local fleetSql, fleetParams = notInFleet(plate)
+    local maxBalance = Config.PreventFinanceSelling and 0 or (loanShown or 0)
+    local n = MySQL.update.await('UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ? AND citizenid = ? AND balance <= ?' .. fleetSql,
+        { buyerCid, buyerLicense, plate, sellerCid, maxBalance, table.unpack(fleetParams) })
+    return (tonumber(n) or 0) > 0
+end
+
+local TRANSFER_TEXT = {
+    not_owned = 'error.notown', financed = 'error.financed', fleet_vehicle = 'error.fleet_vehicle', vehicle_changed = 'error.transfer_changed',
+}
 
 local function validModel(model)
     local v = type(model) == 'string' and sharedVehicles[model]
@@ -387,6 +430,14 @@ local function deliver(Player, model, plate)
     TriggerEvent('qb-vehicleshop:server:onVehiclePurchased', Player.PlayerData.citizenid, model, plate)
     registerVehicle(Player, model, plate)
 end
+
+--- The salesperson's commission on a dealer sale (Config.Commission, or Config.FinanceCommission for
+--- a financed one). It is taken out of the price: the dealership gets the price less this.
+local function commissionFor(price, financed)
+    local rate = tonumber(financed and (Config.FinanceCommission or Config.Commission) or Config.Commission) or 0
+    return math.max(0, math.min(price, round(price * rate)))
+end
+PFShop.CommissionFor = commissionFor
 
 PFShop.ValidModel = function(model) return validModel(model) end
 PFShop.SoldAt = soldAt
@@ -708,6 +759,7 @@ local function offerView(o)
         id = o.id, kind = o.kind, label = o.label, model = o.model, plate = o.plate, shop = o.shopLabel,
         price = o.price, amount = o.amount, tax = tax, total = math.floor((o.amount + tax) * 100 + 0.5) / 100,
         payments = o.terms and o.terms.payments, perPayment = o.terms and o.terms.perPayment, balance = o.terms and o.terms.balance,
+        loan = (o.loan or 0) > 0 and o.loan or nil,
         seller = o.sellerName, buyer = o.buyerName, expiresIn = math.max(0, (o.expires or 0) - os.time()),
     }
 end
@@ -751,7 +803,7 @@ local function sendOffer(src, target, offer)
     -- the prompt answers this offer only (its id): a replaced offer is a new id and a new prompt
     TriggerClientEvent('qb-vehicleshop:client:confirmPurchase', target.PlayerData.source, {
         id = offer.id, label = offer.label, amount = view.total, tax = view.tax, seller = offer.sellerName, kind = offer.kind,
-        payments = offer.terms and offer.terms.payments, perPayment = offer.terms and offer.terms.perPayment,
+        payments = offer.terms and offer.terms.payments, perPayment = offer.terms and offer.terms.perPayment, loan = view.loan,
     })
     pushApp(target.PlayerData.source, 'cardealer', 'offer', view)
     TriggerClientEvent('QBCore:Notify', src, 'Offer sent, waiting for the customer', 'primary')
@@ -787,12 +839,11 @@ function PFShop.DealerOffer(src, playerid, model, downPayment, payments)
     if stock ~= nil and stock < 1 then return { ok = false, error = 'out_of_stock' } end
     local waiting = pendingOffers[target.PlayerData.source]
     if waiting and os.time() <= waiting.expires and waiting.sellerSrc ~= src then return { ok = false, error = 'buyer_busy' } end
-    local rate = terms and (Config.FinanceCommission or Config.Commission) or Config.Commission
     local view = sendOffer(src, target, {
         kind = terms and 'finance' or 'dealer', model = model, label = veh.name or model, price = price, terms = terms,
         amount = terms and terms.down or price, tax = purchaseTax(price), job = shop.Job, shop = shopName, shopLabel = shop.ShopLabel,
         sellerCid = player.PlayerData.citizenid, sellerName = nameOf(player),
-        commission = round(price * rate),
+        commission = commissionFor(price, terms ~= nil),
     })
     return { ok = true, offer = view }
 end
@@ -850,6 +901,45 @@ local function settleTax(o, cid, key)
     return collected
 end
 
+--- An accepted paid transfer (/transfervehicle with a price). The buyer pays into the shop's
+--- account (cash, then bank), the car changes hands only if it is still the seller's, not in a
+--- fleet and not owing more than the buyer was shown, and then the seller is paid in the same kind
+--- of money; if the car could not change hands the buyer is refunded. One key per offer. (The
+--- buyer used to pay the seller directly, and the car was then moved from whoever had it by then.)
+function PFShop.AcceptTransfer(src, offer, customer, key)
+    local cid = customer.PlayerData.citizenid
+    local refused = transferRefusal(offer.plate, offer.sellerCid, offer.loan or 0)
+    if refused then
+        local text = Lang:t(TRANSFER_TEXT[refused] or 'error.notown')
+        TriggerClientEvent('QBCore:Notify', src, text, 'error')
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, text, 'error')
+        return { ok = false, error = refused }
+    end
+    local account = PFPayout.Charge(src, { 'cash', 'bank' }, offer.amount, { key = key .. ':charge', kind = 'purchase', reason = 'Vehicle ' .. offer.plate })
+    if not account then
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.buyertoopoor'), 'error')
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notenoughmoney'), 'error')
+        return { ok = false, error = 'insufficient_funds' }
+    end
+    if not claimTransfer(offer.plate, offer.sellerCid, cid, QBCore.Functions.GetIdentifier(src, 'license'), offer.loan or 0) then
+        if not PFPayout.Pay(cid, account, offer.amount, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle sale did not go through ' .. offer.plate }) then
+            print(('^1[pfm-vehicleshop]^7 buyer %s was not refunded for %s (key %s:refund)'):format(cid, offer.plate, key))
+        end
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.transfer_changed'), 'error')
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.transfer_changed'), 'error')
+        return { ok = false, error = 'vehicle_changed' }
+    end
+    local paid = PFPayout.Pay(offer.sellerCid, account, offer.amount, { key = key .. ':seller', kind = 'sale', reason = 'Vehicle sold ' .. offer.plate, quiet = true })
+    if not paid then
+        -- the money is in the shop's account under this key; staff can settle it from the ledger
+        print(('^1[pfm-vehicleshop]^7 seller %s was not paid for %s (key %s:seller)'):format(offer.sellerCid, offer.plate, key))
+    end
+    TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('success.soldfor') .. comma_value(offer.amount), 'success')
+    TriggerClientEvent('vehiclekeys:client:SetOwner', src, offer.plate)
+    TriggerClientEvent('QBCore:Notify', src, Lang:t('success.boughtfor') .. comma_value(offer.amount), 'success')
+    return { ok = true, plate = offer.plate }
+end
+
 --- The customer's answer to a dealer sale or a paid vehicle transfer (the prompt, or the Car Dealer
 --- app with the offer id). Single use. Returns { ok, ... } or { ok = false, error }.
 --- The answer names the offer it was given for: a seller can replace an offer (a higher price) while
@@ -859,6 +949,8 @@ end
 function PFShop.AnswerOffer(src, accepted, id)
     local offer = pendingOffers[src]
     if not offer or type(id) ~= 'string' or offer.id ~= id then return { ok = false, error = 'not_found' } end
+    -- the car is changing hands in another call (a gift, another buyer): this offer stays open
+    if offer.kind == 'transfer' and plateBusy[offer.plate] then return { ok = false, error = 'in_progress' } end
     pendingOffers[src] = nil
     pushApp(offer.sellerSrc, 'cardealer-sales', 'changed')
     if os.time() > offer.expires then return { ok = false, error = 'expired' } end
@@ -874,34 +966,16 @@ function PFShop.AnswerOffer(src, accepted, id)
     local cid = customer.PlayerData.citizenid
 
     if offer.kind == 'transfer' then
-        -- the seller must still own the car (and it must not have been financed meanwhile, if that is not allowed)
-        local row = MySQL.single.await('SELECT citizenid, balance FROM player_vehicles WHERE plate = ?', { offer.plate })
-        if not row or row.citizenid ~= offer.sellerCid or (Config.PreventFinanceSelling and (tonumber(row.balance) or 0) > 0) then return { ok = false, error = 'not_owned' } end
-        -- nor put in a job fleet while the offer was open
-        if isFleetPlate(offer.plate) then
-            TriggerClientEvent('QBCore:Notify', src, 'This vehicle belongs to a job fleet and cannot be sold', 'error')
-            TriggerClientEvent('QBCore:Notify', offer.sellerSrc, 'This vehicle belongs to a job fleet and cannot be sold', 'error')
-            return { ok = false, error = 'fleet_vehicle' }
+        -- the car is locked before the first wait: the ownership check and the change it allows
+        -- are separated by the database and the ledger
+        plateBusy[offer.plate] = true
+        local ok, res = pcall(PFShop.AcceptTransfer, src, offer, customer, key)
+        plateBusy[offer.plate] = nil
+        if not ok then
+            print(('^1[pfm-vehicleshop]^7 transfer of %s failed: %s'):format(tostring(offer.plate), tostring(res)))
+            return { ok = false, error = 'server_error' }
         end
-        local paid
-        for _, account in ipairs({ 'cash', 'bank' }) do
-            local res = PFPayout.Transfer({
-                from = ('player:%s:%s'):format(cid, account), to = ('player:%s:%s'):format(offer.sellerCid, account), amount = offer.amount,
-                key = key .. ':' .. account, kind = 'sale', reason = 'Vehicle ' .. offer.plate, actor = cid,
-            })
-            if res.ok then paid = true break end
-            if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then break end
-        end
-        if not paid then
-            TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.buyertoopoor'), 'error')
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notenoughmoney'), 'error')
-            return { ok = false, error = 'insufficient_funds' }
-        end
-        MySQL.update.await('UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ?', { cid, QBCore.Functions.GetIdentifier(src, 'license'), offer.plate })
-        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('success.soldfor') .. comma_value(offer.amount), 'success')
-        TriggerClientEvent('vehiclekeys:client:SetOwner', src, offer.plate)
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('success.boughtfor') .. comma_value(offer.amount), 'success')
-        return { ok = true, plate = offer.plate }
+        return res
     end
 
     -- dealer sale or dealer finance: still at the dealership, still working there, still in stock
@@ -921,10 +995,19 @@ function PFShop.AnswerOffer(src, accepted, id)
     settleTax(offer, cid, key)
     local plate = GeneratePlate()
     insertVehicle(customer, offer.model, plate, offer.terms)
-    PFPayout.PaySociety(offer.job, offer.price, { key = key .. ':dealership', reason = 'Vehicle sale' })
-    PFPayout.Pay(offer.sellerCid, 'bank', offer.commission, { key = key .. ':commission', kind = 'wage', reason = 'Vehicle sale commission', quiet = true })
+    -- the price is split: the salesperson's commission out of it, the rest to the dealership (for
+    -- a financed car the shop pays out the part the buyer still owes it). Each part once, by key.
+    local commission = math.max(0, math.min(offer.price, tonumber(offer.commission) or 0))
+    if offer.price - commission > 0 then
+        PFPayout.PaySociety(offer.job, offer.price - commission, { key = key .. ':dealership', reason = 'Vehicle sale' })
+    end
+    if commission > 0 then
+        PFPayout.Pay(offer.sellerCid, 'bank', commission, { key = key .. ':commission', kind = 'wage', reason = 'Vehicle sale commission', quiet = true })
+    end
     recordSale(offer, plate, customer, key)
-    TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('success.earned_commission', { amount = comma_value(offer.commission) }), 'success')
+    if commission > 0 then
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('success.earned_commission', { amount = comma_value(commission) }), 'success')
+    end
     deliver(customer, offer.model, plate)
     pushApp(src, 'cardealer', 'changed')
     return { ok = true, plate = plate, total = total }
@@ -975,7 +1058,9 @@ QBCore.Commands.Add('transfervehicle', Lang:t('general.command_transfervehicle')
     local src = source
     local buyerId = tonumber(args[1])
     local sellAmount = tonumber(args[2])
-    if buyerId == 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.Invalid_ID'), 'error') end
+    if not buyerId or buyerId == 0 or buyerId == src then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.Invalid_ID'), 'error') end
+    -- an amount that is not a number is refused, not taken as a gift
+    if args[2] ~= nil and args[2] ~= '' and not sellAmount then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyertoopoor'), 'error') end
     local ped = GetPlayerPed(src)
     local targetPed = GetPlayerPed(buyerId)
     if targetPed == 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyerinfo'), 'error') end
@@ -985,36 +1070,54 @@ QBCore.Commands.Add('transfervehicle', Lang:t('general.command_transfervehicle')
     if not plate then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.vehinfo'), 'error') end
     local player = exports['pfm-core']:GetPlayer(src)
     local target = exports['pfm-core']:GetPlayer(buyerId)
-    local row = MySQL.single.await('SELECT * FROM player_vehicles WHERE plate = ?', { plate })
-    if not row or not player then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error') end
-    if Config.PreventFinanceSelling then
-        if row.balance > 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.financed'), 'error') end
-    end
-    if row.citizenid ~= player.PlayerData.citizenid then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error') end
-    -- a job fleet car stays the owner's (it comes back to them when it leaves the fleet)
-    if isFleetPlate(plate) then return TriggerClientEvent('QBCore:Notify', src, 'This vehicle belongs to a job fleet. Take it out of the fleet first.', 'error') end
+    if not player then return end
+    if plateBusy[plate] then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.transfer_busy'), 'error') end
     if #(GetEntityCoords(ped) - GetEntityCoords(targetPed)) > 5.0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.playertoofar'), 'error') end
     if not target then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyerinfo'), 'error') end
     local targetcid = target.PlayerData.citizenid
     if targetcid == player.PlayerData.citizenid then return end
-    if not sellAmount then
-        local targetlicense = QBCore.Functions.GetIdentifier(target.PlayerData.source, 'license')
-        MySQL.update('UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ?', { targetcid, targetlicense, plate })
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('success.gifted'), 'success')
-        TriggerClientEvent('vehiclekeys:client:SetOwner', buyerId, plate)
-        TriggerClientEvent('QBCore:Notify', buyerId, Lang:t('success.received_gift'), 'success')
-        return
-    end
-    -- a sale: the buyer accepts the price on their screen, then pays through the ledger
-    -- (the buyer used to be charged whatever the seller typed, without being asked)
-    sellAmount = math.floor(sellAmount)
-    if sellAmount <= 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyertoopoor'), 'error') end
-    local veh = sharedVehicles[row.vehicle]
-    sendOffer(src, target, {
-        kind = 'transfer', plate = plate, label = (veh and veh.name or row.vehicle) .. ' (' .. plate .. ')', amount = sellAmount,
-        sellerCid = player.PlayerData.citizenid,
-        sellerName = ('%s %s'):format(player.PlayerData.charinfo.firstname, player.PlayerData.charinfo.lastname),
-    })
+    -- the car is locked before the first wait (the checks below and the change are separated by
+    -- database waits)
+    plateBusy[plate] = true
+    local ok, err = pcall(function()
+        local row = MySQL.single.await('SELECT citizenid, vehicle, balance FROM player_vehicles WHERE plate = ?', { plate })
+        if not row or row.citizenid ~= player.PlayerData.citizenid then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error') end
+        local loan = tonumber(row.balance) or 0
+        if Config.PreventFinanceSelling and loan > 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.financed'), 'error') end
+        -- a job fleet car stays the owner's (it comes back to them when it leaves the fleet)
+        if isFleetPlate(plate) then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.fleet_vehicle'), 'error') end
+        if not sellAmount then
+            -- a gift: the car moves now, in the state just checked (a loan comes with it)
+            local targetlicense = QBCore.Functions.GetIdentifier(target.PlayerData.source, 'license')
+            if not claimTransfer(plate, player.PlayerData.citizenid, targetcid, targetlicense, loan) then
+                return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.transfer_changed'), 'error')
+            end
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('success.gifted'), 'success')
+            TriggerClientEvent('vehiclekeys:client:SetOwner', buyerId, plate)
+            TriggerClientEvent('QBCore:Notify', buyerId, Lang:t('success.received_gift'), 'success')
+            if loan > 0 then TriggerClientEvent('QBCore:Notify', buyerId, Lang:t('general.loan_came_with', { amount = comma_value(loan) }), 'primary') end
+            return
+        end
+        -- a sale: the buyer accepts the price (and any loan that comes with the car) on their
+        -- screen, then pays through the ledger (the buyer used to be charged whatever the seller
+        -- typed, without being asked)
+        sellAmount = math.floor(sellAmount)
+        if sellAmount <= 0 or sellAmount > 100000000 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyertoopoor'), 'error') end
+        -- a customer answering someone else's offer is not handed another one (it would replace it)
+        local waiting = pendingOffers[target.PlayerData.source]
+        if waiting and os.time() <= waiting.expires and waiting.sellerSrc ~= src then
+            return TriggerClientEvent('QBCore:Notify', src, 'That player is answering another offer', 'error')
+        end
+        local veh = sharedVehicles[row.vehicle]
+        sendOffer(src, target, {
+            kind = 'transfer', plate = plate, label = (veh and veh.name or tostring(row.vehicle)) .. ' (' .. plate .. ')', amount = sellAmount,
+            loan = loan > 0 and loan or nil,
+            sellerCid = player.PlayerData.citizenid,
+            sellerName = ('%s %s'):format(player.PlayerData.charinfo.firstname, player.PlayerData.charinfo.lastname),
+        })
+    end)
+    plateBusy[plate] = nil
+    if not ok then print(('^1[pfm-vehicleshop]^7 /transfervehicle %s failed: %s'):format(tostring(plate), tostring(err))) end
 end)
 
 -- Dynamically update showrooms if a vehicle gets removed from QBCore.Shared.Vehicles (Server-Side Only for Security)

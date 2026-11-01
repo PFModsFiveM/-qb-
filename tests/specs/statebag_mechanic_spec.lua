@@ -324,6 +324,32 @@ describe("driver wear and mileage reports ('pf_mech:server:setState')", function
         assert_eq(st(CAR).mileage, 1001.9)
     end)
 
+    it('a report computed before the alignment or an admin reset cannot undo it (wear epoch)', function()
+        local function reportAt(e, value) Mock.fireNet('pf_mech:server:setState', ME, CAR, 'partDamage', value, e) end
+        seat(ME, CAR)
+        st(CAR).partDamage = { suspension = 50, oil = 40 }
+        reportAt(0, { suspension = 50.5, oil = 40 })
+        local seen = st(CAR).wearEpoch or 0
+        Mock.players[ME].inv.alignment_rack_tool = 1
+        useItem(ME, 'alignment_rack_tool')
+        Mock.clock = Mock.clock + 20
+        Mock.fireNet('pf-mechanicjob:server:advanced:completeAlignment', ME, CAR)
+        assert_eq(st(CAR).partDamage.suspension, 38.5)
+        reportAt(seen, { suspension = 51, oil = 41 })                 -- in flight from before the rack
+        assert_eq(st(CAR).partDamage.suspension, 38.5, 'the alignment stays')
+        assert_eq(st(CAR).partDamage.oil, 40)
+        reportAt(st(CAR).wearEpoch, { suspension = 39, oil = 41 })
+        assert_eq(st(CAR).partDamage.oil, 41, 'reports of the new epoch count')
+
+        seen = st(CAR).wearEpoch
+        Mock.fireNet('pf-mechanicjob:server:adminCustoms:vehicleState', ADMIN, CAR, 'resetPartDamage')
+        reportAt(seen, { suspension = 40, oil = 42 })
+        assert_eq(st(CAR).partDamage.oil, 0, 'the reset stays')
+        assert_eq(st(CAR).partDamage.suspension, 0)
+        reportAt(st(CAR).wearEpoch, { oil = 0.2 })
+        assert_eq(st(CAR).partDamage.oil, 0.2)
+    end)
+
     it('other keys and other value types are refused', function()
         seat(ME, CAR)
         report(ME, CAR, 'nos', { has = true, level = 100 })

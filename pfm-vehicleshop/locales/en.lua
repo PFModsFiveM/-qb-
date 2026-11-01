@@ -19,6 +19,9 @@ local Translations = {
         buyertoopoor = "The buyer doesn\'t have enough money",
         nofinanced = "You don't have any financed vehicles at this location",
         financed = "This vehicle is financed",
+        fleet_vehicle = "This vehicle belongs to a job fleet. Take it out of the fleet first.",
+        transfer_changed = "The sale did not go through: the vehicle changed meanwhile. Any payment was returned.",
+        transfer_busy = "This vehicle is already changing hands",
     },
     success = {
         purchased = "Congratulations on your purchase!",
@@ -65,6 +68,7 @@ local Translations = {
         submit_ID = "Server ID (#)",
     },
     general = {
+        loan_came_with = "The vehicle came with its finance: $%{amount} still to pay",
         testdrive_timer = "Test Drive Time Remaining:",
         vehinteraction = "Vehicle Interaction",
         testdrive_timenoti = "You have %{testdrivetime} minutes remaining",

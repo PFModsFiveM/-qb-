@@ -7,7 +7,8 @@ end
 
 -- The shared fuel level ('qb-fuel' on the vehicle) is written by the server only
 -- (sv_stateBagStrictMode): the driver's client reports its level and the server only lets it go
--- down, as fast as driving burns fuel; refuelling raises it on the server (pump, jerry can).
+-- down, as fast as driving burns fuel (a new car takes its driver's first report); refuelling
+-- raises it on the server (pump, jerry can).
 local reportFuel = function(vehicle, fuel)
     if not Config.SyncFuelBetweenPlayers or not NetworkGetEntityIsNetworked(vehicle) then return end
     TriggerServerEvent('qb-fuel:server:syncFuel', NetworkGetNetworkIdFromEntity(vehicle), fuel + 0.0)
@@ -38,10 +39,37 @@ end
 newExports('GetFuel', GetFuel)
 
 if Config.SyncFuelBetweenPlayers then
+    -- last shared level seen per car: a write at or below it is the server answering a driver's
+    -- report, a write above it is a refuel
+    local lastShared, tracked = {}, 0
+
+    local forgetRemovedVehicles = function()
+        local kept, n = {}, 0
+        for entity, level in pairs(lastShared) do
+            if DoesEntityExist(entity) then kept[entity], n = level, n + 1 end
+        end
+        lastShared, tracked = kept, n
+    end
+
     AddStateBagChangeHandler('qb-fuel', nil, function(bagName, _, value)
         local entity = GetEntityFromStateBagName(bagName)
         if entity == 0 then return end
         if not DoesEntityExist(entity) or not IsEntityAVehicle(entity) then return end
+        value = tonumber(value)
+        if not value then return end
+        local before = lastShared[entity]
+        lastShared[entity] = value
+        if before == nil then
+            tracked = tracked + 1
+            if tracked > 256 then forgetRemovedVehicles() end
+        end
+        -- The car this client drives burns fuel here. When the server caps a report (it never
+        -- lowers the level faster than Config.MaxFuelBurnPerSecond), its answer sits above our
+        -- real level: keep ours and let the next reports bring the shared level down to it.
+        if before and value <= before and GetPedInVehicleSeat(entity, -1) == PlayerPedId()
+            and GetVehicleFuelLevel(entity) < value then
+            return
+        end
         SetVehicleFuelLevel(entity, value + 0.0)
     end)
 

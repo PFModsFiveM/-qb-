@@ -95,9 +95,13 @@ describe('phone invoices in the Bills app', function()
         assert_eq(society('mechanic'), 250)
         assert_eq(bank(MECH), 25)                               -- 10 % commission to the biller
         assert_eq(MySQL.scalar.await('SELECT COUNT(*) FROM phone_invoices WHERE id = ?', { id }), 0)
-        -- paid again, or the same invoice replayed: no money moves
+        -- paid again, or the same invoice replayed (its row back, as after a crash before the
+        -- delete: the same ledger token): no money moves
         assert_eq(B.Pay(A, { key = key }).ok, false)
+        local token = MySQL.scalar.await("SELECT SUBSTRING(idempotency_key, 23, 36) FROM pf_transactions WHERE idempotency_key LIKE 'pfm-phone:invoice:tok:%:society' LIMIT 1")
+        assert_true(type(token) == 'string' and #token == 36, 'the invoice was charged on its token key')
         invoice(250, 1, id)
+        MySQL.update.await('UPDATE phone_invoices SET ledger_token = ? WHERE id = ?', { token, id })
         assert_eq(B.Pay(A, { key = key }).ok, true)
         assert_eq(bank(A), 750)
         assert_eq(society('mechanic'), 250)

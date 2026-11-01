@@ -11,6 +11,7 @@ local Translations = {
         no_vehicles = 'No hay vehículos cerca',
         no_jerrycan = 'No tienes un bidón de gasolina',
         vehicle_full = 'El vehículo ya está lleno de gasolina',
+        vehicle_busy = 'Otra persona ya está repostando este vehículo',
         no_fuel_can = 'No tienes gasolina en el bidón',
         no_nozzle = 'No hay ningún vehículo con la boquilla puesta cerca',
         too_far = 'Estás demasiado lejos de la bomba, la boquilla ha sido devuelta',

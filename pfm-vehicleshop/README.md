@@ -13,9 +13,9 @@
 
 **Shops:**
 * Lock to a specific job
-* Commission paid to sales person for private dealer
+* Commission paid to sales person for private dealer, out of the sale price
 * Create as many as desired with easy polyzone creation
-* Vehicle sale amount gets deposited into the cardealer society fund for private dealer
+* Vehicle sale amount, less the sales person's commission, gets deposited into the cardealer society fund for private dealer
 
 **Planned Updates**
 * QB-Phone support to make payments
@@ -69,8 +69,8 @@ https://github.com/mkafrin/PolyZone/wiki/Using-the-creation-script
 ```lua
 Config = {}
 Config.UsingTarget = false -- If you are using qb-target (uses entity zones to target vehicles)
-Config.Commission = 0.10 -- Percent that goes to sales person from a full car sale - default 10%
-Config.FinanceCommission = 0.05 -- Percent that goes to sales person from a finance sale - default 5%
+Config.Commission = 0.10 -- Share of the price that goes to the sales person on a full car sale - default 10% (out of the price: the dealership gets the rest)
+Config.FinanceCommission = 0.05 -- The same for a financed sale - default 5%
 Config.FinanceZone = vector3(-29.53, -1103.67, 26.42) -- Where the finance menu is located
 Config.PaymentWarning = 10 -- time in minutes that player has to make payment before repo - default 10
 Config.PaymentInterval = 24 -- time in hours between payment being due - default 24

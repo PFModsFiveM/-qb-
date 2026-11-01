@@ -7,6 +7,10 @@ local Translations = {
         no_space_on_lot = 'There is not space for your car on the lot!',
         not_in_veh = 'You are not in a vehicle!',
         not_for_sale = 'This vehicle is NOT for sale!',
+        fleet_vehicle = 'This vehicle belongs to a job fleet. Take it out of the fleet first.',
+        impounded = 'This vehicle is impounded. Pay its impound fee first.',
+        lot_unavailable = 'The lot cannot take this right now. Nothing was changed.',
+        lot_busy = 'The lot is handling another sale. Try again in a moment.',
     },
     menu = {
         view_contract = 'View Contract',

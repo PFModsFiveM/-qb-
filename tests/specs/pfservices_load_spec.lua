@@ -109,6 +109,9 @@ describe('police and EMS dispatch is their MDT', function()
         assert_eq(calls[1].call.coords.x, 1)
         assert_eq(calls[2].mdt, 'ems')
         assert_eq(calls[2].call.priority, 1)
+        -- the request id travels with the call, so the MDT can take it off the board when it closes
+        assert_eq(calls[1].call.requestId, 1)
+        assert_eq(calls[2].call.requestId, 2)
         PFServices.RegisterApps()
         local p = Mock.newPlayer(9)
         p.PlayerData.job = { name = 'police', onduty = true, grade = { level = 1 } }

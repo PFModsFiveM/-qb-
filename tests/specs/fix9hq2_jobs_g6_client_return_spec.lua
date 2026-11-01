@@ -1,13 +1,15 @@
 -- pf-jobs Gruppe 6 client (client/gruppe6.lua): 'pf-jobs:gruppe6:returnVehicle' was registered
 -- twice. Pressing E in the return area triggers that event, so an old "no bags collected" handler
 -- ran next to the real one and showed 'No bags collected. Return the vehicle.' on every return.
--- One handler is left: the truck is returned, and no misleading error is shown.
+-- One handler is left: the truck is returned, and no misleading error is shown. It also removes the
+-- truck's storage target from the truck (it passed the vehicle after clearing it), and a contract
+-- the server ended with no bags collected reaches it through 'pf-jobs:gruppe6:returnWithoutBags'.
 load_resource('tests/lua/fivem_mocks.lua')
 
 local CLIENT = '[pfscripts]/pf-jobs/client/gruppe6.lua'
 local EVENT = 'pf-jobs:gruppe6:returnVehicle'
 
-local toServer, notes, bars, threads
+local toServer, notes, bars, threads, untargeted
 local function sentToServer(name)
     local n = 0
     for _, e in ipairs(toServer) do if e.name == name then n = n + 1 end end
@@ -29,7 +31,7 @@ local function noop() return nil end
 
 local env, pedCoords, inVehicle, pressedE
 local function loadClient()
-    toServer, notes, bars, threads = {}, {}, {}, {}
+    toServer, notes, bars, threads, untargeted = {}, {}, {}, {}, {}
     pedCoords, inVehicle, pressedE = vector3(0, 0, 0), false, false
     -- a fresh client: only the handlers this load registers
     Mock.netHandlers, Mock.netHandlerList = {}, {}
@@ -43,7 +45,8 @@ local function loadClient()
     QBCoreMock.Functions.DeleteVehicle = function() end
     Mock.exportsByResource['pfm-target'] = {
         AddBoxZone = function() end, RemoveZone = function() end,
-        AddTargetEntity = function() end, RemoveTargetEntity = function() end,
+        AddTargetEntity = function() end,
+        RemoveTargetEntity = function(_, entity) untargeted[#untargeted + 1] = entity end,
     }
     local own = {
         TriggerServerEvent = function(name, ...) toServer[#toServer + 1] = { name = name, args = { ... } } end,
@@ -112,6 +115,25 @@ describe('Gruppe 6 client: returning the truck', function()
         bars[#bars].finish()
         assert_eq(sentToServer('pf-jobs:gruppe6:vehicleReturned'), 1)
         assert_true(noted('Vehicle returned successfully'), 'returned')
+        -- the truck's "Open Storage" target goes with it (it was removed from nil before)
+        assert_eq(#untargeted, 1)
+        assert_eq(untargeted[1], 55)
+        assert_eq(sentToServer('pf-jobs:gruppe6:startSearch'), 1, 'looks for the next contract')
+    end)
+
+    it('a contract ended with no bags goes straight to the return area, and the truck is returned', function()
+        startContractWithTruck()
+        threads = {}
+        -- the server ended the contract (nothing collected): no vault step
+        fire('pf-jobs:gruppe6:returnWithoutBags')
+        assert_eq(#threads, 1, 'the return-area watcher started')
+        pedCoords, inVehicle, pressedE = vector3(-20.0, -703.57, 32.34), true, true
+        threads[1]()
+        assert_false(noted('No bags collected'))
+        assert_eq(barsNamed('return_vehicle'), 1)
+        bars[#bars].finish()
+        assert_eq(sentToServer('pf-jobs:gruppe6:vehicleReturned'), 1)
+        assert_eq(sentToServer('pf-jobs:gruppe6:depositComplete'), 0, 'no deposit asked for')
     end)
 
     it('without a truck the return is refused with the right message', function()

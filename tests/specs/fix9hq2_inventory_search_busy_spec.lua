@@ -180,6 +180,46 @@ describe('a search lock on the searched player', function()
         assert_eq(busy(TARGET), false)
     end)
 
+    it('another inventory opening for the searcher ends the search (its window is replaced)', function()
+        OpenInventoryById(COP, TARGET)
+        OpenInventory(COP)                                   -- the searcher's own inventory
+        assert_eq(InventoryViewers[TARGET], nil)
+        assert_eq(busy(TARGET), false)
+        Mock.fireNet('qb-inventory:server:closeInventory', COP, nil)
+        OpenInventoryById(COP, TARGET)
+        OpenInventory(COP, 'stash-evidence', { label = 'Evidence', maxweight = 1000, slots = 10 })
+        assert_eq(InventoryViewers[TARGET], nil, 'a stash replaces it too')
+        assert_eq(busy(TARGET), false)
+    end)
+
+    it('an inventory refused to the searcher leaves the search open', function()
+        Inventories['stash-busy'] = { items = {}, isOpen = ROBBER, label = 'Busy', maxweight = 1000, slots = 10 }
+        OpenInventoryById(COP, TARGET)
+        OpenInventory(COP, 'stash-busy')
+        assert_eq(InventoryViewers[TARGET], COP, 'nothing replaced the search window')
+        assert_eq(busy(TARGET), true)
+        Inventories['stash-busy'] = nil
+    end)
+
+    it('the searched player logging out ends the search and closes it for the searcher', function()
+        OpenInventoryById(COP, TARGET)
+        Mock.fireEvent('QBCore:Server:OnPlayerUnload', TARGET, TARGET)
+        assert_eq(InventoryViewers[TARGET], nil)
+        assert_eq(closedFor(COP), 1)
+        Mock.fireEvent('QBCore:Server:PlayerLoaded', TARGET, Mock.players[TARGET])
+        assert_eq(busy(TARGET), false, 'the next character is not locked')
+    end)
+
+    it("the searched player's disconnect leaves nothing behind for the next player on that id", function()
+        OpenInventoryById(COP, TARGET)
+        Mock.players[TARGET] = nil
+        Mock.fireEvent('playerDropped', TARGET)
+        SetInventoryBusy(TARGET, false)                      -- recompute from what the server holds
+        assert_eq(busy(TARGET), false)
+        closeSearch(COP, TARGET)                             -- the searcher's late close is harmless
+        assert_eq(InventoryViewers[TARGET], nil)
+    end)
+
     it('a searcher who leaves during the opening wait never locks the target', function()
         local realWait = Wait
         Wait = function() Mock.players[COP] = nil; Mock.fireEvent('playerDropped', COP) end

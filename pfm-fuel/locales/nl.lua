@@ -11,6 +11,7 @@ local Translations = {
         no_vehicles = 'Er zijn geen voertuigen in de buurt',
         no_jerrycan = 'Je hebt geen jerrycan met benzine',
         vehicle_full = 'Het voertuig is al volgetankt',
+        vehicle_busy = 'Iemand anders tankt dit voertuig al',
         no_fuel_can = 'Er zit geen benzine in de jerrycan',
         no_nozzle = 'Er is geen voertuig met een aangesloten slang in de buurt',
         too_far = 'Je bent te ver van de pomp, de slang is teruggeplaatst',

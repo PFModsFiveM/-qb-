@@ -1,5 +1,8 @@
 -- pfm-vehicleshop on the ledger: pay before the car, server-checked shops and finance terms, and
--- dealer sales / paid transfers only after the customer accepts.
+-- dealer sales / paid transfers only after the customer accepts the offer they were shown (its id).
+-- A dealer sale's commission comes out of the price (the dealership gets the rest). /transfervehicle
+-- refuses job fleet cars (and financed cars when configured), and a paid transfer moves the car only
+-- if it is still the seller's when the buyer pays (the buyer is refunded otherwise).
 load_resource('tests/lua/ledger_env.lua')
 Commands = {}
 QBCoreMock.Commands.Add = function(name, _, _, _, fn) Commands[name] = fn end
@@ -11,7 +14,19 @@ QBCoreMock.Shared.Vehicles = {
 }
 
 local vehicles = {}   -- player_vehicles: [plate] = row
+local fleet = {}      -- job_garage_vehicles (active): [plate] = id
 FakeDB.extraPatterns = {
+    { "AND TABLE_NAME = 'job_garage_vehicles'", function() return 1 end },
+    { 'SELECT id FROM job_garage_vehicles WHERE plate = ? AND active = 1', function(p) return fleet[p[1]] end },
+    { 'SELECT citizenid, vehicle, balance FROM player_vehicles WHERE plate = ?', function(p) return vehicles[p[1]] and { vehicles[p[1]] } or {} end },
+    -- the ownership change: only from the seller, within the loan the buyer saw, not a fleet car
+    { 'UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ? AND citizenid = ? AND balance <= ?', function(p)
+        local v = vehicles[p[3]]
+        if not v or v.citizenid ~= p[4] or (v.balance or 0) > p[5] then return 0 end
+        if FakeDB.log[#FakeDB.log]:find('NOT EXISTS', 1, true) and fleet[p[6]] then return 0 end
+        v.citizenid = p[1]
+        return 1
+    end },
     { 'SELECT plate FROM player_vehicles WHERE plate = ?', function(p) return vehicles[p[1]] and p[1] or nil end },
     { 'INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state, balance', function(p)
         vehicles[p[6]] = { citizenid = p[2], vehicle = p[3], plate = p[6], balance = p[9], paymentamount = p[10], paymentsleft = p[11], financetime = p[12] }
@@ -36,7 +51,6 @@ FakeDB.extraPatterns = {
     end },
     { 'SELECT * FROM player_vehicles WHERE plate = ?', function(p) return vehicles[p[1]] and { vehicles[p[1]] } or {} end },
     { 'SELECT citizenid, balance FROM player_vehicles WHERE plate = ?', function(p) return vehicles[p[1]] and { vehicles[p[1]] } or {} end },
-    { 'UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ?', function(p) vehicles[p[3]].citizenid = p[1]; return 1 end },
 }
 
 LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/server.lua' })
@@ -48,18 +62,23 @@ local function money(src) return Mock.players[src].PlayerData.money end
 local function count(tbl) local n = 0 for _ in pairs(tbl) do n = n + 1 end return n end
 local function first() for _, v in pairs(vehicles) do return v end end
 -- the prompt answers the offer it was shown for: { accept, id } with the id that came with it
-local function answer(src, accept)
+local function lastPrompt()
     local shown = Mock.clientEventsNamed('qb-vehicleshop:client:confirmPurchase')
-    local last = shown[#shown]
-    Mock.fireNet('qb-vehicleshop:server:answerPurchase', src, { accept = accept, id = last and last.args[1].id })
+    return shown[#shown] and shown[#shown].args[1]
 end
+local function answer(src, accept)
+    local last = lastPrompt()
+    Mock.fireNet('qb-vehicleshop:server:answerPurchase', src, { accept = accept, id = last and last.id })
+end
+local defaultPrevent = Config.PreventFinanceSelling
 
 BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
     Mock.players, Mock.coords = {}, {}
     Mock.vehicleOf, Mock.plates = {}, {}
-    vehicles = {}
+    vehicles, fleet = {}, {}
+    Config.PreventFinanceSelling = defaultPrevent
     FakeDB.society('cardealer', 0)
     for src, cash in pairs({ [BUYER] = 0, [DEALER] = 0, [STRANGER] = 0 }) do
         local p = Mock.newPlayer(src)
@@ -136,9 +155,43 @@ describe('dealer sales', function()
         answer(BUYER, true)
         answer(BUYER, true) -- a repeated answer
         assert_eq(money(BUYER).bank, 100000)
-        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000)
+        -- the commission is taken out of the price: dealership + salesperson = the price
         assert_eq(money(DEALER).bank, 200000 + 100000 * Config.Commission)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000 - 100000 * Config.Commission)
         assert_eq(count(vehicles), 1)
+        assert_eq(#LedgerEnv.paid('pfm-vehicleshop:dealer:'), 3)   -- the charge, the dealership, the commission: once each
+    end)
+    it('a commission rate above 100 % never pays more than the price', function()
+        atLuxury()
+        local rate = Config.Commission
+        Config.Commission = 1.5
+        Mock.fireNet('qb-vehicleshop:server:sellShowroomVehicle', DEALER, 'cognoscenti', BUYER)
+        answer(BUYER, true)
+        Config.Commission = rate
+        assert_eq(money(BUYER).bank, 100000)
+        assert_eq(money(DEALER).bank, 300000)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 0)
+    end)
+    it('the prompt accepts only the offer it was shown; a replaced offer is refused and stays open', function()
+        atLuxury()
+        Mock.fireNet('qb-vehicleshop:server:sellShowroomVehicle', DEALER, 'cognoscenti', BUYER)
+        local shown = lastPrompt()
+        assert_true(type(shown.id) == 'string' and shown.id ~= '', 'the prompt carries the offer id')
+        -- the seller replaces it (a finance offer, other terms) while the customer is clicking
+        Mock.fireNet('qb-vehicleshop:server:sellfinanceVehicle', DEALER, 20000, 10, 'cognoscenti', BUYER)
+        local replaced = lastPrompt()
+        assert_true(replaced.id ~= shown.id)
+        Mock.fireNet('qb-vehicleshop:server:answerPurchase', BUYER, { accept = true, id = shown.id })
+        assert_eq(money(BUYER).bank, 200000, 'the old click accepted nothing')
+        assert_eq(count(vehicles), 0)
+        -- an answer without an id (an old prompt) accepts nothing either
+        Mock.fireNet('qb-vehicleshop:server:answerPurchase', BUYER, true)
+        Mock.fireNet('qb-vehicleshop:server:answerPurchase', BUYER, { accept = true })
+        assert_eq(money(BUYER).bank, 200000)
+        -- the offer that is open now is still there and is the one that is paid
+        answer(BUYER, true)
+        assert_eq(money(BUYER).bank, 180000)
+        assert_eq(first().balance, 80000)
     end)
     it('a declined offer costs nothing', function()
         atLuxury()
@@ -160,7 +213,9 @@ describe('dealer sales', function()
         answer(BUYER, true)
         assert_eq(money(BUYER).bank, 180000)
         assert_eq(first().balance, 80000)
-        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000)
+        -- the finance commission comes out of the price too; the shop lends the rest of it
+        assert_eq(money(DEALER).bank, 200000 + 100000 * Config.FinanceCommission)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000 - 100000 * Config.FinanceCommission)
     end)
 end)
 
@@ -187,5 +242,75 @@ describe('/transfervehicle', function()
         answer(BUYER, false)
         assert_eq(money(BUYER).bank, 200000)
         assert_eq(vehicles.MYCAR1.citizenid, 'CID3')
+    end)
+    it('a job fleet car is neither sold nor given away', function()
+        sellerInCar()
+        fleet.MYCAR1 = 4
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        assert_eq(#Mock.clientEventsNamed('qb-vehicleshop:client:confirmPurchase'), 0, 'no offer')
+        Commands.transfervehicle(STRANGER, { tostring(BUYER) })
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID3', 'no gift')
+        fleet.MYCAR1 = nil
+        Commands.transfervehicle(STRANGER, { tostring(BUYER) })
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID1', 'out of the fleet it can be given')
+    end)
+    it('a car put in a fleet while the offer was open is refused at acceptance, nothing charged', function()
+        sellerInCar()
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        fleet.MYCAR1 = 4
+        answer(BUYER, true)
+        assert_eq(money(BUYER).bank, 200000)
+        assert_eq(money(STRANGER).bank, 200000)
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID3')
+    end)
+    it('a car that changed hands after the buyer paid is not taken from its new owner; the buyer is refunded', function()
+        sellerInCar()
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        -- the seller gives the car away in the moment between the buyer's payment and the change
+        local claim = FakeDB.extraPatterns[4]
+        assert_true(claim[1]:find('UPDATE player_vehicles SET citizenid', 1, true) ~= nil)
+        local original = claim[2]
+        claim[2] = function(p) vehicles.MYCAR1.citizenid = 'CID9' return original(p) end
+        answer(BUYER, true)
+        claim[2] = original
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID9')
+        assert_eq(money(BUYER).bank, 200000, 'refunded')
+        assert_eq(money(STRANGER).bank, 200000, 'the seller was not paid')
+        assert_eq(#LedgerEnv.paid('pfm-vehicleshop:transfer:'), 2)   -- the charge and its refund
+    end)
+    it('a financed car: refused when configured; otherwise the buyer is shown the loan and takes it over', function()
+        sellerInCar()
+        vehicles.MYCAR1.balance = 6000
+        Config.PreventFinanceSelling = true
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        Commands.transfervehicle(STRANGER, { tostring(BUYER) })
+        assert_eq(#Mock.clientEventsNamed('qb-vehicleshop:client:confirmPurchase'), 0)
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID3')
+        Config.PreventFinanceSelling = false
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        assert_eq(lastPrompt().loan, 6000, 'the prompt shows what is still owed')
+        answer(BUYER, true)
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID1')
+        assert_eq(vehicles.MYCAR1.balance, 6000, 'the loan stays on the car')
+        assert_eq(money(BUYER).bank, 195000)
+    end)
+    it('an amount that is not a number is refused, not taken as a gift', function()
+        sellerInCar()
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5k' })
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID3')
+        assert_eq(#Mock.clientEventsNamed('qb-vehicleshop:client:confirmPurchase'), 0)
+    end)
+    it('another seller cannot replace an offer the buyer is answering', function()
+        sellerInCar()
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        local first = lastPrompt()
+        vehicles.OTHER1 = { citizenid = 'CID2', vehicle = 'blista', plate = 'OTHER1', balance = 0 }
+        Mock.vehicleOf[DEALER] = 901
+        Mock.plates[901] = 'OTHER1'
+        Commands.transfervehicle(DEALER, { tostring(BUYER), '100' })
+        assert_eq(lastPrompt().id, first.id, 'no new prompt')
+        answer(BUYER, true)
+        assert_eq(vehicles.MYCAR1.citizenid, 'CID1')
+        assert_eq(vehicles.OTHER1.citizenid, 'CID2')
     end)
 end)

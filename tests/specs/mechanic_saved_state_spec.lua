@@ -19,7 +19,7 @@ function GetAllVehicles() return allVehicles end
 -- a small database: player_vehicles and vehicle_diagnostics rows by plate
 local db
 local function resetDb()
-    db = { veh = {}, diag = {}, diagWrites = 0, modsWrites = 0 }
+    db = { veh = {}, diag = {}, diagWrites = 0, nosWrites = 0, modsWrites = 0 }
 end
 resetDb()
 MySQL.single = { await = function(q, p)
@@ -28,13 +28,16 @@ MySQL.single = { await = function(q, p)
 end }
 MySQL.insert = { await = function(q, p)
     if q:find('INSERT INTO vehicle_diagnostics', 1, true) then
-        local row, i = {}, 0
+        -- an upsert: the columns it names replace those of the row (ON DUPLICATE KEY UPDATE)
+        local row, i, named = db.diag[p[1]] or {}, 0, {}
         for col in q:match('%((.-)%)%s*VALUES'):gmatch('[^,%s`]+') do
             i = i + 1
             row[col] = p[i]
+            named[col] = true
         end
         db.diag[p[1]] = row
-        db.diagWrites = db.diagWrites + 1
+        if named.brakes then db.diagWrites = db.diagWrites + 1 end   -- wear, mileage and health
+        if named.nos_has then db.nosWrites = db.nosWrites + 1 end    -- the NOS columns
         return 1
     end
 end }
@@ -129,6 +132,7 @@ describe('saving a car', function()
         Mock.fireNet('pf_mech:sync:forceSave', OWNER, 'OWNED1', CAR)
         Mock.fireNet('qb-garages:server:updateVehicleStats', OWNER, 'OWNED1', 100, 1000, 1000)
         assert_eq(db.diagWrites, 0)
+        assert_eq(db.nosWrites, 0)
         assert_eq(stored().brakes, 50, 'the saved wear is untouched')
         assert_eq(mods().nos, nil, 'the props are still kept, without NOS')
         assert_eq(mods().modEngine, 4)
@@ -151,6 +155,8 @@ describe('saving a car', function()
         Mock.fireNet('pf_mech:sync:cacheVehicleState', FRIEND, { plate = 'OWNED1', netId = CAR, props = forged })
         assert_eq(stored().brakes, 60, 'the sync saves the server state')
         assert_eq(stored().citizenid, 'CID1', 'under the owner')
+        assert_eq(db.nosWrites, 0, 'the driving sync leaves NOS to the NOS handlers')
+        assert_eq(tonumber(stored().nos_has), 0)
         st(CAR).partDamage.brakes = 75
         st(CAR).nos = { has = false, level = 0 }
         Mock.fireNet('qb-garages:server:updateVehicleStats', FRIEND, 'OWNED1', 100, 900, 800)
@@ -158,6 +164,7 @@ describe('saving a car', function()
         assert_eq(row.brakes, 75)
         assert_eq(row.mileage, 5000)
         assert_eq(tonumber(row.nos_has), 0)
+        assert_eq(db.nosWrites, 1, 'the store saves NOS through the NOS writer')
         assert_eq(row.engineHealth, 900)
         assert_eq(row.bodyHealth, 800)
         assert_eq(mods().modEngine, 4)
@@ -183,6 +190,7 @@ describe('saving a car', function()
         Mock.fireNet('pf_mech:sync:forceSave', STRANGER, 'OWNED1', CAR)
         Mock.fireNet('qb-garages:server:updateVehicleStats', STRANGER, 'OWNED1', 100, 1000, 1000)
         assert_eq(db.diagWrites, 0)
+        assert_eq(db.nosWrites, 0)
         assert_eq(db.modsWrites, 0)
     end)
 end)
@@ -244,6 +252,7 @@ describe('a car taken out again', function()
         Mock.coords[FAKE_CAR] = Mock.coords[STRANGER]
         Mock.fireNet('qb-garages:server:updateVehicleStats', STRANGER, 'OWNED1', 100, 1000, 1000)
         assert_eq(db.diagWrites, 0)
+        assert_eq(db.nosWrites, 0)
         assert_eq(stored().brakes, 50)
     end)
 

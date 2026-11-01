@@ -17,8 +17,10 @@ end
 -- ====================|| SHARED VEHICLE STATE || ==================== --
 -- The fuel level other players see ('qb-fuel' on the vehicle) is a state bag only the server
 -- writes (sv_stateBagStrictMode). Only the car's driver reports its level, and a report can only
--- lower it, by no more than driving can burn in the time since the last accepted level. Raises
--- come from the server's own refuel paths (a paid pump refill, a jerry can the player owns).
+-- lower it, by no more than driving can burn in the time since the last accepted level; a car with
+-- no shared level yet takes its driver's first report. Raises come only from the server's own
+-- refuel paths (a paid pump refill, a jerry can the player owns) and from server code through the
+-- SetVehicleFuel export.
 -- (Any client once could set any car's fuel; then the network owner of any empty car could, from
 -- any distance, so a modded client near parked cars could drain them all.)
 local FUEL_REACH = 10.0         -- metres: refuelling from outside the car (pump, jerry can)
@@ -26,11 +28,15 @@ local SYNC_WINDOW_MS, SYNC_MAX = 10000, 20
 local syncRate = {}             -- [src] = { start, count }
 local lastLevelAt = {}          -- [vehicle entity] = GetGameTimer() of the last level written
 
--- most fuel (0-100 scale) driving can burn per second: generous, as handling files differ; a
--- legitimate drop above it is still applied, over the next reports
-local function maxBurnPerSecond() return tonumber(Config.MaxFuelBurnPerSecond) or 0.5 end
--- the burn allowance stops growing after this long without a report (the driver's client reports
--- every Config.FuelSyncTime seconds while the engine runs)
+-- most fuel (0-100 scale) driving can burn per second (Config.MaxFuelBurnPerSecond)
+local function maxBurnPerSecond()
+    local v = tonumber(Config.MaxFuelBurnPerSecond)
+    if not v or v ~= v or v <= 0 then return 0.5 end
+    return v
+end
+-- the burn allowance stops growing after this long without a write, so a car parked for an hour
+-- cannot be emptied by one report (the driver's client reports every Config.FuelSyncTime seconds
+-- while the engine runs)
 local function maxBurnWindowMs() return math.max(30, 3 * (tonumber(Config.FuelSyncTime) or 10)) * 1000.0 end
 
 local function syncRateOk(src)
@@ -69,6 +75,10 @@ local function finiteNumber(v)
     return v
 end
 
+local function sharedLevel(veh)
+    return finiteNumber(Entity(veh).state['qb-fuel'])
+end
+
 local function writeVehicleFuel(veh, level)
     lastLevelAt[veh] = GetGameTimer()
     Entity(veh).state:set('qb-fuel', level + 0.0, true)
@@ -81,7 +91,7 @@ end
 local function acceptedDriverLevel(src, veh, level)
     local ped = GetPlayerPed(src)
     if not ped or ped == 0 or GetPedInVehicleSeat(veh, -1) ~= ped then return nil end
-    local current = tonumber(Entity(veh).state['qb-fuel'])
+    local current = sharedLevel(veh)
     if current == nil then return level end
     if level >= current then return nil end
     local window = maxBurnWindowMs()
@@ -102,22 +112,65 @@ RegisterNetEvent('qb-fuel:server:syncFuel', function(netId, level)
     local veh = vehicleFromNetId(netId)
     if not veh then return end
     local accepted = acceptedDriverLevel(src, veh, level)
-    if accepted and accepted ~= tonumber(Entity(veh).state['qb-fuel']) then writeVehicleFuel(veh, accepted) end
+    if accepted and accepted ~= sharedLevel(veh) then writeVehicleFuel(veh, accepted) end
 end)
 
---- The server's refuel paths raise the shared level: `litres` already paid for at the pump, or
---- poured from the player's own jerry can, go into the car beside the player. `clientLevel` is
---- only used for a car that has no shared level yet.
-local function addVehicleFuel(src, netId, litres, clientLevel)
-    if not Config.SyncFuelBetweenPlayers then return end
-    litres = finiteNumber(litres)
-    if not litres or litres <= 0 then return end
+--- The car (by network id) a refuel by `src` goes into: it must exist and be within reach.
+local function refuelTarget(src, netId)
     local veh = vehicleFromNetId(netId)
-    if not veh or distanceToVehicle(src, veh) > FUEL_REACH then return end
-    local current = tonumber(Entity(veh).state['qb-fuel'])
-    if current == nil then current = roundLevel(finiteNumber(clientLevel) or 0) end
-    writeVehicleFuel(veh, roundLevel(current + litres))
+    if not veh or distanceToVehicle(src, veh) > FUEL_REACH then return nil end
+    return veh
 end
+
+-- One refuel per car at a time. The pump works out how much fits before the payment (a database
+-- wait), so a second refuel landing in that wait would make the first pay for fuel that no longer
+-- fits.
+local refuelling = {} -- [vehicle entity] = true
+
+--- Runs fn(...) holding `veh`'s refuel lock; false when another refuel holds it.
+local function withRefuelLock(veh, fn, ...)
+    if refuelling[veh] then return false end
+    refuelling[veh] = true
+    local results = table.pack(pcall(fn, ...))
+    refuelling[veh] = nil
+    if not results[1] then error(results[2], 0) end
+    return true, table.unpack(results, 2, results.n)
+end
+
+--- The server's refuel paths raise the shared level by `litres` (already paid for at the pump, or
+--- poured from the player's own jerry can). Returns the new level, or nil when the car has no
+--- shared level yet: the client's word is not taken for where it starts, so the car keeps the
+--- refueller's local level until its driver's first report.
+local function addVehicleFuel(veh, litres)
+    if not Config.SyncFuelBetweenPlayers or not veh then return nil end
+    local current = sharedLevel(veh)
+    if current == nil or litres <= 0 then return current end
+    local level = roundLevel(current + litres)
+    writeVehicleFuel(veh, level)
+    return level
+end
+
+-- Server code (a garage or job spawning a car) sets a car's level directly: the first value a new
+-- car gets, or any change the server itself decided. `vehicle` is a server entity handle (what
+-- CreateVehicleServerSetter returns; NetworkGetEntityFromNetworkId for a network id).
+local function serverVehicle(vehicle)
+    vehicle = tonumber(vehicle)
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) or GetEntityType(vehicle) ~= 2 then return nil end
+    return vehicle
+end
+
+exports('SetVehicleFuel', function(vehicle, level)
+    local veh = serverVehicle(vehicle)
+    level = finiteNumber(level)
+    if not veh or not level then return false end
+    writeVehicleFuel(veh, roundLevel(level))
+    return true
+end)
+
+exports('GetVehicleFuel', function(vehicle)
+    local veh = serverVehicle(vehicle)
+    return veh and sharedLevel(veh) or nil
+end)
 
 AddEventHandler('entityRemoved', function(entity)
     lastLevelAt[entity] = nil
@@ -131,26 +184,15 @@ end)
 
 -- ====================|| EVENTS || ==================== --
 
--- `netId` is the car the nozzle is in; `clientLevel` its level, used only if it has no shared one
-QBCore.Functions.CreateCallback('qb-fuel:server:refillVehicle', function(src, cb, litres, netId, clientLevel)
-    local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player then return end
-    if IsOnRefuelCooldown(src) then
-        cb(false)
-        return
-    end
-    litres = tonumber(litres)
-    if not litres or litres <= 0 then
-        cb(false)
-        return
-    end
-    -- Clamp to tank capacity; price always computed from config, never trusted from the client
+--- Pays for and pours a pump refill (runs under the car's refuel lock); returns paid, level, reason.
+local function pumpRefill(src, Player, veh, litres)
+    -- Clamp to tank capacity and to the room left in the tank; price always computed from config,
+    -- never trusted from the client
     local maxLitres = Config.MaxTankLitres or 100
     litres = math.min(math.floor(litres), maxLitres)
-    if litres <= 0 then
-        cb(false)
-        return
-    end
+    local current = Config.SyncFuelBetweenPlayers and sharedLevel(veh) or nil
+    if current then litres = math.min(litres, math.floor(100 - current)) end
+    if litres <= 0 then return false, current, current and 'full' or nil end
 
     -- station-local price (dynamic pricing) + city sales tax, both resolved server-side
     local coords = GetEntityCoords(GetPlayerPed(src))
@@ -164,11 +206,32 @@ QBCore.Functions.CreateCallback('qb-fuel:server:refillVehicle', function(src, cb
     -- exact amount under the same key
     local key = ('pfm-fuel:refuel:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
     local paid = finalPrice > 0 and PFPayout.Charge(Player, Config.MoneyType, finalPrice, { key = key, kind = 'purchase', reason = 'Fuel' }) and true or false
-    if paid and taxRate > 0 then
+    if not paid then return false end
+    local level = addVehicleFuel(veh, litres)
+    if taxRate > 0 then
         CollectFuelTax(subtotal, Player.PlayerData.citizenid, finalPrice - subtotal, key)
     end
-    if paid then addVehicleFuel(src, netId, litres, clientLevel) end
-    cb(paid)
+    return true, level
+end
+
+--- A pump refill of `litres` into the car with network id `netId` (the one the nozzle is in).
+--- Answers (paid, newLevel, reason): newLevel is the car's shared level after the refill, nil when
+--- the car has none yet (false on a failure); reason is 'full' (nothing fits), 'busy' (someone else
+--- is refuelling it) or 'no_vehicle' (no such car beside the player); nil when the payment failed.
+QBCore.Functions.CreateCallback('qb-fuel:server:refillVehicle', function(src, cb, litres, netId)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return cb(false) end
+    if IsOnRefuelCooldown(src) then return cb(false) end
+    litres = finiteNumber(litres)
+    if not litres or litres <= 0 then return cb(false) end
+    -- the fuel goes into a real car beside the player, so it is paid for only if that car is there
+    local veh = refuelTarget(src, netId)
+    -- (no nil before a reason: an event's argument list must not have holes)
+    if not veh then return cb(false, false, 'no_vehicle') end
+    local free, paid, level, reason = withRefuelLock(veh, pumpRefill, src, Player, veh, litres)
+    if not free then return cb(false, sharedLevel(veh) or false, 'busy') end
+    if paid then return cb(true, level) end
+    cb(false, level or false, reason)
 end)
 
 RegisterServerEvent('qb-fuel:server:buyJerryCan', function()
@@ -197,10 +260,10 @@ RegisterServerEvent('qb-fuel:server:refillJerryCan', function()
     end
 end)
 
--- `netId` is the car being filled from the can; `vehLevel` its level, used only if it has no
--- shared one. What leaves the can (it can only go down) is what goes into the car.
+-- `netId` is the car being filled from the can (within reach). What leaves the can (it can only
+-- go down) is what goes into the car.
 local pouring = {} -- [src] = true while a can update runs (the inventory calls can yield)
-local function pourCan(src, fuel, netId, vehLevel)
+local function pourCan(src, fuel, netId)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
 
@@ -213,19 +276,28 @@ local function pourCan(src, fuel, netId, vehLevel)
     local currentFuel = math.min(tonumber(jerryCan.info and jerryCan.info.fuel) or 0, Config.JerryCanLitre)
     fuel = math.max(0, math.min(math.floor(fuel), currentFuel))
     local poured = currentFuel - fuel
+    if poured <= 0 then return end
+    -- the can is emptied only into a car beside the player
+    local veh = refuelTarget(src, netId)
+    if not veh then return end
 
-    jerryCan.info.fuel = fuel
-    jerryCan.info.ammo = fuel
-    if Player.RemoveItem('weapon_petrolcan', 1, jerryCan.slot) == false then return end
-    Player.AddItem('weapon_petrolcan', 1, nil, jerryCan.info)
-    if poured > 0 and netId ~= nil then addVehicleFuel(src, netId, poured, vehLevel) end
+    -- a copy: the inventory's own item table stays as it was if the swap below fails
+    local info = {}
+    for k, v in pairs(jerryCan.info or {}) do info[k] = v end
+    info.fuel, info.ammo = fuel, fuel
+    local free = withRefuelLock(veh, function()
+        if Player.RemoveItem('weapon_petrolcan', 1, jerryCan.slot) == false then return end
+        Player.AddItem('weapon_petrolcan', 1, nil, info)
+        addVehicleFuel(veh, poured)
+    end)
+    if not free then Player.Notify(Lang:t('error.vehicle_busy'), 'error') end
 end
 
-RegisterServerEvent('qb-fuel:server:setCanFuel', function(fuel, netId, vehLevel)
+RegisterServerEvent('qb-fuel:server:setCanFuel', function(fuel, netId)
     local src = source
     if pouring[src] then return end
     pouring[src] = true
-    local ok, err = pcall(pourCan, src, fuel, netId, vehLevel)
+    local ok, err = pcall(pourCan, src, fuel, netId)
     pouring[src] = nil
     if not ok then error(err, 0) end
 end)

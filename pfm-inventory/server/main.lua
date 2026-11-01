@@ -80,9 +80,14 @@ local DROP_REACH = 3.0
 -- corner selling, fitting a harness...). A client may add or drop its OWN action locks through
 -- 'qb-inventory:server:setActionBusy', but it can never clear the server's open-inventory flag:
 -- a client that clears a lock only ends the restriction it asked for itself.
+-- Every lock has a time to live (whole seconds; it holds at least that long and ends within a
+-- second after). A lock shorter than the 30 minute safety net is re-checked when it runs out, so
+-- inv_busy drops on time instead of at the next minute sweep.
 local BUSY_LOCK_TTL = 30 * 60     -- safety net: a lock a client never released ends after 30 min
-local BUSY_MAX_LOCKS = 8
+local CLIENT_TTL_MAX = 600        -- a client may ask for its own lock to end sooner (1..600 s)
+local BUSY_MAX_LOCKS = 8          -- per player, for client locks and for server locks each
 local BUSY_RATE_WINDOW, BUSY_RATE_MAX = 10, 30
+local CLIENT_LOCK_PREFIX = 'client:'
 local InventoryOpenBusy = {}      -- [src] = true while the server has an inventory open for src
 local BusyLogout = {}             -- [src] = true between logout and the next character load
 local BusyLocks = {}              -- [src] = { [reason] = expiresAt (os.time) }
@@ -93,11 +98,13 @@ local function hasBusyLock(src)
     if not locks then return false end
     local now = os.time()
     for reason, expiresAt in pairs(locks) do
-        if expiresAt <= now then locks[reason] = nil end
+        if expiresAt < now then locks[reason] = nil end
     end
     if next(locks) == nil then BusyLocks[src] = nil return false end
     return true
 end
+
+local function isClientLock(reason) return reason:sub(1, #CLIENT_LOCK_PREFIX) == CLIENT_LOCK_PREFIX end
 
 local function writeBusy(src)
     local busy = InventoryOpenBusy[src] == true or BusyLogout[src] == true or hasBusyLock(src)
@@ -113,20 +120,33 @@ function SetInventoryBusy(src, open)
     return writeBusy(src)
 end
 
---- Adds (busy = true) or removes an action lock for `src`. `reason` names the action.
+--- Adds (busy = true) or removes an action lock for `src`. `reason` names the action; `ttl` is the
+--- lock's time to live in seconds (1..30 min, default 30 min). Taking a lock again replaces its TTL.
 function SetBusyLock(src, reason, busy, ttl)
     src = tonumber(src)
     if not src or type(reason) ~= 'string' then return false end
     local locks = BusyLocks[src] or {}
     if busy == true then
         if locks[reason] == nil then
-            local n = 0
-            for _ in pairs(locks) do n = n + 1 end
+            -- client and server locks are counted apart: a client holding its maximum of locks
+            -- cannot keep the server from taking one (a search, a robbery)
+            local client, n = isClientLock(reason), 0
+            for r in pairs(locks) do
+                if isClientLock(r) == client then n = n + 1 end
+            end
             if n >= BUSY_MAX_LOCKS then return false end
         end
-        ttl = math.min(BUSY_LOCK_TTL, math.max(1, math.floor(tonumber(ttl) or BUSY_LOCK_TTL)))
+        ttl = tonumber(ttl)
+        if not ttl or ttl ~= ttl then ttl = BUSY_LOCK_TTL end
+        ttl = math.min(BUSY_LOCK_TTL, math.max(1, math.ceil(ttl)))
         locks[reason] = os.time() + ttl
         BusyLocks[src] = locks
+        if ttl < BUSY_LOCK_TTL then
+            -- recomputed once it has run out (a stale timer only recomputes the same state)
+            SetTimeout((ttl + 1) * 1000 + 50, function()
+                if BusyLocks[src] then writeBusy(src) end
+            end)
+        end
     else
         locks[reason] = nil
         BusyLocks[src] = next(locks) and locks or nil
@@ -154,9 +174,10 @@ exports('SetBusyLock', function(src, reason, busy, ttl) return SetBusyLock(src, 
 -- ── searching another player ──────────────────────────────────────
 -- A search (police search, robbery, admin) holds the 'inv:search' lock on the searched player, so
 -- they cannot use their own inventory meanwhile. The lock belongs to that search only and ends when
--- the searcher closes it, logs out or disconnects, when the searched player leaves or logs out, or
--- when the searcher walks away (checked every minute, on the searcher's next item move and when the
--- searched player tries to open an inventory). Any other lock the searched player holds stays.
+-- the searcher closes it or another inventory opens for them, when the searcher logs out or
+-- disconnects, when the searched player leaves or logs out, or when the searcher walks away (checked
+-- every minute, on the searcher's next item move and when the searched player tries to open an
+-- inventory). Any other lock the searched player holds stays.
 -- (The search used to set the searched player's open-inventory flag, which nothing cleared when the
 -- searcher dropped or walked off: the player could not open their inventory again until relog.)
 local SEARCH_LOCK = 'inv:search'
@@ -181,13 +202,21 @@ function EndInventorySearch(targetId, viewer, closeViewer)
     return true
 end
 
+--- Ends every search `viewer` is making. Called when another inventory opens for the searcher: the
+--- new window replaces the search's without the client closing it.
+function EndInventorySearchesBy(viewer)
+    viewer = tonumber(viewer)
+    if not viewer then return end
+    for t, v in pairs(InventoryViewers) do
+        if v == viewer then EndInventorySearch(t, viewer, false) end
+    end
+end
+
 --- Starts `viewer`'s search of `targetId`: one search per searcher, one searcher per player.
 function BeginInventorySearch(viewer, targetId)
     viewer, targetId = tonumber(viewer), tonumber(targetId)
     if not viewer or not targetId then return false end
-    for t, v in pairs(InventoryViewers) do
-        if v == viewer and t ~= targetId then EndInventorySearch(t, viewer, false) end
-    end
+    EndInventorySearchesBy(viewer)
     if InventoryViewers[targetId] ~= nil and InventoryViewers[targetId] ~= viewer then
         EndInventorySearch(targetId, nil, true)
     end
@@ -224,11 +253,20 @@ function CheckInventorySearches()
 end
 
 -- A client asks to hold (true) or release (false) its own action lock while a progress bar or an
--- activity runs. Only a short name and a boolean are taken, from a logged-in player, rate limited.
-RegisterNetEvent('qb-inventory:server:setActionBusy', function(reason, busy)
+-- activity runs: (reason, busy[, ttlSeconds]). Only a short name, a boolean and, when holding, an
+-- optional time to live of 1..600 seconds (default 30 minutes) are taken, from a logged-in player,
+-- rate limited. A request with any other ttl is ignored. The lock ends on release, when the TTL
+-- runs out, on logout and on disconnect.
+RegisterNetEvent('qb-inventory:server:setActionBusy', function(reason, busy, ttlSeconds)
     local src = source
     if type(reason) ~= 'string' or #reason < 1 or #reason > 32 or not reason:match('^[%w_%-%.:]+$') then return end
     if type(busy) ~= 'boolean' then return end
+    local ttl
+    if busy and ttlSeconds ~= nil then
+        -- (a release ignores the ttl: dropping one's own lock is always allowed)
+        if type(ttlSeconds) ~= 'number' or ttlSeconds ~= ttlSeconds or ttlSeconds < 1 or ttlSeconds > CLIENT_TTL_MAX then return end
+        ttl = math.ceil(ttlSeconds)
+    end
     if not QBCore.Functions.GetPlayer(src) then return end
     local now = os.time()
     local rate = BusyRate[src]
@@ -238,7 +276,7 @@ RegisterNetEvent('qb-inventory:server:setActionBusy', function(reason, busy)
     end
     rate.count = rate.count + 1
     if rate.count > BUSY_RATE_MAX then return end
-    SetBusyLock(src, 'client:' .. reason, busy)
+    SetBusyLock(src, CLIENT_LOCK_PREFIX .. reason, busy, ttl)
 end)
 
 CreateThread(function()
@@ -564,6 +602,7 @@ RegisterNetEvent('qb-inventory:server:openDrop', function(dropId)
         inventory = ItemsForClient(dropId, drop.items)
     }
     drop.isOpen = src
+    EndInventorySearchesBy(src)
     TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(src, Player.PlayerData.items, Player), formattedInventory)
 end)
 

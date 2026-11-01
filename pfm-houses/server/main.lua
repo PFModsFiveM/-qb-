@@ -349,6 +349,38 @@ function PFHouses.PricePaid(house)
     return nil
 end
 
+--- Read-only, for other resources (pf-government's weekly property tax): every owned house as
+--- { house, citizenid, value, label }. value is what the city was paid for it (purchase_price), or
+--- the listing price when nothing was recorded (0 when neither is known). Everything is read from
+--- the database, so the answer is right even before this resource has loaded its houses; a house
+--- with several rows counts once, with its newest row (as when the owners are loaded).
+exports('GetOwnedHouses', function()
+    local rows = MySQL.query.await(PFHouses.dbReady and 'SELECT id, house, citizenid, purchase_price FROM player_houses ORDER BY id'
+        or 'SELECT id, house, citizenid FROM player_houses ORDER BY id', {}) or {}
+    local newest, order = {}, {}
+    for _, r in ipairs(rows) do
+        if type(r.house) == 'string' and r.house ~= '' and type(r.citizenid) == 'string' and r.citizenid ~= '' then
+            if not newest[r.house] then order[#order + 1] = r.house end
+            newest[r.house] = r
+        end
+    end
+    local listings = {}
+    if #order > 0 then
+        for _, l in ipairs(MySQL.query.await('SELECT name, label, price FROM houselocations', {}) or {}) do
+            if type(l.name) == 'string' then listings[l.name] = l end
+        end
+    end
+    local out = {}
+    for _, house in ipairs(order) do
+        local r, listing = newest[house], listings[house]
+        local paid = tonumber(r.purchase_price)
+        local value = (paid and paid > 0) and paid or tonumber(listing and listing.price) or 0
+        out[#out + 1] = { house = house, citizenid = r.citizenid, value = math.max(0, math.floor(value)),
+            label = listing and type(listing.label) == 'string' and listing.label ~= '' and listing.label or house }
+    end
+    return out
+end)
+
 PFHouses.NearHouse = nearHouse
 PFHouses.InsideHouse = insideHouse
 PFHouses.IsRealEstate = isRealEstate

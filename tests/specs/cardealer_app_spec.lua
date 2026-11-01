@@ -1,6 +1,7 @@
 -- pfm-vehicleshop Car Dealer apps (pf-devices): the catalogue with prices, stock and finance terms;
 -- a dealer's sale from the app waits for the buyer's answer on their own screen, then charges
--- price + purchase tax once, pays the dealership and the commission once, takes one car from stock,
+-- price + purchase tax once, splits the price once between the salesperson's commission and the
+-- dealership (the commission comes out of the price, it is not paid on top), takes one car from stock,
 -- registers the car with pf-government and records the sale; finance payments and pay-offs from the
 -- app go through the same ledger path with stable keys; stock orders are paid by the dealership;
 -- everything that is not the player's, or not their job's, is refused.
@@ -170,7 +171,7 @@ describe('the catalogue', function()
 end)
 
 describe('a dealer sale from the app', function()
-    it('waits for the buyer, then charges price + tax once and pays the dealership and the commission once', function()
+    it('waits for the buyer, then charges price + tax once and splits the price once: commission, then the dealership', function()
         local res = staff('offer', DEALER, { model = 'cognoscenti', target = BUYER })
         assert_true(res.ok, tostring(res.error))
         assert_eq(res.offer.total, 108000)
@@ -185,8 +186,13 @@ describe('a dealer sale from the app', function()
         local done = citizen('answerOffer', BUYER, { id = res.offer.id, accept = true })
         assert_true(done.ok, tostring(done.error))
         assert_eq(money(BUYER).bank, 300000 - 108000)
-        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000)
-        assert_eq(money(DEALER).bank, 300000 + 100000 * Config.Commission)
+        -- the commission is the salesperson's share of the price: the dealership gets the rest, and
+        -- together they are the price (nothing paid on top)
+        local commission = 100000 * Config.Commission
+        assert_eq(money(DEALER).bank, 300000 + commission)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000 - commission)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance + (money(DEALER).bank - 300000), 100000)
+        assert_eq(sales[1] and sales[1].commission, commission)
         assert_eq(#taxes, 1)
         assert_eq(taxes[1].amount, 8000)
         assert_eq(#registrations, 1)
@@ -201,6 +207,8 @@ describe('a dealer sale from the app', function()
         Mock.fireNet('qb-vehicleshop:server:answerPurchase', BUYER, true)
         assert_eq(money(BUYER).bank, 300000 - 108000)
         assert_eq(#LedgerEnv.paid('pfm-vehicleshop:dealer:' .. res.offer.id .. ':commission'), 1)
+        assert_eq(#LedgerEnv.paid('pfm-vehicleshop:dealer:' .. res.offer.id .. ':dealership'), 1)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000 - commission)
         assert_eq(count(vehicles), 1)
     end)
     it('a declined or wrong offer costs nothing and keeps the car in stock', function()
@@ -220,7 +228,10 @@ describe('a dealer sale from the app', function()
         assert_eq(money(BUYER).bank, 300000 - 20000 - 8000)
         assert_eq(first().balance, 80000)
         assert_eq(first().paymentsleft, 10)
+        -- the finance commission, also out of the price; the shop lends the rest of it
         assert_eq(money(DEALER).bank, 300000 + 100000 * Config.FinanceCommission)
+        assert_eq(FakeDB.bank_accounts.cardealer.account_balance, 100000 - 100000 * Config.FinanceCommission)
+        assert_eq(sales[1].commission, 100000 * Config.FinanceCommission)
         assert_eq(sales[1].financed, 1)
         local init = staff('init', DEALER)
         assert_eq(#init.plans, 1)

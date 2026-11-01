@@ -203,7 +203,10 @@ describe('3. sold to the mechanic shop as a player supplier', function()
         o = O.Get(orderId)
         assert_eq(o.status, 'delivered')
         local markupShare = math.floor(ORDER * 3 * 0.15 * 0.5 * 100 + 0.5) / 100
-        assert_eq(Mock.players[RECYCLER].PlayerData.money.bank, before + markupShare + ORDER * 3 - tonumber(o.freight_payout))
+        -- the full goods value (the shop paid the freight on top) and half the markup, at delivery
+        assert_true(tonumber(o.freight_payout) > 0)
+        assert_eq(tonumber(o.total), ORDER * 3 + tonumber(o.ai_markup) + tonumber(o.freight_payout))
+        assert_eq(Mock.players[RECYCLER].PlayerData.money.bank, before + markupShare + ORDER * 3)
         local pallet = MySQL.single.await('SELECT * FROM pf_world_objects WHERE order_id = ?', { orderId })
         Mock.coords[BOSS] = vector3(pallet.x, pallet.y, pallet.z)
         assert_true(W.Unpack(BOSS, pallet.id).ok)

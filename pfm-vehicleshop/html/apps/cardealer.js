@@ -15,6 +15,8 @@
         downtoosmall: 'The down payment is below the minimum', exceededmax: 'Too many payments', buyer_busy: 'That customer is answering another offer',
         not_allowed: 'Your grade cannot order stock', bad_qty: 'Enter how many cars to order', stock_untracked: 'Stock is not tracked here',
         bad_shop: 'Choose your dealership', bad_request: 'Something was missing', rate_limited: 'Slow down a little',
+        fleet_vehicle: 'That vehicle belongs to a job fleet', financed: 'That vehicle is financed', server_error: 'Something went wrong on the server',
+        vehicle_changed: 'The vehicle changed meanwhile. Any payment was returned.',
     };
 
     function plural(n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; }
@@ -49,7 +51,7 @@
                 if (!o) return;
                 const terms = o.kind === 'finance'
                     ? `${money(o.amount)} down, then ${o.payments} payments of ${money(o.perPayment)}`
-                    : (o.kind === 'transfer' ? `${money(o.amount)} to ${o.seller}` : money(o.price));
+                    : (o.kind === 'transfer' ? `${money(o.amount)} to ${o.seller}${o.loan ? `, and its finance comes with it (${money(o.loan)} still to pay)` : ''}` : money(o.price));
                 banner.appendChild(h('div.pf-card.pfd-offer',
                     h('div.pf-stack', { style: { gap: '4px', flex: '1' } },
                         h('div.pf-strong', `${o.seller} offers you ${o.label}${o.shop ? ' at ' + o.shop : ''}`),
@@ -234,7 +236,9 @@
                     const m = models.find((x) => x.model === model.value);
                     if (!m) return;
                     const rate = mode.value === 'finance' ? d.commission.finance : d.commission.sale;
-                    let text = `Your commission: ${money(Math.round(m.price * rate))}. `;
+                    // the commission comes out of the price; the dealership's account gets the rest
+                    const commission = Math.max(0, Math.min(m.price, Math.round(m.price * rate)));
+                    let text = `Your commission: ${money(commission)}, out of the price (the dealership gets ${money(m.price - commission)}). `;
                     if (mode.value === 'finance') {
                         const dp = Number(down.value), n = Number(payments.value);
                         const minDown = Math.round(m.price * d.finance.minDownPercent / 100);

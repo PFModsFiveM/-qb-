@@ -112,6 +112,33 @@ const mailHandlers = () => ({
         });
     }
 
+    await it('mail: a document the sender does not own is marked as going out as a copy', async () => {
+        const handlers = mailHandlers();
+        handlers['mail.documents'] = () => ({ ok: true, mine: [{ id: 3, title: 'Mine', own: true }], shared: [{ id: 5, title: 'Theirs', own: false }] });
+        const env = makeWindow('computer', handlers);
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('mail', { compose: { subject: 'Theirs', attachments: [{ type: 'document', id: 5, title: 'Theirs', own: false }] } });
+        await settle();
+        const dialog = env.$('.pfc-dialog');
+        ok(dialog, 'compose open');
+        const chips = () => [...dialog.querySelectorAll('.pfc-chips .pfc-chip')].map((c) => c.textContent);
+        ok(chips()[0].includes('(copy)'), 'not marked as a copy: ' + chips()[0]);
+        const note = [...dialog.querySelectorAll('.pf-small')].find((n) => n.textContent.includes('read-only copy'));
+        ok(note && note.style.display !== 'none', 'copy note hidden');
+        // a document of their own attaches as itself
+        const select = dialog.querySelector('select');
+        select.value = '3';
+        select.dispatchEvent(new env.win.Event('change'));
+        await settle();
+        ok(!chips()[1].includes('(copy)'), 'own document marked as a copy');
+        dialog.querySelector('input').value = '5550003';
+        dialog.querySelector('textarea').value = 'See attached';
+        [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Send').click();
+        await settle();
+        const sent = env.rpcs.find((r) => r.method === 'send');
+        eq(JSON.stringify(sent.payload.attachments), JSON.stringify([{ type: 'document', id: 5 }, { type: 'document', id: 3 }]), 'the client sent more than the ids');
+    });
+
     await it('bills: lists, pays by key and shows what cannot be paid here', async () => {
         const env = makeWindow('tablet', {
             'bills.list': () => ({ ok: true, totalDue: 750, overdue: 1, bank: 1000, history: [], open: [

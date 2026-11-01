@@ -1,5 +1,6 @@
 // pf-jobs NUI modules in a simulated browser (jsdom) on the pf-devices runtime: the Tow app renders
-// the server's state as text on the tablet and the computer and sends only ids and models; the Gruppe 6
+// the server's state as text on the tablet and the computer and sends only ids and models (and shows
+// a player who left the tow job only their flatbed return); the Gruppe 6
 // and Garbage apps send crew shares as a list and buy upgrades by id; the Bus app takes a depot bus.
 // Run: node js/pfjobs_apps_spec.js
 const fs = require('fs');
@@ -144,6 +145,59 @@ const towView = () => ({
         [...root.querySelectorAll('button')].find((b) => b.textContent === 'Get a contract').click();
         await settle();
         ok(env.rpcs.find((r) => r.method === 'startContract'), 'contract asked for');
+    });
+
+    for (const device of ['tablet', 'computer']) {
+        await it(`${device}: a player who left the tow job sees only the flatbed return`, async () => {
+            const view = () => ({
+                ok: true, playerId: 1, returnOnly: true, atBay: true,
+                rental: { model: 'flatbed', label: EVIL, plate: 'TOWR4321', deposit: 250, orphaned: false, present: true },
+                hook: { plate: EVIL },
+                depot: { label: 'Hayes', x: 489, y: -1331 },
+            });
+            const settled = { returnOnly: true, playerId: 1, atBay: true, depot: { label: 'Hayes', x: 489, y: -1331 } };
+            const env = makeWindow(device, {
+                'tow.getInit': view, 'tow.refresh': view,
+                'tow.returnFlatbed': () => ({ ok: true, refund: 250, view: settled }),
+            });
+            await env.win.PFApps.refresh();
+            await env.win.PFApps.open('tow');
+            await settle();
+            const root = env.root('tow');
+            ok(root.textContent.includes('Flatbed return'), 'return-only header');
+            ok(root.textContent.includes('TOWR4321'), 'the rental');
+            ok(root.textContent.includes(EVIL), 'server text as text');
+            ok(root.textContent.includes('/tow'), 'told to take the car off with /tow');
+            eq(root.querySelectorAll('img').length, 0);
+            eq(root.querySelectorAll('[data-tab]').length, 0, 'no requests, contracts or progress tabs');
+            eq(root.querySelectorAll('[data-action="rentFlatbed"],[data-action="startContract"],[data-action="acceptRequest"]').length, 0);
+            [...root.querySelectorAll('button')].find((b) => b.textContent === 'Return flatbed').click();
+            await settle();
+            const sent = env.rpcs.find((r) => r.method === 'returnFlatbed');
+            ok(sent, 'return asked for');
+            eq(JSON.stringify(sent.payload || {}), '{}', 'nothing but the method');
+            ok(env.notes.some((n) => n.m === 'Flatbed returned. $250 deposit back to your bank'), 'the refund is told (the app closes after)');
+            ok(!root.textContent.includes('TOWR4321'), 'the returned flatbed is gone from the screen');
+            ok(root.textContent.includes('settled'), 'settled');
+            eq(root.querySelectorAll('[data-action="rentFlatbed"]').length, 0, 'still no rent offers');
+            eq(env.win.__xss, undefined);
+        });
+    }
+
+    await it('Tow app: a returned flatbed leaves the driver\'s screen (views replace, not merge)', async () => {
+        const after = towView();
+        delete after.rental; delete after.contract; delete after.hook;
+        const env = makeWindow('tablet', { 'tow.getInit': towView, 'tow.returnFlatbed': () => ({ ok: true, refund: 125, view: after }) });
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('tow');
+        await settle();
+        const root = env.root('tow');
+        [...root.querySelectorAll('button')].find((b) => b.textContent === 'Return flatbed').click();
+        await settle();
+        ok(env.notes.some((n) => n.m === 'Flatbed returned. $125 deposit back to your bank'), 'refund told');
+        eq([...root.querySelectorAll('button')].filter((b) => b.textContent === 'Return flatbed').length, 0, 'no stale rental');
+        ok(root.querySelector('[data-action="rentFlatbed"]'), 'rent offers back');
+        ok(!root.textContent.includes('BRK00001'), 'no stale contract');
     });
 
     await it('Gruppe 6: the leader saves shares as a list and buys an upgrade by id', async () => {

@@ -13,12 +13,20 @@
 --   pfDriftTires  pf-mechanicjob (performance upgrade handler, admin customs)
 --   partDamage    pf-mechanicjob (repairs, alignment, admin customs, 'pf_mech:server:setState')
 --   mileage       pf-mechanicjob (admin customs, 'pf_mech:server:setState')
+-- The two third-party resources are copied into [qb] under their own names and patched:
+--   inv_busy      progressbar    (holds pfm-inventory's 'progressbar' lock: 'qb-inventory:server:setActionBusy')
+--   voiceIntent, disableRadio, radio, call, click_on, click_off, proximity, radioActive
+--                 pma-voice      (server/module/state.lua: 'pma-voice:server:*', 'pma-voice:setTalkingOnRadio')
 
 -- ── keys ──────────────────────────────────────────────────────────
 -- Written by the server only. A client must ask the server instead of writing these.
 local SERVER_OWNED = {
     inv_busy = true, ['qb-fuel'] = true, nos = true, pfDriftTires = true,
     partDamage = true, mileage = true, pf_jobId = true,
+    -- pma-voice: the keys its server writes (the client reads them, e.g. LocalPlayer.state.assignedChannel)
+    voiceIntent = true, disableRadio = true, radioActive = true, proximity = true,
+    radio = true, call = true, click_on = true, click_off = true, submix = true,
+    radioChannel = true, callChannel = true, assignedChannel = true, muted = true,
 }
 
 -- Keys a client may keep as LOCAL state (`:set(key, value, false)`), with the reason it is enough.
@@ -296,6 +304,31 @@ describe('state bag scanner', function()
         assert_eq(table.concat(lines, ' '),
             "1:inv_busy:true 2:isLoggedIn:false 3:nos:true 8:partDamage:true 9:mileage:true 11:qb-fuel:true 13:k:true 15:[key]:true")
     end)
+    it('catches every write the original progressbar and pma-voice clients made', function()
+        -- lines as they were in the owner's copies (2025-10-19), before the [qb] patch
+        local original = table.concat({
+            "LocalPlayer.state:set('inv_busy', true, true)",                -- progressbar StartProgress
+            "LocalPlayer.state:set('inv_busy', false, true)",               -- progressbar ActionCleanup
+            "LocalPlayer.state:set(volumeType, volume, true)",              -- pma-voice setVolume
+            "LocalPlayer.state:set('voiceIntent', intent, true)",           -- /setvoiceintent
+            "LocalPlayer.state:set('proximity', {",                         -- setProximityState / mumbleConnected
+            "    index = mode, distance = proximityRange, mode = m,",
+            "}, true)",
+            "LocalPlayer.state:set(\"radioActive\", true, true);",          -- +radiotalk
+            "LocalPlayer.state:set(\"disableRadio\", curVal, true)",        -- add/removeRadioDisableBit
+            "LocalPlayer.state:set(\"disableRadio\", 0, true)",             -- init
+        }, '\n') .. '\n'
+        local found = {}
+        for _, w in ipairs(ScanStateWrites(original)) do
+            assert_true(WriteProblem(w) ~= nil, 'flagged: ' .. w.key)
+            found[#found + 1] = w.key
+        end
+        assert_eq(table.concat(found, ' '), 'inv_busy inv_busy [volumeType] voiceIntent proximity radioActive disableRadio disableRadio')
+        -- and as local writes they would still hide the server's value
+        for _, k in ipairs({ 'voiceIntent', 'disableRadio', 'radioActive', 'proximity', 'radio', 'call' }) do
+            assert_true(WriteProblem({ key = k, replicated = false }) ~= nil, 'server-owned: ' .. k)
+        end
+    end)
     it('local writes pass only for documented keys, never for server-owned ones', function()
         assert_eq(WriteProblem({ key = 'isLoggedIn', replicated = false }), nil)
         assert_true(WriteProblem({ key = 'isLoggedIn', replicated = true }) ~= nil)
@@ -321,6 +354,31 @@ describe('repository scan (sv_stateBagStrictMode)', function()
             assert_true(scripts[f] ~= nil, 'scanned: ' .. f)
         end
         assert_eq(scripts['pfm-fuel/server/main.lua'], nil, 'server scripts are not client scripts')
+    end)
+
+    it('scans the [qb] copies of progressbar and pma-voice', function()
+        for _, f in ipairs({
+            'progressbar/client.lua',
+            'pma-voice/shared.lua', 'pma-voice/client/utils/Nui.lua', 'pma-voice/client/init/proximity.lua',
+            'pma-voice/client/init/init.lua', 'pma-voice/client/init/main.lua', 'pma-voice/client/init/submix.lua',
+            'pma-voice/client/module/phone.lua', 'pma-voice/client/module/radio.lua',
+            'pma-voice/client/commands.lua', 'pma-voice/client/events.lua',
+        }) do
+            assert_true(scripts[f] ~= nil, 'scanned: ' .. f)
+        end
+        assert_eq(scripts['progressbar/client.lua'], 'progressbar')
+        assert_eq(scripts['pma-voice/client/module/radio.lua'], 'pma-voice')
+        for _, f in ipairs({ 'pma-voice/server/main.lua', 'pma-voice/server/module/radio.lua', 'pma-voice/server/module/state.lua' }) do
+            assert_eq(scripts[f], nil, 'server script: ' .. f)
+        end
+    end)
+
+    it('staging runs with strict state bags on', function()
+        local on = false
+        for line in __readfile('docs/staging/server.staging.cfg'):gmatch('[^\n]+') do
+            if line:match('^%s*setr%s+sv_stateBagStrictMode%s+true%s*$') then on = true end
+        end
+        assert_true(on, 'setr sv_stateBagStrictMode true, not commented out')
     end)
 
     it('no client script writes replicated or server-owned state', function()

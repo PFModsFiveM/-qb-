@@ -80,6 +80,28 @@ describe('bus: two spawn requests at once', function()
         assert_true(view.bus ~= nil, 'the bus is tracked')
         assert_eq(view.bus.plate, Mock.plates[spawned[1].id])
         assert_eq(#Mock.clientEventsNamed('bus:client:vehicleSpawned'), 1)
+        local told = false
+        for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do
+            if e.target == D and e.args[1] == 'Your bus is already being brought out' then told = true end
+        end
+        assert_true(told, 'the second request is told why')
+    end)
+
+    it('a request that fails with an error does not keep the lock', function()
+        local real = CreateVehicleServerSetter
+        CreateVehicleServerSetter = function() error('spawn native failed') end
+        local co = coroutine.create(function()
+            source = D
+            Mock.netHandlers['bus:server:spawnBus']('bus')
+        end)
+        local ok, err = coroutine.resume(co)
+        source = nil
+        CreateVehicleServerSetter = real
+        assert_false(ok, 'the error still reaches the server log')
+        assert_true(tostring(err):find('spawn native failed', 1, true) ~= nil)
+        finish(request(D))
+        assert_eq(#spawned, 1, 'the next request brings a bus out')
+        assert_true(PFJobsBus.View(D).bus ~= nil)
     end)
 
     it('the lock is released: after returning the bus another can be taken', function()

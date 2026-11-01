@@ -140,6 +140,167 @@ describe('documents', function()
     end)
 end)
 
+-- runs fn once just before the next statement containing `fragment` (as if it landed meanwhile)
+local function before(fragment, fn)
+    local update = MySQL.update
+    MySQL.update = setmetatable({ await = function(q, params)
+        if fn and type(q) == 'string' and q:find(fragment, 1, true) then
+            local run = fn
+            fn = nil
+            MySQL.update = update
+            run()
+        end
+        return update.await(q, params)
+    end }, { __call = function(_, ...) return update(...) end })
+    return function() MySQL.update = update end
+end
+local function count(sql, params) return tonumber(MySQL.scalar.await(sql, params)) or 0 end
+local function lastAttachment(cid)
+    local rows = box(cid, 'inbox')
+    local m = rows[#rows]
+    return m and m.attachments and tonumber(m.attachments:match('"ref":"(%d+)"'))
+end
+
+describe('documents: who hands out access', function()
+    it('the owner_hidden column is there (migration 2, run twice at start)', function()
+        assert_eq(count([[SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'pf_citizen_documents' AND COLUMN_NAME = 'owner_hidden']]), 1)
+        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-citizen' AND version = 2"), 1)
+    end)
+    it('a reader who mails a document sends each recipient a locked copy, never a link', function()
+        local id = D.Save(A, { title = 'Quote', body = 'Paint job $800' }).id
+        assert_true(D.Share(A, { id = id, to = '5550002', mode = 'link' }).ok)
+        local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Quote', message = 'Attached', attachments = { { type = 'document', id = id } } })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_shares WHERE document_id = ? AND citizenid = ?', { id, 'CID3' }), 0)
+        assert_eq(D.Get(C3, { id = id }).error, 'not_found')
+        local copy = lastAttachment('CID3')
+        assert_true(copy ~= nil and copy ~= id)
+        local row = MySQL.single.await('SELECT owner_cid, locked, copied_from, body FROM pf_citizen_documents WHERE id = ?', { copy })
+        assert_eq(row.owner_cid, 'CID3')
+        assert_eq(tonumber(row.locked), 1)
+        assert_eq(tonumber(row.copied_from), id)
+        assert_eq(row.body, 'Paint job $800')
+        assert_eq(D.Save(C3, { id = copy, title = 'Quote', body = 'Paint job $1' }).error, 'locked')
+        -- the owner's own mail still gives a link to the original
+        assert_true(M.SendFromPlayer(A, { to = '5550003', subject = 'Quote', message = 'Here', attachments = { { type = 'document', id = id } } }).ok)
+        assert_eq(lastAttachment('CID3'), id)
+        assert_eq(D.Get(C3, { id = id }).document.own, false)
+    end)
+    it('one copy for a citizen who gets the mail as a person and as the owner of a business', function()
+        MySQL.query.await("INSERT INTO pf_gov_businesses (business_id, business_name, owner_id, owner_name) VALUES ('shop:docs', 'Doc Shop', 'CID3', 'C')")
+        local id = D.Save(A, { title = 'Menu', body = 'Soup' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        local mine = count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'")
+        local res = M.SendFromPlayer(B, { to = '5550003, biz:shop:docs', subject = 'Menu', message = 'x', attachments = { { type = 'document', id = id } } })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(res.delivered, 2)
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), mine + 1)
+    end)
+    it('a link someone other than the owner gave out can neither sign nor lock', function()
+        local id = D.Save(A, { title = 'Lease', body = 'Rent $500' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        -- a link B passed on (how mail worked before)
+        MySQL.insert.await("INSERT INTO pf_citizen_document_shares (document_id, citizenid, shared_by) VALUES (?, 'CID3', 'CID2')", { id })
+        assert_eq(D.Get(C3, { id = id }).document.canSign, false)
+        assert_eq(D.Sign(C3, { id = id }).error, 'sign_not_allowed')
+        assert_eq(count('SELECT locked FROM pf_citizen_documents WHERE id = ?', { id }), 0)
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_signatures WHERE document_id = ?', { id }), 0)
+        -- the owner sees that link and can take it back
+        local cids = {}
+        for _, w in ipairs(D.Get(A, { id = id }).document.sharedWith) do cids[#cids + 1] = w.cid end
+        table.sort(cids)
+        assert_eq(table.concat(cids, ','), 'CID2,CID3')
+        assert_eq(D.Unshare(A, { id = id, cid = 'CID3' }).ok, true)
+        assert_eq(D.Get(C3, { id = id }).error, 'not_found')
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+    end)
+    it('a link taken back between the lock and the signature leaves the document unsigned and editable', function()
+        local id = D.Save(A, { title = 'Draft', body = 'v1' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        local undo = before('INSERT IGNORE INTO pf_citizen_document_signatures', function()
+            assert_eq(count('SELECT locked FROM pf_citizen_documents WHERE id = ?', { id }), 1)
+            assert_eq(D.Unshare(A, { id = id, cid = 'CID2' }).ok, true)
+        end)
+        local res = D.Sign(B, { id = id })
+        undo()
+        assert_eq(res.error, 'not_found')
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_signatures WHERE document_id = ?', { id }), 0)
+        assert_eq(count('SELECT locked FROM pf_citizen_documents WHERE id = ?', { id }), 0)
+        assert_eq(D.Save(A, { id = id, title = 'Draft', body = 'v2' }).ok, true)
+    end)
+end)
+
+describe('documents someone else signed', function()
+    it("the owner's delete only takes it off the owner's list: signers keep it, the others lose their link", function()
+        local id = D.Save(A, { title = 'Car sale', body = 'A sells the car to B for $9000' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        D.Share(A, { id = id, to = '5550003', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        local res = D.Delete(A, { id = id })
+        assert_eq(res.ok, true)
+        assert_eq(res.hidden, true)
+        assert_eq(MySQL.scalar.await('SELECT deleted_at FROM pf_citizen_documents WHERE id = ?', { id }), nil)
+        assert_eq(count('SELECT owner_hidden FROM pf_citizen_documents WHERE id = ?', { id }), 1)
+        assert_eq(D.Get(B, { id = id }).document.title, 'Car sale')
+        assert_eq(#D.Get(B, { id = id }).document.signatures, 1)
+        assert_eq(D.Get(C3, { id = id }).error, 'not_found')
+        for _, d in ipairs(D.List(A).mine) do assert_true(d.id ~= id, 'still on the owner list') end
+        local listed = false
+        for _, d in ipairs(D.List(B).shared) do if d.id == id then listed = true end end
+        assert_true(listed, 'the signer lost it from their list')
+        -- hidden documents do not count against the owner's limit
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID1' AND deleted_at IS NULL AND owner_hidden = 0 AND id = ?", { id }), 0)
+    end)
+    it('stop sharing is refused for a signer; a signer who removes it from their list still reads it', function()
+        local id = D.Save(A, { title = 'Loan', body = 'B owes A $500' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        assert_eq(D.Unshare(A, { id = id, cid = 'CID2' }).error, 'signed')
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_shares WHERE document_id = ? AND citizenid = ?', { id, 'CID2' }), 1)
+        assert_eq(D.Delete(B, { id = id }).removed, true)
+        assert_eq(D.Get(B, { id = id }).document.title, 'Loan')
+    end)
+    it('a signature landing during the delete or the unshare statement wins', function()
+        local id = D.Save(A, { title = 'Bond', body = 'x' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        local sign = function()
+            MySQL.insert.await("INSERT INTO pf_citizen_document_signatures (document_id, citizenid, name, fingerprint) VALUES (?, 'CID2', 'B', REPEAT('0', 64))", { id })
+        end
+        local undo = before('DELETE h FROM pf_citizen_document_shares', sign)
+        local res = D.Unshare(A, { id = id, cid = 'CID2' })
+        undo()
+        assert_eq(res.error, 'signed')
+        local id2 = D.Save(A, { title = 'Bond 2', body = 'y' }).id
+        D.Share(A, { id = id2, to = '5550002', mode = 'link' })
+        undo = before('deleted_at = NOW()', function()
+            MySQL.insert.await("INSERT INTO pf_citizen_document_signatures (document_id, citizenid, name, fingerprint) VALUES (?, 'CID2', 'B', REPEAT('0', 64))", { id2 })
+        end)
+        res = D.Delete(A, { id = id2 })
+        undo()
+        assert_eq(res.hidden, true)
+        assert_eq(D.Get(B, { id = id2 }).document.title, 'Bond 2')
+    end)
+    it("only the owner's own signature: the owner still deletes it for everyone", function()
+        local id = D.Save(A, { title = 'Memo', body = 'z' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(A, { id = id }).ok, true)
+        assert_eq(D.Delete(A, { id = id }).deleted, true)
+        assert_eq(D.Get(B, { id = id }).error, 'not_found')
+    end)
+    it('a deleted owner: a document someone else signed stays with the signer', function()
+        local id = D.Save(C3, { title = 'Witness', body = 'Seen at 9pm' }).id
+        D.Share(C3, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        assert_eq(D.Unshare(C3, { id = id, cid = 'CID2' }).error, 'signed')
+        -- even without a share left, the signature keeps it
+        MySQL.update.await("DELETE FROM pf_citizen_document_shares WHERE document_id = ?", { id })
+        Mock.eventHandlers['pfm-core:server:characterDeleted']('CID3')
+        assert_eq(MySQL.scalar.await('SELECT deleted_at FROM pf_citizen_documents WHERE id = ?', { id }), nil)
+        assert_eq(D.Get(B, { id = id }).document.title, 'Witness')
+    end)
+end)
+
 describe('documents when a character is deleted', function()
     it('private documents go; documents shared with others stay with them; their access to others goes', function()
         local cleanup = Mock.eventHandlers['pfm-core:server:characterDeleted']

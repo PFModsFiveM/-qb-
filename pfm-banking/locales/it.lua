@@ -20,6 +20,8 @@ local Translations = {
         money = 'Non hai abbastanza soldi',
         pin = 'PIN Errato',
         card = 'Nessuna Carta di Credito trovata',
+        toofar = 'Sei troppo lontano',
+        atm = 'Questo bancomat è fuori servizio',
     },
     progress = {
         atm = 'Accesso in corso all\'ATM',

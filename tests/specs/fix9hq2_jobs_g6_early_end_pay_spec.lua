@@ -2,7 +2,8 @@
 -- maximum (tierMax[tier] x share of bags) instead of the contract's own payout, so ending early
 -- could pay more than finishing the contract. Ending early now pays the contract's own payout for
 -- the share of bags handed in, never more than finishing would; in a party the crew bonus applies
--- to that amount, not to the tier maximum.
+-- to that amount, not to the tier maximum. Ending before any bag was collected used to leave the
+-- contract stuck (the vault refuses an empty deposit); it now ends at once with no pay.
 load_resource('tests/lua/ledger_env.lua')
 QBCore = QBCoreMock
 QBCoreMock.Shared.Items.moneybag = { name = 'moneybag', label = 'Money Bag', weight = 0 }
@@ -119,5 +120,44 @@ describe('Gruppe 6: ending a contract early', function()
         assert_eq(bank(LEAD) + bank(M2), pool)
         -- never more than the same crew finishing the whole contract
         assert_true(pool <= math.floor(data.payout * bonus) * 2)
+    end)
+
+    it('ending before any bag is collected closes the contract with no pay (it used to stay stuck)', function()
+        collect(LEAD, 0)
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        assert_eq(#paid(), 0, 'nothing paid')
+        assert_eq(bank(LEAD), 0)
+        assert_eq(#Mock.clientEventsNamed('pf-jobs:gruppe6:goToDeposit'), 0, 'no vault trip for an empty deposit')
+        assert_eq(#Mock.clientEventsNamed('pf-jobs:gruppe6:returnWithoutBags'), 1, 'sent back to HQ with the truck')
+        assert_eq(Mock.callCallback('pf-jobs:gruppe6:getAppView', LEAD).contract, nil, 'the contract is over')
+        -- a deposit now does nothing; once the truck is back (as after any contract) a new one
+        -- can be taken
+        atVault(LEAD)
+        Mock.fireNet('pf-jobs:gruppe6:depositComplete', LEAD)
+        assert_eq(#paid(), 0)
+        Mock.fireNet('pf-jobs:gruppe6:vehicleReturned', LEAD)
+        Mock.clock = Mock.clock + 10
+        local data = collect(LEAD)
+        atVault(LEAD)
+        Mock.fireNet('pf-jobs:gruppe6:depositComplete', LEAD)
+        assert_eq(bank(LEAD), data.payout, 'the next contract pays as usual')
+    end)
+
+    it('in a party, ending with no bags ends the contract for the whole crew', function()
+        Mock.fireNet('pf-jobs:gruppe6:createGroup', LEAD)
+        local code = Mock.callCallback('pf-jobs:gruppe6:getAppView', LEAD).group.groupCode
+        Mock.fireNet('pf-jobs:gruppe6:joinByCode', M2, code)
+        collect(LEAD, 0)
+        assert_true(Mock.callCallback('pf-jobs:gruppe6:getAppView', M2).contract ~= nil, 'the member shares it')
+        Mock.fireNet('pf-jobs:gruppe6:endContract', M2)
+        assert_eq(#paid(), 0)
+        for _, src in ipairs({ LEAD, M2 }) do
+            assert_eq(Mock.callCallback('pf-jobs:gruppe6:getAppView', src).contract, nil)
+            local sent = 0
+            for _, e in ipairs(Mock.clientEventsNamed('pf-jobs:gruppe6:returnWithoutBags')) do
+                if e.target == src then sent = sent + 1 end
+            end
+            assert_eq(sent, 1, 'told: ' .. src)
+        end
     end)
 end)

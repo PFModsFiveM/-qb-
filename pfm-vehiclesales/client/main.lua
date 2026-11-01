@@ -136,10 +136,15 @@ local function SellData(data, model)
         vehicleData.plate = model
         vehicleData.mods = QBCore.Functions.GetVehicleProperties(vehicleData.ent)
         vehicleData.desc = data.desc
+        -- the car leaves only once the server has listed it (qb-occasions:client:vehicleListed);
+        -- a refused listing (financed, impounded, a fleet car) keeps it here
         TriggerServerEvent('qb-occasions:server:sellVehicle', data.price, vehicleData)
-        sellVehicleWait(data.price)
     end, model)
 end
+
+RegisterNetEvent('qb-occasions:client:vehicleListed', function(price)
+    sellVehicleWait(tonumber(price) or 0)
+end)
 
 local listen = false
 local function Listen4Control(spot) -- Uses this to listen for controls to open various menus.
@@ -267,11 +272,13 @@ RegisterNetEvent('qb-occasions:client:SellBackCar', function()
         local vehicle = GetVehiclePedIsIn(ped, false)
         vehicleData.model = GetEntityModel(vehicle)
         vehicleData.plate = GetVehicleNumberPlateText(vehicle)
-        QBCore.Functions.TriggerCallback('qb-occasions:server:checkVehicleOwner', function(owned, balance)
+        QBCore.Functions.TriggerCallback('qb-occasions:server:checkVehicleOwner', function(owned, balance, blocked)
             if owned then
-                if balance < 1 then
+                if blocked then
+                    QBCore.Functions.Notify(blocked, 'error', 3500)
+                elseif balance < 1 then
+                    -- the server removes the car once it has paid for it (qb-occasions:client:soldBack)
                     TriggerServerEvent('qb-occasions:server:sellVehicleBack', vehicleData)
-                    QBCore.Functions.DeleteVehicle(vehicle)
                 else
                     QBCore.Functions.Notify(Lang:t('error.finish_payments'), 'error', 3500)
                 end
@@ -282,6 +289,11 @@ RegisterNetEvent('qb-occasions:client:SellBackCar', function()
     else
         QBCore.Functions.Notify(Lang:t('error.not_in_veh'), 'error', 4500)
     end
+end)
+
+RegisterNetEvent('qb-occasions:client:soldBack', function()
+    local vehicle = GetVehiclePedIsIn(PlayerPedId(), false)
+    if vehicle ~= 0 then QBCore.Functions.DeleteVehicle(vehicle) end
 end)
 
 RegisterNetEvent('qb-occasions:client:ReturnOwnedVehicle', function(vehdata)
@@ -316,9 +328,11 @@ end)
 
 RegisterNetEvent('qb-vehiclesales:client:SellVehicle', function()
     local VehiclePlate = QBCore.Functions.GetPlate(GetVehiclePedIsIn(PlayerPedId()))
-    QBCore.Functions.TriggerCallback('qb-occasions:server:checkVehicleOwner', function(owned, balance)
+    QBCore.Functions.TriggerCallback('qb-occasions:server:checkVehicleOwner', function(owned, balance, blocked)
         if owned then
-            if balance < 1 then
+            if blocked then
+                QBCore.Functions.Notify(blocked, 'error', 3500)
+            elseif balance < 1 then
                 QBCore.Functions.TriggerCallback('qb-occasions:server:getVehicles', function(vehicles)
                     if vehicles == nil or #vehicles < #Config.Zones[Zone].VehicleSpots then
                         openSellContract(true)

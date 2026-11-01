@@ -74,18 +74,32 @@ function P.Pay(who, account, amount, opts)
     return res.ok == true, res
 end
 
--- A transfer whose outcome is not known yet: it may still complete (now in another call, or later
--- through the ledger's recovery), so nothing else may be charged in its place.
-local function unclear(res)
-    return res.state == 'pending' or res.state == 'debited' or res.error == 'in_progress' or res.error == 'internal_error'
+-- Errors the ledger returns before it writes anything (no transaction row, so nothing moved).
+local REFUSED_BEFORE_WRITE = {
+    insufficient_funds = true, invalid_request = true, invalid_account = true, same_account = true,
+    invalid_amount = true, invalid_key = true,
+}
+
+-- Whether the ledger clearly refused this transfer with no money taken, so another account may be
+-- tried: a 'failed' transfer (new, or stored under the same key), or a request refused before
+-- anything was written. A pending transfer the ledger's recovery marked 'interrupted_unverified'
+-- is not clear: the player's money may have left before the crash.
+local function clearRefusal(res)
+    if res.ok then return false end
+    if res.state == 'failed' then return res.error ~= 'interrupted_unverified' end
+    if res.state == nil and res.txId == nil then return REFUSED_BEFORE_WRITE[res.error] == true end
+    return false
 end
 
 --- Takes money from a player into system:<resource> (deposits, fees). Tries each account in order,
---- e.g. { 'cash', 'bank' }. opts: key (required; each account gets key .. ':' .. account), reason, kind.
---- The next account is only tried after a clean refusal (e.g. insufficient_funds, failed). When an
---- account's transfer is in an unclear state (pending, debited, in_progress) Charge stops there and
---- returns false with that result: treat it as not charged now; the ledger's recovery settles it, and
---- the same key later returns its final result.
+--- e.g. { 'cash', 'bank' }. opts: key (required; each account gets key .. ':' .. account), reason, kind,
+--- to, metadata, quiet.
+--- The next account is only tried after a clear refusal of the previous one (insufficient_funds, or
+--- 'failed' with no money taken). On any other outcome (pending, debited, compensated, in_progress,
+--- ledger_write_failed, internal_error, a stored duplicate that is not completed or failed, bank not
+--- running) Charge stops there and returns false with that result, so one payment is never taken from
+--- two accounts. When the outcome is not known yet, result.unclear is true: do not charge again under
+--- a new key; the ledger's recovery settles it, and the same key later returns its final result.
 --- @return string|false account used, table result
 function P.Charge(who, accounts, amount, opts)
     opts = opts or {}
@@ -102,14 +116,16 @@ function P.Charge(who, accounts, amount, opts)
             metadata = opts.metadata,
         })
         if res.ok then return account, res end
-        if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then break end
-        if unclear(res) then
-            tellFailure(who, opts, 'The bank is still processing this payment. Nothing more was charged.')
+        if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then
+            tellFailure(who, opts, 'The bank did not respond. Nothing was charged.')
             return false, res
         end
-    end
-    if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then
-        tellFailure(who, opts, 'The bank did not respond. Nothing was charged.')
+        if not clearRefusal(res) then
+            res.unclear = res.state ~= 'compensated' -- a compensated transfer was refunded: settled
+            tellFailure(who, opts, res.unclear and 'The bank is still processing this payment. Nothing more was charged.'
+                or 'The payment did not go through. Nothing was charged.')
+            return false, res
+        end
     end
     return false, res
 end

@@ -2,8 +2,9 @@
 -- set by the server only. The driver reports ('qb-fuel:server:syncFuel'): a new car takes that
 -- level, after that a report can only lower it (fix9hq2_vehiclefx_fuel_sync_spec has the burn-rate
 -- cap and the refuel paths that raise it); anyone else, a bad value or a flood changes nothing.
--- The client exports report instead of writing the state bag, and the nozzle flags are local
--- state values.
+-- The client exports report instead of writing the state bag; the client applies the shared level
+-- except a capped answer to its own report on the car it drives; the refuel flows send no client
+-- level; the nozzle flags are local state values.
 load_resource('tests/lua/fivem_mocks.lua')
 
 local states = {}
@@ -109,32 +110,76 @@ describe('qb-fuel:server:syncFuel', function()
 end)
 
 describe('pfm-fuel client', function()
-    local toServer, localWrites = {}, {}
+    local toServer, localWrites, bagHandler = {}, {}, nil
+    local level, driverOf, ME, pending = {}, {}, 77, {}
     local env = setmetatable({
         TriggerServerEvent = function(name, ...) toServer[#toServer + 1] = { name = name, args = { ... } } end,
         AddEventHandler = function() end,
-        AddStateBagChangeHandler = function() end,
+        AddStateBagChangeHandler = function(key, _, fn) if key == 'qb-fuel' then bagHandler = fn end end,
+        GetEntityFromStateBagName = function(bag) return tonumber(bag:match('entity:(%d+)')) or 0 end,
         DoesEntityExist = function() return true end,
         IsEntityAVehicle = function() return true end,
         NetworkRequestControlOfEntity = function() end,
-        SetVehicleFuelLevel = function() end,
-        GetVehicleFuelLevel = function() return 41.0 end,
+        SetVehicleFuelLevel = function(veh, v) level[veh] = v end,
+        GetVehicleFuelLevel = function(veh) return level[veh] or 41.0 end,
+        PlayerPedId = function() return ME end,
+        GetPedInVehicleSeat = function(veh, seat) return seat == -1 and driverOf[veh] or 0 end,
         NetworkGetEntityIsNetworked = function() return true end,
         NetworkGetNetworkIdFromEntity = function(e) return e + 1000 end,
-        SetTimeout = function(_, fn) fn() end,
+        SetTimeout = function(_, fn) pending[#pending + 1] = fn end,
         Entity = function() return { state = setmetatable({}, { __index = { set = function(_, k, v, r) localWrites[#localWrites + 1] = { k, v, r } end } }) } end,
     }, { __index = _G })
+    Config.SyncFuelBetweenPlayers = true
     assert(load(__readfile('pfm-fuel/client/exports.lua'), '@pfm-fuel/client/exports.lua', 't', env))()
+    local function bag(veh, value) bagHandler(('entity:%d'):format(veh), 'qb-fuel', value) end
 
     it('SetFuel reports to the server (now and once more shortly) and writes no state bag', function()
         local SetFuel = Mock.exportsByResource['__self'].SetFuel
         SetFuel(CAR, 120)
+        assert_eq(level[CAR], 100.0)
+        level[CAR] = 41.0
+        for _, fn in ipairs(pending) do fn() end
         assert_eq(#toServer, 2)
         assert_eq(toServer[1].name, 'qb-fuel:server:syncFuel')
         assert_eq(toServer[1].args[1], CAR + 1000)
         assert_eq(toServer[1].args[2], 100.0, 'clamped before it is sent')
         assert_eq(toServer[2].args[2], 41.0, 'the repeat sends the current level')
         assert_eq(#localWrites, 0)
+    end)
+
+    it('the shared level is applied to cars this client does not drive', function()
+        assert_true(bagHandler ~= nil, 'a qb-fuel state bag handler')
+        level[701] = 20.0
+        bag(701, 64.5)
+        assert_eq(level[701], 64.5)
+        bag(701, 30)
+        assert_eq(level[701], 30.0)
+    end)
+
+    it('the car this client drives keeps its own lower level when the server caps a drop', function()
+        driverOf[702] = ME
+        level[702] = 80.0
+        bag(702, 80)                 -- its first value
+        level[702] = 68.0            -- 10 s of hard driving burned 12
+        bag(702, 75)                 -- the server took only 5 off
+        assert_eq(level[702], 68.0, 'not raised back by the capped answer')
+        bag(702, 70)                 -- the next report catches up
+        assert_eq(level[702], 68.0)
+        bag(702, 95)                 -- someone refuels it while it is driven
+        assert_eq(level[702], 95.0, 'a raise is a refuel and is applied')
+        level[702] = 60.0
+        bag(702, 50)                 -- a lower shared level than ours is applied too
+        assert_eq(level[702], 50.0)
+        bag(702, 'lots')
+        assert_eq(level[702], 50.0, 'a non-number is ignored')
+    end)
+
+    it('the refuel flows send no client level and take the server\'s answer', function()
+        local src = __readfile('pfm-fuel/client/main.lua')
+        assert_true(src:find("TriggerServerEvent%('qb%-fuel:server:setCanFuel', canLiter %- liter, NetworkGetEntityIsNetworked%(veh%) and NetworkGetNetworkIdFromEntity%(veh%) or nil%)") ~= nil, 'jerry can: can level and car only')
+        assert_true(src:find("TriggerCallback%('qb%-fuel:server:refillVehicle', function%(success, level, reason%)") ~= nil, 'pump: async, with the new level')
+        assert_true(src:find("end, liter, netId%)") ~= nil, 'pump: litres and car only')
+        assert_true(src:find("SetFuel%(veh, tonumber%(level%) or") ~= nil, 'pump: the server\'s level is set locally')
     end)
 
     it('the nozzle flags are local state values, written with replicate = false', function()

@@ -32,7 +32,16 @@ local function getUp()
     Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, false)
 end
 
+-- one resource load per file: each test starts after the previous patient got up and left, so no
+-- open call or "left while down" memory carries over from the test before
+local function endSession()
+    if not Mock.players[PATIENT] then return end
+    getUp()
+    Mock.fireEvent('playerDropped', PATIENT)
+end
+
 BeforeEach = function()
+    endSession()
     Mock.reset()
     LedgerEnv.reset()
     Mock.clock = Mock.clock + 1000

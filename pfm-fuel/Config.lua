@@ -6,6 +6,10 @@ Config = Config or {}
 Config.GlobalFuelConsumptionMultiplier = 4.5 -- GTAV Default: 1.0
 Config.SyncFuelBetweenPlayers = true         -- Sync fuel between players
 Config.FuelSyncTime = 10                     -- Time between syncs in seconds
+-- Most fuel (0-100 scale) the server lets a driver's report take off per second since the last
+-- accepted level. Keep it above what your fastest-burning vehicle uses: a car that burns faster
+-- still drains on its driver's screen, only the level other players see catches up more slowly.
+Config.MaxFuelBurnPerSecond = 0.5
 
 Config.MoneyType = 'cash'       -- Money type to use for the fuel transactions
 Config.FuelPrice = 5            -- Price of the fuel per litre (always enforced server-side)

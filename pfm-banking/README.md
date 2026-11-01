@@ -9,6 +9,24 @@
 
 Documentation: https://docs.qbcore.org/qbcore-documentation/qbcore-resources/qb-banking
 
+## Cash points
+Cash only changes hands where the player stands, checked on the server:
+- **Bank counter** (`Config.locations`, within `Config.CashRange.counter`): cash withdraw and deposit,
+  for the player's own account and the society accounts they may use.
+- **ATM** (`Config.ATMs`, within `Config.CashRange.atm`, with a `bank_card` in the inventory): cash
+  withdrawals only (the ATM screen has no deposit).
+
+`Config.ATMs` comes from esx_atm (GPL-3.0) and vRP (MIT); the sources are named in `config.lua`. An ATM
+that is not in the list (for example one added by a custom map) refuses cash until its position is
+added: stand at it and run `/atmcheck` (admin) to get the line to add.
+
+## PFPayout.Charge
+`PFPayout.Charge(who, { 'cash', 'bank' }, amount, { key })` tries the next account only after a clear
+refusal (not enough money, a failed transfer). When the outcome is not known (pending, debited, in
+progress, a write or internal error) it stops and returns `false, result` with `result.unclear = true`:
+do not charge again under a new key; the ledger's recovery settles it and the same key then returns
+the final result.
+
 # License
 
     QBCore Framework

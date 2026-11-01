@@ -54,9 +54,9 @@ local function closedHere(src)
     return BankBranches and BankBranches.ClosedMessageAt and BankBranches.ClosedMessageAt(src) or nil
 end
 
--- Cash at the counter: the player has to stand at one of the bank counters (Config.locations, the
--- points the client's targets and zones are built on). The position is read on the server.
-local COUNTER_RANGE = 5.0
+-- Cash changes hands only where the player stands, read on the server: at a bank counter
+-- (Config.locations, the points the client's targets and zones are built on) for withdrawals and
+-- deposits, or at an ATM (Config.ATMs) for withdrawals. Bank-to-bank transfers stay remote.
 local function playerPos(src)
     local ped = GetPlayerPed(src)
     if not ped or ped == 0 then return nil end
@@ -65,36 +65,33 @@ local function playerPos(src)
     return vector3(c.x, c.y, c.z or 0.0)
 end
 
-local function atCounter(src)
+local function cashRange(kind, default)
+    local r = Config.CashRange and tonumber(Config.CashRange[kind])
+    return (r and r > 0) and r or default
+end
+
+-- Index of the first point within `range` metres of the player, or nil.
+local function nearPoint(src, points, range)
     local pos = playerPos(src)
     if not pos then return nil end
-    for i, loc in ipairs(Config.locations or {}) do
-        if #(pos - loc) <= COUNTER_RANGE then return i end
+    for i, p in ipairs(points or {}) do
+        if #(pos - p) <= range then return i end
     end
     return nil
 end
 
--- ATM withdrawals use the same withdraw callback. ATM rules are decided separately; until then an
--- ATM session (opened through openATM) allows a withdrawal near the spot where it was opened, for a
--- limited time, so ATMs keep working while counter cash requires a counter.
-local ATM_SESSION_SECONDS = 600
-local ATM_SESSION_RANGE = 10.0
-local atmSessions = {} -- [src] = { at = os.time(), pos = vector3 }
+local function atCounter(src) return nearPoint(src, Config.locations, cashRange('counter', 5.0)) end
+local function atAtm(src) return nearPoint(src, Config.ATMs, cashRange('atm', 4.0)) end
 
-local function atAtm(src)
-    local s = atmSessions[src]
-    if not s then return false end
-    if os.time() - s.at > ATM_SESSION_SECONDS then
-        atmSessions[src] = nil
-        return false
-    end
-    local pos = playerPos(src)
-    return pos ~= nil and #(pos - s.pos) <= ATM_SESSION_RANGE
+-- An ATM needs a bank card in the inventory, as opening it does (the PIN is asked by the ATM screen).
+local function hasBankCard(src)
+    local ok, cards = pcall(function() return exports['pfm-inventory']:GetItemsByName(src, 'bank_card') end)
+    return ok and type(cards) == 'table' and #cards > 0, cards
 end
 
-AddEventHandler('playerDropped', function()
-    atmSessions[source] = nil
-end)
+if type(Config.ATMs) ~= 'table' or #Config.ATMs == 0 then
+    print('^3[pfm-banking]^7 Config.ATMs is empty: every ATM refuses cash (bank counters still work)')
+end
 
 -- Functions
 
@@ -376,12 +373,20 @@ QBCore.Functions.CreateCallback('qb-banking:server:openATM', function(source, cb
         TriggerClientEvent('QBCore:Notify', src, closed, 'error')
         return cb(false)
     end
-    local bankCards = exports['pfm-inventory']:GetItemsByName(src, 'bank_card') -- inventory method, not on Player API
-    if not bankCards then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.card'), 'error') end
+    -- only at a listed ATM (the client opens the screen at any ATM model; an unlisted one is refused here)
+    if not atAtm(src) then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.atm'), 'error')
+        return cb(false)
+    end
+    local hasCard, bankCards = hasBankCard(src)
+    if not hasCard then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.card'), 'error')
+        return cb(false)
+    end
     local acceptablePins = {}
-    for _, bankCard in ipairs(bankCards) do acceptablePins[#acceptablePins + 1] = bankCard.info.cardPin end
-    local pos = playerPos(src)
-    atmSessions[src] = pos and { at = os.time(), pos = pos } or nil
+    for _, bankCard in ipairs(bankCards) do
+        if type(bankCard) == 'table' and type(bankCard.info) == 'table' then acceptablePins[#acceptablePins + 1] = bankCard.info.cardPin end
+    end
     local job = Player.PlayerData.job
     local gang = Player.PlayerData.gang
     local accounts = {}
@@ -405,7 +410,12 @@ QBCore.Functions.CreateCallback('qb-banking:server:withdraw', function(source, c
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
-    if not atCounter(src) and not atAtm(src) then return cb({ success = false, message = Lang:t('error.toofar') }) end
+    -- at a counter, or at a listed ATM with a bank card (counter cash includes society accounts; the
+    -- ATM shows the same accounts the player may use)
+    if not atCounter(src) then
+        if not atAtm(src) then return cb({ success = false, message = Lang:t('error.toofar') }) end
+        if not hasBankCard(src) then return cb({ success = false, message = Lang:t('error.card') }) end
+    end
     local closed = closedHere(src)
     if closed then return cb({ success = false, message = closed }) end
     local accountName = data.accountName
@@ -432,7 +442,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:deposit', function(source, cb
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
-    -- deposits are counter-only (the ATM screen has no deposit)
+    -- deposits only at a counter: the ATM screen offers no deposit
     if not atCounter(src) then return cb({ success = false, message = Lang:t('error.toofar') }) end
     local closed = closedHere(src)
     if closed then return cb({ success = false, message = closed }) end
@@ -732,6 +742,25 @@ CreateThread(function()
 end)
 
 -- Commands
+
+--- Staff helper for Config.ATMs: whether an ATM at this player's position pays out cash, and if not,
+--- the line to add to Config.ATMs (from the player's server-side position).
+function BankingInternal.AtmCheckMessage(src)
+    local pos = playerPos(src)
+    if not pos then return nil end
+    local i = atAtm(src)
+    if i then return ('Config.ATMs entry %d is in range: this ATM pays out cash'):format(i) end
+    return ('No ATM of Config.ATMs within %.1f m. To add this one: vector3(%.3f, %.3f, %.3f),'):format(
+        cashRange('atm', 4.0), pos.x, pos.y, pos.z)
+end
+
+QBCore.Commands.Add('atmcheck', 'Check whether the ATM here pays out cash (admin)', {}, false, function(source)
+    if not source or source <= 0 then return end
+    local msg = BankingInternal.AtmCheckMessage(source)
+    if not msg then return end
+    TriggerClientEvent('chat:addMessage', source, { args = { 'Bank', msg } })
+    print(('[pfm-banking] /atmcheck (%s): %s'):format(GetPlayerName(source) or source, msg))
+end, 'admin')
 
 QBCore.Commands.Add('givecash', 'Give Cash', { { name = 'id', help = 'Player ID' }, { name = 'amount', help = 'Amount' } }, true, function(source, args)
     local src = source

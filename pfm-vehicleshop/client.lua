@@ -1031,9 +1031,14 @@ RegisterNetEvent('qb-vehicleshop:client:confirmPurchase', function(offer)
     if tonumber(offer.tax) and tonumber(offer.tax) > 0 then
         detail = detail .. (' (incl. $%s purchase tax)'):format(tostring(offer.tax))
     end
+    if tonumber(offer.loan) and tonumber(offer.loan) > 0 then
+        detail = detail .. (', and its finance comes with it: $%s still to pay'):format(tostring(offer.loan))
+    end
+    -- the answer names this offer: if the seller replaces it meanwhile, this click accepts nothing
+    -- (the new offer comes with its own prompt)
     exports['pfm-menu']:openMenu({
         { header = tostring(offer.label), txt = detail .. ' - offered by ' .. tostring(offer.seller), isMenuHeader = true },
-        { header = 'Accept and pay', params = { isServer = true, event = 'qb-vehicleshop:server:answerPurchase', args = true } },
-        { header = 'Decline', params = { isServer = true, event = 'qb-vehicleshop:server:answerPurchase', args = false } },
+        { header = 'Accept and pay', params = { isServer = true, event = 'qb-vehicleshop:server:answerPurchase', args = { accept = true, id = offer.id } } },
+        { header = 'Decline', params = { isServer = true, event = 'qb-vehicleshop:server:answerPurchase', args = { accept = false, id = offer.id } } },
     })
 end)

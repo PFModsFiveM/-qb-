@@ -30,16 +30,24 @@ Mock.exportsByResource['pfm-inventory'] = {
     GetInventory = function() return { items = {} } end,
     GetFreshness = function() return nil end,
 }
-local collected, mayManage = {}, {}
+-- pf-stores as it works: CollectOrder asks the buyer kind's adapter (pf-computer's own jobAdapter for
+-- 'jobbiz') whether the player may manage the buyer, before it changes anything
+local collected, orderReads, adapters = {}, 0, {}
+local orderStatus = 'ready'
+local onGetOrder
 Mock.exportsByResource['pf-stores'] = {
-    RegisterBuyerKind = function() return true end,
+    RegisterBuyerKind = function(_, kind, adapter) adapters[kind] = adapter return true end,
     ListOwnedStores = function() return { ok = true, data = { stores = {} } } end,
     CollectOrder = function(_, src, kind, buyerId, orderId)
-        if not mayManage[src] then return { ok = false, error = 'not_owner' } end
+        local adapter = adapters[kind]
+        if not adapter or not adapter.canManage(src, buyerId) then return { ok = false, error = 'not_owner' } end
         collected[#collected + 1] = { src = src, orderId = orderId } return { ok = true }
     end,
-    GetOrder = function(_, id) return { id = id, buyer_kind = 'jobbiz', store_id = 'mechanic', status = 'ready', method = 'pickup', items_json = '[]' } end,
-    CanManageOrderBuyer = function(_, src, orderId) return mayManage[src] == true end,
+    GetOrder = function(_, id)
+        orderReads = orderReads + 1
+        if onGetOrder then onGetOrder(id) end
+        return { id = id, buyer_kind = 'jobbiz', store_id = 'mechanic', status = orderStatus, method = 'pickup', items_json = '[]' }
+    end,
 }
 
 -- pf-services keeps its event kinds in memory: a restart forgets them
@@ -86,7 +94,8 @@ BeforeEach = function()
     Mock.reset()
     Mock.clock = Mock.clock + 100
     Mock.players, Mock.coords, Mock.aces = {}, {}, {}
-    announcements, collected, mayManage, emitted = {}, {}, {}, {}
+    announcements, collected, emitted = {}, {}, {}
+    orderReads, orderStatus, onGetOrder = 0, 'ready', nil
     govPerms = {}
     player(BOSS, 'BOSS1', 'mechanic', 3)
     Mock.players[BOSS].PlayerData.job.isboss = true
@@ -133,6 +142,37 @@ describe('fix9hq2 computer: Job Board hiring news after a pf-services restart', 
         assert_true(kinds['business.hiring'] ~= nil)
         assert_eq(kinds['business.hiring'].category, 'business')
     end)
+    it('the kind is registered when pf-computer starts with pf-services running', function()
+        kinds = {}
+        jobboardOnStart('pf-computer')
+        assert_true(kinds['business.hiring'] ~= nil)
+    end)
+    it("pf-services reading as 'starting' inside its own start event still gets the kind", function()
+        kinds = {}
+        local real = GetResourceState
+        GetResourceState = function(name) if name == 'pf-services' then return 'starting' end return real(name) end
+        jobboardOnStart('pf-services')
+        GetResourceState = real
+        assert_true(kinds['business.hiring'] ~= nil)
+    end)
+    it('a pf-services:server:ready signal registers it too', function()
+        kinds = {}
+        local ready = Mock.eventHandlers['pf-services:server:ready']
+        assert_true(type(ready) == 'function', 'jobboard listens for pf-services:server:ready')
+        ready()
+        assert_true(kinds['business.hiring'] ~= nil)
+    end)
+    it('a pf-services that refuses or fails does not break posting', function()
+        local svc = Mock.exportsByResource['pf-services']
+        local realReg = svc.RegisterEventKind
+        svc.RegisterEventKind = function() error('pf-services restarting') end
+        kinds = {}
+        createPost('Welder')
+        svc.RegisterEventKind = realReg
+        assert_eq(#emitted, 0, 'nothing emitted for an unknown kind')
+        createPost('Welder 2')
+        assert_eq(#emitted, 1, 'the next post registers and emits')
+    end)
     it('nothing is registered while pf-services is not running', function()
         kinds = {}
         started['pf-services'] = nil
@@ -144,8 +184,9 @@ describe('fix9hq2 computer: Job Board hiring news after a pf-services restart', 
 end)
 
 describe('fix9hq2 computer: supplies pickup run permission', function()
+    local spawned
     local function pickup(src, orderId)
-        local spawned = {}
+        spawned = spawned or {}
         started['pf-mechanicjob'] = true
         Mock.exportsByResource['pf-mechanicjob'] = { StartSuppliesPickup = function(_, s, order) spawned[#spawned + 1] = { src = s, order = order } return true end }
         local res = call(src, 'business:supplies:orders:pickup', { orderId = orderId, mode = 'job' })
@@ -153,33 +194,72 @@ describe('fix9hq2 computer: supplies pickup run permission', function()
         Mock.exportsByResource['pf-mechanicjob'] = nil
         return res, spawned
     end
+    local function runs() return PFComputer.dataStore.pickupRuns end
 
-    it('a mechanic who may not collect the order gets no truck and trailer', function()
-        mayManage[SENIOR] = false
-        local res, spawned = pickup(SENIOR, 42)
-        assert_eq(res and res.error, 'not_owner')
+    it('staff who are not the boss are refused before the order is read or a truck is spawned', function()
+        spawned = {}
+        local res = pickup(SENIOR, 42)
+        assert_eq(res and res.ok, false)
+        assert_eq(res.error, 'not_boss')
         assert_eq(#spawned, 0, 'no pickup run spawned')
-        assert_eq(PFComputer.dataStore and PFComputer.dataStore.pickupRuns and PFComputer.dataStore.pickupRuns['SEN1'], nil)
+        assert_eq(orderReads, 0, 'refused before the order lookup')
+        assert_eq(runs()['SEN1'], nil, 'no run remembered')
         assert_eq(#collected, 0)
     end)
-    it('a player who may collect starts the run and the finished run collects it', function()
-        mayManage[BOSS] = true
-        local res, spawned = pickup(BOSS, 43)
+    it('without pf-mechanicjob, staff who are not the boss cannot collect at once either', function()
+        local res = call(SENIOR, 'business:supplies:orders:pickup', { orderId = 42, mode = 'job' })
+        assert_eq(res and res.error, 'not_boss')
+        assert_eq(#collected, 0)
+    end)
+    it('the boss starts the run, and the finished run collects the order', function()
+        spawned = {}
+        local res = pickup(BOSS, 43)
         assert_true(res and res.ok, 'run started: ' .. tostring(res and res.error))
         assert_eq(#spawned, 1)
         assert_eq(spawned[1].order.id, 43)
+        assert_eq(runs()['BOSS1'].orderId, 43)
         TriggerEvent('pf-computer:server:supplies:completeOrder', BOSS, 43)
         assert_eq(#collected, 1)
         assert_eq(collected[1].orderId, 43)
+        assert_eq(runs()['BOSS1'], nil)
     end)
-    it('when pf-stores cannot answer the permission, nothing is spawned', function()
-        local stores = Mock.exportsByResource['pf-stores']
-        local real = stores.CanManageOrderBuyer
-        stores.CanManageOrderBuyer = function() error('boom') end
-        local res, spawned = pickup(BOSS, 44)
-        stores.CanManageOrderBuyer = real
-        assert_eq(res and res.error, 'stores_unavailable')
+    it('the boss check is the one pf-stores makes at collection: a boss demoted mid-run cannot collect', function()
+        spawned = {}
+        assert_true(pickup(BOSS, 44).ok)
+        Mock.players[BOSS].PlayerData.job.isboss = false
+        TriggerEvent('pf-computer:server:supplies:completeOrder', BOSS, 44)
+        assert_eq(#collected, 0, 'pf-stores refused with the same rule')
+    end)
+    it('an order that is not ready starts nothing', function()
+        spawned = {}
+        orderStatus = 'awaiting_supplier'
+        local res = pickup(BOSS, 45)
+        assert_eq(res and res.error, 'order_not_ready')
         assert_eq(#spawned, 0)
+    end)
+    it('two pickup requests at once start one run', function()
+        spawned = {}
+        local inner
+        onGetOrder = function()
+            onGetOrder = nil
+            -- a second request arrives while the first waits on the order read
+            inner = call(BOSS, 'business:supplies:orders:pickup', { orderId = 46, mode = 'job' })
+        end
+        Mock.clientEvents = {}
+        started['pf-mechanicjob'] = true
+        Mock.exportsByResource['pf-mechanicjob'] = { StartSuppliesPickup = function(_, s, order) spawned[#spawned + 1] = { src = s, order = order } return true end }
+        Mock.gameTimer = Mock.gameTimer + 100000
+        local res = PFComputer.dispatch('business:supplies:orders:pickup', { orderId = 46, mode = 'job' }, BOSS)
+        started['pf-mechanicjob'] = nil
+        Mock.exportsByResource['pf-mechanicjob'] = nil
+        assert_true(res and res.ok, 'the first started: ' .. tostring(res and res.error))
+        assert_eq(inner and inner.error, 'busy', 'the second was refused')
+        assert_eq(#spawned, 1, 'one truck')
+        -- the lock is released afterwards
+        spawned = {}
+        runs()['BOSS1'] = nil
+        assert_true(pickup(BOSS, 47).ok)
+        assert_eq(#spawned, 1)
     end)
 end)
 
@@ -195,6 +275,29 @@ describe('fix9hq2 computer: City Hall announcement duration and category', funct
         assert_true(call(STAFF, 'gov:announcements:create', { title = 'None', body = 'x' }).ok)
         assert_eq(announcements[4].data.duration, nil, 'no duration: pf-government default')
     end)
+    it('odd durations become whole days in range, or the default', function()
+        govPerms[STAFF] = { laws = true }
+        local cases = {
+            { '7', 7 * 86400 }, { 2.9, 2 * 86400 }, { -3, 86400 }, { 1 / 0, 90 * 86400 }, { -1 / 0, 86400 },
+            { 0 / 0, nil }, { 'soon', nil }, { true, nil },
+        }
+        for i, c in ipairs(cases) do
+            assert_true(call(STAFF, 'gov:announcements:create', { title = 'D' .. i, body = 'b', duration = c[1] }).ok)
+            assert_eq(announcements[i].data.duration, c[2], 'duration ' .. tostring(c[1]))
+        end
+    end)
+    it('the seconds sent are what pf-government stores as the expiry (90 days at most)', function()
+        govPerms[STAFF] = { laws = true }
+        assert_true(call(STAFF, 'gov:announcements:create', { title = 'Max', body = 'b', duration = 90 }).ok)
+        assert_true(announcements[1].data.duration <= 90 * 86400, 'within ANNOUNCEMENT_MAX_DURATION')
+        assert_true(announcements[1].data.duration >= 86400, 'at least a day, never read as 90 seconds')
+    end)
+    it('only officials with the announcement permission reach pf-government', function()
+        govPerms[STAFF] = {}
+        local res = call(STAFF, 'gov:announcements:create', { title = 'No', body = 'b', duration = 3 })
+        assert_eq(res and res.error, 'not_authorized')
+        assert_eq(#announcements, 0)
+    end)
     it('the category is cleaned to what pf-government accepts ([A-Za-z0-9 _-], at most 32)', function()
         govPerms[STAFF] = { laws = true }
         local cases = {
@@ -204,14 +307,22 @@ describe('fix9hq2 computer: City Hall announcement duration and category', funct
             { '  !!!  ', nil },
             { '', nil },
             { string.rep('abcdefghij', 5), string.rep('abcdefghij', 3) .. 'ab' },
+            { 'Taxes\n\tand fees', 'Taxes and fees' },
+            { 'Café news', 'Caf news' },
+            { string.rep('x', 31) .. ' y', string.rep('x', 31) },
+            { string.rep('!', 5000) .. 'late', nil },
         }
         for i, c in ipairs(cases) do
             assert_true(call(STAFF, 'gov:announcements:create', { title = 'T' .. i, body = 'b', category = c[1] }).ok)
             local sent = announcements[i].data.category
-            assert_eq(sent, c[2], 'category ' .. tostring(c[1]))
+            assert_eq(sent, c[2], 'category ' .. tostring(c[1]):sub(1, 40))
             if sent ~= nil then
                 assert_true(#sent <= 32 and sent:match('^[%w _%-]+$') ~= nil, 'passes the government whitelist: ' .. sent)
+                assert_true(sent:match('^%s') == nil and sent:match('%s$') == nil, 'trimmed: ' .. sent)
             end
         end
+        -- not text at all: pf-government's default
+        assert_true(call(STAFF, 'gov:announcements:create', { title = 'N', body = 'b', category = 42 }).ok)
+        assert_eq(announcements[#announcements].data.category, nil)
     end)
 end)

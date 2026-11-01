@@ -691,6 +691,7 @@ function OpenShop(source, name)
         slots = #RegisteredShops[name].items,
         inventory = RegisteredShops[name].items
     }
+    EndInventorySearchesBy(source)
     TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, Player.PlayerData.items, Player), formattedInventory)
     TriggerListener('ShopOpened', GetInventoryType(name), hookData)
 end
@@ -711,6 +712,7 @@ function OpenInventory(source, identifier, data)
         local hookData = buildHookData('InventoryOpened', source, QBPlayer)
         if TriggerHook('InventoryOpened', nil, hookData) == false then return end
         SetInventoryBusy(source, true)
+        EndInventorySearchesBy(source)
         TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, QBPlayer.PlayerData.items, QBPlayer))
         TriggerListener('InventoryOpened', nil, hookData)
         return
@@ -740,6 +742,7 @@ function OpenInventory(source, identifier, data)
         slots = inventory.slots,
         inventory = ItemsForClient(identifier, inventory.items)
     }
+    EndInventorySearchesBy(source)
     TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, QBPlayer.PlayerData.items, QBPlayer), formattedInventory)
     TriggerListener('InventoryOpened', GetInventoryType(identifier), hookData)
 end

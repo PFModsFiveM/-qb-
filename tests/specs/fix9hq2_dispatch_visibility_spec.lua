@@ -2,7 +2,10 @@
 --   (a) the waypoint uses the list's visibility rule (the kind's job list), so a Benny's or
 --       Beeker's mechanic gets the waypoint of a mechanic.roadside call they see and accept;
 --   (b) City Hall business requests (gov.request.*) are claimable from the generic Dispatch app
---       only with the permission pf-government's Business Requests app checks for that kind.
+--       only with the permission pf-government's Business Requests app checks for that kind (the
+--       kind's govPermission in pf-services' catalog, checked here against pf-government's own list).
+-- The list itself (ListForJob, SQL) is stubbed here with the same rule; the real query is covered by
+-- realdb_specs/fix9hq2_dispatch_visibility_realdb_spec.lua.
 load_resource('tests/lua/fivem_mocks.lua')
 
 Config = {}
@@ -161,6 +164,42 @@ describe('(b) City Hall requests on the generic Dispatch app', function()
         local a = handlers.dispatch.accept(BENNY, { id = 1 })
         assert_true(a.ok, a.error)
         assert_eq(#permCalls, 0, 'no government check for non-government kinds')
+    end)
+
+    it("the catalog's permission per kind is the one pf-government's Business Requests app checks", function()
+        GovApps = { Define = function() end }
+        load_resource('[pfscripts]/pf-government/server/apps/requests.lua')
+        local govKinds = GovRequests.Kinds
+        local n = 0
+        for kind, def in pairs(govKinds) do
+            n = n + 1
+            assert_eq(PFServices.GetRequestKind(kind).govPermission, def.perm, kind)
+        end
+        assert_true(n >= 4)
+        for kind in pairs(PFCatalog.Requests) do
+            if kind:sub(1, 12) == 'gov.request.' then assert_true(govKinds[kind] ~= nil, kind .. ' is worked by pf-government') end
+        end
+    end)
+
+    it('a gov.request kind registered at runtime is gated by its own permission', function()
+        assert_true(PFServices.RegisterRequestKind('gov.request.permit', { label = 'Permit', job = 'government', govPermission = 'licenses' }))
+        REQ[5] = { id = 5, kind = 'gov.request.permit', job = 'government', status = 'open', title = 'Permit' }
+        assert_eq(handlers.dispatch.accept(CLERK, { id = 5 }).error, 'no_permission')
+        assert_true(handlers.dispatch.accept(LICENSER, { id = 5 }).ok)
+        -- without a permission it is never claimable from Dispatch
+        assert_true(PFServices.RegisterRequestKind('gov.request.other', { label = 'Other', job = 'government' }))
+        REQ[6] = { id = 6, kind = 'gov.request.other', job = 'government', status = 'open', title = 'Other' }
+        assert_eq(handlers.dispatch.accept(BOSS, { id = 6 }).error, 'no_permission')
+    end)
+
+    it('giving a request back needs no permission (a demoted clerk is not stuck with it)', function()
+        REQ[2].status, REQ[2].assignee = 'accepted', 'GOV1'
+        local released = {}
+        local realRelease = PFServices.ReleaseRequest
+        PFServices.ReleaseRequest = function(src, id) released[#released + 1] = id return { ok = true, request = REQ[id] } end
+        assert_true(handlers.dispatch.release(CLERK, { id = 2 }).ok)
+        PFServices.ReleaseRequest = realRelease
+        assert_eq(released[1], 2)
     end)
 
     it('the list tells the client which requests the caller may take', function()

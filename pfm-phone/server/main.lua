@@ -443,16 +443,18 @@ end)
 -- Paying a bill: the amount, the business and the biller come from the stored invoice. (They came
 -- from the client, so a bill could be paid with $1, to any business, with the commission sent to
 -- any player; the commission was also paid before the payment was checked.) Every step is keyed by
--- the invoice (its ledger token), so paying the same bill twice moves money once. The phone, the tablet and the
--- computer (pf-citizen's Bills app, through the PayInvoice export) all pay through PayInvoice below.
+-- the invoice (its ledger token), so paying the same bill twice moves money once. The phone, the
+-- tablet and the computer (pf-citizen's Bills app, through the PayInvoice export) all pay through
+-- PayInvoice below.
 
 --- Charges the invoice on the ledger. Attempt 1 uses the key <base>, attempt n the key
---- <base>:retry<n> (PFPayout.Charge adds ':bank'); <base> is InvoiceKeyBase below. A key whose attempt failed
---- (not enough money) stays failed in the ledger, so a new attempt key is used only when the one
---- before it ended without moving money (failed, or compensated: refunded). An attempt the ledger is
---- still settling (pending, or debited: the payer was charged and the credit is left to recovery)
---- answers 'in_progress' and is never charged again; a completed attempt means the invoice is paid.
---- There is no attempt limit. Returns true, replayed (the charge was made before) or false, error.
+--- <base>:retry<n> (PFPayout.Charge adds ':bank'); <base> is InvoiceKeyBase below. A key whose
+--- attempt failed (not enough money) stays failed in the ledger, so a new attempt key is used only
+--- when the one before it ended without moving money (failed, or compensated: refunded). An attempt
+--- the ledger is still settling (pending, or debited: the payer was charged and the credit is left
+--- to recovery) answers 'in_progress' and is never charged again; a completed attempt means the
+--- invoice is paid. There is no attempt limit. Returns true, replayed (the charge was made before)
+--- or false, error.
 ---
 --- The keys come from the invoice's ledger_token, a unique token stored with the invoice when it is
 --- created (pfm-phone:invoice:tok:<token>). Invoice ids can come back (a truncated table, or MySQL
@@ -460,7 +462,10 @@ end)
 --- deleted), and a new invoice under an old id would find the old invoice's completed charge and
 --- count as paid without a charge. Rows from before the token (ledger_token NULL) keep the id key
 --- pfm-phone:invoice:<id>, so a charge they already made is still found.
-local InvoiceAttempts = {} -- [ledger key base] = first attempt not known to have ended without moving money
+
+-- [ledger key base] = first attempt not known to have ended without moving money (a hint: after a
+-- restart the walk starts at 1 again and skips the failed keys it finds)
+local InvoiceAttempts = {}
 local SETTLED_UNPAID = { failed = true, compensated = true }
 
 --- The ledger key base of an invoice row: from its token, or from its id for a row without one.
@@ -472,35 +477,59 @@ local function InvoiceKeyBase(invoice)
     return 'pfm-phone:invoice:' .. tostring(invoice.id)
 end
 
--- phone_invoices.ledger_token: added here when missing (servers that imported qb-phone.sql before
--- the column existed). Additive and safe to re-run: it is only added when information_schema does
--- not list it.
-local InvoiceTokenColumn = false   -- true once the column is known to exist
-local InvoiceTokenChecking = false -- a check is running (it yields on the database)
-local TOKEN_COLUMN_SQL = "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND COLUMN_NAME = 'ledger_token'"
+-- phone_invoices.ledger_token on servers that imported qb-phone.sql before the column existed. Each
+-- step runs only when information_schema shows it is missing, so a restart repeats nothing:
+--   1. the column itself, NULL on the rows already there (they keep their id-based keys);
+--   2. its default UUID(), so invoices other resources insert without a token (pfm-policejob's
+--      /bill, third-party billing scripts) get a unique one as well. Best effort: a database without
+--      expression defaults (MySQL before 8.0.13) keeps NULL there, and only the invoices pfm-phone
+--      creates itself get tokens.
+-- A failed check is retried at most once a minute, not on every new invoice.
+local TOKEN_COLUMN_SQL = [[SELECT COUNT(*) AS n, MAX(COLUMN_DEFAULT) AS def FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND COLUMN_NAME = 'ledger_token']]
+local TOKEN_RETRY_MS = 60000
+local TokenColumn = { exists = false, checking = false, failedAt = nil }
+
+--- true, hasUuidDefault when the column exists; false when it does not.
+local function ReadTokenColumn()
+    local row = MySQL.single.await(TOKEN_COLUMN_SQL)
+    if type(row) ~= 'table' or (tonumber(row.n) or 0) < 1 then return false, false end
+    return true, tostring(row.def or ''):lower():find('uuid', 1, true) ~= nil
+end
 
 local function EnsureInvoiceTokenColumn()
-    if InvoiceTokenColumn then return true end
+    if TokenColumn.exists then return true end
     for _ = 1, 100 do -- another caller is checking: wait for its answer (at most ~5 s)
-        if not InvoiceTokenChecking then break end
+        if not TokenColumn.checking then break end
         Wait(50)
     end
-    if InvoiceTokenColumn then return true end
-    if InvoiceTokenChecking then return false end
-    InvoiceTokenChecking = true
-    local ok, exists = pcall(function()
-        if (tonumber(MySQL.scalar.await(TOKEN_COLUMN_SQL)) or 0) == 0 then
-            MySQL.query.await('ALTER TABLE `phone_invoices` ADD COLUMN `ledger_token` VARCHAR(40) NULL DEFAULT NULL')
-        end
-        return (tonumber(MySQL.scalar.await(TOKEN_COLUMN_SQL)) or 0) > 0
-    end)
-    InvoiceTokenChecking = false
-    InvoiceTokenColumn = ok and exists == true
-    if not InvoiceTokenColumn then
-        print(('^1[pfm-phone]^7 phone_invoices.ledger_token is missing and could not be added (%s): new invoices fall back to id-based ledger keys; add the column from qb-phone.sql')
-            :format(ok and 'not listed after ALTER' or tostring(exists)))
+    if TokenColumn.exists then return true end
+    if TokenColumn.checking then return false end
+    if TokenColumn.failedAt and GetGameTimer() - TokenColumn.failedAt < TOKEN_RETRY_MS then return false end
+    TokenColumn.checking = true
+    local okRead, exists, uuidDefault = pcall(ReadTokenColumn)
+    local problem = not okRead and tostring(exists) or nil
+    if okRead and not exists then
+        local okAdd, err = pcall(MySQL.query.await, 'ALTER TABLE `phone_invoices` ADD COLUMN `ledger_token` VARCHAR(40) NULL DEFAULT NULL')
+        if not okAdd then problem = tostring(err) end
+        -- read again either way: another server sharing the database may have added it meanwhile
+        okRead, exists, uuidDefault = pcall(ReadTokenColumn)
+        if not okRead then problem = tostring(exists) end
     end
-    return InvoiceTokenColumn
+    exists = okRead and exists == true
+    if exists and not uuidDefault then
+        local okDef, err = pcall(MySQL.query.await, 'ALTER TABLE `phone_invoices` ALTER COLUMN `ledger_token` SET DEFAULT (UUID())')
+        if not okDef then
+            print(('^3[pfm-phone]^7 phone_invoices.ledger_token has no UUID() default (%s): invoices other resources insert directly keep id-based ledger keys'):format(tostring(err)))
+        end
+    end
+    TokenColumn.exists, TokenColumn.checking = exists, false
+    TokenColumn.failedAt = (not exists) and GetGameTimer() or nil
+    if not exists then
+        print(('^1[pfm-phone]^7 phone_invoices.ledger_token is missing and could not be added (%s): new invoices fall back to id-based ledger keys; add the column from qb-phone.sql')
+            :format(problem or 'not listed after ALTER'))
+    end
+    return exists
 end
 CreateThread(EnsureInvoiceTokenColumn)
 
@@ -510,7 +539,10 @@ CreateThread(EnsureInvoiceTokenColumn)
 local function CreateInvoice(data)
     if type(data) ~= 'table' then return nil, 'bad_request' end
     local cid, amount, society = data.citizenid, IsValidAmount(data.amount), data.society
-    if type(cid) ~= 'string' or cid == '' or not amount or amount < 1 or type(society) ~= 'string' or society == '' then return nil, 'bad_request' end
+    if type(cid) ~= 'string' or cid == '' or #cid > 50 or not amount or amount < 1 or amount > 2147483647
+        or type(society) ~= 'string' or society == '' or #society > 50 then
+        return nil, 'bad_request'
+    end
     local candecline = (data.candecline == 0 or data.candecline == false) and 0 or 1
     local reason = data.reason ~= nil and tostring(data.reason):sub(1, 256) or nil
     local sender = data.sender ~= nil and tostring(data.sender):sub(1, 50) or nil
@@ -536,7 +568,7 @@ local function ChargeInvoice(src, base, amount, society)
         if not found then return false, 'bank_unavailable' end
         local state = type(tx) == 'table' and tx.state or nil
         if state == 'completed' then
-            InvoiceAttempts[base] = attempt
+            InvoiceAttempts[base] = nil
             return true, true
         elseif state and SETTLED_UNPAID[state] then
             attempt = attempt + 1
@@ -547,7 +579,7 @@ local function ChargeInvoice(src, base, amount, society)
             local account, res = PFPayout.Charge(src, 'bank', amount, { key = key, kind = 'purchase', reason = 'Invoice from ' .. society })
             res = type(res) == 'table' and res or {}
             if account then
-                InvoiceAttempts[base] = attempt
+                InvoiceAttempts[base] = nil
                 return true, res.duplicate == true
             end
             if res.state and SETTLED_UNPAID[res.state] then
@@ -599,31 +631,39 @@ PayInvoiceLocked = function(src, Ply, invoiceId, elsewhere)
     if not amount or society == '' then return false, 'not_found' end
 
     local key = InvoiceKeyBase(invoice)
-    local charged, err = ChargeInvoice(src, key, amount, society)
-    if not charged then return false, err == 'insufficient_funds' and 'insufficient_funds' or (err or 'payment_failed') end
-    MySQL.query.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
-    -- a replayed charge reaches this point too (an earlier ledger entry, e.g. one ledger recovery
-    -- completed after an 'in_progress' answer); the society and commission keys make the payouts
-    -- idempotent. The mails and events go out with the request whose society credit actually moved
-    -- money (not a ledger duplicate), so they go out once per paid invoice: also after a crash
-    -- between the charge and the credit, and never again for a replay or a reused invoice row.
+    local charged, info = ChargeInvoice(src, key, amount, society)
+    if not charged then return false, info or 'payment_failed' end
+    local replayed = info == true
+    -- A replayed charge reaches this point too (an earlier ledger entry, e.g. one ledger recovery
+    -- completed after an 'in_progress' answer, or a crash after the charge). The business and the
+    -- commission are paid before the invoice row is deleted, on keys of their own: a crash anywhere
+    -- before the delete leaves the invoice, and paying it again finishes whatever is missing
+    -- without moving any money twice.
     local ok, credit = PFPayout.PaySociety(society, amount, { key = key .. ':society', reason = 'Phone invoice' })
-    if not ok then print(('^1[pfm-phone]^7 invoice %d: payment to %s not credited yet (key %s:society)'):format(invoiceId, society, key)) end
-    local first = ok and not (type(credit) == 'table' and credit.duplicate == true)
+    if not ok then print(('^1[pfm-phone]^7 invoice %d: payment to %s not credited (key %s:society)'):format(invoiceId, society, key)) end
+    local creditedNow = ok and not (type(credit) == 'table' and credit.duplicate == true)
 
     local rate = Config.BillingCommissions[society]
+    local commission = 0
     if rate and invoice.sendercitizenid and invoice.sendercitizenid ~= '' then
-        local commission = Round(amount * rate)
+        commission = Round(amount * rate)
         if commission > 0 then
             PFPayout.Pay(invoice.sendercitizenid, 'bank', commission, { key = key .. ':commission', kind = 'wage', reason = 'Billing commission', quiet = true })
         end
-        if first then
-            exports['pfm-phone']:sendNewMailToOffline(invoice.sendercitizenid, {
-                sender = 'Billing Department',
-                subject = 'Commission Received',
-                message = string.format('You received a commission check of $%s when %s %s paid a bill of $%s.', commission, Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
-            })
-        end
+    end
+    local removed = MySQL.update.await('DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?', { invoiceId, cid })
+    removed = type(removed) == 'table' and tonumber(removed.affectedRows) or tonumber(removed) or 0
+    -- The mails and events go out once per paid invoice: from the request that removed the row,
+    -- when it charged the payer or credited the business itself. A replay whose payouts were all
+    -- made before (a reused pre-token row whose old invoice was paid) sends nothing again.
+    local first = removed > 0 and (not replayed or creditedNow)
+
+    if first and commission > 0 then
+        exports['pfm-phone']:sendNewMailToOffline(invoice.sendercitizenid, {
+            sender = 'Billing Department',
+            subject = 'Commission Received',
+            message = string.format('You received a commission check of $%s when %s %s paid a bill of $%s.', commission, Ply.PlayerData.charinfo.firstname, Ply.PlayerData.charinfo.lastname, amount)
+        })
     end
     if first then
         TriggerEvent('qb-phone:server:paidInvoice', src, invoiceId)
@@ -640,18 +680,34 @@ QBCore.Functions.CreateCallback('qb-phone:server:PayInvoice', function(source, c
 end)
 
 --- Declines a declinable invoice of the player `src`. Returns true, or false and an error code.
+--- It takes the invoice's payment lock, so a decline and a payment of one invoice cannot run at once
+--- (the invoice paid and reported declined); the events go out from the request that removed the row.
 local function DeclineInvoice(src, invoiceId)
     local Ply = exports['pfm-core']:GetPlayer(src)
     invoiceId = tonumber(invoiceId)
-    if not Ply or not invoiceId then return false, 'bad_request' end
+    if not Ply or not invoiceId or invoiceId ~= math.floor(invoiceId) then return false, 'bad_request' end
     local cid = Ply.PlayerData.citizenid
-    local rows = MySQL.query.await('SELECT amount, society FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, cid, 1 })
-    if not (rows and rows[1]) then return false, 'not_declinable' end
-    TriggerEvent('qb-phone:server:declinedInvoice', src, invoiceId)
-    notifyBillingSociety(rows[1].society, Ply, rows[1].amount, false)
-    MySQL.query('DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, cid, 1 })
-    TriggerEvent('pfm-phone:server:invoiceSettled', { id = invoiceId, citizenid = cid, amount = rows[1].amount, society = rows[1].society }, 'declined')
-    return true
+    local lockKey = tostring(cid) .. ':' .. invoiceId
+    if InvoiceLocks[lockKey] then return false, 'in_progress' end
+    InvoiceLocks[lockKey] = true
+    local ok, done, err = pcall(function()
+        local rows = MySQL.query.await('SELECT amount, society FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, cid, 1 })
+        local row = rows and rows[1]
+        if not row then return false, 'not_declinable' end
+        local removed = MySQL.update.await('DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', { invoiceId, cid, 1 })
+        removed = type(removed) == 'table' and tonumber(removed.affectedRows) or tonumber(removed) or 0
+        if removed < 1 then return false, 'not_declinable' end
+        TriggerEvent('qb-phone:server:declinedInvoice', src, invoiceId)
+        notifyBillingSociety(row.society, Ply, row.amount, false)
+        TriggerEvent('pfm-phone:server:invoiceSettled', { id = invoiceId, citizenid = cid, amount = row.amount, society = row.society }, 'declined')
+        return true
+    end)
+    InvoiceLocks[lockKey] = nil
+    if not ok then
+        print(('^1[pfm-phone]^7 declining invoice %d failed: %s'):format(invoiceId, tostring(done)))
+        return false, 'server_error'
+    end
+    return done, err
 end
 exports('DeclineInvoice', function(src, invoiceId) return DeclineInvoice(src, invoiceId) end)
 

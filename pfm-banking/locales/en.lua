@@ -24,6 +24,7 @@ local Translations = {
         card = 'No bank card found',
         amount = 'Invalid amount',
         toofar = 'You are too far away',
+        atm = 'This ATM is out of service',
     },
     progress = {
         atm = 'Accessing ATM',

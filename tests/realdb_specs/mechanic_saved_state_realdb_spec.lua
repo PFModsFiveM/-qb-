@@ -132,6 +132,29 @@ describe('saving and taking out a car on the real database', function()
         assert_eq(Entity(LAST_CAR).state.partDamage.brakes, 62)
     end)
 
+    it('the driving save keeps the NOS columns; the store writes the NOS the car has now', function()
+        MySQL.update.await("UPDATE vehicle_diagnostics SET nos_has = 1, nos_level = 40, nos_color = '#FF0000' WHERE plate = 'OWNED1'")
+        spawn(CAR)
+        Mock.vehicleOf[OWNER] = CAR
+        Mock.fireNet('pf_mech:server:restoreVehicleState', OWNER, CAR)
+        local s = Entity(CAR).state
+        assert_eq(s.nos.level, 40)
+        s.partDamage.brakes = 70
+        s.nos = { has = false, level = 0, color = '#FF0000' }      -- emptied; its own save is the NOS handler's
+        Mock.fireNet('pf_mech:sync:cacheVehicleState', OWNER, { plate = 'OWNED1', netId = CAR, props = forged })
+        local r = row()
+        assert_eq(tonumber(r.brakes), 70, 'the wear is saved')
+        assert_eq(tonumber(r.nos_has), 1, 'the driving save leaves the NOS columns alone')
+        assert_eq(tonumber(r.nos_level), 40)
+        assert_eq(r.nos_color, '#FF0000')
+        Mock.fireNet('qb-garages:server:updateVehicleStats', OWNER, 'OWNED1', 100, 900, 1000)
+        r = row()
+        assert_eq(tonumber(r.nos_has), 0, 'the store writes the NOS the car has now')
+        assert_eq(tonumber(r.nos_level), 0)
+        assert_eq(tonumber(r.brakes), 70, 'the NOS write keeps the wear')
+        assert_eq(tonumber(r.engineHealth), 900)
+    end)
+
     it('a save with no car spawned leaves vehicle_diagnostics alone', function()
         Mock.fireNet('pf_mech:saveFullDiagnostics', OWNER, 'OWNED1', forged)
         Mock.fireNet('pf_mech:sync:forceSave', OWNER, 'OWNED1', CAR)

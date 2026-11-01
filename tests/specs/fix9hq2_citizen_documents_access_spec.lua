@@ -1,11 +1,12 @@
 -- pf-citizen documents: who gets access through mail, who may sign, and what the owner's delete and
 -- "stop sharing" do once someone else signed. Runs the real documents and mail code on a small
--- in-memory model of the three document tables (the SQL itself is in the real-DB spec).
+-- in-memory model of the three document tables (the SQL itself is in the real-DB spec). `S.before`
+-- runs a step "while the statement waits on the database", to show each check is in the statement.
 load_resource('tests/lua/fivem_mocks.lua')
 
 -- ── the document tables, in memory ───────────────────────────────────
 local S
-local function resetStore() S = { docs = {}, shares = {}, sigs = {}, mails = {}, nextDoc = 0 } end
+local function resetStore() S = { docs = {}, shares = {}, sigs = {}, mails = {}, nextDoc = 0, before = nil } end
 resetStore()
 local function key(d, c) return tostring(tonumber(d)) .. '|' .. tostring(c) end
 local function has(q, t) return q:find(t, 1, true) ~= nil end
@@ -21,6 +22,12 @@ local function othersSigned(d)
 end
 
 local function handle(kind, q, p)
+    -- S.before = { match = 'fragment', fn = function() end }: runs once before that statement
+    if S.before and has(q, S.before.match) then
+        local fn = S.before.fn
+        S.before = nil
+        fn()
+    end
     if has(q, 'player_mails') then
         if kind == 'insert' then S.mails[#S.mails + 1] = { cid = p[1], subject = p[3], folder = p[8], attachments = p[14] }; return #S.mails end
         if kind == 'query' then return {} end
@@ -105,13 +112,26 @@ local function handle(kind, q, p)
             local d = live(p[1])
             if not d then return 0 end
             if has(q, 'shared_by') and not given(d, p[2]) then return 0 end
-            if d.locked == 1 then return 0 end
             d.locked = 1
+            return 1   -- matched rows, as oxmysql reports them
+        end
+        if has(q, 'SET title = ?, body = ?') then
+            local d = live(p[3])
+            if not d or d.owner_cid ~= p[4] or d.locked ~= 0 then return 0 end
+            d.title, d.body = p[1], p[2]
+            return 1
+        end
+        if has(q, 'SET d.locked = 0') then
+            local d = live(p[1])
+            if not d or d.locked ~= 1 then return 0 end
+            for _, sg in pairs(S.sigs) do if sg.document_id == d.id then return 0 end end
+            d.locked = 0
             return 1
         end
         if has(q, 'INSERT IGNORE INTO pf_citizen_document_signatures') then
             local cid, name, d = p[1], p[2], live(p[3])
             if not d then return 0 end
+            if has(q, 'd.locked = 1') and d.locked ~= 1 then return 0 end
             if has(q, 'shared_by') and not given(d, cid) then return 0 end
             local k = key(d.id, cid)
             if S.sigs[k] then return 0 end
@@ -157,7 +177,7 @@ local function db(kind)
 end
 MySQL = { query = db('query'), insert = db('insert'), update = db('update'), scalar = db('scalar'), single = db('single') }
 
-local started = { ['pf-devices'] = true, ['pfm-core'] = true }
+local started = { ['pf-devices'] = true, ['pfm-core'] = true, ['pf-government'] = true }
 function GetResourceState(name) return started[name] and 'started' or 'missing' end
 local clock = 0
 function GetGameTimer() return clock end
@@ -169,6 +189,12 @@ Mock.exportsByResource['pf-devices'] = {
     RegisterApp = function() return true end,
     RegisterAppHandlers = function() return true end,
     Broadcast = function() return true end,
+}
+-- one registered business, owned by citizen 3 (mail to biz:shop:corner reaches them)
+Mock.exportsByResource['pf-government'] = {
+    GetBusiness = function(_, id) if id == 'shop:corner' then return { id = 'shop:corner', name = 'Corner Shop', ownerId = 'CID3' } end end,
+    GetBusinessEmployees = function() return { ok = true, employees = {} } end,
+    ListBusinesses = function() return {} end,
 }
 PFPayout = { NewId = function() return 'n' end, Charge = function() return false, { error = 'x' } end, Transfer = function() return { ok = true } end }
 
@@ -187,6 +213,7 @@ BeforeEach = function()
     resetStore()
     clock = clock + 600000
     PFCitizen.__resetLimits()
+    PFCitizen.__resetStaffCache()
     for src, phone in pairs({ [A] = '5550001', [B] = '5550002', [C3] = '5550003' }) do
         local p = Mock.newPlayer(src)
         p.PlayerData.charinfo.phone = phone
@@ -250,6 +277,20 @@ describe('documents attached to player mail', function()
         assert_eq(attachedRef(lastMailTo('CID3')), id)
         assert_eq(S.nextDoc, before, 'a copy was made')
     end)
+    it('one copy per recipient, also when they get the mail as a person and as a business boss', function()
+        local id = newDoc(A, 'Offer', 'Ten crates at $40')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        local before = S.nextDoc
+        local res = M.SendFromPlayer(B, { to = '5550003, biz:shop:corner', subject = 'Offer', message = 'x', attachments = { { type = 'document', id = id } } })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(res.delivered, 2)
+        assert_eq(S.nextDoc, before + 1, 'one copy for citizen 3')
+        local refs = {}
+        for _, m in ipairs(S.mails) do if m.cid == 'CID3' then refs[#refs + 1] = attachedRef(m) end end
+        assert_eq(#refs, 2)
+        assert_eq(refs[1], refs[2])
+        assert_eq(S.docs[refs[1]].owner_cid, 'CID3')
+    end)
     it('a recipient with no room for the copy: nothing is sent', function()
         local max = CitizenConfig.Documents.MaxPerCitizen
         CitizenConfig.Documents.MaxPerCitizen = 1
@@ -283,6 +324,51 @@ describe('who may sign', function()
         assert_eq(D.Get(B, { id = id }).document.canSign, false)
         assert_eq(D.Sign(B, { id = id }).error, 'already_signed')
         assert_eq(S.docs[id].locked, 1)
+    end)
+end)
+
+describe('signing while the owner acts', function()
+    it('a link taken back between the lock and the signature: no signature, and the owner can edit again', function()
+        local id = newDoc(A, 'Draft', 'v1')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        S.before = { match = 'INSERT IGNORE INTO pf_citizen_document_signatures', fn = function()
+            assert_eq(S.docs[id].locked, 1, 'signed before locking')
+            assert_eq(D.Unshare(A, { id = id, cid = 'CID2' }).ok, true)
+        end }
+        assert_eq(D.Sign(B, { id = id }).error, 'not_found')
+        assert_eq(S.sigs[key(id, 'CID2')], nil)
+        assert_eq(S.docs[id].locked, 0, 'left locked with no signature')
+        assert_eq(D.Save(A, { id = id, title = 'Draft', body = 'v2' }).ok, true)
+    end)
+    it('a document that was locked already stays locked when a signature is refused', function()
+        local id = newDoc(A, 'Deal', 'x')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        D.Share(A, { id = id, to = '5550003', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        S.before = { match = 'INSERT IGNORE INTO pf_citizen_document_signatures', fn = function()
+            assert_eq(D.Unshare(A, { id = id, cid = 'CID3' }).ok, true)
+        end }
+        assert_eq(D.Sign(C3, { id = id }).error, 'not_found')
+        assert_eq(S.docs[id].locked, 1)
+    end)
+    it("a signature landing during the owner's delete keeps the document for the signer", function()
+        local id = newDoc(A, 'Bond')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        S.before = { match = 'deleted_at = NOW()', fn = function()
+            S.sigs[key(id, 'CID2')] = { document_id = id, citizenid = 'CID2', name = 'B' }
+        end }
+        local res = D.Delete(A, { id = id })
+        assert_eq(res.hidden, true)
+        assert_eq(D.Get(B, { id = id }).document.title, 'Bond')
+    end)
+    it('a signature landing during "stop sharing" keeps the signer\'s link', function()
+        local id = newDoc(A, 'Pact')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        S.before = { match = 'DELETE h FROM pf_citizen_document_shares', fn = function()
+            S.sigs[key(id, 'CID2')] = { document_id = id, citizenid = 'CID2', name = 'B' }
+        end }
+        assert_eq(D.Unshare(A, { id = id, cid = 'CID2' }).error, 'signed')
+        assert_true(S.shares[key(id, 'CID2')] ~= nil)
     end)
 end)
 

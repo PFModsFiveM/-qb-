@@ -24,6 +24,7 @@ local Translations = {
         card = 'Geen bankkaart gevonden',
         amount = 'Foute hoeveelheid',
         toofar = 'Je bent te ver weg',
+        atm = 'Deze geldautomaat is buiten gebruik',
     },
     progress = {
         atm = 'ATM gebruiken',
