@@ -100,6 +100,19 @@ describe('pf-stores in person', function()
         assert_true(cb('pf-stores:server:purchaseStore', SHOPPER, 'corner').ok)
         assert_eq(S.rows.corner.owner_citizenid, 'SHOP1')
     end)
+    it('a store without a price cannot be claimed for free', function()
+        S.rows.corner.owner_citizenid = nil
+        local price = Config.Stores.corner.purchase.price
+        Config.Stores.corner.purchase.price = 0
+        Mock.coords[SHOPPER] = vector3(100.0, 0.0, 0.0)
+        local before = #transfers
+        local res = cb('pf-stores:server:purchaseStore', SHOPPER, 'corner')
+        Config.Stores.corner.purchase.price = price
+        assert_eq(res.error, 'price_not_set')
+        assert_eq(S.rows.corner.owner_citizenid, nil)
+        assert_eq(#transfers, before)
+        S.rows.corner.owner_citizenid = 'SHOP1'
+    end)
     it('the owner and the store balance are shown to the owner only', function()
         local other = cb('pf-stores:server:getStore', SHOPPER, 'corner')
         assert_true(other.ok)

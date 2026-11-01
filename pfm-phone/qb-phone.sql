@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS `phone_invoices` (
   `sendercitizenid` varchar(50) DEFAULT NULL,
   `candecline` int(1) not null default 1,
   `reason` varchar(256) default null,
+  -- unique per invoice, the base of its ledger keys (ids can be reused); pfm-phone adds the column
+  -- on start to tables created before it. NULL on older rows, which keep their id-based keys.
+  `ledger_token` varchar(40) default null,
   PRIMARY KEY (`id`),
   KEY `citizenid` (`citizenid`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4;

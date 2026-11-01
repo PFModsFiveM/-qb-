@@ -65,7 +65,8 @@ local refuelVehicle = function(veh)
         disableMouse = false,
         disableCombat = true,
     }, {}, {}, {}, function()
-        TriggerServerEvent('qb-fuel:server:setCanFuel', canLiter - liter)
+        -- the server pours what left the can into this car's shared level
+        TriggerServerEvent('qb-fuel:server:setCanFuel', canLiter - liter, NetworkGetEntityIsNetworked(veh) and NetworkGetNetworkIdFromEntity(veh) or nil, vehFuel)
         SetPedAmmo(ped, `WEAPON_PETROLCAN`, canLiter - liter)
         exports['pfm-fuel']:SetFuel(veh, vehFuel + liter)
         QBCore.Functions.Notify(Lang:t('success.refueled'), 'success')
@@ -233,7 +234,9 @@ local refillVehicleFuel = function(liter)
         disableMouse = false,
         disableCombat = true,
     }, {}, {}, {}, function()
-        local success = QBCore.Functions.TriggerCallback('qb-fuel:server:refillVehicle', liter)
+        -- paid for on the server, which also raises this car's shared level
+        local netId = NetworkGetEntityIsNetworked(veh) and NetworkGetNetworkIdFromEntity(veh) or nil
+        local success = QBCore.Functions.TriggerCallback('qb-fuel:server:refillVehicle', liter, netId, exports['pfm-fuel']:GetFuel(veh) or 0)
         if not success then return QBCore.Functions.Notify(Lang:t('error.no_money'), 'error') end
         removeObjects()
         exports['pfm-fuel']:SetFuel(veh, math.floor(exports['pfm-fuel']:GetFuel(veh) or 0) + liter)

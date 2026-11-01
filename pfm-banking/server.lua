@@ -54,6 +54,48 @@ local function closedHere(src)
     return BankBranches and BankBranches.ClosedMessageAt and BankBranches.ClosedMessageAt(src) or nil
 end
 
+-- Cash at the counter: the player has to stand at one of the bank counters (Config.locations, the
+-- points the client's targets and zones are built on). The position is read on the server.
+local COUNTER_RANGE = 5.0
+local function playerPos(src)
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 then return nil end
+    local c = GetEntityCoords(ped)
+    if not c then return nil end
+    return vector3(c.x, c.y, c.z or 0.0)
+end
+
+local function atCounter(src)
+    local pos = playerPos(src)
+    if not pos then return nil end
+    for i, loc in ipairs(Config.locations or {}) do
+        if #(pos - loc) <= COUNTER_RANGE then return i end
+    end
+    return nil
+end
+
+-- ATM withdrawals use the same withdraw callback. ATM rules are decided separately; until then an
+-- ATM session (opened through openATM) allows a withdrawal near the spot where it was opened, for a
+-- limited time, so ATMs keep working while counter cash requires a counter.
+local ATM_SESSION_SECONDS = 600
+local ATM_SESSION_RANGE = 10.0
+local atmSessions = {} -- [src] = { at = os.time(), pos = vector3 }
+
+local function atAtm(src)
+    local s = atmSessions[src]
+    if not s then return false end
+    if os.time() - s.at > ATM_SESSION_SECONDS then
+        atmSessions[src] = nil
+        return false
+    end
+    local pos = playerPos(src)
+    return pos ~= nil and #(pos - s.pos) <= ATM_SESSION_RANGE
+end
+
+AddEventHandler('playerDropped', function()
+    atmSessions[source] = nil
+end)
+
 -- Functions
 
 local function getPlayerAndCitizenId(playerId)
@@ -338,6 +380,8 @@ QBCore.Functions.CreateCallback('qb-banking:server:openATM', function(source, cb
     if not bankCards then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.card'), 'error') end
     local acceptablePins = {}
     for _, bankCard in ipairs(bankCards) do acceptablePins[#acceptablePins + 1] = bankCard.info.cardPin end
+    local pos = playerPos(src)
+    atmSessions[src] = pos and { at = os.time(), pos = pos } or nil
     local job = Player.PlayerData.job
     local gang = Player.PlayerData.gang
     local accounts = {}
@@ -361,6 +405,7 @@ QBCore.Functions.CreateCallback('qb-banking:server:withdraw', function(source, c
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
+    if not atCounter(src) and not atAtm(src) then return cb({ success = false, message = Lang:t('error.toofar') }) end
     local closed = closedHere(src)
     if closed then return cb({ success = false, message = closed }) end
     local accountName = data.accountName
@@ -387,6 +432,8 @@ QBCore.Functions.CreateCallback('qb-banking:server:deposit', function(source, cb
     local Player, citizenid = getPlayerAndCitizenId(src)
     if not Player or not citizenid then return cb({ success = false, message = Lang:t('error.error') }) end
     if type(data) ~= 'table' then return cb({ success = false, message = Lang:t('error.error') }) end
+    -- deposits are counter-only (the ATM screen has no deposit)
+    if not atCounter(src) then return cb({ success = false, message = Lang:t('error.toofar') }) end
     local closed = closedHere(src)
     if closed then return cb({ success = false, message = closed }) end
     local accountName = data.accountName

@@ -6,8 +6,8 @@ local newExports = function(funcName, func)
 end
 
 -- The shared fuel level ('qb-fuel' on the vehicle) is written by the server only
--- (sv_stateBagStrictMode): this client reports its level and the server checks it is the driver,
--- the car's network owner or, for a top-up, standing beside the car.
+-- (sv_stateBagStrictMode): the driver's client reports its level and the server only lets it go
+-- down, as fast as driving burns fuel; refuelling raises it on the server (pump, jerry can).
 local reportFuel = function(vehicle, fuel)
     if not Config.SyncFuelBetweenPlayers or not NetworkGetEntityIsNetworked(vehicle) then return end
     TriggerServerEvent('qb-fuel:server:syncFuel', NetworkGetNetworkIdFromEntity(vehicle), fuel + 0.0)

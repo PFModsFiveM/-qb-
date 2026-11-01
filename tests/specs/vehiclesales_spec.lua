@@ -25,6 +25,10 @@ FakeDB.extraPatterns = {
     end },
     { 'UPDATE players SET money = ? WHERE citizenid = ?', function(p) FakeDB.players[p[2]] = { money = json.decode(p[1]) }; return 1 end },
     { 'INSERT INTO player_vehicles', function(p) owned[p[6]] = { citizenid = p[2], vehicle = p[3], hash = p[4], plate = p[6] }; return 1 end },
+    { 'SELECT balance FROM player_vehicles WHERE plate = ? AND citizenid = ? AND hash = ?', function(p)
+        local v = owned[p[1]]
+        return (v and v.citizenid == p[2] and v.hash == p[3]) and { { balance = v.balance or 0 } } or {}
+    end },
     { 'DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? and hash = ?', function(p)
         local v = owned[p[1]]
         if v and v.citizenid == p[2] and v.hash == p[3] then owned[p[1]] = nil return { affectedRows = 1 } end

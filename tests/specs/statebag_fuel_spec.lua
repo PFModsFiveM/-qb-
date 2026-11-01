@@ -1,8 +1,9 @@
 -- pfm-fuel, sv_stateBagStrictMode: the fuel level other players see ('qb-fuel' on the vehicle) is
--- set by the server only ('qb-fuel:server:syncFuel'). The driver (or the client simulating an
--- empty car) may report any level; a player beside the car may only top it up; anyone else, a bad
--- value or a flood changes nothing. The client exports report instead of writing the state bag,
--- and the nozzle flags are local state values.
+-- set by the server only. The driver reports ('qb-fuel:server:syncFuel'): a new car takes that
+-- level, after that a report can only lower it (fix9hq2_vehiclefx_fuel_sync_spec has the burn-rate
+-- cap and the refuel paths that raise it); anyone else, a bad value or a flood changes nothing.
+-- The client exports report instead of writing the state bag, and the nozzle flags are local
+-- state values.
 load_resource('tests/lua/fivem_mocks.lua')
 
 local states = {}
@@ -43,70 +44,61 @@ BeforeEach = function()
 end
 
 describe('qb-fuel:server:syncFuel', function()
-    it('the driver sets the level (down as fuel is used, up after a refill)', function()
+    local function later(seconds) Mock.gameTimer = Mock.gameTimer + seconds * 1000 end
+
+    it('the driver gives a new car its level, then lowers it as fuel is used', function()
         sync(DRIVER, CAR, 64.5)
         assert_eq(fuel(CAR), 64.5)
-        sync(DRIVER, CAR, 12.25)
-        assert_eq(fuel(CAR), 12.25)
+        later(10)
+        sync(DRIVER, CAR, 62.25)
+        assert_eq(fuel(CAR), 62.25)
+        later(10)
         sync(DRIVER, CAR, 80)
-        assert_eq(fuel(CAR), 80.0)
+        assert_eq(fuel(CAR), 62.25, 'a report never raises it: refuelling does, on the server')
     end)
 
-    it("another player's car: from far away nothing, from beside it only a top-up", function()
+    it("another player's car: from far away or beside it, nothing", function()
         sync(DRIVER, CAR, 50)
-        sync(FARAWAY, CAR, 0)
-        sync(FARAWAY, CAR, 100)
-        assert_eq(fuel(CAR), 50.0, 'far away')
-        sync(PASSERBY, CAR, 5)
-        assert_eq(fuel(CAR), 50.0, 'beside it, but draining it')
-        sync(PASSERBY, CAR, 70)
-        assert_eq(fuel(CAR), 70.0, 'refuelling from the pump or a jerry can')
-    end)
-
-    it('a newly spawned car takes its first level from a player beside it', function()
-        Mock.vehicleOf[DRIVER] = nil
-        sync(PASSERBY, CAR, 30)
-        assert_eq(fuel(CAR), 30.0)
-    end)
-
-    it('the client simulating an empty car may set any level, even from afar', function()
-        Mock.vehicleOf[DRIVER] = nil
-        sync(DRIVER, CAR, 90)
-        owners[CAR] = FARAWAY
-        sync(FARAWAY, CAR, 0)
-        assert_eq(fuel(CAR), 0.0, 'e.g. a tow job car spawned with an empty tank')
-        Mock.vehicleOf[DRIVER] = CAR
-        sync(FARAWAY, CAR, 0)
-        sync(FARAWAY, CAR, 40)
-        assert_eq(fuel(CAR), 0.0, 'not once someone else drives it')
+        later(10)
+        for _, src in ipairs({ FARAWAY, PASSERBY }) do
+            sync(src, CAR, 0)
+            sync(src, CAR, 100)
+        end
+        assert_eq(fuel(CAR), 50.0)
     end)
 
     it('bad values, unknown entities and non-vehicles change nothing', function()
-        sync(DRIVER, CAR, 50)
-        for _, bad in ipairs({ 'lots', {}, 0 / 0, math.huge, -math.huge }) do sync(DRIVER, CAR, bad) end
-        assert_eq(fuel(CAR), 50.0)
         sync(DRIVER, CAR, 250)
         assert_eq(fuel(CAR), 100.0, 'clamped to a full tank')
+        later(10)
+        for _, bad in ipairs({ 'lots', {}, 0 / 0, math.huge, -math.huge }) do sync(DRIVER, CAR, bad) end
+        assert_eq(fuel(CAR), 100.0)
         sync(DRIVER, CAR, -10)
-        assert_eq(fuel(CAR), 0.0, 'clamped to empty')
+        assert_eq(fuel(CAR), 95.0, 'clamped to empty, then to what 10 s of driving burns')
+        later(10)
         missing[CAR] = true
         sync(DRIVER, CAR, 40)
         missing[CAR] = nil
         sync(DRIVER, PED_ENTITY, 40)
         sync(DRIVER, 'abc', 40)
         sync(DRIVER, 1.5, 40)
-        assert_eq(fuel(CAR), 0.0)
+        assert_eq(fuel(CAR), 95.0)
         assert_eq(Entity(PED_ENTITY).state['qb-fuel'], nil)
     end)
 
     it('at most 20 reports per player in 10 seconds', function()
-        for i = 1, 20 do sync(DRIVER, CAR, i) end
-        assert_eq(fuel(CAR), 20.0)
-        sync(DRIVER, CAR, 99)
-        assert_eq(fuel(CAR), 20.0, 'over the limit')
+        for i = 1, 20 do
+            sync(DRIVER, CAR, 100 - i)
+            later(0.4)
+        end
+        local after20 = fuel(CAR)
+        assert_true(after20 < 100 and after20 > 80, tostring(after20))
+        later(1)
+        sync(DRIVER, CAR, 0)
+        assert_eq(fuel(CAR), after20, 'over the limit')
         Mock.gameTimer = Mock.gameTimer + 10001
-        sync(DRIVER, CAR, 99)
-        assert_eq(fuel(CAR), 99.0)
+        sync(DRIVER, CAR, 0)
+        assert_true(fuel(CAR) < after20, 'a new window')
     end)
 
     it('nothing is synced when fuel sync is off', function()

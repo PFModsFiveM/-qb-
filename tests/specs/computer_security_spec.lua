@@ -95,10 +95,12 @@ local function startRun(src, orderId)
     Mock.exportsByResource['pf-mechanicjob'] = { StartSuppliesPickup = function() return true end }
     local stores = Mock.exportsByResource['pf-stores']
     stores.GetOrder = function(_, id) return { buyer_kind = 'jobbiz', store_id = 'mechanic', status = 'ready', items_json = '[]' } end
+    -- (the run is refused before anything spawns unless the player may collect the order)
+    stores.CanManageOrderBuyer = function() return true end
     local res = call(src, 'business:supplies:orders:pickup', { orderId = orderId, mode = 'job' })
     started['pf-mechanicjob'] = nil
     Mock.exportsByResource['pf-mechanicjob'] = nil
-    stores.GetOrder = nil
+    stores.GetOrder, stores.CanManageOrderBuyer = nil, nil
     assert(res and res.ok, 'pickup run start: ' .. tostring(res and res.error))
 end
 

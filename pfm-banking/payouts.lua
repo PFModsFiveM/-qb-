@@ -74,8 +74,18 @@ function P.Pay(who, account, amount, opts)
     return res.ok == true, res
 end
 
+-- A transfer whose outcome is not known yet: it may still complete (now in another call, or later
+-- through the ledger's recovery), so nothing else may be charged in its place.
+local function unclear(res)
+    return res.state == 'pending' or res.state == 'debited' or res.error == 'in_progress' or res.error == 'internal_error'
+end
+
 --- Takes money from a player into system:<resource> (deposits, fees). Tries each account in order,
 --- e.g. { 'cash', 'bank' }. opts: key (required; each account gets key .. ':' .. account), reason, kind.
+--- The next account is only tried after a clean refusal (e.g. insufficient_funds, failed). When an
+--- account's transfer is in an unclear state (pending, debited, in_progress) Charge stops there and
+--- returns false with that result: treat it as not charged now; the ledger's recovery settles it, and
+--- the same key later returns its final result.
 --- @return string|false account used, table result
 function P.Charge(who, accounts, amount, opts)
     opts = opts or {}
@@ -93,6 +103,10 @@ function P.Charge(who, accounts, amount, opts)
         })
         if res.ok then return account, res end
         if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then break end
+        if unclear(res) then
+            tellFailure(who, opts, 'The bank is still processing this payment. Nothing more was charged.')
+            return false, res
+        end
     end
     if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then
         tellFailure(who, opts, 'The bank did not respond. Nothing was charged.')

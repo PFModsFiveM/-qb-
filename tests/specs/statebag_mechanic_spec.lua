@@ -77,6 +77,8 @@ BeforeEach = function()
     Mock.coords[ME], Mock.coords[OTHER], Mock.coords[ADMIN], Mock.coords[CAR] = HERE, HERE, HERE, HERE
     Mock.coords[OTHER_CAR] = vector3(900.0, 900.0, 30.0)
     for _, src in ipairs({ ME, OTHER, ADMIN }) do Mock.fireEvent('playerDropped', src) end
+    -- fresh cars each test (the server forgets what it knew about the old ones, e.g. their wear)
+    for _, v in ipairs({ CAR, OTHER_CAR }) do Mock.fireEvent('entityRemoved', nil, v) end
 end
 
 describe('NOS fitting', function()

@@ -589,20 +589,24 @@ function OpenInventoryById(source, targetId)
     local TargetPlayer = exports['pfm-core']:GetPlayer(tonumber(targetId))
     if not QBPlayer or not TargetPlayer then return end
     if Player(targetId).state.inv_busy then CloseInventory(targetId) end
-    local playerItems = QBPlayer.PlayerData.items
-    local targetItems = TargetPlayer.PlayerData.items
     local formattedInventory = {
         name = 'otherplayer-' .. targetId,
         label = GetPlayerName(targetId),
         maxweight = Config.MaxWeight,
         slots = Config.MaxSlots,
-        inventory = targetItems
     }
     local hookData = buildHookData('InventoryOpened', source, QBPlayer, targetId, TargetPlayer)
     if TriggerHook('InventoryOpened', 'player', hookData) == false then return end
     Wait(1500)
-    InventoryViewers[tonumber(targetId)] = source
-    SetInventoryBusy(targetId, true)
+    -- either player may have left during the wait (a lock taken for a gone searcher never ended)
+    QBPlayer = exports['pfm-core']:GetPlayer(source)
+    TargetPlayer = exports['pfm-core']:GetPlayer(tonumber(targetId))
+    if not QBPlayer or not TargetPlayer then return end
+    -- the search holds its own lock on the target (see BeginInventorySearch in main.lua), released
+    -- on close, on the searcher's logout or drop, or when the searcher walks away
+    if not BeginInventorySearch(source, targetId) then return end
+    local playerItems = QBPlayer.PlayerData.items
+    local targetItems = TargetPlayer.PlayerData.items
     formattedInventory.inventory = ItemsForClient(tonumber(targetId), targetItems, TargetPlayer)
     TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, playerItems, QBPlayer), formattedInventory)
     TriggerListener('InventoryOpened', 'player', hookData)
@@ -697,6 +701,8 @@ exports('OpenShop', OpenShop)
 --- @param identifier string|nil The identifier of the inventory to open.
 --- @param data table|nil Additional data for initializing the inventory.
 function OpenInventory(source, identifier, data)
+    -- a search on this player whose searcher walked away or left ends here instead of at the next tick
+    if InventoryViewers[tonumber(source)] then CheckInventorySearch(source) end
     if Player(source).state.inv_busy then return end
     local QBPlayer = exports['pfm-core']:GetPlayer(source)
     if not QBPlayer then return end

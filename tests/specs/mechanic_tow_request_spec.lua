@@ -25,7 +25,8 @@ BeforeEach = function()
     Mock.clock = Mock.clock + 1000
     Mock.players, Mock.coords, plates, requests = {}, {}, {}, {}
     local m = Mock.newPlayer(MECH, 'MECHCID')
-    m.PlayerData.job = { name = 'mechanic', label = 'LS Customs', onduty = true }
+    -- the shop pays the tow: its boss orders it (fix9hq2_mechanic_tow_billing_spec: who else may)
+    m.PlayerData.job = { name = 'mechanic', label = 'LS Customs', onduty = true, isboss = true, grade = { level = 4 } }
     Mock.newPlayer(CIV).PlayerData.job = { name = 'unemployed', onduty = true }
     Mock.coords[MECH], Mock.coords[CIV] = AT, AT
     plates[CAR] = 'BROKE01'

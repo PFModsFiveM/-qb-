@@ -151,6 +151,78 @@ end
 
 exports('SetBusyLock', function(src, reason, busy, ttl) return SetBusyLock(src, reason, busy, ttl) end)
 
+-- ── searching another player ──────────────────────────────────────
+-- A search (police search, robbery, admin) holds the 'inv:search' lock on the searched player, so
+-- they cannot use their own inventory meanwhile. The lock belongs to that search only and ends when
+-- the searcher closes it, logs out or disconnects, when the searched player leaves or logs out, or
+-- when the searcher walks away (checked every minute, on the searcher's next item move and when the
+-- searched player tries to open an inventory). Any other lock the searched player holds stays.
+-- (The search used to set the searched player's open-inventory flag, which nothing cleared when the
+-- searcher dropped or walked off: the player could not open their inventory again until relog.)
+local SEARCH_LOCK = 'inv:search'
+local SEARCH_REACH = 5.0
+local SearchRangeBound = {}       -- [targetId] = true when the search began within reach
+
+local function searchDistance(viewer, targetId)
+    return #(GetEntityCoords(GetPlayerPed(viewer)) - GetEntityCoords(GetPlayerPed(targetId)))
+end
+
+--- Ends the search on `targetId` (only the one `viewer` holds, when given) and releases its lock.
+--- `closeViewer` also closes the searcher's inventory window.
+function EndInventorySearch(targetId, viewer, closeViewer)
+    targetId = tonumber(targetId)
+    if not targetId then return false end
+    local current = InventoryViewers[targetId]
+    if current == nil or (viewer ~= nil and current ~= viewer) then return false end
+    InventoryViewers[targetId] = nil
+    SearchRangeBound[targetId] = nil
+    SetBusyLock(targetId, SEARCH_LOCK, false)
+    if closeViewer then TriggerClientEvent('qb-inventory:client:closeInv', current) end
+    return true
+end
+
+--- Starts `viewer`'s search of `targetId`: one search per searcher, one searcher per player.
+function BeginInventorySearch(viewer, targetId)
+    viewer, targetId = tonumber(viewer), tonumber(targetId)
+    if not viewer or not targetId then return false end
+    for t, v in pairs(InventoryViewers) do
+        if v == viewer and t ~= targetId then EndInventorySearch(t, viewer, false) end
+    end
+    if InventoryViewers[targetId] ~= nil and InventoryViewers[targetId] ~= viewer then
+        EndInventorySearch(targetId, nil, true)
+    end
+    if not SetBusyLock(targetId, SEARCH_LOCK, true) then return false end
+    InventoryViewers[targetId] = viewer
+    -- a search opened from beside the player must stay beside them; an admin opening it from afar
+    -- is not range bound
+    SearchRangeBound[targetId] = searchDistance(viewer, targetId) <= SEARCH_REACH or nil
+    return true
+end
+
+--- Is the search on `targetId` still valid? Ends it (releasing its lock) when not.
+function CheckInventorySearch(targetId)
+    targetId = tonumber(targetId)
+    local viewer = targetId and InventoryViewers[targetId]
+    if not viewer then return false end
+    if not QBCore.Functions.GetPlayer(viewer) then
+        EndInventorySearch(targetId, viewer, false)
+        return false
+    end
+    if not QBCore.Functions.GetPlayer(targetId)
+        or (SearchRangeBound[targetId] and searchDistance(viewer, targetId) > SEARCH_REACH) then
+        EndInventorySearch(targetId, viewer, true)
+        return false
+    end
+    return true
+end
+
+--- Checks every open search; a search still valid has its lock renewed so it outlasts the lock TTL.
+function CheckInventorySearches()
+    for targetId in pairs(InventoryViewers) do
+        if CheckInventorySearch(targetId) then SetBusyLock(targetId, SEARCH_LOCK, true) end
+    end
+end
+
 -- A client asks to hold (true) or release (false) its own action lock while a progress bar or an
 -- activity runs. Only a short name and a boolean are taken, from a logged-in player, rate limited.
 RegisterNetEvent('qb-inventory:server:setActionBusy', function(reason, busy)
@@ -173,6 +245,7 @@ CreateThread(function()
     while true do
         Wait(60000)
         PurgeExpiredBusyLocks()
+        CheckInventorySearches()
     end
 end)
 
@@ -191,14 +264,16 @@ AddEventHandler('playerDropped', function()
             drop.isOpen = false
         end
     end
-    InventoryViewers[src] = nil
+    -- a search on the dropped player closes for the searcher
+    local searcher = InventoryViewers[src]
+    InventoryViewers[src], SearchRangeBound[src] = nil, nil
+    if searcher and searcher ~= src then TriggerClientEvent('qb-inventory:client:closeInv', searcher) end
     for dropId, holder in pairs(DropHolders or {}) do
         if holder == src then DropHolders[dropId] = nil end
     end
+    -- a search the dropped player was making ends and releases the searched player's lock
     for targetId, viewer in pairs(InventoryViewers) do
-        if viewer == src then
-            InventoryViewers[targetId] = nil
-        end
+        if viewer == src then EndInventorySearch(targetId, src, false) end
     end
 end)
 
@@ -290,6 +365,10 @@ end)
 AddEventHandler('QBCore:Server:OnPlayerUnload', function(src)
     src = tonumber(src)
     if not src then return end
+    -- a search made by, or of, the player who logged out ends
+    for targetId, viewer in pairs(InventoryViewers) do
+        if viewer == src or targetId == src then EndInventorySearch(targetId, viewer, true) end
+    end
     clearBusyState(src)
     BusyLogout[src] = true
     writeBusy(src)
@@ -375,9 +454,8 @@ RegisterNetEvent('qb-inventory:server:closeInventory', function(inventory)
     if inventory:find('shop%-') then return end
     if inventory:find('^otherplayer%-') then
         local targetId = tonumber(inventory:match('^otherplayer%-(.+)'))
-        if not targetId or InventoryViewers[targetId] ~= src then return end
-        InventoryViewers[targetId] = nil
-        SetInventoryBusy(targetId, false)
+        -- releases only this search's lock on the searched player
+        if targetId then EndInventorySearch(targetId, src, false) end
         return
     end
     if Drops[inventory] then
@@ -942,7 +1020,8 @@ local function isOpenFor(inventoryId, src)
         return true
     elseif inventoryId:find('^otherplayer%-') then
         local targetId = tonumber(inventoryId:match('^otherplayer%-(.+)'))
-        return targetId ~= nil and InventoryViewers[targetId] == src
+        -- a searcher who walked away (or whose target left) loses the search here
+        return targetId ~= nil and InventoryViewers[targetId] == src and CheckInventorySearch(targetId)
     elseif inventoryId:find('^drop%-') then
         return Drops[inventoryId] ~= nil and Drops[inventoryId].isOpen == src
     else

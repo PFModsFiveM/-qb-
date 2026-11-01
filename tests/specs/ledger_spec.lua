@@ -45,6 +45,9 @@ BeforeEach = function()
     player(BURGER_BOSS, 'BB1', 'burgershot', true, 100, 1000)
     player(COP, 'CP1', 'police', false, 100, 1000)
     player(CIV, 'CV1', 'unemployed', false, 100, 1000)
+    -- counter cash needs a bank counter (server-side position): everyone stands at the Legion counter
+    Mock.coords = {}
+    for src = 1, 4 do Mock.coords[src] = Config.locations[1] end
     FakeDB.society('police', 5000, 'job')
     FakeDB.society('burgershot', 300, 'job')
     FakeDB.society('ambulance', 0, 'job')

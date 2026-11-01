@@ -283,6 +283,29 @@ local OFFER_SECONDS = 60
 local pendingOffers = {}  -- [customer source] = offer
 local financeBusy = {}    -- [plate] = true while a finance payment is processed
 
+-- Job fleet cars (pf-jobgarages job_garage_vehicles, active) belong to their job garage: pfm-garages
+-- never gives them out of a personal garage, so they cannot be given or sold to another player
+-- (the buyer would pay for a car they can never take out). The table may not exist.
+local fleetTableKnown = nil
+local function fleetTableExists()
+    if fleetTableKnown == nil then
+        fleetTableKnown = (tonumber(MySQL.scalar.await(
+            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")) or 0) > 0
+        if not fleetTableKnown then SetTimeout(300000, function() fleetTableKnown = nil end) end
+    end
+    return fleetTableKnown
+end
+
+--- true when the plate is an active fleet car; also true when that cannot be told (refused then).
+local function isFleetPlate(plate)
+    local ok, fleet = pcall(function()
+        if not fleetTableExists() then return false end
+        return MySQL.scalar.await('SELECT id FROM job_garage_vehicles WHERE plate = ? AND active = 1 LIMIT 1', { plate }) ~= nil
+    end)
+    if not ok then return true end
+    return fleet
+end
+
 local function validModel(model)
     local v = type(model) == 'string' and sharedVehicles[model]
     return v and tonumber(v.price) and tonumber(v.price) > 0 and v or nil
@@ -725,8 +748,9 @@ local function sendOffer(src, target, offer)
     offer.buyerName = nameOf(target)
     pendingOffers[target.PlayerData.source] = offer
     local view = offerView(offer)
+    -- the prompt answers this offer only (its id): a replaced offer is a new id and a new prompt
     TriggerClientEvent('qb-vehicleshop:client:confirmPurchase', target.PlayerData.source, {
-        label = offer.label, amount = view.total, tax = view.tax, seller = offer.sellerName, kind = offer.kind,
+        id = offer.id, label = offer.label, amount = view.total, tax = view.tax, seller = offer.sellerName, kind = offer.kind,
         payments = offer.terms and offer.terms.payments, perPayment = offer.terms and offer.terms.perPayment,
     })
     pushApp(target.PlayerData.source, 'cardealer', 'offer', view)
@@ -828,9 +852,13 @@ end
 
 --- The customer's answer to a dealer sale or a paid vehicle transfer (the prompt, or the Car Dealer
 --- app with the offer id). Single use. Returns { ok, ... } or { ok = false, error }.
+--- The answer names the offer it was given for: a seller can replace an offer (a higher price) while
+--- the customer's click is on its way, and that click must not accept the new one. (Without an id
+--- the prompt accepted whatever was pending.) An offer is never changed once sent, so the id also
+--- fixes the price that is charged.
 function PFShop.AnswerOffer(src, accepted, id)
     local offer = pendingOffers[src]
-    if not offer or (id ~= nil and offer.id ~= id) then return { ok = false, error = 'not_found' } end
+    if not offer or type(id) ~= 'string' or offer.id ~= id then return { ok = false, error = 'not_found' } end
     pendingOffers[src] = nil
     pushApp(offer.sellerSrc, 'cardealer-sales', 'changed')
     if os.time() > offer.expires then return { ok = false, error = 'expired' } end
@@ -849,6 +877,12 @@ function PFShop.AnswerOffer(src, accepted, id)
         -- the seller must still own the car (and it must not have been financed meanwhile, if that is not allowed)
         local row = MySQL.single.await('SELECT citizenid, balance FROM player_vehicles WHERE plate = ?', { offer.plate })
         if not row or row.citizenid ~= offer.sellerCid or (Config.PreventFinanceSelling and (tonumber(row.balance) or 0) > 0) then return { ok = false, error = 'not_owned' } end
+        -- nor put in a job fleet while the offer was open
+        if isFleetPlate(offer.plate) then
+            TriggerClientEvent('QBCore:Notify', src, 'This vehicle belongs to a job fleet and cannot be sold', 'error')
+            TriggerClientEvent('QBCore:Notify', offer.sellerSrc, 'This vehicle belongs to a job fleet and cannot be sold', 'error')
+            return { ok = false, error = 'fleet_vehicle' }
+        end
         local paid
         for _, account in ipairs({ 'cash', 'bank' }) do
             local res = PFPayout.Transfer({
@@ -897,8 +931,17 @@ function PFShop.AnswerOffer(src, accepted, id)
 end
 
 -- The customer's answer to a dealer sale or a paid vehicle transfer
-RegisterNetEvent('qb-vehicleshop:server:answerPurchase', function(accepted)
-    PFShop.AnswerOffer(source, accepted == true)
+-- The prompt sends { accept = bool, id = offer id } (the id came with the prompt); an answer for an
+-- offer that is no longer the pending one is refused.
+RegisterNetEvent('qb-vehicleshop:server:answerPurchase', function(answer, id)
+    local src = source
+    local accepted = answer == true
+    if type(answer) == 'table' then accepted, id = answer.accept == true, answer.id end
+    if type(id) ~= 'string' or #id > 48 then id = nil end
+    local res = PFShop.AnswerOffer(src, accepted, id)
+    if not res.ok and res.error == 'not_found' and accepted and pendingOffers[src] then
+        TriggerClientEvent('QBCore:Notify', src, 'The offer changed. Check the new offer before accepting.', 'error')
+    end
 end)
 
 AddEventHandler('playerDropped', function()
@@ -948,6 +991,8 @@ QBCore.Commands.Add('transfervehicle', Lang:t('general.command_transfervehicle')
         if row.balance > 0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.financed'), 'error') end
     end
     if row.citizenid ~= player.PlayerData.citizenid then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notown'), 'error') end
+    -- a job fleet car stays the owner's (it comes back to them when it leaves the fleet)
+    if isFleetPlate(plate) then return TriggerClientEvent('QBCore:Notify', src, 'This vehicle belongs to a job fleet. Take it out of the fleet first.', 'error') end
     if #(GetEntityCoords(ped) - GetEntityCoords(targetPed)) > 5.0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.playertoofar'), 'error') end
     if not target then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyerinfo'), 'error') end
     local targetcid = target.PlayerData.citizenid

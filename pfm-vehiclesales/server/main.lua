@@ -30,6 +30,41 @@ local function isAtSaleLot(src)
     return false
 end
 
+-- Job fleet cars (pf-jobgarages job_garage_vehicles, active) belong to their job garage: pfm-garages
+-- never gives them out of a personal garage, so a buyer would pay for a car they can never take out.
+-- They are not listed or sold back. The table may not exist (pf-jobgarages not installed).
+local fleetTableKnown = nil
+local function fleetTableExists()
+    if fleetTableKnown == nil then
+        fleetTableKnown = (tonumber(MySQL.scalar.await(
+            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")) or 0) > 0
+        if not fleetTableKnown then SetTimeout(300000, function() fleetTableKnown = nil end) end
+    end
+    return fleetTableKnown
+end
+
+--- true when the plate is an active fleet car; also true when that cannot be told (refused then).
+local function isFleetPlate(plate)
+    local ok, fleet = pcall(function()
+        if not fleetTableExists() then return false end
+        return MySQL.scalar.await('SELECT id FROM job_garage_vehicles WHERE plate = ? AND active = 1 LIMIT 1', { plate }) ~= nil
+    end)
+    if not ok then return true end
+    return fleet
+end
+
+--- Why a car the player owns cannot leave their hands here (financed or a fleet car), or nil.
+--- `byColumn` is 'vehicle' (model name) or 'hash', as the caller identifies the car.
+local function cannotSell(src, plate, cid, byColumn, value)
+    local rows = MySQL.query.await('SELECT balance FROM player_vehicles WHERE plate = ? AND citizenid = ? AND ' .. byColumn .. ' = ?', { plate, cid, value })
+    local row = rows and rows[1]
+    if not row then return Lang:t('error.not_your_vehicle') end
+    -- a financed car keeps its loan: the row (and with it the balance) would be deleted here
+    if (tonumber(row.balance) or 0) > 0 then return Lang:t('error.finish_payments') end
+    if isFleetPlate(plate) then return 'This vehicle belongs to a job fleet. Take it out of the fleet first.' end
+    return nil
+end
+
 local function generateOID()
     local num = math.random(1, 10) .. math.random(111, 999)
 
@@ -119,8 +154,16 @@ RegisterNetEvent('qb-occasions:server:sellVehicle', function(vehiclePrice, vehic
     vehiclePrice = math.floor(tonumber(vehiclePrice) or 0)
     if vehiclePrice < 1 or vehiclePrice > 50000000 then return end
     local desc = tostring(vehicleData.desc or ''):sub(1, 250)
-    local ownsVehicle = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? and vehicle = ?', { vehicleData.plate, Player.PlayerData.citizenid, vehicleData.model })
-    if ownsVehicle.affectedRows > 0 then
+    if type(vehicleData.plate) ~= 'string' or type(vehicleData.model) ~= 'string' then return end
+    -- not a financed car (the listing deleted the row, so taking it back erased the loan) and not a
+    -- job fleet car; the client checks the balance too, but that is not enough
+    local refused = cannotSell(src, vehicleData.plate, Player.PlayerData.citizenid, 'vehicle', vehicleData.model)
+    if refused then
+        TriggerClientEvent('QBCore:Notify', src, refused, 'error', 3500)
+        return
+    end
+    local ownsVehicle = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? and vehicle = ? AND balance <= 0', { vehicleData.plate, Player.PlayerData.citizenid, vehicleData.model })
+    if ownsVehicle and (ownsVehicle.affectedRows or 0) > 0 then
         MySQL.insert('INSERT INTO occasion_vehicles (seller, price, description, plate, model, mods, occasionid) VALUES (?, ?, ?, ?, ?, ?, ?)', { Player.PlayerData.citizenid, vehiclePrice, desc, vehicleData.plate, vehicleData.model, json.encode(vehicleData.mods), generateOID() })
         TriggerEvent('qb-log:server:CreateLog', 'vehicleshop', 'Vehicle for Sale', 'red', '**' .. GetPlayerName(src) .. '** has a ' .. vehicleData.model .. ' priced at ' .. vehiclePrice)
         TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
@@ -150,8 +193,15 @@ RegisterNetEvent('qb-occasions:server:sellVehicleBack', function(vehData)
         TriggerClientEvent('QBCore:Notify', src, 'The bank is not available right now', 'error')
         return
     end
-    local ownsVehicle = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? and hash = ?', { plate, Player.PlayerData.citizenid, vehData.model })
-    if ownsVehicle.affectedRows > 0 then
+    if type(plate) ~= 'string' or vehData.model == nil then return end
+    -- a financed car is not bought back (the loan went with the row) and neither is a fleet car
+    local refused = cannotSell(src, plate, Player.PlayerData.citizenid, 'hash', vehData.model)
+    if refused then
+        TriggerClientEvent('QBCore:Notify', src, refused, 'error', 3500)
+        return
+    end
+    local ownsVehicle = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? and hash = ? AND balance <= 0', { plate, Player.PlayerData.citizenid, vehData.model })
+    if ownsVehicle and (ownsVehicle.affectedRows or 0) > 0 then
         local payout = math.floor(tonumber(price * 0.5))
         PFPayout.Pay(src, 'bank', payout, {
             key = ('pfm-vehiclesales:sellback:%s:%s:%s'):format(tostring(plate), Player.PlayerData.citizenid, PFPayout.NewId()),

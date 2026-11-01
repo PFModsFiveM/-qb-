@@ -22,8 +22,12 @@ local function closesFor(t, status, reason)
     end
     return n
 end
-local function goDown() Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, true) end
+-- the server's own view of the ped: last stand holds it at 150 health, a healthy ped is at 200
+Health = {}
+function GetEntityHealth(ped) return Health[ped] or 200 end
+local function goDown() Health[PATIENT] = 150; Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, true) end
 local function getUp()
+    Health[PATIENT] = 200
     Mock.fireNet('hospital:server:SetDeathStatus', PATIENT, false)
     Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, false)
 end
@@ -32,7 +36,7 @@ BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
     Mock.clock = Mock.clock + 1000
-    Mock.players, Mock.coords, Requests, Closes, Emits = {}, {}, {}, {}, {}
+    Mock.players, Mock.coords, Requests, Closes, Emits, Health = {}, {}, {}, {}, {}, {}
     FakeDB.society('ambulance', 0)
     Config.WipeInventoryOnRespawn = false
     local p = Mock.newPlayer(PATIENT, 'PATIENTCID')
@@ -72,6 +76,9 @@ describe('EMS patient requests', function()
         assert_eq(closesFor('patient', 'cancelled', 'respawned'), 1)
         Commands.revive(MEDIC, { tostring(PATIENT) })
         assert_eq(closesFor('patient', 'cancelled', 'admin_revive'), 1)
+        getUp()                                                              -- already closed by the revive
+        assert_eq(closesFor('patient', 'cancelled', 'recovered'), 0)
+        goDown()                                                             -- down again: a new emergency
         getUp()
         assert_eq(closesFor('patient', 'cancelled', 'recovered'), 1)
         Mock.clock = Mock.clock + 120

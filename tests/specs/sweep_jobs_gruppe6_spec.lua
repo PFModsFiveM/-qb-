@@ -123,7 +123,7 @@ describe('pf-jobs Gruppe6', function()
         assert_eq(#rows, 1)
         local total = 0
         for _, c in ipairs(data.locationBags) do total = total + c end
-        assert_eq(rows[1].amount, math.floor(1000 * 3 / total))   -- tier 1 early-end cap x share
+        assert_eq(rows[1].amount, math.floor(data.payout * 3 / total))   -- the contract's own payout x share (not the tier maximum)
         local xp = Mock.players[GUARD].PlayerData.metadata.gruppe6_xp
         Mock.fireNet('pf-jobs:gruppe6:depositComplete', GUARD)
         assert_eq(#paid(), 1)
