@@ -2232,45 +2232,45 @@ Batch 13 fixed each of these. The gaps its checkers found are listed in the batc
 ### Gaps the checkers found
 | Area | Gap | Status |
 |---|---|---|
-| Banking | pfm-policejob `/bill` creates a phone invoice when `Charge` returns false. On an unclear result that later completes, the player pays twice. | handled in batch 13b |
-| Banking | Callers that make a new key per click (fuel, car wash, vehicle shop, truck robbery, rentals, taxi, farming, App Store, revive) can charge twice when the player retries after an unclear result (older). | handled in batch 13b |
-| Banking | On an unclear result, callers with their own error show two notices (pfm-shops bail), and the tow app says "insufficient funds". | handled in batch 13b |
-| Property tax | While pfm-houses' database is not ready, the export uses the listing price instead of the price paid. | handled in batch 13b |
-| Property tax | The government Fines app does not list citizens' property-tax bills, so staff cannot see or waive them. The dashboard's pending-bill count now includes them. | handled in batch 13b |
-| Computer and inventory | A search is bound to range only if the searcher is within 5 m after the 1.5 s opening wait. Police search and rob need only 2.5 m, so a searcher who steps away during the wait can loot from any distance and keep the target locked. | handled in batch 13b |
-| Computer and inventory | TAB does not free a searched player at once (the `inventory` command stops on `inv_busy` first); only the minute sweep does. The spec skips that key path. | handled in batch 13b |
-| Computer and inventory | During the 1.5 s wait the target can reopen their own inventory and keep it open for the whole search (older). | handled in batch 13b |
-| Computer and inventory | The pickup lock is per player, not per order: two bosses can spawn two trucks for one order. No money moves. | handled in batch 13b |
-| Documents and phone | A key the ledger recovers as `interrupted_unverified` is treated as failed, and a new key charges again: a crash mid-transfer can still charge twice. Two specs assert this as correct. | handled in batch 13b |
-| Documents and phone | A decline does not check the invoice's ledger keys. After a completed or in-flight charge the payer can decline: they are charged and the business is never paid. | handled in batch 13b |
-| Documents and phone | If the business credit is interrupted, the row is deleted and the payment returns true while the business stays unpaid. The `:society` key never moves to a new attempt key. | handled in batch 13b |
-| Documents and phone | After a crash between the payouts and the delete, the retry sends no settled event or mail, so the Bills history misses the invoice. | handled in batch 13b |
-| Documents and phone | A copy holds only the title and body, not the signatures. Mailed copies count against the recipient's document limit. A failed delivery leaves an orphan copy. An attachment dropped for lack of room is still reported ok. | handled in batch 13b |
-| EMS and Dispatch | If the patient logs out, drops or is revived while the request insert is still running, the request and its MDT call stay open until expiry (900 s). | handled in batch 13b |
-| EMS and Dispatch | A player who crashes or logs out in last stand and comes back within the 60 s cooldown gets no call. | handled in batch 13b |
-| EMS and Dispatch | A standing player at 101–150 health who fakes last stand gets one call at their real position (design limit kept from the WIP). | handled in batch 13b |
-| Fuel and cruise | A new car's first level is still its driver's first report (any 0–100): no spawner calls `SetVehicleFuel` yet. | handled in batch 13b |
-| Fuel and cruise | Cruise now checks steering and the handbrake every frame (not asked for): speed is not held in a turn, and cruise may switch off after a curve. | handled in batch 13b |
-| Fuel and cruise | A car that is not networked can no longer be pump-refuelled. A car with no shared level is charged for the full litres asked, with no room check. | handled in batch 13b |
-| Fuel and cruise | The pump works next to any car anywhere, at the base price (older). | handled in batch 13b |
-| Jobs | Gruppe 6: the truck's storage target is removed after the truck is deleted, which does nothing in game (the target is kept under the net id). | handled in batch 13b |
-| Jobs | Bus: the spec runs without the database read, so it does not prove the lock comes before the first database wait. | handled in batch 13b |
-| Jobs | Gruppe 6: the zero-bag end clears only current group members; lost bags still block an early end; ending in the 250 ms bag recount window pays nothing. | handled in batch 13b |
-| Jobs | Tow: a former driver with an owed contract cannot claim the pay. An open Tow window keeps the driver layout until it refreshes. The client comment about a restart is misleading. | handled in batch 13b |
-| Mechanic | The tow cooldown is used up even when the request fails. The client offers a tow only at engine 30% or less. Busy and cooldown refusals are silent. No committed spec holds the first wait. | handled in batch 13b |
-| Mechanic | The 30 s wear save takes its snapshot before its database wait, so a repair in that window can leave pre-repair wear saved. | handled in batch 13b |
-| Stores | `O.Settle` and AI delivery retry fixed ledger keys after a stored failure: the order never settles and its money stays in escrow. | handled in batch 13b |
-| Stores | `O.Route` (and pf-services `RegisterRequestHandler`) accept only a Lua function. Adapters registered through exports arrive as function references in FiveM, so restaurant and job-business deliveries probably get no route in game. | handled in batch 13b |
-| Stores | The cart estimate and the order-card breakdown need pf-computer's `business:supplies:catalog` and `orders:list` to pass the pricing. Until then the app shows generic wording. | handled in batch 13b |
-| Stores | A buyer account that is gone for good gets a new failed refund row about once an hour, forever (no `forfeited` state). | handled in batch 13b |
-| Stores | `/supplyorders` prints the buyer's lines without converting them; the `ListSupplyOrders` mock in `stores_trucking_ledger_spec` is stale. | handled in batch 13b |
-| Strict state bags | The progressbar copy has no LICENSE (the snapshot had none; upstream is GPL-3.0). | handled in batch 13b |
-| Strict state bags | Proximity `index` and `mode` are checked for type and range only, not against `Cfg.voiceModes`. | handled in batch 13b |
-| Strict state bags | Switching channel while holding push-to-talk clears `radioActive` until release. A server-side `disableRadio` write would not reach the client's copy (no such writer exists). | handled in batch 13b |
-| Vehicles | `buyVehicle` does not check the fleet again: a listing made before this fix, or during pf-jobgarages' add-to-fleet race, can sell a fleet car. | handled in batch 13b |
-| Vehicles | `getVehicles` sends every listing's `vehicle_state` (finance and condition) to all clients. | handled in batch 13b |
-| Vehicles | `fleetTableExists` caches "no table" for 5 minutes, so a failed lookup lets fleet cars through. | handled in batch 13b |
-| Vehicles | A failed seller payout or buyer refund after a paid transfer is never retried. An unclear buyer charge can leave the buyer charged with no car. | handled in batch 13b |
+| Banking | pfm-policejob `/bill` creates a phone invoice when `Charge` returns false. On an unclear result that later completes, the player pays twice. | handled in batch 13b: fixed (Phone invoices). `/fine` sends no invoice on an unclear charge |
+| Banking | Callers that make a new key per click (fuel, car wash, vehicle shop, truck robbery, rentals, taxi, farming, App Store, revive) can charge twice when the player retries after an unclear result (older). | handled in batch 13b: partly. Fuel, vehicle sales and the tow deposit no longer charge again; the others are still open |
+| Banking | On an unclear result, callers with their own error show two notices (pfm-shops bail), and the tow app says "insufficient funds". | handled in batch 13b: partly. The tow app says the deposit is still settling; pfm-shops still open |
+| Property tax | While pfm-houses' database is not ready, the export uses the listing price instead of the price paid. | handled in batch 13b: fixed. The export answers "not ready" and the run retries |
+| Property tax | The government Fines app does not list citizens' property-tax bills, so staff cannot see or waive them. The dashboard's pending-bill count now includes them. | handled in batch 13b: fixed. Listed with filters; staff can waive them |
+| Computer and inventory | A search is bound to range only if the searcher is within 5 m after the 1.5 s opening wait. Police search and rob need only 2.5 m, so a searcher who steps away during the wait can loot from any distance and keep the target locked. | handled in batch 13b: fixed. The reach is decided before the wait (police 2.5 m) |
+| Computer and inventory | TAB does not free a searched player at once (the `inventory` command stops on `inv_busy` first); only the minute sweep does. The spec skips that key path. | handled in batch 13b: fixed. TAB frees the target on the same key press |
+| Computer and inventory | During the 1.5 s wait the target can reopen their own inventory and keep it open for the whole search (older). | handled in batch 13b: fixed. The lock is taken and the target's windows close before the wait |
+| Computer and inventory | The pickup lock is per player, not per order: two bosses can spawn two trucks for one order. No money moves. | handled in batch 13b: fixed (Stores). One pickup run per order |
+| Documents and phone | A key the ledger recovers as `interrupted_unverified` is treated as failed, and a new key charges again: a crash mid-transfer can still charge twice. Two specs assert this as correct. | handled in batch 13b: fixed. It waits for reconciliation; the two specs were rewritten |
+| Documents and phone | A decline does not check the invoice's ledger keys. After a completed or in-flight charge the payer can decline: they are charged and the business is never paid. | handled in batch 13b: fixed. A decline checks every charge key first |
+| Documents and phone | If the business credit is interrupted, the row is deleted and the payment returns true while the business stays unpaid. The `:society` key never moves to a new attempt key. | handled in batch 13b: fixed. The row stays 'paying' until every step is paid, on numbered keys, with a sweep |
+| Documents and phone | After a crash between the payouts and the delete, the retry sends no settled event or mail, so the Bills history misses the invoice. | handled in batch 13b: fixed. The request that deletes the row sends the events, once |
+| Documents and phone | A copy holds only the title and body, not the signatures. Mailed copies count against the recipient's document limit. A failed delivery leaves an orphan copy. An attachment dropped for lack of room is still reported ok. | handled in batch 13b: fixed (Citizen and government). Signature record, own cap, no orphan copy, missing attachments reported |
+| EMS and Dispatch | If the patient logs out, drops or is revived while the request insert is still running, the request and its MDT call stay open until expiry (900 s). | handled in batch 13b: fixed. The new request is closed after the insert |
+| EMS and Dispatch | A player who crashes or logs out in last stand and comes back within the 60 s cooldown gets no call. | handled in batch 13b: fixed. The cooldown is skipped once for a returning patient |
+| EMS and Dispatch | A standing player at 101–150 health who fakes last stand gets one call at their real position (design limit kept from the WIP). | handled in batch 13b: kept as a design limit (one call per relog) |
+| Fuel and cruise | A new car's first level is still its driver's first report (any 0–100): no spawner calls `SetVehicleFuel` yet. | handled in batch 13b: fixed. Read from `player_vehicles.fuel`, else 100 |
+| Fuel and cruise | Cruise now checks steering and the handbrake every frame (not asked for): speed is not held in a turn, and cruise may switch off after a curve. | handled in batch 13b: fixed. Checked once at switch-on again |
+| Fuel and cruise | A car that is not networked can no longer be pump-refuelled. A car with no shared level is charged for the full litres asked, with no room check. | handled in batch 13b: fixed. The room comes from the server level; a message for a car that is not networked |
+| Fuel and cruise | The pump works next to any car anywhere, at the base price (older). | handled in batch 13b: fixed. Only at stations and `Config.ExtraPumps` |
+| Jobs | Gruppe 6: the truck's storage target is removed after the truck is deleted, which does nothing in game (the target is kept under the net id). | handled in batch 13b: fixed. Removed before the delete |
+| Jobs | Bus: the spec runs without the database read, so it does not prove the lock comes before the first database wait. | handled in batch 13b: fixed. A new spec with a yielding database read |
+| Jobs | Gruppe 6: the zero-bag end clears only current group members; lost bags still block an early end; ending in the 250 ms bag recount window pays nothing. | handled in batch 13b: fixed in a second round. Leavers cleared, lost bags written off, the recount event registered |
+| Jobs | Tow: a former driver with an owed contract cannot claim the pay. An open Tow window keeps the driver layout until it refreshes. The client comment about a restart is misleading. | handled in batch 13b: fixed. Owed pay from the return-only view; the app switches on a job change |
+| Mechanic | The tow cooldown is used up even when the request fails. The client offers a tow only at engine 30% or less. Busy and cooldown refusals are silent. No committed spec holds the first wait. | handled in batch 13b: fixed. Cooldown after a request, one shared rule, every refusal explained, a spec |
+| Mechanic | The 30 s wear save takes its snapshot before its database wait, so a repair in that window can leave pre-repair wear saved. | handled in batch 13b: fixed. One wear writer per plate, checked against the repair epoch |
+| Stores | `O.Settle` and AI delivery retry fixed ledger keys after a stored failure: the order never settles and its money stays in escrow. | handled in batch 13b: fixed. Numbered keys; a payee gone for good is refunded to the buyer or held |
+| Stores | `O.Route` (and pf-services `RegisterRequestHandler`) accept only a Lua function. Adapters registered through exports arrive as function references in FiveM, so restaurant and job-business deliveries probably get no route in game. | handled in batch 13b: fixed in pf-stores (`callable` check in `O.Route` and `O.GovernmentId`) |
+| Stores | The cart estimate and the order-card breakdown need pf-computer's `business:supplies:catalog` and `orders:list` to pass the pricing. Until then the app shows generic wording. | handled in batch 13b: fixed. pf-computer sends the pricing and the breakdown |
+| Stores | A buyer account that is gone for good gets a new failed refund row about once an hour, forever (no `forfeited` state). | handled in batch 13b: fixed. `forfeited` after 5 refusals |
+| Stores | `/supplyorders` prints the buyer's lines without converting them; the `ListSupplyOrders` mock in `stores_trucking_ledger_spec` is stale. | handled in batch 13b: fixed. Converted lines; the mock matches the query |
+| Strict state bags | The progressbar copy has no LICENSE (the snapshot had none; upstream is GPL-3.0). | not taken up in batch 13b; still open |
+| Strict state bags | Proximity `index` and `mode` are checked for type and range only, not against `Cfg.voiceModes`. | not taken up in batch 13b; still open |
+| Strict state bags | Switching channel while holding push-to-talk clears `radioActive` until release. A server-side `disableRadio` write would not reach the client's copy (no such writer exists). | not taken up in batch 13b; unchanged |
+| Vehicles | `buyVehicle` does not check the fleet again: a listing made before this fix, or during pf-jobgarages' add-to-fleet race, can sell a fleet car. | handled in batch 13b: fixed. Checked before the charge and inside the claiming DELETE |
+| Vehicles | `getVehicles` sends every listing's `vehicle_state` (finance and condition) to all clients. | handled in batch 13b: fixed. Only the columns the UI uses |
+| Vehicles | `fleetTableExists` caches "no table" for 5 minutes, so a failed lookup lets fleet cars through. | handled in batch 13b: fixed. A failed lookup is not cached and refuses |
+| Vehicles | A failed seller payout or buyer refund after a paid transfer is never retried. An unclear buyer charge can leave the buyer charged with no car. | handled in batch 13b: fixed in a second round. Settlements: payouts stored and retried, unclear charges held |
 
 ### Known, not fixed here (older, or outside this batch)
 - **pfm-banking:** the ATM PIN is checked only in the UI; `Config.useDailyLimit` / `dailyLimit` are unused. Only an attribution line was added for the 5 MIT (vRP) points.
@@ -2282,6 +2282,8 @@ Batch 13 fixed each of these. The gaps its checkers found are listed in the batc
 - **pf-jobs:** Gruppe 6 `vehicleReturned` clears the sender's contract without checks (pays nothing). A tow contract in progress keeps its car and spot until the former driver disconnects.
 - **pfm-vehicleshop / pf-jobgarages:** repossession deletes the car's row but leaves its active `job_garage_vehicles` row. Old listings without `vehicle_state` come back with default columns; a loan erased by an earlier listing can't be recovered.
 - **pf-hud:** `svelte-source` and the old `html/index.js` / `index.css` are unused and could be retired.
+
+Batch 13b fixed the late fees, the house utility bills, the police invoice insert (`/fine`), the police MDT's `requestId`, the second permission list, the citizen medic call on logout, the garage fuel save and the fleet row left by a repossession. See the batch 13b section.
 
 ### Database migrations (rerun-safe)
 - pf-government v2: `bill_ref`, `bill_period`, unique `uq_bill_period_ref`;
@@ -2297,7 +2299,7 @@ Batch 13 fixed each of these. The gaps its checkers found are listed in the batc
 - Mocked 1695 / 0, real DB 414 / 0, JS all green; `ledger_parallel` and `sql_install_check` pass.
 
 ### Things to know before live
-- **Freight minimum on small orders:** confirm it. An employee with supply-order permission at a store or restaurant can place tiny delivery orders and drive them for $150–250 each from the business account. It is real work for real pay and creates no money.
+- **Freight minimum on small orders:** confirm it. An employee with supply-order permission at a store or restaurant can place tiny delivery orders and drive them for $150–250 each from the business account. It is real work for real pay and creates no money. *Batch 13b changes this: a delivery below `MinDeliveryGoods` (default: the freight minimum) is refused.*
 - **Delinquent property tax suspends licenses** (the existing escalation for citizen bills).
 - **`qb-phone.sql`** now needs a database with expression defaults: MariaDB 10.2+ or MySQL 8.0.13+. It fails on MySQL 5.7.
 - **Used lot:** listing and selling back need OneSync (the server reads which car the seller sits in).

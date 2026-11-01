@@ -136,9 +136,8 @@ function RegisterNetEvent(name, fn)
 end
 RegisterServerEvent = RegisterNetEvent
 function AddEventHandler(name, fn) Mock.eventHandlers[name] = fn end
-function TriggerClientEvent(name, target, ...) Mock.clientEvents[#Mock.clientEvents + 1] = { name = name, target = target, args = { ... } } end
--- TriggerEvent (server-local events reach AddEventHandler handlers) is defined with the resource
--- boundary below: handlers receive packed copies.
+-- TriggerEvent (server-local events reach AddEventHandler handlers) and TriggerClientEvent are
+-- defined with the resource boundary below: both pack their arguments.
 function CreateThread() end
 Citizen = { CreateThread = CreateThread, Wait = function() end }
 function SetTimeout() end
@@ -342,9 +341,12 @@ end
 --     with a string __cfx_functionReference. type() says 'table'; it can be called (that call packs
 --     its arguments and results again) but indexing any other key errors;
 --   * a table that contains itself cannot be packed: the caller gets an error.
--- Mock.pack / Mock.cross emulate that for every export a resource registers with exports(), for
--- the QBCore object (GetCoreObject), server callbacks and TriggerEvent. Use Mock.callable(v) in a
--- spec where code would use a callable check.
+-- Mock.pack / Mock.cross emulate that for every export (registered by resource code with exports()
+-- or hand-written in Mock.exportsByResource), the QBCore object (GetCoreObject), server callbacks,
+-- usable items, TriggerEvent and TriggerClientEvent. Left as they are: net events a spec fires
+-- (Mock.fireNet: the spec plays the client), Mock.selfExport (a direct call into the resource) and
+-- QBCore.Shared (live data specs fill at any time). Use Mock.callable(v) in a spec where code would
+-- use a callable check, Mock.funcrefTarget(v) to compare a received funcref with its function.
 local FUNCREF_KEY = '__cfx_functionReference'
 local funcrefTarget = setmetatable({}, { __mode = 'k' }) -- funcref -> the function it calls
 local funcrefCount = 0
@@ -428,6 +430,14 @@ function TriggerEvent(name, ...)
     if handler then handler(unpackArgs(args)) end
 end
 
+-- TriggerClientEvent: the arguments are packed when the event is sent, so Mock.clientEvents holds
+-- what the client receives (a table changed after the send is not changed there).
+function TriggerClientEvent(name, target, ...)
+    local args = packArgs(...)
+    args.n = nil
+    Mock.clientEvents[#Mock.clientEvents + 1] = { name = name, target = target, args = args }
+end
+
 -- The QBCore object a resource gets from GetCoreObject: a fresh table per call (each resource has
 -- its own copy, so a resource that wraps QBCore.Functions.X changes only its own). Functions and
 -- Commands are funcrefs: arguments and results cross the boundary (a player from GetPlayer is a
@@ -474,15 +484,7 @@ Mock.vehicleGrants = {}
 Mock.exportsByResource['pfm-core'] = {
     -- like pfm-core: a filter list returns only those parts (a resource asking for
     -- {'Functions'} has no QBCore.Commands, exactly as on a real server)
-    GetCoreObject = function(_, filters)
-        if os.getenv('PF_BND_CORE') == '0' then
-            if type(filters) ~= 'table' then return QBCoreMock end
-            local out = {}
-            for _, key in ipairs(filters) do out[key] = QBCoreMock[key] end
-            return out
-        end
-        return Mock.coreObject(filters)
-    end,
+    GetCoreObject = function(_, filters) return Mock.coreObject(filters) end,
     GrantVehicleSpawn = function(_, src, model) Mock.vehicleGrants[#Mock.vehicleGrants + 1] = { src = src, model = model } return true end,
     RegisterJobVehicles = function() return true end,
     AddItems = function(_, items)
@@ -500,7 +502,10 @@ Mock.exportsByResource['pfm-core'] = {
 QBCoreMock.Shared.Jobs = {}
 QBCoreMock.Shared.Gangs = {}
 Mock.rawExports = setmetatable({}, { __mode = 'k' })
--- Hand-written mocks that emulate the boundary themselves (GetCoreObject's view) are called as they are.
+-- Hand-written mocks (Mock.exportsByResource[res].Name = function(self, ...)) are called across the
+-- boundary too, so they receive what the other resource would (funcrefs, copies) and the resource
+-- under test gets copies back. One that builds its own boundary view (GetCoreObject) is listed here
+-- and called as it is.
 Mock.passThrough = setmetatable({}, { __mode = 'k' })
 Mock.passThrough[Mock.exportsByResource['pfm-core'].GetCoreObject] = true
 exports = setmetatable({}, {
@@ -518,8 +523,8 @@ exports = setmetatable({}, {
             -- exports a resource registers itself (exports('Name', fn)) get no self argument, like FiveM;
             -- the hand-written mocks above take one.
             if Mock.rawExports[f] then return function(_, ...) return Mock.cross(f, ...) end end
-            if Mock.passThrough[f] or os.getenv('PF_BND_HAND') ~= '1' then return function(_, ...) return f(_, ...) end end
-            return function(_, ...) return Mock.cross(f, _, ...) end
+            if Mock.passThrough[f] then return function(_, ...) return f(_, ...) end end
+            return function(self, ...) return Mock.cross(function(...) return f(self, ...) end, ...) end
         end })
     end,
 })
