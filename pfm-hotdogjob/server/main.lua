@@ -152,7 +152,10 @@ RegisterNetEvent('qb-hotdogjob:server:UpdateReputation', function(quality)
         end
     end
 
-    TriggerClientEvent('qb-hotdogjob:client:UpdateReputation', src, Player.PlayerData.metadata['rep'])
+    -- Player is pfm-core's copy from before AddRep (it came through the export): send the rep the
+    -- player has now, not the old one
+    local Fresh = exports['pfm-core']:GetPlayer(src) or Player
+    TriggerClientEvent('qb-hotdogjob:client:UpdateReputation', src, Fresh.PlayerData.metadata['rep'])
 end)
 
 -- Commands

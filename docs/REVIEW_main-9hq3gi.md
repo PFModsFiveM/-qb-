@@ -9,6 +9,15 @@
 
 **Totals:** 61 findings. 23 confirmed by both skeptics, 9 confirmed by one, 3 refuted, 29 low-severity ones not sent to skeptics.
 
+## Status (2026-11-01, after batch 13b)
+
+Batch 13b closed the gaps the batch 13 checkers found (see `IMPLEMENTATION_REPORT.md`, batch 13b). Status lines below that 13b changed say so.
+- **Fixed in batch 13b:** the phone invoice crash path (13). Also the checker gaps on EMS calls, fuel sync, fleet cars on the used lot, the inventory search, supply pickup and refunds, Gruppe 6 and the Dispatch permission.
+- **Found and fixed in batch 13b (not in this review):** the export boundary. A function passed through an export arrives in the other resource as a funcref, not a Lua function. pf-devices refused every app handler from another resource, so no device app outside pf-devices would have answered in game. pf-services dropped request hooks, and the MDT access wrapper never answered refused callers. The test harness now emulates the boundary, so specs catch this class of bug.
+- **Open:**
+  - strict state bags on live: the originals and `[custom]` must be deleted there first (6);
+  - the open items the 13b checkers left, listed in `IMPLEMENTATION_REPORT.md`, batch 13b. The two that matter most: a tow deposit retry can still charge both cash and bank (pf-jobs), and deleting a character removes its half-paid invoices (pfm-core).
+
 ## Status (2026-11-01, after batch 13)
 
 Each finding below now has a **Status** line. Batch 13 areas are named as in `IMPLEMENTATION_REPORT.md`, batch 13.
@@ -78,7 +87,7 @@ All re-run at the branch tips.
 - **Inventory not blocked:** with strict mode on, the server no longer blocks the inventory during progress bars.
 - **Staging fails its own test:** staging (`docs/staging/server.staging.cfg:26`) already enables strict mode, so FINAL_TEST_PLAN's "no state-bag errors" step will fail.
 - **Live cfg duplicate:** the live cfg also starts `[custom]/pf-mechanicjob`, an old duplicate full of client writes.
-- **Status:** fixed in batch 13 on staging (Strict state bags). Patched copies of progressbar and pma-voice start from [qb], progressbar holds pfm-inventory's lock, and staging runs strict mode again. Open on live: delete `[standalone]/progressbar`, `[voice]/pma-voice` and `[custom]` before turning it on (owner action on the live cfg).
+- **Status:** fixed in batch 13 on staging (Strict state bags). Patched copies of progressbar and pma-voice start from [qb], progressbar holds pfm-inventory's lock, and staging runs strict mode again. Open on live: delete `[standalone]/progressbar`, `[voice]/pma-voice` and `[custom]` before turning it on (owner action on the live cfg). Batch 13b did not change this; the batch 13 checker's three small points (progressbar LICENSE, voice mode names, push-to-talk on a channel switch) are still open.
 
 **7. Websites with a Cards Grid or Quick Links module cannot be saved.** The new depth limit (`pf-computer/server/main.lua:1431`, `SITE_MAX_DEPTH = 6`) rejects the editor's own structure.
 - **Status:** fixed in batch 12 (pf-computer). The depth limit fits every editor module.
@@ -100,7 +109,7 @@ All re-run at the branch tips.
 **10. Tow rental.**
 - **Double deposit:** two rent requests at once charge two $250 deposits, one of which can never be refunded (`pf-jobs/server/apps/tow.lua:267`).
 - **Deposit kept after leaving the job:** the deposit cannot be returned once the player leaves the tow job (`tow.lua:304`).
-- **Status:** fixed in batch 12 (pf-jobs): a per-character lock, and return or report-lost after leaving the job. Batch 13 (Jobs) adds a return-only Tow app for former drivers.
+- **Status:** fixed in batch 12 (pf-jobs): a per-character lock, and return or report-lost after leaving the job. Batch 13 (Jobs) adds a return-only Tow app for former drivers. Batch 13b: they can also collect owed contract pay there.
 
 **11. News vehicles** (`pfm-newsjob/server/main.lua`).
 - **Stuck lock:** the "return your vehicle first" lock never clears when the van is destroyed (line 76).
@@ -113,24 +122,24 @@ All re-run at the branch tips.
 - **Status:** fixed in batch 12 (pf-devices). A per-character lock, a new ledger key per attempt, and one charge per app.
 
 **13. Phone invoice retry.** `pfm-phone/server/main.lua:458` treats every non-completed ledger key as failed. It can charge twice after a crash in the middle of a transfer, and an invoice becomes unpayable after 20 failed attempts.
-- **Status:** open (Documents and phone). Batch 12 ended the 20-attempt dead end, and batch 13 gave each invoice its own ledger token. The batch 13 checker showed that a crash mid-transfer can still charge twice: a key the ledger recovers as `interrupted_unverified` is treated as failed. Handled in batch 13b.
+- **Status:** fixed in batch 13b (Phone invoices). Batch 12 ended the 20-attempt dead end, and batch 13 gave each invoice its own ledger token. Batch 13b: an `interrupted_unverified` charge waits for reconciliation and never moves to a new key. The row stays 'paying' until the business and the commission are paid, each step on numbered keys of its own, and a sweep finishes half-paid invoices after a crash. A decline checks every charge key first. Open, outside pfm-phone: deleting a character removes its 'paying' rows (pfm-core), and the Bills app still lists them (pf-citizen).
 
 ## Smaller issues (new on this branch)
 
 - **Mail re-sharing:** a read-only document link can be re-shared through mail attachments, which bypasses unshare; a re-shared holder can sign and lock the owner's document (`pf-citizen/server/mail.lua:477`).
-  - **Status:** fixed in batch 13 (Documents and phone). Only the owner hands out links, anyone else sends a locked copy, and only people the owner or the server shared it with can sign.
+  - **Status:** fixed in batch 13 (Documents and phone). Only the owner hands out links, anyone else sends a locked copy, and only people the owner or the server shared it with can sign. Batch 13b: a copy carries the signatures as a read-only record, received copies have their own cap, and a failed mail leaves no orphan copy.
 - **Signed documents:** the owner of a signed document can delete or unshare it, removing the other signers' record (`documents.lua:139`).
   - **Status:** fixed in batch 13 (Documents and phone). Once someone else has signed, the owner's delete only hides it from the owner, and a signer can't be unshared.
 - **EMS calls:** "Person down" calls stay on the EMS MDT after the patient respawns, and a client can add a new one every 60 seconds (`pf-ambulancejob/server/main.lua:47`).
-  - **Status:** fixed in batch 13 (EMS and Dispatch). The MDT call closes with the patient's request, and a call opens only when the server reads the player down. Two edge cases the checker found (a logout during the request insert, a reconnect within the 60 s cooldown) are handled in batch 13b.
+  - **Status:** fixed in batch 13 (EMS and Dispatch). The MDT call closes with the patient's request, and a call opens only when the server reads the player down. Batch 13b fixed the two edge cases the checker found: a call made during a logout is closed, and a patient who reconnects within the 60 s cooldown gets the call back.
 - **Job Board after a restart:** hiring events stop after `restart pf-services` (`pf-computer/server/jobboard.lua:158`).
   - **Status:** fixed in batch 13 (Computer and inventory). The hiring kind is registered again when pf-services starts.
 - **Cruise control:** the HUD indicator is gone; its only handler was in the deleted pfm-hud (`pfm-smallresources/client/cruise.lua:45`).
-  - **Status:** fixed in batch 13 (Fuel and cruise). pf-hud shows a cruise icon, and cruise always sends the off state.
+  - **Status:** fixed in batch 13 (Fuel and cruise). pf-hud shows a cruise icon, and cruise always sends the off state. Batch 13b: speed is held through turns again.
 - **Fuel sync:** the network owner of any empty car can set its fuel from any distance (`pfm-fuel/server/main.lua:61`).
-  - **Status:** fixed in batch 13 (Fuel and cruise). Only the driver reports, only downward, capped per second. A new car's first level still comes from its driver: handled in batch 13b.
+  - **Status:** fixed in batch 13 (Fuel and cruise). Only the driver reports, only downward, capped per second. Batch 13b: a car's first level comes from the server (`player_vehicles.fuel`, else 100), the garage save is clamped to the server's level, and pumps sell only at stations.
 - **Mechanic tows:** any on-duty mechanic, not only the boss, can spend the shop's money on tows (`pf-mechanicjob/server/advanced_systems.lua:398`).
-  - **Status:** fixed in batch 13 (Mechanic). Only the boss, for a car near them that the server reads as broken.
+  - **Status:** fixed in batch 13 (Mechanic). Only the boss, for a car near them that the server reads as broken. Batch 13b: the cooldown starts only after a request, every refusal says why, and the client scan uses the server's rule.
 - **Gruppe 6 XP:** parallel deposit requests add XP once per request (`gruppe6.lua:1054`).
   - **Status:** fixed in batch 12 (pf-jobs). The deposit is locked per contract.
 - **Bus spawn:** two take-out requests at once spawn two buses (`bus.lua:557`).
@@ -138,22 +147,22 @@ All re-run at the branch tips.
 - **Gruppe 6 storage:** the truck's "Open Storage" option fires an event nothing handles (`gruppe6.lua:537`).
   - **Status:** fixed in batch 12 (pf-jobs). It uses pfm-inventory's inventory command.
 - **Supply pickup:** non-boss staff can start a supply pickup run that can never be collected (`pf-computer/server/main.lua:2926`).
-  - **Status:** fixed in batch 13 (Computer and inventory). The boss check runs before the order is read or any truck spawns.
+  - **Status:** fixed in batch 13 (Computer and inventory). The boss check runs before the order is read or any truck spawns. Batch 13b: one pickup run per order, so two bosses can't start two trucks.
 - **Supplier stock:** it ignores `Config.SupplyChain.CaseSize` for restaurant lines (`pf-stores/server_orders.lua:440`).
   - **Status:** fixed in batch 13 (Stores). One case-size helper is used for matching, reserving, stocking and returning.
 - **Failed refunds:** a failed refund on a cancelled supply order is never retried, although the log says it is (`server_orders.lua:606`).
-  - **Status:** fixed in batch 13 (Stores). Retried under a new numbered key after a stored failure, with a growing wait; migration v3 covers older orders.
+  - **Status:** fixed in batch 13 (Stores). Retried under a new numbered key after a stored failure, with a growing wait; migration v3 covers older orders. Batch 13b: a refund to an account gone for good ends `forfeited` after 5 refusals, and settlement payouts use numbered keys too.
 - **Escrow sweep:** it can charge a citizen for a request that was already cancelled (`pf-services/server/requests.lua:555`).
   - **Status:** fixed in batch 12 (pf-services). The sweep refunds a request that was cancelled meanwhile.
 - **Dispatch app:**
   - waypoints fail for Benny's and Beeker's;
     - **Status:** fixed in batch 13 (EMS and Dispatch). One job rule for the list, accept and the waypoint.
   - a government request can be claimed there without the permission;
-    - **Status:** fixed in batch 13 (EMS and Dispatch). Taking or completing one needs the kind's pf-government permission.
+    - **Status:** fixed in batch 13 (EMS and Dispatch). Taking or completing one needs the kind's pf-government permission. Batch 13b: Dispatch reads that permission from pf-government, so there is one list.
   - accept, release and complete return the raw request row to the client.
     - **Status:** fixed in batch 12 (pf-services). The RPCs return the public request view.
 - **Fleet cars on the used lot:** an active job-fleet car can still be sold there or through /transfervehicle.
-  - **Status:** fixed in batch 13 (Vehicles). Refused on the lot and by `/transfervehicle`, also inside the SQL. The lot's buy path does not check the fleet again: handled in batch 13b.
+  - **Status:** fixed in batch 13 (Vehicles). Refused on the lot and by `/transfervehicle`, also inside the SQL. Batch 13b: the buy path checks the fleet too, before the charge and inside the claiming `DELETE`, and a fleet add refuses a listed car.
 - **Accept and pay:** the prompt accepts whatever offer is pending, not the one shown (`pfm-vehicleshop/server.lua:900`).
   - **Status:** fixed in batch 13 (Vehicles). Only the offer with the id shown is accepted.
 - **Stale wear reports:** a repair can be undone by the driver's in-flight wear report (`advanced_systems.lua:221`).
@@ -166,13 +175,13 @@ All re-run at the branch tips.
 - **Supplier markup drain:** cancelling a player-supplied order refunds the buyer in full while the supplier keeps the markup bonus. A store boss who is also a supplier can drain the escrow (`pf-stores/server_orders.lua:600`). One skeptic confirmed it; the other said it predates the branch.
   - **Status:** fixed in batch 13 (Stores). The supplier's markup share is paid only at delivery, so a cancel leaves the supplier nothing.
 - **Gruppe 6 early end:** ending a contract pays the tier maximum rather than the contract's payout (`gruppe6.lua:1003`).
-  - **Status:** fixed in batch 13 (Jobs). It pays the contract's payout times the share of bags handed in.
+  - **Status:** fixed in batch 13 (Jobs). It pays the contract's payout times the share of bags handed in. Batch 13b: members who leave are cleared, and lost bags are written off, so an early end with lost bags can still close.
 - **Used-car lot and loans:** listing a financed car on the used lot and taking it back erases the loan (`pfm-vehiclesales/server/main.lua:122`).
   - **Status:** fixed in batch 13 (Vehicles). Financed cars can't be listed, and taking a listing back restores its loan.
 - **Bank counters:** cash and society-cash callbacks have no proximity check (`pfm-banking/server.lua:359`).
   - **Status:** fixed in batch 13 (Banking). Cash needs the player within 5 m of a counter, or within 4 m of a listed ATM for a withdrawal.
 - **Inventory search:** a searched player's inventory stays locked when the searcher disconnects (`pfm-inventory/server/main.lua:198`).
-  - **Status:** fixed in batch 13 (Computer and inventory). The search ends on the searcher's disconnect, logout, close or another inventory. A searcher who steps away during the 1.5 s opening wait stays unbound: handled in batch 13b.
+  - **Status:** fixed in batch 13 (Computer and inventory). The search ends on the searcher's disconnect, logout, close or another inventory. Batch 13b: the reach is fixed before the wait (police 2.5 m), the target is locked and their windows closed before it, and TAB frees a stale search at once.
 
 ## Refuted (no action)
 

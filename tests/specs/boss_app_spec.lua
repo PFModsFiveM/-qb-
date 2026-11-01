@@ -182,6 +182,27 @@ describe('staff changes from the app', function()
         assert_eq(rpc(BOSS, 'setGrade', { scope = 'police', citizenid = 'WORK1', grade = 1 }).error, 'bad_request')
         assert_eq(job(OUTSIDER).name, 'police')
     end)
+    it('the member is told the rank they have now (the copy from before the change held the old one)', function()
+        Mock.clientEvents = {}
+        assert_true(rpc(BOSS, 'setGrade', { scope = 'job', citizenid = 'WORK1', grade = 2 }).ok)
+        local told = {}
+        for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do
+            if e.target == WORKER then told[#told + 1] = tostring(e.args[1]) end
+        end
+        assert_eq(told[1], 'Your rank is now Senior.', table.concat(told, ' | '))
+        assert_eq(#told, 1)
+    end)
+    it('an offline member is ranked and saved without a notice', function()
+        offline.OFF3 = { Offline = true, PlayerData = { citizenid = 'OFF3', charinfo = {}, job = { name = 'mechanic', grade = { level = 0 } } }, Functions = {} }
+        offline.OFF3.Functions.SetJob = setter(offline.OFF3, 'job', QBCoreMock.Shared.Jobs)
+        local saved = false
+        offline.OFF3.Functions.Save = function() saved = true end
+        Mock.clientEvents = {}
+        assert_true(rpc(BOSS, 'setGrade', { scope = 'job', citizenid = 'OFF3', grade = 1 }).ok)
+        assert_eq(offline.OFF3.PlayerData.job.grade.name, 'Mechanic')
+        assert_true(saved)
+        assert_eq(#Mock.clientEventsNamed('QBCore:Notify'), 0)
+    end)
     it('a member ranked above the boss is out of reach', function()
         Mock.players[SENIOR].PlayerData.job.grade.level = 5
         assert_eq(rpc(BOSS, 'fire', { scope = 'job', citizenid = 'SEN1' }).error, 'outranks_you')

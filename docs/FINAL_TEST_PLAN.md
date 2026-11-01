@@ -99,26 +99,84 @@ Run with strict state bags on (staging cfg) and the originals of progressbar and
 | Property tax | Open the tax schedule; wait about a minute after start (or run `govpropertytax` in the console) with house owners online and offline; pay one bill in Bills on the tablet, another on the computer; restart pf-government | "property" shows at 0.5%; each owner gets one bill "Property tax: <address>, week of YYYY-MM-DD", and a notification if online; each bill is paid once; the restart creates no second bill |
 | Computer: Job Board after a restart | Restart only pf-services, then post a vacancy | The hiring news item appears |
 | Computer: supply pickup | A grade-2 mechanic who is not the boss presses Collect on a ready order; then the boss does | No truck for the employee; the boss's run unpacks the order |
-| Inventory: search | An officer searches a player, then walks more than 5 m away; search again and the officer disconnects; search again and the officer opens their own inventory | Walking away frees the target within a minute (TAB does not free them at once); a disconnect and the officer's own inventory free them at once |
+| Inventory: search | An officer searches a player, then walks more than 5 m away; search again and the officer disconnects; search again and the officer opens their own inventory | Walking away frees the target within a minute (TAB does not free them at once); a disconnect and the officer's own inventory free them at once. *Batch 13b changes this: about 2 s, and TAB frees them at once (see 3e)* |
 | Inventory: progress bar lock | Open the inventory during a progress bar; kill the client in the middle of a bar | Refused during the bar, free after it ends or is cancelled; after the kill, the lock ends after the bar's time plus about 10 s |
 | Documents | Mail a document you don't own; delete a document someone else signed | The recipient gets a read-only copy; the signer still has the document |
 | Phone invoices | Watch the console on first start; pay an invoice from the phone, another from the Bills app | The `ALTER phone_invoices` lines appear on the first start only; each invoice is paid once and the business credited once |
 | EMS: down calls | Read a last-stand player's health on the server; go down, then bleed out; get revived; go down again and respawn, check in, log out, drop; reconnect while dead, once more than 60 s after the first call and once within 60 s | Last stand reads 150; one call on the EMS MDT, still one after bleeding out; the call shows done after the revive; respawn, check-in, logout and drop take it off the board; reconnecting dead brings it back |
 | Dispatch | A citizen calls roadside repair with Benny's on duty; a government employee without the licenses permission opens a license request in Dispatch; Business Requests approves another request | Benny's gets the waypoint; no Accept button for that employee; the approval still works |
-| Fuel | Drive a car with a second player watching the gauge; refuel at a pump and with a jerry can; spawn a new car from a garage; refuel at a pump far from a station | Both players see the same level (if the other player lags behind, raise `Config.MaxFuelBurnPerSecond`); the pump and the can work on a car that already has a level, and the pump charges only for what fits; the new car's level reaches the other player; the far pump still works at the base price (known) |
+| Fuel | Drive a car with a second player watching the gauge; refuel at a pump and with a jerry can; spawn a new car from a garage; refuel at a pump far from a station | Both players see the same level (if the other player lags behind, raise `Config.MaxFuelBurnPerSecond`); the pump and the can work on a car that already has a level, and the pump charges only for what fits; the new car's level reaches the other player; the far pump still works at the base price (known). *Batch 13b changes this: pumps sell only at stations (see 3e)* |
 | Cruise | Turn cruise on and off, steer through curves, leave the seat with cruise on; move the icon in HUD edit mode | The icon shows only while cruise is on and sits well in the vehicle icon row; leaving the seat turns it off. Note whether cruise switching off after curves is a problem |
 | Jobs: tow return | Fire a tow driver who has a flatbed out; they return it at the bay; with a car on the bed, restart pf-jobs and use `/tow` | The Tow app stays and shows only the return; the return-only yard target appears; the deposit is refunded once and the app disappears; `/tow` takes the car off the bed |
 | Jobs: Gruppe 6 early end | End a contract early with no bags, then another with some bags handed in; press E at HQ to return the truck | No bags: the crew is sent to the HQ return area, no pay; some bags: the partial share; one progress bar, and the truck's "Open Storage" target is gone |
 | Jobs: bus | Spam "take bus" | One bus comes out |
-| Mechanic: tow billing | The boss scans a car with engine health at 30% or less; a mechanic who is not the boss tries | A request appears in Dispatch, paid by the shop; the other mechanic gets the "boss can order" message |
+| Mechanic: tow billing | The boss scans a car with engine health at 30% or less (batch 13b: or another reason the server reads as broken); a mechanic who is not the boss tries | A request appears in Dispatch, paid by the shop; the other mechanic gets the "boss can order" message |
 | Mechanic: repair | Repair a part while another player drives the car | The old wear does not come back |
 | Mechanic: NOS | Empty or remove a bottle, then store the car straight away; again, and let the 30 s save run; take the car out | The bottle is still empty |
-| Stores: totals | A store, a restaurant and a job business each place a small delivery order and a pickup order; a player supplier fills one delivery; cancel another before delivery | Delivery charged goods + markup + freight (at least the freight minimum) from the business account; pickup charged goods only; the supplier sees "You earn…" and is paid only when the trucker delivers; the cancel refunds the whole amount |
+| Stores: totals | A store, a restaurant and a job business each place a small delivery order and a pickup order; a player supplier fills one delivery; cancel another before delivery | Delivery charged goods + markup + freight (at least the freight minimum) from the business account; pickup charged goods only; the supplier sees "You earn…" and is paid only when the trucker delivers; the cancel refunds the whole amount. *Batch 13b: a delivery below `MinDeliveryGoods` is refused, so order at least the minimum (see 3e)* |
 | Stores: delivery route | A restaurant and a mechanic shop each order a delivery | Each order gets a delivery point (or the government delivery zone) and is delivered |
 | Voice | Push-to-talk on a radio channel with a second player; switch channel while talking; F11 proximity cycle; `/vol`; the radio volume buttons; die or get cuffed (resources that add a radio-disable bit); restart pma-voice | The other player hears you and the pf-hud radio icon shows (about one ping later); proximity and volumes change; the radio is blocked while dead or cuffed; voice works after the restart; no refused state-bag writes in the console |
 | Vehicles: used lot | Start the server; list a car, then take it back; try to list and to sell back a fleet car and an impounded car (OneSync on) | "pfm-vehiclesales v1 applied" in the console, once; condition, odometer and loan unchanged after take-back; both refused, and the cars stay in the world |
 | Vehicles: transfers | `/transfervehicle` as a gift, as a sale, with a fleet car, and with a financed car while `Config.PreventFinanceSelling` is on and off | Gift and sale move the car once; the sale pays the seller once; fleet car refused; financed car refused when on, and the buyer sees the loan before accepting when off |
 | Vehicles: dealer offer | A dealer replaces an offer while the customer's prompt is open; the customer clicks the old prompt, then accepts the new offer; check both accounts | The old click accepts nothing; the new offer is paid; the dealership gets the price minus the commission and the salesperson the commission |
+
+## 3e. Gaps from the batch 13 checks (batch 13b)
+Run with strict state bags on (staging cfg), as in 3d. Several rows need a second player.
+
+| Loop | Steps | Expect |
+|---|---|---|
+| Phone: pay once | Pay an invoice from the phone, another from the Bills app; check the business account and the mails | The money moves once; the business mail arrives once |
+| Phone: restart mid-payment | Pay an invoice and restart the server straight away; wait about 2 minutes after the start | The sweep settles it: the business is credited once and the paid mail arrives; the invoice is not charged again |
+| Phone: business without an account | Send an invoice whose business has no bank account | The phone says it cannot receive payments; no money moves |
+| Phone: escaped text | Put text such as `<b>x</b>` in an invoice reason | It shows as plain text on the phone |
+| Phone: `/fine` | `/fine` a player who has no money | The invoice "Police fine" appears on their phone |
+| Phone: console | Watch the console on the first start | The `ALTER phone_invoices` lines appear once; note any "waits for an admin" warnings |
+| Inventory: search wait | An officer starts a search and steps back during the 1.5 s wait | No window opens |
+| Inventory: walking off | During a search the searched player walks more than 2.5 m away, then presses TAB | The officer's window closes within about 2 s; TAB opens the target's own inventory at once |
+| Inventory: target's windows | Start a search while the target has their inventory open; during the search the target tries hotbar keys, dropping a bag and giving an item | Their inventory closes; hotbar keys, drops and gives do nothing |
+| Inventory: admin menu | An admin opens a player's inventory from the admin menu, far away | It opens (this confirms the server sees the call as `pfm-adminmenu`) |
+| Inventory: moving suspect | Search a suspect who sways or is ragdolled | Note whether 2.5 m ends honest searches too early |
+| Fuel: first level | Take a car out of a garage (note its stored fuel), also with a changed plate; spawn a new car, a job car and a test-drive car; buy a used car from the lot | The garage car starts at its stored fuel, also with the plate changed; new, job and test-drive cars start full; the used car starts at the fuel it was sold with |
+| Fuel: parking | Drive a garage car, park it, take it out again | The real level was saved |
+| Fuel: pumps | Use a pump right after getting into a car; use a pump far from any station and one on a custom map | The first waits briefly instead of saying "busy"; the others say "Fuel is only sold at a gas station" until their spot is in `Config.ExtraPumps` |
+| Fuel: burn rate | Drive with a second player watching the gauge | The two gauges agree (the 0.5 per second cap from batch 13) |
+| Cruise | Turn cruise on and drive through curves | Speed is held through the curves |
+| Stores: delivery route | A restaurant and a mechanic shop each order a delivery | The contract is posted and the pallet appears |
+| Stores: small orders | Place a delivery below the minimum, then the same order as a pickup; look at the cart | The delivery is refused with the message and "Place order" is disabled; the pickup works; the cart shows the delivery total |
+| Stores: second boss | Two bosses press Collect on the same ready order | The second is refused; one truck |
+| Stores: supplier deleted | A player supplier accepts an order, then their character is deleted before delivery; run `/supplyheld` as admin and as a player | The store gets the goods money back after about 7 minutes; `/supplyheld` works for the admin only |
+| EMS: leaving while down | Log out, or drop, in last stand right as you go down | No call is left on the EMS MDT |
+| EMS: reconnect | Crash in last stand and reconnect within 60 s; then bleed out | The call comes back; bleeding out keeps that one call |
+| EMS: medic call | Make a /911e or Services medic call, then log out | The call leaves the EMS board |
+| Police MDT | A citizen makes a Services police call, then cancels it | It leaves the police MDT board |
+| Dispatch | A government licenser takes a license request in Dispatch; a clerk without the permission opens it | The licenser can take it; the clerk sees no Accept button |
+| Vehicles: migrations | Start the server | "v2 applied" for pfm-vehicleshop and pfm-vehiclesales, once |
+| Vehicles: held sale | On staging, block the database for a moment during a purchase, a used-lot buy and a paid `/transfervehicle` | Each finishes within about 60 s; a held purchase arrives parked in the delivery garage with a notification and a mail; nobody is charged twice |
+| Vehicles: fleet | Repossess a fleet car; try to add a listed car to a fleet; re-add a car that was removed from a fleet | The repossessed car leaves the fleet and the road; the listed car is refused; the re-add works |
+| Gruppe 6: shared stash | Take bags from a pickup, then end early right after | "You took N bag(s)" appears; no "not safe for net" line in the console; the early end counts those bags |
+| Gruppe 6: lost bags | Hand in some bags, lose the rest, end again, close at the vault | The client is sent to return the truck |
+| Gruppe 6: trunk | Put bags in the truck's trunk, lose the rest, end early | The trunk bags count |
+| Gruppe 6: party | Leave the party, or get kicked, mid-contract; then take a new contract | The new contract starts |
+| Gruppe 6: return | Return the truck at HQ, then take the next one | "Open Storage" is gone from the old truck and present on the next |
+| Tow: owed pay | A driver whose contract pay is owed leaves the job and collects it in the Tow app; get fired while the app is open | Paid once; the open app switches to the return-only view |
+| Tow: deposit | Rent a flatbed while the bank is restarting | One deposit at most, and a clear message |
+| Mechanic: tow order | The boss orders a tow for a car that already has a police impound order; scan a car with only body damage | The impound reason is given; the body-damaged car is offered a tow |
+| Mechanic: repair | Repair a car, then store or delete it at once; take it out again | It comes back repaired |
+| Documents: signed copy | Mail a signed document to a third person; make a copy of a copy that its middle owner signed | The recipient sees "Signatures on the original" and no signatures on their copy; the second shows "signed an earlier copy" |
+| Documents: copy room | Fill a citizen's room for received copies, then let them write a document | They can still write their own documents |
+| Government: late fees | Let a fine go overdue; pay it at the moment the fee lands; on the copy of live, look at older overdue bills after the first hourly run | One late fee only; a fee that landed during the payment is still due; every older overdue bill gets one fee |
+| Government: house utilities | Bill a house; pay one bill in the owner's Bills app; let another go delinquent, then waive it | The bill appears in Bills and is paid once; waiving the delinquent bill brings the power back |
+| Government: Fines app | Staff open Fines → Houses | Property-tax bills are listed and can be waived |
+| Government: start order | Restart pfm-houses, then pf-government | The property tax waits, then bills the price paid |
+| Government: hourly run | Cause a database hiccup during the hourly run | It is logged, and the next hour's run still goes |
+| Export boundary: device apps | Open one app from each resource on the tablet and the computer (Mail, Bills, Documents, Dispatch, Services, News, Supplier, the job apps, the government apps) and use one action in each | Every app answers; before batch 13b no app outside pf-devices could answer in game |
+| Export boundary: requests with proof | Try to complete a government field request and a tow impound order without the proof | Both are refused; with the proof they complete once |
+| Export boundary: migrations | Start on a fresh database and on a copy of live | Every resource's migrations run, including the ones with function steps; no migration error in the console |
+| Export boundary: MDT access | A civilian triggers an MDT action (for example through the device app) | They get "no access" at once (no hanging window) |
+| Export boundary: jail | Jail a player with items through the MDT, then release them | Items are taken at jailing and returned at release |
+| Export boundary: licences | For an online citizen: grant a licence, then suspend another; lift and remove; relog the citizen; open the profile of one whose suspension ran out | Each change survives the relog; the licence granted just before the suspension is kept; the expired suspension is lifted at once |
+| Export boundary: MDT duty | Toggle MDT duty twice | The right state shows each time |
+| Export boundary: smaller fixes | Change a member's rank as a boss; clean a weapon; run `/admincustoms` as a QBCore admin; `/giveitem` a chop_kit; gain hot dog rep; trade crypto; check the crafting XP lock | The member is told the new rank; gun oil is used up; admincustoms opens; the item is given; the rep, wallet and portfolio show the new values; the XP lock works |
 
 ## 4. Multiplayer and exploits
 | Case | Expect |

@@ -28,7 +28,14 @@ RegisterNetEvent('qb-weapons:server:CleanWeapon', function(weaponSlot, kitSlot)
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_gunoil'), 'error')
         return
     end
+    local weaponName = WeaponItem.name
     if not exports['pfm-inventory']:RemoveItem(src, 'gunoil', 1, kit.slot, 'pfm-weapons:clean') then return end
+
+    -- Player is pfm-core's copy from before the kit was taken (it came through the export): writing
+    -- its items back would return the kit, so the inventory is read again
+    Player = exports['pfm-core']:GetPlayer(src)
+    WeaponItem = Player and Player.PlayerData.items[weaponSlot]
+    if not WeaponItem or WeaponItem.name ~= weaponName then return end
 
     local current = tonumber(WeaponItem.info and WeaponItem.info.quality) or 100
     local newQuality = math.min(100, current + (Config.Jam.CleanAmount or 40))

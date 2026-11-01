@@ -147,8 +147,13 @@ function M.SetGrade(src, scope, cid, grade)
     if grades and not grades[tostring(grade)] then return false, 'unknown_grade' end
     if not Member.Functions[sc.set](group.name, grade) then return false, 'unknown_grade' end
     if Member.Functions.Save then Member.Functions.Save() end
-    local g = Member.PlayerData[sc.field]
-    notifyOnline(Member, 'Your rank is now ' .. tostring(g and g.grade and g.grade.name or grade) .. '.', 'success')
+    -- Member is pfm-core's copy from before the change (it came through the export): an online
+    -- member is read again for the rank they have now; an offline one is not told anything
+    local Now = not Member.Offline and QBCore.Functions.GetPlayerByCitizenId(Member.PlayerData.citizenid) or nil
+    if Now then Member = Now end
+    local g = Now and Now.PlayerData[sc.field]
+    local def = grades and grades[tostring(grade)]
+    notifyOnline(Member, 'Your rank is now ' .. tostring(g and g.grade and g.grade.name or def and def.name or grade) .. '.', 'success')
     TriggerEvent('qb-log:server:CreateLog', scope == 'job' and 'bossmenu' or 'gangmenu', 'Grade Change', 'yellow',
         ('%s set %s to grade %s (%s)'):format(fullName(Boss), fullName(Member), tostring(grade), group.name), false)
     return true, Member

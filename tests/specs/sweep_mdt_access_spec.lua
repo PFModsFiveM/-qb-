@@ -133,6 +133,8 @@ describe('MDT licenses', function()
     it('unsuspend does not grant a license type the MDT does not manage, or one that was never suspended', function()
         local cid = Mock.players[CIVIL].PlayerData.citizenid
         db.players[cid].metadata = { licences = { driver = false } }
+        -- the citizen is online: the live player holds the same licences (the MDT starts from those)
+        Mock.players[CIVIL].PlayerData.metadata.licences = { driver = false }
         Mock.fireNet('pf_mdt:unsuspendLicense', OFFICER, { citizenId = cid, licenseType = 'pilot' })
         Mock.fireNet('pf_mdt:unsuspendLicense', OFFICER, { citizenId = cid, licenseType = 'driver' })
         assert_eq(ran('UPDATE players SET metadata'), 0)
@@ -140,9 +142,13 @@ describe('MDT licenses', function()
     it('a suspended license is restored', function()
         local cid = Mock.players[CIVIL].PlayerData.citizenid
         db.players[cid].metadata = { licences = { driver = false }, licenseSuspensions = { driver = '2030-01-01 00:00:00' } }
+        local liveMeta = Mock.players[CIVIL].PlayerData.metadata
+        liveMeta.licences = { driver = false }
+        liveMeta.licenseSuspensions = { driver = '2030-01-01 00:00:00' }
         Mock.fireNet('pf_mdt:unsuspendLicense', OFFICER, { citizenId = cid, licenseType = 'driver' })
         assert_eq(ran('UPDATE players SET metadata'), 1)
         assert_true(json.decode(lastParams('UPDATE players SET metadata')[1]).licences.driver == true)
+        assert_eq(Mock.players[CIVIL].PlayerData.metadata.licences.driver, true, 'the online citizen has it back')
     end)
 end)
 

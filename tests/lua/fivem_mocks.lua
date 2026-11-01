@@ -487,9 +487,20 @@ Mock.exportsByResource['pfm-core'] = {
     GetCoreObject = function(_, filters) return Mock.coreObject(filters) end,
     GrantVehicleSpawn = function(_, src, model) Mock.vehicleGrants[#Mock.vehicleGrants + 1] = { src = src, model = model } return true end,
     RegisterJobVehicles = function() return true end,
+    -- like pfm-core (server/exports.lua): AddItems adds all or nothing, one existing item refuses it
     AddItems = function(_, items)
-        for name, def in pairs(items or {}) do QBCoreMock.Shared.Items[name] = QBCoreMock.Shared.Items[name] or def end
-        return true
+        for name, def in pairs(items or {}) do
+            if type(name) ~= 'string' then return false, 'invalid_item_name', def end
+            if QBCoreMock.Shared.Items[name] then return false, 'item_exists', def end
+        end
+        for name, def in pairs(items or {}) do QBCoreMock.Shared.Items[name] = def end
+        return true, 'success', nil
+    end,
+    AddItem = function(_, name, def)
+        if type(name) ~= 'string' then return false, 'invalid_item_name' end
+        if QBCoreMock.Shared.Items[name] then return false, 'item_exists' end
+        QBCoreMock.Shared.Items[name] = def
+        return true, 'success'
     end,
     GetPlayer = function(_, id) return Mock.players[id] end,
     GetShared = function(_, key) return QBCoreMock.Shared[key] end,
