@@ -19,6 +19,7 @@ client_scripts {
 }
 
 server_scripts {
+    "@oxmysql/lib/MySQL.lua",
     "@pfm-banking/payouts.lua",
     "server/main.lua",
     "server/pricing.lua"
@@ -31,6 +32,9 @@ files {
     "html/style.css"
 }
 
-dependency 'pfm-target'
+dependencies {
+    'pfm-target',
+    'oxmysql',
+}
 
 provide 'LegacyFuel'

@@ -36,7 +36,7 @@ FakeDB.extraPatterns = {
     end },
 }
 
-LedgerEnv.load('pfm-vehiclesales', { 'pfm-vehiclesales/config.lua', 'pfm-vehiclesales/server/main.lua' })
+LedgerEnv.load('pfm-vehiclesales', { 'pfm-vehiclesales/config.lua', 'pfm-vehicleshop/settlements.lua', 'pfm-vehiclesales/server/main.lua' })
 Mock.exportsByResource['pfm-phone'] = { sendNewMailToOffline = function() end }
 
 local BUYER, BUYER2, SELLER = 1, 2, 3

@@ -38,6 +38,8 @@ Used Car Sale for QB-Core Framework :blue_car:
 - Ability to put your vehicle on sale for other players to buy
 - Ability to take your vehicle back if it is not sold yet
 - Ability to sell your vehicle to the dealer for a fixed amount
+- Job fleet cars (pf-jobgarages) are never listed, sold back or sold to a buyer
+- A purchase the bank cannot confirm at once holds the listing for the buyer, never charges twice and finishes on its own (the car parked in `Config.DeliveryGarage`) or puts the car back on the lot; the seller's money and refunds are kept and retried until paid. Needs `pfm-vehicleshop` installed (it loads `@pfm-vehicleshop/settlements.lua`)
 
 ## Installation
 ### Manual

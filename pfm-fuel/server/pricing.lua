@@ -52,6 +52,27 @@ function GetStationIndexForCoords(coords)
     return best
 end
 
+--- Whether `src` stands at a pump the server knows: within a listed station (Config.GasStations)
+--- or beside one of Config.ExtraPumps (a pump outside the station list, e.g. on a custom map).
+--- Returns true plus the station index (nil at an extra pump), or false. Positions are the
+--- server's: the server cannot see pump props, so a pump in neither list does not sell.
+function StationForPlayer(src)
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 then return false end
+    local coords = GetEntityCoords(ped)
+    local index = GetStationIndexForCoords(coords)
+    if index then return true, index end
+    local reach = tonumber(Config.ExtraPumpRadius) or 10.0
+    for _, pump in ipairs(type(Config.ExtraPumps) == 'table' and Config.ExtraPumps or {}) do
+        local kind = type(pump)
+        if kind == 'vector3' or kind == 'vector4' or kind == 'table' then
+            local x, y, z = tonumber(pump.x), tonumber(pump.y), tonumber(pump.z)
+            if x and y and z and #(coords - vector3(x, y, z)) <= reach then return true, nil end
+        end
+    end
+    return false
+end
+
 function GetStationFuelPrice(index)
     local mult = (index and stationMults[index]) or 1.0
     return round2(Config.FuelPrice * mult)
@@ -80,10 +101,11 @@ function CollectFuelTax(subtotal, citizenid, tax, key)
     return tonumber(value) or 0
 end
 
--- all-in per-litre price at the pump the player is standing at
+-- all-in per-litre price at the pump the player is standing at; false away from a known station
+-- (the pump would refuse the refill)
 QBCore.Functions.CreateCallback('qb-fuel:server:getPumpPrice', function(src, cb)
-    local coords = GetEntityCoords(GetPlayerPed(src))
-    local index = GetStationIndexForCoords(coords)
+    local atStation, index = StationForPlayer(src)
+    if not atStation then return cb(false) end
     local perLitre = GetStationFuelPrice(index)
     local taxRate = GetFuelTaxRate()
     cb(round2(perLitre * (1 + taxRate)), perLitre, taxRate * 100)

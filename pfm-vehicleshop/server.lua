@@ -60,7 +60,12 @@ PFShop.Migrations = {
             KEY `seller_cid` (`seller_cid`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
     } },
+    -- money a sale still owes (retried until paid) and sales whose charge the bank has not
+    -- confirmed yet (settlements.lua)
+    { version = 2, name = 'owed payments and held sales', up = PFSettle.MigrationSteps('pfm_vehicleshop') },
 }
+PFSettle.Init('pfm_vehicleshop')
+PFSettle.MailSender = 'Vehicle dealership'
 
 --- When this player's play time started being counted for finance (os.time()), if online.
 function PFShop.SessionStart(citizenid) return financetimer[citizenid] end
@@ -288,12 +293,21 @@ local financeBusy = {}    -- [plate] = true while a finance payment is processed
 -- Job fleet cars (pf-jobgarages job_garage_vehicles, active) belong to their job garage: pfm-garages
 -- never gives them out of a personal garage, so they cannot be given or sold to another player
 -- (the buyer would pay for a car they can never take out). The table may not exist.
+-- A failed lookup is not cached and not taken as "no table" (that would let a fleet car through
+-- for 5 minutes): callers refuse while it cannot be told.
 local fleetTableKnown = nil
+--- true / false, or nil when the lookup failed.
 local function fleetTableExists()
     if fleetTableKnown == nil then
-        fleetTableKnown = (tonumber(MySQL.scalar.await(
-            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")) or 0) > 0
-        if not fleetTableKnown then SetTimeout(300000, function() fleetTableKnown = nil end) end
+        local ok, n = pcall(MySQL.scalar.await,
+            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")
+        n = ok and tonumber(n) or nil
+        if n == nil then return nil end
+        -- "no table" is asked again after 5 minutes (the resource may be installed meanwhile)
+        local exists = n > 0
+        fleetTableKnown = exists
+        if not exists then SetTimeout(300000, function() fleetTableKnown = nil end) end
+        return exists
     end
     return fleetTableKnown
 end
@@ -301,7 +315,9 @@ end
 --- true when the plate is an active fleet car; also true when that cannot be told (refused then).
 local function isFleetPlate(plate)
     local ok, fleet = pcall(function()
-        if not fleetTableExists() then return false end
+        local exists = fleetTableExists()
+        if exists == nil then error('fleet table lookup failed') end
+        if not exists then return false end
         return MySQL.scalar.await('SELECT id FROM job_garage_vehicles WHERE plate = ? AND active = 1 LIMIT 1', { plate }) ~= nil
     end)
     if not ok then return true end
@@ -309,10 +325,11 @@ local function isFleetPlate(plate)
 end
 
 --- The condition an ownership change adds, so a car put in a fleet after the check does not change
---- hands in the same moment (one statement). Returns sql, params.
+--- hands in the same moment (one statement). Returns sql, params; nil when it cannot be told.
 local function notInFleet(plate)
-    local ok, exists = pcall(fleetTableExists)
-    if ok and exists then
+    local exists = fleetTableExists()
+    if exists == nil then return nil end
+    if exists then
         return ' AND NOT EXISTS (SELECT 1 FROM job_garage_vehicles WHERE plate = ? AND active = 1)', { plate }
     end
     return '', {}
@@ -339,6 +356,7 @@ end
 --- not above what the buyer saw, not in a fleet. Returns true when it moved.
 local function claimTransfer(plate, sellerCid, buyerCid, buyerLicense, loanShown)
     local fleetSql, fleetParams = notInFleet(plate)
+    if not fleetSql then return false end
     local maxBalance = Config.PreventFinanceSelling and 0 or (loanShown or 0)
     local n = MySQL.update.await('UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ? AND citizenid = ? AND balance <= ?' .. fleetSql,
         { buyerCid, buyerLicense, plate, sellerCid, maxBalance, table.unpack(fleetParams) })
@@ -387,18 +405,30 @@ local function financeTerms(price, downPayment, payments)
     return { down = downPayment, payments = payments, balance = balance, perPayment = perPayment }
 end
 
-local function insertVehicle(Player, model, plate, terms)
-    if terms then
-        MySQL.insert('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state, balance, paymentamount, paymentsleft, financetime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', {
-            Player.PlayerData.license, Player.PlayerData.citizenid, model, GetHashKey(model), '{}', plate, 'pillboxgarage', 0,
-            terms.balance, terms.perPayment, terms.payments, Config.PaymentInterval * 60,
+-- Where a car whose payment cleared later is parked (the buyer may be anywhere, or offline).
+local function deliveryGarage() return type(Config.DeliveryGarage) == 'string' and Config.DeliveryGarage or 'pillboxgarage' end
+
+--- Writes a bought car to the buyer's garage record. owner = { license, citizenid }. A car handed
+--- over at the shop is out (state 0, it spawns there); a parked one waits in the delivery garage.
+--- Returns the insert id or nil.
+local function insertVehicle(owner, model, plate, terms, parked)
+    local garage, state = parked and deliveryGarage() or 'pillboxgarage', parked and 1 or 0
+    local ok, id = pcall(function()
+        if terms then
+            return MySQL.insert.await('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state, balance, paymentamount, paymentsleft, financetime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', {
+                owner.license, owner.citizenid, model, GetHashKey(model), '{}', plate, garage, state,
+                terms.balance, terms.perPayment, terms.payments, Config.PaymentInterval * 60,
+            })
+        end
+        return MySQL.insert.await('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', {
+            owner.license, owner.citizenid, model, GetHashKey(model), '{}', plate, garage, state,
         })
-    else
-        MySQL.insert('INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', {
-            Player.PlayerData.license, Player.PlayerData.citizenid, model, GetHashKey(model), '{}', plate, 'pillboxgarage', 0,
-        })
-    end
+    end)
+    if not ok then print(('^1[pfm-vehicleshop]^7 could not write vehicle %s: %s'):format(tostring(plate), tostring(id))) end
+    return ok and id or nil
 end
+
+local function ownerOf(Player) return { license = Player.PlayerData.license, citizenid = Player.PlayerData.citizenid } end
 
 -- Cars bought and not yet driven out: [source][plate] = model. The spawn callback hands out each
 -- bought car once, at the shop. (It spawned any owned car, any number of times, wherever the client
@@ -408,15 +438,15 @@ local lastTestDrive = {}
 local TESTDRIVE_COOLDOWN = 20
 
 -- A new car is registered with the city: pf-government bills the registration fee (Bills app).
-local function registerVehicle(Player, model, plate)
+local function registerVehicle(cid, model, plate, src)
     if GetResourceState('pf-government') ~= 'started' then return 0 end
     local v = sharedVehicles[model] or {}
     local ok, done, fee = pcall(function()
-        return exports['pf-government']:ChargeVehicleRegistration(Player.PlayerData.citizenid, { model = v.name or model, plate = plate })
+        return exports['pf-government']:ChargeVehicleRegistration(cid, { model = v.name or model, plate = plate })
     end)
     fee = ok and done and tonumber(fee) or 0
-    if fee > 0 then
-        TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, ('Registration: the DMV billed you $%s (see your bills)'):format(comma_value(math.floor(fee))), 'primary')
+    if fee > 0 and src then
+        TriggerClientEvent('QBCore:Notify', src, ('Registration: the DMV billed you $%s (see your bills)'):format(comma_value(math.floor(fee))), 'primary')
     end
     return fee
 end
@@ -428,7 +458,7 @@ local function deliver(Player, model, plate)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.purchased'), 'success')
     TriggerClientEvent('qb-vehicleshop:client:buyShowroomVehicle', src, model, plate)
     TriggerEvent('qb-vehicleshop:server:onVehiclePurchased', Player.PlayerData.citizenid, model, plate)
-    registerVehicle(Player, model, plate)
+    registerVehicle(Player.PlayerData.citizenid, model, plate, src)
 end
 
 --- The salesperson's commission on a dealer sale (Config.Commission, or Config.FinanceCommission for
@@ -551,10 +581,27 @@ QBCore.Functions.CreateCallback('qb-vehicleshop:server:spawnvehicle', function(s
     cb(netId, vehProps, plate)
 end)
 
+-- Errors the ledger returns before it writes anything (nothing moved), as in payouts.lua.
+local REFUSED_BEFORE_WRITE = {
+    insufficient_funds = true, invalid_request = true, invalid_account = true, same_account = true,
+    invalid_amount = true, invalid_key = true,
+}
+
+--- Whether a charge attempt clearly took nothing: failed (not interrupted during the debit, where
+--- the money may have left), compensated (given back), or refused before anything was written.
+local function closedWithoutMoney(res)
+    if res.state == 'compensated' then return true end
+    if res.state == 'failed' then return res.error ~= 'interrupted_unverified' end
+    return res.state == nil and res.txId == nil and REFUSED_BEFORE_WRITE[res.error] == true
+end
+
 --- Charges `amount` from the player's accounts in order under keys base:<n>:<account>, starting at
 --- attempt `first`. A key the ledger already closed without moving money (not enough money that
 --- time) is skipped, so a later attempt can still pay; a key that completed counts as paid, so a
---- retry after a crash never pays twice; a key still in flight stops the attempt.
+--- retry after a crash never pays twice. Any outcome that is not known yet (in flight, written but
+--- not settled, interrupted during the debit) stops there with result.unclear: nothing is taken from
+--- the next account and no later attempt key is used (it could pay a second time once the first
+--- settles).
 --- @return string|false account, string key, table result, number nextAttempt
 local function stableCharge(cid, accounts, amount, base, opts, first)
     local attempt = math.max(1, math.floor(tonumber(first) or 1))
@@ -568,13 +615,14 @@ local function stableCharge(cid, accounts, amount, base, opts, first)
             })
             if res.ok then return account, key, res, attempt + 1 end
             last = res
-            if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' or res.error == 'in_progress' then
+            if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then
                 return false, key, res, attempt
             end
-            if res.duplicate then
-                if res.state ~= 'failed' and res.state ~= 'compensated' then return false, key, res, attempt end
-                spent = spent + 1
+            if not closedWithoutMoney(res) then
+                res.unclear = true
+                return false, key, res, attempt
             end
+            if res.duplicate then spent = spent + 1 end
         end
         if spent < #accounts then return false, key, last, attempt + 1 end
         attempt = attempt + 1
@@ -585,11 +633,33 @@ end
 -- The next attempt of a finance payment key (keys are stable per payment; a failed attempt moves on)
 local paymentAttempt = {}   -- [base key] = attempt
 
+local FINANCE_ACCOUNTS = { 'cash', 'bank' }
+
 local function financeCharge(src, cid, amount, base, reason)
-    local account, key, res, nextAttempt = stableCharge(cid, { 'cash', 'bank' }, amount, base, { kind = 'loan_payment', reason = reason }, paymentAttempt[base])
+    local account, key, res, nextAttempt = stableCharge(cid, FINANCE_ACCOUNTS, amount, base, { kind = 'loan_payment', reason = reason }, paymentAttempt[base])
     paymentAttempt[base] = nextAttempt
     if account then paymentAttempt[base] = nil end
     return account, key, res
+end
+
+--- When a charge's outcome is not known yet (res.unclear), stores the sale as held (settlements.lua)
+--- and tells the buyer; returns the hold then, nil otherwise. The caller hands nothing over: the
+--- held sale is finished, or released, when the ledger settles that charge.
+local function holdIfUnclear(res, opts)
+    if type(res) ~= 'table' or not res.unclear then return nil end
+    local hold = PFSettle.Hold({
+        flow = opts.flow, key = opts.key, accounts = opts.accounts, citizenid = opts.cid, amount = opts.amount,
+        plate = opts.plate, txId = res.txId, data = opts.data,
+    })
+    PFSettle.Tell(opts.cid, Lang:t(opts.message or 'general.payment_held', { vehicle = opts.label or '', garage = deliveryGarage(), ref = hold.ref }), 'primary')
+    return hold
+end
+
+--- The message for a charge that clearly took nothing: the bank not running, or not enough money.
+local function refusedText(res)
+    local err = type(res) == 'table' and res.error
+    if err == 'bank_unavailable' or err == 'ledger_unavailable' then return 'error.bank_unavailable' end
+    return 'error.notenoughmoney'
 end
 
 --- One finance payment of at least the instalment on the player's own financed car. The key is
@@ -603,6 +673,8 @@ function PFShop.FinancePayment(src, plate, paymentAmount)
     if paymentAmount <= 0 or paymentAmount > 100000000 then return { ok = false, error = 'bad_amount' } end
     if type(plate) ~= 'string' or plate == '' or #plate > 16 then return { ok = false, error = 'bad_plate' } end
     if financeBusy[plate] then return { ok = false, error = 'in_progress' } end
+    -- an earlier payment on this car still waits on the bank: it is applied (or not) first
+    if PFSettle.PlateHeld(plate) then return { ok = false, error = 'payment_waiting' } end
 
     local citizenid = player.PlayerData.citizenid
     local dbRow = MySQL.query.await('SELECT balance, paymentamount, paymentsleft, financetime FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, citizenid })
@@ -619,26 +691,40 @@ function PFShop.FinancePayment(src, plate, paymentAmount)
 
     financeBusy[plate] = true
     local base = ('pfm-vehicleshop:finance:%s:%s:%d:%d:%d'):format(citizenid, plate, left, balance, paymentAmount)
-    local ok, account, key = pcall(financeCharge, src, citizenid, paymentAmount, base, 'Vehicle finance payment ' .. plate)
+    local ok, account, key, res = pcall(financeCharge, src, citizenid, paymentAmount, base, 'Vehicle finance payment ' .. plate)
     local result
+    local change = { plate = plate, balance = balance, newBalance = newBalance, newPayment = newPayment, paymentsLeft = paymentsLeft, amount = paymentAmount }
     if not ok then
         print(('^1[pfm-vehicleshop]^7 finance payment for %s failed: %s'):format(plate, tostring(account)))
         result = { ok = false, error = 'server_error' }
     elseif not account then
-        result = { ok = false, error = 'notenoughmoney' }
+        local hold = holdIfUnclear(res, { flow = 'payment', key = key, accounts = FINANCE_ACCOUNTS, cid = citizenid, amount = paymentAmount,
+            plate = plate, data = change, message = 'general.finance_payment_held' })
+        result = hold and { ok = false, error = 'payment_held', ref = hold.ref } or { ok = false, error = 'notenoughmoney' }
     else
-        local n = MySQL.update.await('UPDATE player_vehicles SET balance = ?, paymentamount = ?, paymentsleft = ?, financetime = ? WHERE plate = ? AND citizenid = ? AND balance = ?',
-            { newBalance, newPayment, paymentsLeft, Config.PaymentInterval * 60, plate, citizenid, balance })
-        if (tonumber(n) or 0) < 1 then
-            -- the car changed meanwhile (paid off, repossessed): the payment goes back
-            PFPayout.Pay(citizenid, account, paymentAmount, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle finance payment returned ' .. plate })
-            result = { ok = false, error = 'changed' }
-        else
-            result = { ok = true, paid = paymentAmount, balance = newBalance, paymentsLeft = paymentsLeft, nextPayment = newPayment }
-        end
+        result = PFShop.ApplyFinancePayment(citizenid, account, key, change)
     end
     financeBusy[plate] = nil
     return result
+end
+
+--- Applies a paid finance payment (or pay-off) to the car, only in the state it was paid for; if the
+--- car changed meanwhile (paid off, repossessed) the payment goes back. Rerun-safe: a change that is
+--- already on the car is not refunded.
+function PFShop.ApplyFinancePayment(citizenid, account, key, c)
+    local interval = c.newBalance > 0 and Config.PaymentInterval * 60 or 0
+    local n = MySQL.update.await('UPDATE player_vehicles SET balance = ?, paymentamount = ?, paymentsleft = ?, financetime = ? WHERE plate = ? AND citizenid = ? AND balance = ?',
+        { c.newBalance, c.newPayment, c.paymentsLeft, interval, c.plate, citizenid, c.balance })
+    if (tonumber(n) or 0) >= 1 then
+        return { ok = true, paid = c.amount, balance = c.newBalance, paymentsLeft = c.paymentsLeft, nextPayment = c.newPayment }
+    end
+    local now = MySQL.single.await('SELECT balance, paymentsleft FROM player_vehicles WHERE plate = ? AND citizenid = ?', { c.plate, citizenid })
+    if now and tonumber(now.balance) == c.newBalance and tonumber(now.paymentsleft) == c.paymentsLeft then
+        return { ok = true, paid = c.amount, balance = c.newBalance, paymentsLeft = c.paymentsLeft, nextPayment = c.newPayment }
+    end
+    PFSettle.Owe({ key = key .. ':refund', to = citizenid, account = account, amount = c.amount, kind = 'refund',
+        reason = 'Vehicle finance payment returned ' .. c.plate, label = 'a returned finance payment' })
+    return { ok = false, error = 'changed' }
 end
 
 --- Pays off the player's own financed car in full.
@@ -647,6 +733,7 @@ function PFShop.PayOff(src, plate)
     if not player then return { ok = false, error = 'no_player' } end
     if type(plate) ~= 'string' or plate == '' or #plate > 16 then return { ok = false, error = 'bad_plate' } end
     if financeBusy[plate] then return { ok = false, error = 'in_progress' } end
+    if PFSettle.PlateHeld(plate) then return { ok = false, error = 'payment_waiting' } end
     local citizenid = player.PlayerData.citizenid
     local dbRow = MySQL.query.await('SELECT balance FROM player_vehicles WHERE plate = ? AND citizenid = ?', { plate, citizenid })
     if not dbRow or not dbRow[1] then return { ok = false, error = 'not_owned' } end
@@ -655,27 +742,28 @@ function PFShop.PayOff(src, plate)
 
     financeBusy[plate] = true
     local base = ('pfm-vehicleshop:payoff:%s:%s:%d'):format(citizenid, plate, vehBalance)
-    local ok, account, key = pcall(financeCharge, src, citizenid, vehBalance, base, 'Vehicle paid off ' .. plate)
+    local ok, account, key, res = pcall(financeCharge, src, citizenid, vehBalance, base, 'Vehicle paid off ' .. plate)
     local result
+    local change = { plate = plate, balance = vehBalance, newBalance = 0, newPayment = 0, paymentsLeft = 0, amount = vehBalance }
     if not ok then
         print(('^1[pfm-vehicleshop]^7 pay-off for %s failed: %s'):format(plate, tostring(account)))
         result = { ok = false, error = 'server_error' }
     elseif not account then
-        result = { ok = false, error = 'notenoughmoney' }
+        local hold = holdIfUnclear(res, { flow = 'payment', key = key, accounts = FINANCE_ACCOUNTS, cid = citizenid, amount = vehBalance,
+            plate = plate, data = change, message = 'general.finance_payment_held' })
+        result = hold and { ok = false, error = 'payment_held', ref = hold.ref } or { ok = false, error = 'notenoughmoney' }
     else
-        local n = MySQL.update.await('UPDATE player_vehicles SET balance = ?, paymentamount = ?, paymentsleft = ?, financetime = ? WHERE plate = ? AND citizenid = ? AND balance = ?', { 0, 0, 0, 0, plate, citizenid, vehBalance })
-        if (tonumber(n) or 0) < 1 then
-            PFPayout.Pay(citizenid, account, vehBalance, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle pay-off returned ' .. plate })
-            result = { ok = false, error = 'changed' }
-        else
-            result = { ok = true, paid = vehBalance }
-        end
+        result = PFShop.ApplyFinancePayment(citizenid, account, key, change)
+        if result.ok then result = { ok = true, paid = vehBalance } end
     end
     financeBusy[plate] = nil
     return result
 end
 
-local FINANCE_MESSAGES = { not_owned = 'error.notown', notenoughmoney = 'error.notenoughmoney', overpaid = 'error.overpaid', alreadypaid = 'error.alreadypaid' }
+local FINANCE_MESSAGES = {
+    not_owned = 'error.notown', notenoughmoney = 'error.notenoughmoney', overpaid = 'error.overpaid', alreadypaid = 'error.alreadypaid',
+    payment_waiting = 'error.payment_waiting',
+}
 
 -- Make a finance payment
 RegisterNetEvent('qb-vehicleshop:server:financePayment', function(paymentAmount, vehData)
@@ -711,15 +799,25 @@ RegisterNetEvent('qb-vehicleshop:server:buyShowroomVehicle', function(vehicle)
     local model = vehicle.buyVehicle
     local veh = validModel(model)
     if not veh or not shopFor(src, 'free-use', model) then return end
+    local cid = pData.PlayerData.citizenid
+    -- a purchase of theirs still waits on the bank: a second click would buy a second car
+    if PFSettle.BuyerWaiting(cid) then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.payment_waiting'), 'error') end
     local price = tonumber(veh.price)
     local plate = GeneratePlate()
-    if not PFPayout.Charge(src, { 'cash', 'bank' }, price, {
-        key = ('pfm-vehicleshop:buy:%s:%s'):format(pData.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Vehicle ' .. model,
-    }) then
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notenoughmoney'), 'error')
+    local key = ('pfm-vehicleshop:buy:%s:%s'):format(cid, PFPayout.NewId())
+    local accounts = { 'cash', 'bank' }
+    local account, res = PFPayout.Charge(src, accounts, price, { key = key, kind = 'purchase', reason = 'Vehicle ' .. model, quiet = true })
+    if not account then
+        if holdIfUnclear(res, { flow = 'showroom', key = key, accounts = accounts, cid = cid, amount = price, plate = plate, label = veh.name or model,
+            data = { model = model, plate = plate, license = pData.PlayerData.license } }) then return end
+        TriggerClientEvent('QBCore:Notify', src, Lang:t(refusedText(res)), 'error')
         return
     end
-    insertVehicle(pData, model, plate)
+    if not insertVehicle(ownerOf(pData), model, plate) then
+        -- paid but the car could not be written: the money goes back
+        PFSettle.Owe({ key = key .. ':refund', to = cid, account = account, amount = price, kind = 'refund', reason = 'Vehicle purchase failed ' .. model, label = 'a vehicle purchase that failed' })
+        return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.purchase_failed'), 'error')
+    end
     deliver(pData, model, plate)
 end)
 
@@ -731,14 +829,22 @@ RegisterNetEvent('qb-vehicleshop:server:financeVehicle', function(downPayment, p
     if not pData or not veh or not shopFor(src, 'free-use', vehicle) then return end
     local terms, err = financeTerms(tonumber(veh.price), downPayment, paymentAmount)
     if not terms then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.' .. err), 'error') end
+    local cid = pData.PlayerData.citizenid
+    if PFSettle.BuyerWaiting(cid) then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.payment_waiting'), 'error') end
     local plate = GeneratePlate()
-    if not PFPayout.Charge(src, { 'cash', 'bank' }, terms.down, {
-        key = ('pfm-vehicleshop:finance-down:%s:%s'):format(pData.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Vehicle down payment ' .. vehicle,
-    }) then
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notenoughmoney'), 'error')
+    local key = ('pfm-vehicleshop:finance-down:%s:%s'):format(cid, PFPayout.NewId())
+    local accounts = { 'cash', 'bank' }
+    local account, res = PFPayout.Charge(src, accounts, terms.down, { key = key, kind = 'purchase', reason = 'Vehicle down payment ' .. vehicle, quiet = true })
+    if not account then
+        if holdIfUnclear(res, { flow = 'showroom', key = key, accounts = accounts, cid = cid, amount = terms.down, plate = plate, label = veh.name or vehicle,
+            data = { model = vehicle, plate = plate, license = pData.PlayerData.license, terms = terms } }) then return end
+        TriggerClientEvent('QBCore:Notify', src, Lang:t(refusedText(res)), 'error')
         return
     end
-    insertVehicle(pData, vehicle, plate, terms)
+    if not insertVehicle(ownerOf(pData), vehicle, plate, terms) then
+        PFSettle.Owe({ key = key .. ':refund', to = cid, account = account, amount = terms.down, kind = 'refund', reason = 'Vehicle purchase failed ' .. vehicle, label = 'a vehicle purchase that failed' })
+        return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.purchase_failed'), 'error')
+    end
     deliver(pData, vehicle, plate)
 end)
 
@@ -764,6 +870,14 @@ local function offerView(o)
     }
 end
 PFShop.OfferView = offerView
+
+--- What a held dealer sale keeps of its offer (stored as JSON until the payment clears).
+local function saleOf(o)
+    return {
+        kind = o.kind, model = o.model, label = o.label, price = o.price, terms = o.terms, amount = o.amount, tax = o.tax or 0,
+        job = o.job, shop = o.shop, shopLabel = o.shopLabel, sellerCid = o.sellerCid, sellerName = o.sellerName, commission = o.commission or 0,
+    }
+end
 
 function PFShop.PendingOfferFor(src)
     local o = pendingOffers[src]
@@ -874,12 +988,12 @@ RegisterNetEvent('qb-vehicleshop:server:sellfinanceVehicle', function(downPaymen
     dealerOffer(source, playerid, vehicle, downPayment == nil and -1 or downPayment, paymentAmount)
 end)
 
-local function recordSale(o, plate, buyer, key)
+local function recordSale(o, plate, buyerCid, buyerName, key)
     if not PFShop.dbReady then return end
     MySQL.insert.await([[INSERT IGNORE INTO pfm_vehicleshop_sales (shop, model, plate, price, tax, paid_now, financed, buyer_cid, buyer_name,
         seller_cid, seller_name, commission, ledger_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]], {
         o.shop or '', o.model, plate, o.price, o.tax or 0, o.amount + (o.tax or 0), o.terms and 1 or 0,
-        buyer.PlayerData.citizenid, nameOf(buyer), o.sellerCid, o.sellerName, o.commission or 0, key,
+        buyerCid, buyerName, o.sellerCid, o.sellerName, o.commission or 0, key,
     })
 end
 
@@ -896,9 +1010,23 @@ local function settleTax(o, cid, key)
     end
     local uncollected = math.floor((tax - collected) * 100 + 0.5) / 100
     if uncollected > 0 then
-        PFPayout.Pay(cid, 'bank', uncollected, { key = key .. ':tax-refund', kind = 'refund', reason = 'Uncollected vehicle tax', quiet = true })
+        PFSettle.Owe({ key = key .. ':tax-refund', to = cid, account = 'bank', amount = uncollected, kind = 'refund', reason = 'Uncollected vehicle tax', label = 'uncollected vehicle tax' })
     end
     return collected
+end
+
+--- The money of a paid dealer sale: the price is split, the salesperson's commission out of it and
+--- the rest to the dealership (for a financed car the shop pays out the part the buyer still owes
+--- it). Each part once, by key, and kept until it is paid. Returns the commission.
+local function payDealerSale(o, key)
+    local commission = math.max(0, math.min(o.price, tonumber(o.commission) or 0))
+    if o.price - commission > 0 then
+        PFSettle.Owe({ key = key .. ':dealership', to = 'society:' .. tostring(o.job), amount = o.price - commission, kind = 'deposit', reason = 'Vehicle sale' })
+    end
+    if commission > 0 then
+        PFSettle.Owe({ key = key .. ':commission', to = o.sellerCid, account = 'bank', amount = commission, kind = 'wage', reason = 'Vehicle sale commission', label = 'your sale commission' })
+    end
+    return commission
 end
 
 --- An accepted paid transfer (/transfervehicle with a price). The buyer pays into the shop's
@@ -915,25 +1043,33 @@ function PFShop.AcceptTransfer(src, offer, customer, key)
         TriggerClientEvent('QBCore:Notify', offer.sellerSrc, text, 'error')
         return { ok = false, error = refused }
     end
-    local account = PFPayout.Charge(src, { 'cash', 'bank' }, offer.amount, { key = key .. ':charge', kind = 'purchase', reason = 'Vehicle ' .. offer.plate })
+    local accounts = { 'cash', 'bank' }
+    local license = QBCore.Functions.GetIdentifier(src, 'license')
+    local account, res = PFPayout.Charge(src, accounts, offer.amount, { key = key .. ':charge', kind = 'purchase', reason = 'Vehicle ' .. offer.plate, quiet = true })
     if not account then
-        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.buyertoopoor'), 'error')
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notenoughmoney'), 'error')
+        -- not known yet: the car stays the seller's until the payment clears, then it moves (or the
+        -- buyer is refunded if it can no longer move); nothing is charged again
+        local hold = holdIfUnclear(res, { flow = 'transfer', key = key .. ':charge', accounts = accounts, cid = cid, amount = offer.amount,
+            plate = offer.plate, label = offer.label, message = 'general.transfer_held',
+            data = { base = key, plate = offer.plate, sellerCid = offer.sellerCid, loan = offer.loan or 0, license = license, label = offer.label, amount = offer.amount } })
+        if hold then
+            TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('general.transfer_held_seller', { ref = hold.ref }), 'primary')
+            return { ok = false, error = 'payment_held', ref = hold.ref }
+        end
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t(refusedText(res) == 'error.notenoughmoney' and 'error.buyertoopoor' or refusedText(res)), 'error')
+        TriggerClientEvent('QBCore:Notify', src, Lang:t(refusedText(res)), 'error')
         return { ok = false, error = 'insufficient_funds' }
     end
-    if not claimTransfer(offer.plate, offer.sellerCid, cid, QBCore.Functions.GetIdentifier(src, 'license'), offer.loan or 0) then
-        if not PFPayout.Pay(cid, account, offer.amount, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle sale did not go through ' .. offer.plate }) then
-            print(('^1[pfm-vehicleshop]^7 buyer %s was not refunded for %s (key %s:refund)'):format(cid, offer.plate, key))
-        end
+    if not claimTransfer(offer.plate, offer.sellerCid, cid, license, offer.loan or 0) then
+        PFSettle.Owe({ key = key .. ':refund', to = cid, account = account, amount = offer.amount, kind = 'refund',
+            reason = 'Vehicle sale did not go through ' .. offer.plate, label = 'a vehicle sale that did not go through' })
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.transfer_changed'), 'error')
         TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.transfer_changed'), 'error')
         return { ok = false, error = 'vehicle_changed' }
     end
-    local paid = PFPayout.Pay(offer.sellerCid, account, offer.amount, { key = key .. ':seller', kind = 'sale', reason = 'Vehicle sold ' .. offer.plate, quiet = true })
-    if not paid then
-        -- the money is in the shop's account under this key; staff can settle it from the ledger
-        print(('^1[pfm-vehicleshop]^7 seller %s was not paid for %s (key %s:seller)'):format(offer.sellerCid, offer.plate, key))
-    end
+    -- kept and retried until paid (the money stays in the shop's account until then)
+    PFSettle.Owe({ key = key .. ':seller', to = offer.sellerCid, account = account, amount = offer.amount, kind = 'sale',
+        reason = 'Vehicle sold ' .. offer.plate, label = 'the sale of ' .. tostring(offer.label or offer.plate) })
     TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('success.soldfor') .. comma_value(offer.amount), 'success')
     TriggerClientEvent('vehiclekeys:client:SetOwner', src, offer.plate)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.boughtfor') .. comma_value(offer.amount), 'success')
@@ -949,8 +1085,12 @@ end
 function PFShop.AnswerOffer(src, accepted, id)
     local offer = pendingOffers[src]
     if not offer or type(id) ~= 'string' or offer.id ~= id then return { ok = false, error = 'not_found' } end
-    -- the car is changing hands in another call (a gift, another buyer): this offer stays open
-    if offer.kind == 'transfer' and plateBusy[offer.plate] then return { ok = false, error = 'in_progress' } end
+    -- the car is changing hands in another call (a gift, another buyer, a sale waiting on the
+    -- bank): this offer stays open
+    if offer.kind == 'transfer' and (plateBusy[offer.plate] or PFSettle.PlateHeld(offer.plate)) then return { ok = false, error = 'in_progress' } end
+    -- a purchase of the customer's still waits on the bank: accepting would charge them a second time
+    local answering = exports['pfm-core']:GetPlayer(src)
+    if accepted == true and answering and PFSettle.BuyerWaiting(answering.PlayerData.citizenid) then return { ok = false, error = 'payment_waiting' } end
     pendingOffers[src] = nil
     pushApp(offer.sellerSrc, 'cardealer-sales', 'changed')
     if os.time() > offer.expires then return { ok = false, error = 'expired' } end
@@ -986,25 +1126,35 @@ function PFShop.AnswerOffer(src, accepted, id)
         return { ok = false, error = 'out_of_stock' }
     end
     local total = offer.amount + (offer.tax or 0)
-    if not PFPayout.Charge(src, { 'cash', 'bank' }, total, { key = key .. ':charge', kind = 'purchase', reason = 'Vehicle ' .. offer.model }) then
+    local accounts = { 'cash', 'bank' }
+    local account, res = PFPayout.Charge(src, accounts, total, { key = key .. ':charge', kind = 'purchase', reason = 'Vehicle ' .. offer.model, quiet = true })
+    if not account then
+        -- not known yet: the car stays reserved (stock taken) until the payment clears; the sale
+        -- then finishes on its own, the car parked in the delivery garage
+        local hold = holdIfUnclear(res, { flow = 'dealer', key = key .. ':charge', accounts = accounts, cid = cid, amount = total, label = offer.label,
+            data = { base = key, offer = saleOf(offer), model = offer.model, plate = GeneratePlate(), license = customer.PlayerData.license, buyerName = nameOf(customer) } })
+        if hold then
+            TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('general.sale_held_seller', { ref = hold.ref }), 'primary')
+            pushApp(src, 'cardealer', 'changed')
+            return { ok = false, error = 'payment_held', ref = hold.ref }
+        end
         PFShop.ReturnStock(offer.shop, offer.model)
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.notenoughmoney'), 'error')
-        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.notenoughmoney'), 'error')
+        TriggerClientEvent('QBCore:Notify', src, Lang:t(refusedText(res)), 'error')
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t(refusedText(res)), 'error')
         return { ok = false, error = 'insufficient_funds' }
     end
-    settleTax(offer, cid, key)
+    -- the car first: if it cannot be written, nothing else was paid and the buyer gets it all back
     local plate = GeneratePlate()
-    insertVehicle(customer, offer.model, plate, offer.terms)
-    -- the price is split: the salesperson's commission out of it, the rest to the dealership (for
-    -- a financed car the shop pays out the part the buyer still owes it). Each part once, by key.
-    local commission = math.max(0, math.min(offer.price, tonumber(offer.commission) or 0))
-    if offer.price - commission > 0 then
-        PFPayout.PaySociety(offer.job, offer.price - commission, { key = key .. ':dealership', reason = 'Vehicle sale' })
+    if not insertVehicle(ownerOf(customer), offer.model, plate, offer.terms) then
+        PFShop.ReturnStock(offer.shop, offer.model)
+        PFSettle.Owe({ key = key .. ':refund', to = cid, account = account, amount = total, kind = 'refund', reason = 'Vehicle purchase failed ' .. offer.model, label = 'a vehicle purchase that failed' })
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.purchase_failed'), 'error')
+        TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('error.purchase_failed'), 'error')
+        return { ok = false, error = 'server_error' }
     end
-    if commission > 0 then
-        PFPayout.Pay(offer.sellerCid, 'bank', commission, { key = key .. ':commission', kind = 'wage', reason = 'Vehicle sale commission', quiet = true })
-    end
-    recordSale(offer, plate, customer, key)
+    settleTax(offer, cid, key)
+    local commission = payDealerSale(offer, key)
+    recordSale(offer, plate, cid, nameOf(customer), key)
     if commission > 0 then
         TriggerClientEvent('QBCore:Notify', offer.sellerSrc, Lang:t('success.earned_commission', { amount = comma_value(commission) }), 'success')
     end
@@ -1024,6 +1174,8 @@ RegisterNetEvent('qb-vehicleshop:server:answerPurchase', function(answer, id)
     local res = PFShop.AnswerOffer(src, accepted, id)
     if not res.ok and res.error == 'not_found' and accepted and pendingOffers[src] then
         TriggerClientEvent('QBCore:Notify', src, 'The offer changed. Check the new offer before accepting.', 'error')
+    elseif res.error == 'payment_waiting' then
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.payment_waiting'), 'error')
     end
 end)
 
@@ -1033,22 +1185,39 @@ AddEventHandler('playerDropped', function()
     lastTestDrive[source] = nil
 end)
 
+--- Repossesses a car whose payment is overdue: only the owner's car, still owing and still overdue
+--- in the same statement (a payment made during the warning keeps it), and not while one of its
+--- payments is being processed or waits on the bank. A job fleet built on the car loses it too
+--- (pf-jobgarages deactivates the fleet entry and takes the car off the road), so the job cannot
+--- keep spawning a repossessed car. Returns true when it was taken.
+function PFShop.Repossess(citizenid, plate)
+    if financeBusy[plate] or PFSettle.PlateHeld(plate) then return false end
+    local res = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? AND balance > 0 AND financetime < 1', { plate, citizenid })
+    if not res or (tonumber(res.affectedRows) or 0) < 1 then return false end
+    TriggerEvent('pfm-vehicleshop:server:vehicleRepossessed', plate, citizenid)
+    -- pf-jobgarages not running: its fleet entry is closed here so it cannot come back later
+    if GetResourceState('pf-jobgarages') ~= 'started' and fleetTableExists() then
+        pcall(MySQL.update.await, 'UPDATE job_garage_vehicles SET active = 0, `out` = 0 WHERE plate = ? AND active = 1', { plate })
+    end
+    return true
+end
+
 -- Check if payment is due
 RegisterNetEvent('qb-vehicleshop:server:checkFinance', function()
     local src = source
     local player = exports['pfm-core']:GetPlayer(src)
     if not player then return end
+    local citizenid = player.PlayerData.citizenid
     local query = 'SELECT * FROM player_vehicles WHERE citizenid = ? AND balance > 0 AND financetime < 1'
-    local result = MySQL.query.await(query, { player.PlayerData.citizenid })
+    local result = MySQL.query.await(query, { citizenid })
     if result[1] then
         TriggerClientEvent('QBCore:Notify', src, Lang:t('general.paymentduein', { time = Config.PaymentWarning }))
         Wait(Config.PaymentWarning * 60000)
-        local vehicles = MySQL.query.await(query, { player.PlayerData.citizenid })
+        local vehicles = MySQL.query.await(query, { citizenid })
         for _, v in pairs(vehicles) do
-            local plate = v.plate
-            MySQL.query('DELETE FROM player_vehicles WHERE plate = @plate', { ['@plate'] = plate })
-            --MySQL.update('UPDATE player_vehicles SET citizenid = ? WHERE plate = ?', {'REPO-'..v.citizenid, plate}) -- Use this if you don't want them to be deleted
-            TriggerClientEvent('QBCore:Notify', src, Lang:t('error.repossessed', { plate = plate }), 'error')
+            if PFShop.Repossess(citizenid, v.plate) then
+                TriggerClientEvent('QBCore:Notify', src, Lang:t('error.repossessed', { plate = v.plate }), 'error')
+            end
         end
     end
 end)
@@ -1071,7 +1240,8 @@ QBCore.Commands.Add('transfervehicle', Lang:t('general.command_transfervehicle')
     local player = exports['pfm-core']:GetPlayer(src)
     local target = exports['pfm-core']:GetPlayer(buyerId)
     if not player then return end
-    if plateBusy[plate] then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.transfer_busy'), 'error') end
+    -- a sale of this car waits on the bank (it moves when that payment clears)
+    if plateBusy[plate] or PFSettle.PlateHeld(plate) then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.transfer_busy'), 'error') end
     if #(GetEntityCoords(ped) - GetEntityCoords(targetPed)) > 5.0 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.playertoofar'), 'error') end
     if not target then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.buyerinfo'), 'error') end
     local targetcid = target.PlayerData.citizenid
@@ -1164,6 +1334,127 @@ AddEventHandler('qb-vehicleshop:server:UpdateShowroomAfterDeletion', function(de
         end
     end
 end)
+
+-- ── sales that waited on the bank (settlements.lua) ─────────────────────────────────────────────
+-- Each handler runs once the held charge settled: `charged` (the money is in the shop's account)
+-- finishes the sale, `none` (nothing was taken) releases what it reserved, `review` (interrupted
+-- during the debit) releases it too and sends the buyer to staff. They are rerun-safe: a crash in
+-- the middle runs the same handler again (keyed payments, a car found by its plate).
+
+local function heldTell(cid, key, subs, kind) PFSettle.Tell(cid, Lang:t(key, subs), kind or 'primary', Lang:t('general.held_subject')) end
+
+--- Writes the car of a held sale once (a re-run finds it by its plate; a plate taken meanwhile is
+--- replaced and stored first). The car waits in the delivery garage. Returns the plate.
+local function writeHeldCar(hold, d, terms)
+    local owner = MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ?', { d.plate })
+    if owner == hold.citizenid then return d.plate end
+    if owner ~= nil then
+        d.plate = GeneratePlate()
+        PFSettle.SaveData(hold)
+    end
+    if not insertVehicle({ license = d.license, citizenid = hold.citizenid }, d.model, d.plate, terms, true) then error('the vehicle could not be written') end
+    return d.plate
+end
+
+--- The registration bill and the purchase event, once per held sale.
+local function announceHeldCar(hold, d, model, plate)
+    if d.announced then return end
+    d.announced = true
+    PFSettle.SaveData(hold)
+    TriggerEvent('qb-vehicleshop:server:onVehiclePurchased', hold.citizenid, model, plate)
+    registerVehicle(hold.citizenid, model, plate, PFSettle.SourceOf(hold.citizenid))
+end
+
+local function labelOf(model) local v = sharedVehicles[model] return v and v.name or tostring(model) end
+
+local function releasedText(outcome) return outcome == 'review' and 'general.held_review' or 'general.held_cancelled' end
+
+PFSettle.handlers.showroom = {
+    charged = function(hold)
+        local d = hold.data
+        local plate = writeHeldCar(hold, d, d.terms)
+        announceHeldCar(hold, d, d.model, plate)
+        heldTell(hold.citizenid, 'general.held_delivered', { vehicle = labelOf(d.model), plate = plate, garage = deliveryGarage() }, 'success')
+    end,
+    none = function(hold) heldTell(hold.citizenid, 'general.held_cancelled', { vehicle = labelOf(hold.data.model), ref = hold.ref or hold.id }) end,
+    review = function(hold) heldTell(hold.citizenid, 'general.held_review', { vehicle = labelOf(hold.data.model), ref = '#' .. tostring(hold.id) }, 'error') end,
+}
+
+local function releaseDealer(hold, outcome)
+    local d = hold.data
+    local o = d.offer or {}
+    if not d.stockReturned then
+        d.stockReturned = true
+        PFSettle.SaveData(hold)
+        PFShop.ReturnStock(o.shop, o.model)
+    end
+    heldTell(hold.citizenid, releasedText(outcome), { vehicle = o.label or labelOf(o.model), ref = '#' .. tostring(hold.id) }, outcome == 'review' and 'error' or 'primary')
+    PFSettle.Tell(o.sellerCid, Lang:t('general.held_sale_cancelled', { vehicle = o.label or labelOf(o.model) }), 'error')
+end
+
+PFSettle.handlers.dealer = {
+    charged = function(hold)
+        local d = hold.data
+        local o = d.offer
+        local plate = writeHeldCar(hold, d, o.terms)
+        settleTax(o, hold.citizenid, d.base)
+        local commission = payDealerSale(o, d.base)
+        recordSale(o, plate, hold.citizenid, d.buyerName, d.base)
+        announceHeldCar(hold, d, o.model, plate)
+        heldTell(hold.citizenid, 'general.held_delivered', { vehicle = o.label, plate = plate, garage = deliveryGarage() }, 'success')
+        PFSettle.Tell(o.sellerCid, Lang:t('general.held_sale_done', { vehicle = o.label }), 'success')
+        if commission > 0 then PFSettle.Tell(o.sellerCid, Lang:t('success.earned_commission', { amount = comma_value(commission) }), 'success') end
+    end,
+    none = function(hold) releaseDealer(hold, 'none') end,
+    review = function(hold) releaseDealer(hold, 'review') end,
+}
+
+PFSettle.handlers.transfer = {
+    charged = function(hold, account)
+        local d = hold.data
+        -- moved by an earlier run of this handler, or now (only in the state the buyer accepted)
+        local moved = MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ?', { d.plate }) == hold.citizenid
+        if not moved then
+            if not notInFleet(d.plate) then error('the fleet check is not available') end
+            moved = claimTransfer(d.plate, d.sellerCid, hold.citizenid, d.license, d.loan or 0)
+        end
+        if moved then
+            PFSettle.Owe({ key = d.base .. ':seller', to = d.sellerCid, account = account, amount = d.amount, kind = 'sale',
+                reason = 'Vehicle sold ' .. d.plate, label = 'the sale of ' .. tostring(d.label or d.plate) })
+            heldTell(hold.citizenid, 'general.held_transfer_done', { vehicle = d.label or d.plate }, 'success')
+            PFSettle.Tell(d.sellerCid, Lang:t('general.held_transfer_paid', { vehicle = d.label or d.plate, amount = comma_value(d.amount) }), 'success')
+            local src = PFSettle.SourceOf(hold.citizenid)
+            if src then TriggerClientEvent('vehiclekeys:client:SetOwner', src, d.plate) end
+        else
+            PFSettle.Owe({ key = d.base .. ':refund', to = hold.citizenid, account = account, amount = d.amount, kind = 'refund',
+                reason = 'Vehicle sale did not go through ' .. d.plate, label = 'a vehicle sale that did not go through' })
+            heldTell(hold.citizenid, 'general.held_refunded', { vehicle = d.label or d.plate, amount = comma_value(d.amount) })
+            PFSettle.Tell(d.sellerCid, Lang:t('error.transfer_changed'), 'error')
+        end
+    end,
+    none = function(hold)
+        heldTell(hold.citizenid, 'general.held_cancelled', { vehicle = hold.data.label or hold.data.plate })
+        PFSettle.Tell(hold.data.sellerCid, Lang:t('general.held_sale_cancelled', { vehicle = hold.data.label or hold.data.plate }), 'error')
+    end,
+    review = function(hold)
+        heldTell(hold.citizenid, 'general.held_review', { vehicle = hold.data.label or hold.data.plate, ref = '#' .. tostring(hold.id) }, 'error')
+        PFSettle.Tell(hold.data.sellerCid, Lang:t('general.held_sale_cancelled', { vehicle = hold.data.label or hold.data.plate }), 'error')
+    end,
+}
+
+PFSettle.handlers.payment = {
+    charged = function(hold, account)
+        local c = hold.data
+        local res = PFShop.ApplyFinancePayment(hold.citizenid, account, hold.charge_key, c)
+        if res.ok then
+            heldTell(hold.citizenid, 'general.held_payment_applied', { amount = comma_value(c.amount), plate = c.plate }, 'success')
+        else
+            heldTell(hold.citizenid, 'general.held_payment_returned', { amount = comma_value(c.amount), plate = c.plate })
+        end
+    end,
+    none = function(hold) heldTell(hold.citizenid, 'general.held_payment_none', { plate = hold.data.plate }) end,
+    review = function(hold) heldTell(hold.citizenid, 'general.held_review', { vehicle = hold.data.plate, ref = '#' .. tostring(hold.id) }, 'error') end,
+}
 
 -- A deleted character: their cars (and with them their finance) are gone with player_vehicles. The
 -- dealership's sales record keeps the sale without their citizen id; open offers and play-time

@@ -1,7 +1,9 @@
 -- pfm-fuel, sv_stateBagStrictMode: the fuel level other players see ('qb-fuel' on the vehicle) is
--- set by the server only. The driver reports ('qb-fuel:server:syncFuel'): a new car takes that
--- level, after that a report can only lower it (fix9hq2_vehiclefx_fuel_sync_spec has the burn-rate
--- cap and the refuel paths that raise it); anyone else, a bad value or a flood changes nothing.
+-- set by the server only. The driver reports ('qb-fuel:server:syncFuel'): a new car's first report
+-- gets it the server's level (stored for its plate, else Config.DefaultFuel; see
+-- fix13b_fuel_first_level_spec), after that a report can only lower it (fix9hq2_vehiclefx_fuel_sync_spec
+-- has the burn-rate cap and the refuel paths that raise it); anyone else, a bad value or a flood
+-- changes nothing.
 -- The client exports report instead of writing the state bag; the client applies the shared level
 -- except a capped answer to its own report on the car it drives; the refuel flows send no client
 -- level; the nozzle flags are local state values.
@@ -19,6 +21,9 @@ function NetworkGetEntityOwner(e) return owners[e] end
 local missing = {}
 function DoesEntityExist(e) return not missing[e] end
 
+local stored = {} -- player_vehicles.fuel by plate
+MySQL.scalar = setmetatable({ await = function(_, p) return stored[p[1]] end }, { __call = function() end })
+
 Config = nil
 load_resource('pfm-fuel/Config.lua')
 load_resource('pfm-fuel/server/main.lua')
@@ -35,7 +40,8 @@ BeforeEach = function()
     Mock.reset()
     Mock.players, Mock.vehicleOf, Mock.coords = {}, {}, {}
     Mock.gameTimer = Mock.gameTimer + 100000            -- a fresh rate window
-    states, owners, missing = {}, {}, {}
+    states, owners, missing, stored = {}, {}, {}, {}
+    Mock.plates = { [CAR] = 'PLATE1' }
     entityType = { [CAR] = 2, [PED_ENTITY] = 1 }
     for _, src in ipairs({ DRIVER, PASSERBY, FARAWAY }) do Mock.newPlayer(src) end
     Mock.coords[DRIVER], Mock.coords[PASSERBY], Mock.coords[CAR] = HERE, HERE + vector3(3.0, 0, 0), HERE
@@ -47,9 +53,10 @@ end
 describe('qb-fuel:server:syncFuel', function()
     local function later(seconds) Mock.gameTimer = Mock.gameTimer + seconds * 1000 end
 
-    it('the driver gives a new car its level, then lowers it as fuel is used', function()
-        sync(DRIVER, CAR, 64.5)
-        assert_eq(fuel(CAR), 64.5)
+    it('a new car gets the server\'s level on its driver\'s first report, then the driver lowers it', function()
+        stored.PLATE1 = 64.5
+        sync(DRIVER, CAR, 99)
+        assert_eq(fuel(CAR), 64.5, 'the stored level, not the report')
         later(10)
         sync(DRIVER, CAR, 62.25)
         assert_eq(fuel(CAR), 62.25)
@@ -59,6 +66,7 @@ describe('qb-fuel:server:syncFuel', function()
     end)
 
     it("another player's car: from far away or beside it, nothing", function()
+        stored.PLATE1 = 50
         sync(DRIVER, CAR, 50)
         later(10)
         for _, src in ipairs({ FARAWAY, PASSERBY }) do
@@ -70,7 +78,7 @@ describe('qb-fuel:server:syncFuel', function()
 
     it('bad values, unknown entities and non-vehicles change nothing', function()
         sync(DRIVER, CAR, 250)
-        assert_eq(fuel(CAR), 100.0, 'clamped to a full tank')
+        assert_eq(fuel(CAR), 100.0, 'an unowned car starts at Config.DefaultFuel')
         later(10)
         for _, bad in ipairs({ 'lots', {}, 0 / 0, math.huge, -math.huge }) do sync(DRIVER, CAR, bad) end
         assert_eq(fuel(CAR), 100.0)
@@ -176,7 +184,7 @@ describe('pfm-fuel client', function()
 
     it('the refuel flows send no client level and take the server\'s answer', function()
         local src = __readfile('pfm-fuel/client/main.lua')
-        assert_true(src:find("TriggerServerEvent%('qb%-fuel:server:setCanFuel', canLiter %- liter, NetworkGetEntityIsNetworked%(veh%) and NetworkGetNetworkIdFromEntity%(veh%) or nil%)") ~= nil, 'jerry can: can level and car only')
+        assert_true(src:find("TriggerServerEvent%('qb%-fuel:server:setCanFuel', canLiter %- liter, NetworkGetNetworkIdFromEntity%(veh%)%)") ~= nil, 'jerry can: can level and car only')
         assert_true(src:find("TriggerCallback%('qb%-fuel:server:refillVehicle', function%(success, level, reason%)") ~= nil, 'pump: async, with the new level')
         assert_true(src:find("end, liter, netId%)") ~= nil, 'pump: litres and car only')
         assert_true(src:find("SetFuel%(veh, tonumber%(level%) or") ~= nil, 'pump: the server\'s level is set locally')

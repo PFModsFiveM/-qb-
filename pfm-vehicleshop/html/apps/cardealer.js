@@ -17,6 +17,8 @@
         bad_shop: 'Choose your dealership', bad_request: 'Something was missing', rate_limited: 'Slow down a little',
         fleet_vehicle: 'That vehicle belongs to a job fleet', financed: 'That vehicle is financed', server_error: 'Something went wrong on the server',
         vehicle_changed: 'The vehicle changed meanwhile. Any payment was returned.',
+        payment_held: 'Your bank has not confirmed this payment yet. You will not be charged again: it completes, or is cancelled with nothing taken, on its own.',
+        payment_waiting: 'A vehicle payment of yours is still waiting on the bank. Try again once it clears.',
     };
 
     function plural(n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; }
@@ -145,7 +147,8 @@
                 state.busy = true;
                 const res = await ctx.rpc(method, payload);
                 state.busy = false;
-                if (!res || !res.ok) ctx.notify(ERRORS[res && res.error] || 'That did not work', 'error');
+                // a payment the bank has not confirmed is not a failure: it settles on its own
+                if (!res || !res.ok) ctx.notify(ERRORS[res && res.error] || 'That did not work', res && res.error === 'payment_held' ? 'primary' : 'error');
                 else if (done) done(res);
                 load();
             }

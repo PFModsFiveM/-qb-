@@ -349,14 +349,17 @@ function PFHouses.PricePaid(house)
     return nil
 end
 
---- Read-only, for other resources (pf-government's weekly property tax): every owned house as
---- { house, citizenid, value, label }. value is what the city was paid for it (purchase_price), or
---- the listing price when nothing was recorded (0 when neither is known). Everything is read from
---- the database, so the answer is right even before this resource has loaded its houses; a house
---- with several rows counts once, with its newest row (as when the owners are loaded).
+--- Read-only, for other resources (pf-government's weekly property tax and house utilities): every
+--- owned house as { house, citizenid, value, label }. value is what the city was paid for it
+--- (purchase_price), or the listing price when nothing was recorded (0 when neither is known).
+--- Everything is read from the database, so the answer is right even before this resource has loaded
+--- its houses; a house with several rows counts once, with its newest row (as when the owners are
+--- loaded). Until this resource's migrations ran (PFHouses.dbReady) purchase_price cannot be read, so
+--- it returns nil, 'not_ready' and the caller tries again later, instead of answering with listing
+--- prices that would bill the wrong amount.
 exports('GetOwnedHouses', function()
-    local rows = MySQL.query.await(PFHouses.dbReady and 'SELECT id, house, citizenid, purchase_price FROM player_houses ORDER BY id'
-        or 'SELECT id, house, citizenid FROM player_houses ORDER BY id', {}) or {}
+    if not PFHouses.dbReady then return nil, 'not_ready' end
+    local rows = MySQL.query.await('SELECT id, house, citizenid, purchase_price FROM player_houses ORDER BY id', {}) or {}
     local newest, order = {}, {}
     for _, r in ipairs(rows) do
         if type(r.house) == 'string' and r.house ~= '' and type(r.citizenid) == 'string' and r.citizenid ~= '' then

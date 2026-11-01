@@ -11,6 +11,9 @@ local Translations = {
         impounded = 'This vehicle is impounded. Pay its impound fee first.',
         lot_unavailable = 'The lot cannot take this right now. Nothing was changed.',
         lot_busy = 'The lot is handling another sale. Try again in a moment.',
+        payment_waiting = 'A car purchase of yours is still waiting on the bank. Try again once it clears.',
+        bank_unavailable = 'The bank is not available right now. Nothing was charged.',
+        sellback_unpaid = 'The bank could not pay for the car right now. You keep your car.',
     },
     menu = {
         view_contract = 'View Contract',
@@ -37,6 +40,15 @@ local Translations = {
         are_you_sure = 'Are you sure you no longer want to sell your vehicle?',
         yes_no = '[~g~7~w~] - Yes | [~r~8~w~] - No',
         place_vehicle_for_sale = '[~g~E~w~] - Place Vehicle For Sale By Owner',
+        -- a charge the bank has not confirmed yet: no car now, never charged again, settled on its own
+        payment_held = 'Your bank has not confirmed this payment yet. You will not be charged again. The car is held for you: when the payment clears it is parked at %{garage}; if it does not, the car goes back on the lot and nothing is taken. Reference %{ref}.',
+        payment_held_gone = 'Your bank has not confirmed this payment yet, and the car was sold or changed meanwhile. You will not be charged again: if the payment clears, the money is returned to you. Reference %{ref}.',
+        sold_back_pending = 'You sold your car to the lot for $%{value}. The bank is still processing the payment; it reaches your account automatically.',
+        held_subject = 'Your used car purchase',
+        held_delivered = 'Your payment cleared. The %{vehicle} (%{plate}) is parked for you at %{garage}.',
+        held_refunded = 'Your payment cleared, but the %{vehicle} was no longer for sale. Your $%{amount} is returned to you.',
+        held_cancelled = 'The bank did not take the payment for the %{vehicle}. The car is back on the lot and nothing was charged.',
+        held_review = 'The bank could not confirm whether the payment for the %{vehicle} left your account. Nothing was delivered and the car is back on the lot. If the money is gone, contact staff with reference %{ref}.',
     },
     charinfo = {
         firstname = 'not',

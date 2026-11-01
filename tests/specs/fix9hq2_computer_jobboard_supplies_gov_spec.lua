@@ -1,5 +1,6 @@
 -- pf-computer (fix9hq2, group computer): the Job Board hiring kind survives a pf-services restart,
--- a supplies pickup run is refused before anything spawns when the player may not collect the order,
+-- a supplies pickup run is refused before anything spawns when the player may not collect the order
+-- (and an order has one pickup run at a time, whoever asks),
 -- and City Hall announcements reach pf-government with seconds and a category it accepts.
 load_resource('tests/lua/fivem_mocks.lua')
 
@@ -260,6 +261,64 @@ describe('fix9hq2 computer: supplies pickup run permission', function()
         runs()['BOSS1'] = nil
         assert_true(pickup(BOSS, 47).ok)
         assert_eq(#spawned, 1)
+    end)
+    -- batch 13b: one pickup run per order, whoever asks
+    it('a second boss cannot start a second run for an order whose run is under way', function()
+        spawned = {}
+        player(4, 'BOSS2', 'mechanic', 4)
+        assert_true(pickup(BOSS, 60).ok)
+        local second = pickup(4, 60)
+        assert_eq(second and second.error, 'pickup_in_progress')
+        assert_eq(#spawned, 1, 'one truck for the order')
+        assert_eq(runs()['BOSS2'], nil)
+        assert_true(pickup(4, 61).ok, 'another order is fine')
+        assert_eq(#spawned, 2)
+        runs()['BOSS1'], runs()['BOSS2'] = nil, nil
+    end)
+    it('a run whose driver left, or that started hours ago, does not block the order', function()
+        spawned = {}
+        player(4, 'BOSS2', 'mechanic', 4)
+        assert_true(pickup(BOSS, 62).ok)
+        Mock.players[BOSS] = nil                 -- the first boss left (pf-mechanicjob ended the mission)
+        assert_true(pickup(4, 62).ok, 'the second boss can drive it')
+        assert_eq(runs()['BOSS1'], nil, 'the dead run is forgotten')
+        assert_eq(runs()['BOSS2'].orderId, 62)
+        player(BOSS, 'BOSS1', 'mechanic', 4)
+        runs()['BOSS2'].startedAt = os.time() - 3 * 3600
+        assert_true(pickup(BOSS, 62).ok, 'a run started three hours ago no longer counts')
+        assert_eq(#spawned, 3)
+        assert_eq(runs()['BOSS2'], nil)
+        runs()['BOSS1'] = nil
+    end)
+    it('order numbers that are not whole positive numbers are refused before anything is read', function()
+        spawned = {}
+        for _, bad in ipairs({ 0 / 0, -1, 0, 1.5, 1e12, 'x' }) do
+            local res = pickup(BOSS, bad)
+            assert_eq(res and res.error, 'invalid_order', tostring(bad))
+        end
+        assert_eq(orderReads, 0)
+        assert_eq(#spawned, 0)
+    end)
+    it('two bosses asking at the same moment start one run', function()
+        spawned = {}
+        player(4, 'BOSS2', 'mechanic', 4)
+        local inner
+        onGetOrder = function()
+            onGetOrder = nil
+            -- the second boss asks while the first request waits on the order read
+            inner = call(4, 'business:supplies:orders:pickup', { orderId = 63, mode = 'job' })
+        end
+        Mock.clientEvents = {}
+        started['pf-mechanicjob'] = true
+        Mock.exportsByResource['pf-mechanicjob'] = { StartSuppliesPickup = function(_, s, order) spawned[#spawned + 1] = { src = s, order = order } return true end }
+        Mock.gameTimer = Mock.gameTimer + 100000
+        local res = PFComputer.dispatch('business:supplies:orders:pickup', { orderId = 63, mode = 'job' }, BOSS)
+        started['pf-mechanicjob'] = nil
+        Mock.exportsByResource['pf-mechanicjob'] = nil
+        assert_true(res and res.ok, tostring(res and res.error))
+        assert_eq(inner and inner.error, 'busy')
+        assert_eq(#spawned, 1, 'one truck')
+        runs()['BOSS1'] = nil
     end)
 end)
 

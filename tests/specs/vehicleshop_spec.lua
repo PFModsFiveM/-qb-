@@ -53,7 +53,7 @@ FakeDB.extraPatterns = {
     { 'SELECT citizenid, balance FROM player_vehicles WHERE plate = ?', function(p) return vehicles[p[1]] and { vehicles[p[1]] } or {} end },
 }
 
-LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/server.lua' })
+LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/settlements.lua', 'pfm-vehicleshop/server.lua' })
 
 local BUYER, DEALER, STRANGER = 1, 2, 3
 local PDM = Config.Shops.pdm.Location

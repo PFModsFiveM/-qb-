@@ -581,14 +581,30 @@ end
 
 exports('CloseInventory', CloseInventory)
 
--- Opens the inventory of a player by their ID.
+-- Opens another player's inventory for `source` (a search). Every search is range bound: to the
+-- caller's own limit (`opts.reach`, metres, at most 5) or to 5 m. Only the admin menu, recognised by
+-- the resource that called this export, searches from any distance (see ResolveSearchReach).
+-- The search takes its lock on the target before the opening wait and closes the target's own
+-- windows; nothing opens when the search ended during the wait (either player left, they moved
+-- apart, the searcher opened something else, or another search took over).
 --- @param source number - The player's server ID.
 --- @param targetId number - The ID of the player whose inventory will be opened.
-function OpenInventoryById(source, targetId)
+--- @param opts table|nil - { reach = metres }: the caller's own distance limit for the whole search.
+--- @return boolean - true when the search window was opened.
+function OpenInventoryById(source, targetId, opts)
+    -- read first: after a wait it would no longer name the resource that called the export
+    local reach = ResolveSearchReach(GetInvokingResource(), opts)
+    source, targetId = tonumber(source), tonumber(targetId)
+    if not source or not targetId or source == targetId then return false end
     local QBPlayer = exports['pfm-core']:GetPlayer(source)
-    local TargetPlayer = exports['pfm-core']:GetPlayer(tonumber(targetId))
-    if not QBPlayer or not TargetPlayer then return end
-    if Player(targetId).state.inv_busy then CloseInventory(targetId) end
+    local TargetPlayer = exports['pfm-core']:GetPlayer(targetId)
+    if not QBPlayer or not TargetPlayer then return false end
+    -- a searcher held by a search of their own cannot take items into their inventory
+    if IsBeingSearched(source) then return false end
+    -- the search holds its own lock on the target from here (see BeginInventorySearch in main.lua),
+    -- released on close, on either player's logout or drop, or once they are out of reach
+    local record = BeginInventorySearch(source, targetId, reach)
+    if not record then return false end
     local formattedInventory = {
         name = 'otherplayer-' .. targetId,
         label = GetPlayerName(targetId),
@@ -596,20 +612,32 @@ function OpenInventoryById(source, targetId)
         slots = Config.MaxSlots,
     }
     local hookData = buildHookData('InventoryOpened', source, QBPlayer, targetId, TargetPlayer)
-    if TriggerHook('InventoryOpened', 'player', hookData) == false then return end
+    if TriggerHook('InventoryOpened', 'player', hookData) == false then
+        EndInventorySearch(targetId, source, false)
+        return false
+    end
     Wait(1500)
-    -- either player may have left during the wait (a lock taken for a gone searcher never ended)
+    -- ended or replaced during the wait: its lock is already released, or belongs to the new search
+    if SearchRecords[targetId] ~= record then return false end
     QBPlayer = exports['pfm-core']:GetPlayer(source)
-    TargetPlayer = exports['pfm-core']:GetPlayer(tonumber(targetId))
-    if not QBPlayer or not TargetPlayer then return end
-    -- the search holds its own lock on the target (see BeginInventorySearch in main.lua), released
-    -- on close, on the searcher's logout or drop, or when the searcher walks away
-    if not BeginInventorySearch(source, targetId) then return end
-    local playerItems = QBPlayer.PlayerData.items
-    local targetItems = TargetPlayer.PlayerData.items
-    formattedInventory.inventory = ItemsForClient(tonumber(targetId), targetItems, TargetPlayer)
-    TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, playerItems, QBPlayer), formattedInventory)
+    TargetPlayer = exports['pfm-core']:GetPlayer(targetId)
+    if not QBPlayer or not TargetPlayer or not CheckInventorySearch(targetId) then
+        EndInventorySearch(targetId, source, false)
+        return false
+    end
+    local ok, err = pcall(function()
+        formattedInventory.inventory = ItemsForClient(targetId, TargetPlayer.PlayerData.items, TargetPlayer)
+        TriggerClientEvent('qb-inventory:client:openInventory', source, ItemsForClient(source, QBPlayer.PlayerData.items, QBPlayer), formattedInventory)
+    end)
+    if not ok then
+        -- no window opened, so the searcher could never close it: release the target now
+        EndInventorySearch(targetId, source, false)
+        print(('[pfm-inventory] search of %d by %d could not open: %s'):format(targetId, source, tostring(err)))
+        return false
+    end
+    record.shown = true
     TriggerListener('InventoryOpened', 'player', hookData)
+    return true
 end
 
 exports('OpenInventoryById', OpenInventoryById)
@@ -672,6 +700,8 @@ function OpenShop(source, name)
     if not name then return end
     local Player = exports['pfm-core']:GetPlayer(source)
     if not Player then return end
+    -- a searched player cannot shop until the search ends (a stale search ends here instead)
+    if IsBeingSearched(source) then return end
     if not RegisteredShops[name] then return end
     local playerPed = GetPlayerPed(source)
     local playerCoords = GetEntityCoords(playerPed)
@@ -703,7 +733,7 @@ exports('OpenShop', OpenShop)
 --- @param data table|nil Additional data for initializing the inventory.
 function OpenInventory(source, identifier, data)
     -- a search on this player whose searcher walked away or left ends here instead of at the next tick
-    if InventoryViewers[tonumber(source)] then CheckInventorySearch(source) end
+    IsBeingSearched(source)
     if Player(source).state.inv_busy then return end
     local QBPlayer = exports['pfm-core']:GetPlayer(source)
     if not QBPlayer then return end

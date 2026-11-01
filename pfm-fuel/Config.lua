@@ -10,6 +10,9 @@ Config.FuelSyncTime = 10                     -- Time between syncs in seconds
 -- accepted level. Keep it above what your fastest-burning vehicle uses: a car that burns faster
 -- still drains on its driver's screen, only the level other players see catches up more slowly.
 Config.MaxFuelBurnPerSecond = 0.5
+-- First level the server gives a car that has no stored level (player_vehicles.fuel by its plate):
+-- a new, job, rented or stolen car. An owned car starts at what was stored when it was parked.
+Config.DefaultFuel = 100
 
 Config.MoneyType = 'cash'       -- Money type to use for the fuel transactions
 Config.FuelPrice = 5            -- Price of the fuel per litre (always enforced server-side)
@@ -70,6 +73,13 @@ Config.GasStations = {
 	vector3(-319.292, -1471.715, 30.549),
 	vector3(1784.324, 3330.55, 41.253)
 }
+
+-- Pumps outside the station list above (a custom map, a pump the list misses), e.g.
+-- vector3(x, y, z). The server cannot see pump props, so it sells fuel (pump refills, jerry can
+-- purchases and refills) only within 60 m of a listed station or within ExtraPumpRadius of one of
+-- these. Pouring a jerry can into a car works anywhere.
+Config.ExtraPumps = {}
+Config.ExtraPumpRadius = 10.0
 
 -- ══ Gameplay pack (PF): dynamic pricing + city sales tax ═════════
 Config.DynamicPricing = {

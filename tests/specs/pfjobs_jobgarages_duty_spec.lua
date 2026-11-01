@@ -27,10 +27,16 @@ FakeDB.extraPatterns = {
     { 'SELECT id FROM job_garage_permissions', function(p) return perms[p[1]] and { id = 1 } or nil end },
     { 'UPDATE job_garage_permissions', function(p) perms[p[3]] = { min_grade_use = p[1], min_grade_manage = p[2] } return 1 end },
     { 'INSERT INTO job_garage_permissions', function(p) perms[p[1]] = { min_grade_use = p[2], min_grade_manage = p[3] } return 1 end },
+    { "AND TABLE_NAME = 'occasion_vehicles'", function() return 0 end },
+    -- the add is one INSERT ... SELECT: the car only joins while it is still the manager's, parked,
+    -- not impounded and in no active fleet (params: garage, label, grade, plate, cid, license, plate)
     { 'INSERT INTO job_garage_vehicles', function(p)
+        local v = owned[p[4]]
+        if not v or (v.citizenid ~= p[5]) or (v.state or 1) ~= 1 or (v.depotprice or 0) > 0 then return 0 end
+        for _, r in pairs(fleet) do if r.plate == p[7] and r.active == 1 then return 0 end end
         local id = nextId; nextId = nextId + 1
-        fleet[id] = { id = id, garage_id = p[1], plate = p[2], model = p[3], min_grade = p[5], active = 1, out = 0, assignment_type = 'none' }
-        return id
+        fleet[id] = { id = id, garage_id = p[1], plate = p[4], model = v.vehicle, min_grade = p[3], active = 1, out = 0, assignment_type = 'none' }
+        return 1
     end },
     { 'FROM job_garage_vehicles WHERE id = ? AND garage_id = ? AND active = 1', function(p)
         local r = fleet[tonumber(p[1])]

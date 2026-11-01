@@ -11,6 +11,17 @@
 --   (d) owner decision: the buyer pays the freight on top of the goods. total = goods + markup +
 --       freight; the supplier gets the full goods value (+ markup share), the driver the freight,
 --       and escrow pays out exactly what the order put in.
+-- Batch 13b:
+--   (e) settlement payouts and the AI freight are retried under numbered keys after a stored
+--       failure (unclear results are waited for); a payee whose account is gone for good is given up
+--       on after 5 refusals: a supplier's share goes back to the buyer, what nobody can take is held
+--       in escrow and recorded; the sweep stops and no money is made or lost.
+--   (f) a cancellation refund to a buyer account gone for good is forfeited (held, recorded).
+--   (g) a trucking delivery needs goods worth at least the minimum (MinDeliveryGoods, default the
+--       freight minimum); pickups do not.
+--   (h) buyer adapters registered from another resource (FiveM function references, not Lua
+--       functions) route deliveries.
+--   (i) /supplyorders shows what accepting an order really reserves (the supplier's cases).
 -- The database and the ledger are small in-memory stand-ins defined here.
 load_resource('tests/lua/fivem_mocks.lua')
 
@@ -24,7 +35,9 @@ local OWNER, SUPP, SUPP2 = 1, 2, 3
 -- ── database ────────────────────────────────────────────────────────────────
 local db
 local function resetDb()
-    db = { orders = {}, suppliers = {}, offers = {}, events = 0, nextId = 0 }
+    -- order ids keep counting across tests, as AUTO_INCREMENT does (the order service keeps retry
+    -- waits per order id in memory)
+    db = { orders = {}, suppliers = {}, offers = {}, payouts = {}, events = 0, nextId = db and db.nextId or 0 }
 end
 local function copy(t)
     if type(t) ~= 'table' then return t end
@@ -83,6 +96,21 @@ local function run(kind, sql, p)
     end
     if sql:find("SET refund_state = 'done' WHERE id = %? AND refund_state = 'pending'") then
         local r = orderRow(p[1]); if r and r.refund_state == 'pending' then r.refund_state = 'done' return 1 end return 0
+    end
+    if sql:find("SET refund_state = 'forfeited' WHERE id = %? AND refund_state = 'pending'") then
+        local r = orderRow(p[1]); if r and r.refund_state == 'pending' then r.refund_state = 'forfeited' return 1 end return 0
+    end
+    if sql:find('^INSERT IGNORE INTO pf_supply_order_payouts') then
+        local k = p[1] .. ':' .. p[2]
+        if db.payouts[k] then return 0 end
+        db.payouts[k] = { order_id = p[1], part = p[2], outcome = p[3], payee = p[4], paid_to = p[5], amount = p[6], at = p[7] }
+        return 1
+    end
+    if sql:find('FROM pf_supply_order_payouts') then
+        local out = {}
+        for _, r in pairs(db.payouts) do if not sql:find('outcome = %?') or r.outcome == p[1] then out[#out + 1] = copy(r) end end
+        table.sort(out, function(a, b) return a.order_id < b.order_id end)
+        return out
     end
     if sql:find('SET refund_attempt = %? WHERE id = %? AND refund_attempt = %?') then
         local r = orderRow(p[2]); if r and (r.refund_attempt or 0) == p[3] then r.refund_attempt = p[1] return 1 end return 0
@@ -156,7 +184,9 @@ MySQL = { query = api('query'), single = api('query', 'single'), update = api('u
 -- ── ledger ──────────────────────────────────────────────────────────────────
 local bank
 local function resetBank()
-    bank = { balances = {}, byKey = {}, failKeys = {}, throwKeys = {}, n = 0 }
+    -- gone: accounts that no longer exist (a deleted character): a credit is refused and the source
+    -- refunded, as the ledger's 'compensated' / 'unknown_account'
+    bank = { balances = {}, byKey = {}, failKeys = {}, throwKeys = {}, gone = {}, n = 0 }
 end
 local function bal(ref) return bank.balances[ref] or 0 end
 local function r2(n) return math.floor(n * 100 + 0.5) / 100 end
@@ -175,6 +205,10 @@ local function transferMock(_, o)
         bank.failKeys[o.key] = nil
         tx.state, tx.error = 'failed', 'insufficient_funds'
         return { ok = false, error = 'insufficient_funds', txId = tx.tx_id, state = 'failed' }
+    end
+    if bank.gone[o.to] then
+        tx.state, tx.error = 'compensated', 'unknown_account'
+        return { ok = false, error = 'unknown_account', txId = tx.tx_id, state = 'compensated' }
     end
     bank.balances[o.from] = r2(bal(o.from) - o.amount)
     bank.balances[o.to] = r2(bal(o.to) + o.amount)
@@ -210,7 +244,13 @@ Mock.exportsByResource['pfm-inventory'] = {
 
 -- ── the resource ────────────────────────────────────────────────────────────
 Config = { SupplyChain = { AIMarkup = 0.15, PlayerSupplierShareOfMarkup = 0.5, SupplierOfferSeconds = 120, DriverPrioritySeconds = 300, AIDeliverySeconds = 600 } }
+-- the chat commands are added from a thread at start: run it, and keep what it adds
+local commands = {}
+local realCreateThread, realAdd = CreateThread, QBCoreMock.Commands.Add
+CreateThread = function(fn) fn() end
+QBCoreMock.Commands.Add = function(name, _, _, _, fn, perm) commands[name] = { fn = fn, perm = perm } end
 load_resource('[pfscripts]/pf-stores/server_orders.lua')
+CreateThread, QBCoreMock.Commands.Add = realCreateThread, realAdd
 local O = PFOrders
 O.RegisterBuyerKind('store', {
     canManage = function(src, id) return src == OWNER and id == 'corner' end,
@@ -297,6 +337,7 @@ BeforeEach = function()
     resetBank()
     unknown, unpacked, carriedItems, removed = {}, {}, {}, {}
     Config.SupplyChain.CaseSize = {}
+    Config.SupplyChain.MinDeliveryGoods = nil
     Mock.players = {}
     Mock.newPlayer(OWNER, 'OWN1')
     Mock.newPlayer(SUPP, 'SUP1')
@@ -532,6 +573,7 @@ end)
 
 describe('(d) the buyer pays the freight on top of the goods (owner decision)', function()
     it('a small delivery: goods + markup + the $150 freight minimum; nothing comes out of the goods', function()
+        Config.SupplyChain.MinDeliveryGoods = 0   -- the owner turned the minimum goods value off
         bank.balances[BUYER] = 196
         local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 10 } } })
         assert_true(res.ok, tostring(res.error))
@@ -555,17 +597,17 @@ describe('(d) the buyer pays the freight on top of the goods (owner decision)', 
     end)
     it('a player supplier gets the full goods price plus the bonus, the player driver the freight', function()
         supplier('lockpick', 20, 10)
-        bank.balances[BUYER] = 300
-        local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'lockpick', quantity = 5 } } })
+        bank.balances[BUYER] = 400
+        local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'lockpick', quantity = 10 } } })
         assert_true(res.ok, tostring(res.error))
-        assert_eq(res.data.total, 100 + 15 + 150)
+        assert_eq(res.data.total, 200 + 30 + 150)
         local id = res.data.orderId
         assert_true(O.AcceptSupply(SUPP, id).ok)
         playerDriverDelivers(id, 'DRV1')
         assert_eq(db.orders[id].status, 'unpacked')
         assert_eq(bal('player:DRV1:bank'), 150)
-        assert_eq(supplierBank(), 100 + 7.5, 'all of the goods: $100, not $100 - $150 freight')
-        assert_eq(bal(BUYER), 300 - 265 + 7.5)
+        assert_eq(supplierBank(), 200 + 15, 'all of the goods: $200, not $200 - $150 freight')
+        assert_eq(bal(BUYER), 400 - 380 + 15)
         assert_eq(bal(ESCROW), POOL)
         noUnknownQueries()
     end)
@@ -580,13 +622,13 @@ describe('(d) the buyer pays the freight on top of the goods (owner decision)', 
         assert_eq(bal(ESCROW), POOL, 'nothing created, nothing left')
     end)
     it('a delivery the buyer cannot afford is not placed, and the screen gets the full price', function()
-        bank.balances[BUYER] = 195
-        local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 10 } } })
+        bank.balances[BUYER] = 333
+        local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 40 } } })
         assert_false(res.ok)
         assert_eq(res.error, 'insufficient_funds')
-        assert_eq(res.data.total, 196)
+        assert_eq(res.data.total, 160 + 24 + 150)
         assert_eq(res.data.freight, 150)
-        assert_eq(bal(BUYER), 195)
+        assert_eq(bal(BUYER), 333)
     end)
     it('a pickup is the goods only; the quote and the pricing match what an order is charged', function()
         bank.balances[BUYER] = 40
@@ -607,5 +649,269 @@ describe('(d) the buyer pays the freight on top of the goods (owner decision)', 
         assert_eq(p.markupRefundShare, 0.5)
         assert_eq(Mock.selfExport('QuoteOrder')('shop', 'deli', 'trucking', 40).total, 196)
         assert_eq(Mock.selfExport('GetDeliveryPricing')('store', 'corner'), nil)
+    end)
+end)
+
+-- ── batch 13b ───────────────────────────────────────────────────────────────
+
+describe('(e) settlement payouts are retried under numbered keys', function()
+    it('a payout the ledger refused is retried under the next key after its wait, and paid once', function()
+        local id = placeOrder(nil, 'delivered', { supplier_kind = 'ai', supplier_ref = AI_SUPPLIER })
+        seedTx('freight:supply:' .. id, ESCROW, 'player:DRV1:bank', 20, 'completed')   -- the driver was paid
+        bank.failKeys['supply:' .. id .. ':supplier'] = true                            -- escrow short this once
+        tick()
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier'].state, 'failed')
+        assert_eq(db.orders[id].settled, 0)
+        assert_eq(bal(AI_SUPPLIER), 15, 'the markup went through')
+        local n = txCount()
+        tick(5)
+        tick(5)
+        assert_eq(txCount(), n, 'nothing new before its wait')
+        tick(6)
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier:1'].state, 'completed', 'under the next key')
+        assert_eq(bal(AI_SUPPLIER), 115)
+        assert_eq(db.orders[id].settled, 1)
+        tick(3601)
+        assert_eq(bal(AI_SUPPLIER), 115, 'once')
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier:2'], nil)
+        assert_eq(bal(ESCROW), POOL)
+        noUnknownQueries()
+    end)
+    it('an unclear payout (still being settled by the ledger) is waited for, never paid under a new key', function()
+        local id = placeOrder(nil, 'delivered', { supplier_kind = 'ai', supplier_ref = AI_SUPPLIER })
+        seedTx('freight:supply:' .. id, ESCROW, 'player:DRV1:bank', 20, 'completed')
+        seedTx('supply:' .. id .. ':supplier', ESCROW, AI_SUPPLIER, 100, 'debited')
+        for _ = 1, 4 do tick(3601) end
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier:1'], nil, 'no second key while the first is unclear')
+        assert_eq(db.orders[id].settled, 0)
+        -- the ledger's recovery finishes it
+        bank.byKey['supply:' .. id .. ':supplier'].state = 'completed'
+        bank.balances[AI_SUPPLIER] = bal(AI_SUPPLIER) + 100
+        tick(3601)
+        assert_eq(db.orders[id].settled, 1)
+        assert_eq(bal(AI_SUPPLIER), 115)
+        assert_eq(bal(ESCROW), POOL)
+        -- a failed attempt whose debit the ledger could not verify is unclear too
+        local id2 = placeOrder(nil, 'delivered', { supplier_kind = 'ai', supplier_ref = AI_SUPPLIER })
+        seedTx('supply:' .. id2 .. ':supplier', ESCROW, AI_SUPPLIER, 100, 'failed')
+        bank.byKey['supply:' .. id2 .. ':supplier'].error = 'interrupted_unverified'
+        tick(3601)
+        tick(3601)
+        assert_eq(bank.byKey['supply:' .. id2 .. ':supplier:1'], nil)
+        assert_eq(db.orders[id2].settled, 0)
+    end)
+    it('a deleted supplier\'s goods share and bonus go back to the buyer after 5 refusals, recorded; the sweep stops', function()
+        supplier('lockpick', 20, 10)
+        local id = placeOrder()
+        assert_true(O.AcceptSupply(SUPP, id).ok)
+        bank.gone['player:SUP1:bank'] = true          -- the supplier's character was deleted
+        playerDriverDelivers(id, 'DRV1')              -- delivered: the first attempt
+        assert_eq(db.orders[id].status, 'unpacked')
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier'].state, 'compensated')
+        assert_eq(bal(BUYER), 7.5, 'the buyer\'s half of the markup')
+        for _, wait in ipairs({ 16, 31, 61, 121 }) do tick(wait) end
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier:4'].state, 'compensated', 'five attempts, each under its own key')
+        assert_eq(bank.byKey['supply:' .. id .. ':markup-supplier:4'].state, 'compensated')
+        assert_eq(bal(BUYER), 7.5, 'not given up on before its fifth refusal')
+        assert_eq(db.orders[id].settled, 0)
+        tick(241)
+        assert_eq(bank.byKey['supply:' .. id .. ':supplier:buyer'].state, 'completed')
+        assert_eq(bal(BUYER), 7.5 + 100 + 7.5, 'the goods value and the bonus back to the buyer who paid them')
+        assert_eq(supplierBank(), 0)
+        assert_eq(db.orders[id].settled, 1)
+        assert_eq(db.payouts[id .. ':supplier'].outcome, 'returned')
+        assert_eq(db.payouts[id .. ':supplier'].payee, 'player:SUP1:bank')
+        assert_eq(db.payouts[id .. ':supplier'].paid_to, BUYER)
+        assert_eq(db.payouts[id .. ':markup-supplier'].outcome, 'returned')
+        assert_eq(db.payouts[id .. ':markup-refund'], nil, 'paid normally')
+        assert_eq(bal(ESCROW), POOL, 'escrow paid out exactly what the order put in')
+        local n = txCount()
+        for _ = 1, 3 do tick(3601) end
+        assert_eq(txCount(), n, 'the sweep stopped')
+        noUnknownQueries()
+    end)
+    it('a share nobody can take (the buyer\'s account is gone too) stays in escrow, recorded for staff', function()
+        supplier('lockpick', 20, 10)
+        local id = placeOrder()
+        assert_true(O.AcceptSupply(SUPP, id).ok)
+        bank.gone['player:SUP1:bank'], bank.gone[BUYER] = true, true
+        playerDriverDelivers(id, 'DRV1')
+        for _ = 1, 14 do tick(3601) end
+        assert_eq(db.orders[id].settled, 1)
+        assert_eq(db.payouts[id .. ':supplier'].outcome, 'held')
+        assert_eq(db.payouts[id .. ':supplier'].amount, 100)
+        assert_eq(db.payouts[id .. ':markup-supplier'].outcome, 'held')
+        assert_eq(db.payouts[id .. ':markup-refund'].outcome, 'held')
+        assert_eq(bal(ESCROW), POOL + 100 + 7.5 + 7.5, 'held in escrow: nothing made, nothing lost')
+        assert_eq(#O.ListUnpaid('held'), 3)
+        assert_eq(#Mock.selfExport('ListUnpaidSupplyPayouts')('returned'), 0)
+        local n = txCount()
+        for _ = 1, 3 do tick(3601) end
+        assert_eq(txCount(), n, 'the sweep stopped')
+        -- staff list them in chat; the command is for admins
+        assert_eq(commands.supplyheld.perm, 'admin')
+        Mock.clientEvents = {}
+        commands.supplyheld.fn(OWNER, {})
+        local lines = Mock.clientEventsNamed('chat:addMessage')
+        assert_eq(#lines, 3)
+        assert_true(lines[1].args[1].args[2]:find('held in escrow', 1, true) ~= nil)
+        noUnknownQueries()
+    end)
+    it('AI freight the escrow could not pay is retried under the next freight key; a trip already paid is not paid again', function()
+        local now = os.time() * 1000.0
+        local id = placeOrder(nil, 'in_transit', { supplier_kind = 'ai', supplier_ref = AI_SUPPLIER, driver_kind = 'ai', driver_ref = 'ai', ai_eta = now - 1 })
+        bank.failKeys['freight:supply:' .. id] = true
+        tick()
+        assert_eq(bank.byKey['freight:supply:' .. id].state, 'failed')
+        assert_eq(db.orders[id].status, 'in_transit', 'not delivered while its freight is unpaid')
+        local n = txCount()
+        tick(5)
+        assert_eq(txCount(), n, 'nothing new before its wait')
+        tick(11)
+        assert_eq(bank.byKey['freight:supply:' .. id .. ':1'].state, 'completed', 'under the next key')
+        assert_eq(bal(AI_FREIGHT), 20)
+        assert_eq(db.orders[id].status, 'unpacked')
+        assert_eq(bal(ESCROW), POOL)
+        -- a player driver was already paid under the first key: the AI driver is not paid again
+        local id2 = placeOrder(nil, 'in_transit', { supplier_kind = 'ai', supplier_ref = AI_SUPPLIER, driver_kind = 'ai', driver_ref = 'ai', ai_eta = now - 1 })
+        seedTx('freight:supply:' .. id2, ESCROW, 'player:DRV1:bank', 20, 'completed')
+        tick(1)
+        assert_eq(db.orders[id2].status, 'unpacked')
+        assert_eq(bal(AI_FREIGHT), 20)
+        assert_eq(bank.byKey['freight:supply:' .. id2 .. ':1'], nil)
+        assert_eq(bal(ESCROW), POOL)
+        noUnknownQueries()
+    end)
+end)
+
+describe('(f) a refund to a buyer account gone for good is forfeited', function()
+    it('after 5 refusals the refund is held in escrow and recorded, and the retries stop', function()
+        local id = placeOrder()
+        bank.gone[BUYER] = true
+        local res = O.Cancel(OWNER, 'store', 'corner', id)
+        assert_true(res.ok)
+        assert_true(res.data.refundPending)
+        for _, wait in ipairs({ 16, 31, 61, 121 }) do tick(wait) end
+        assert_eq(db.orders[id].refund_state, 'pending', 'still owed after four refusals')
+        assert_eq(db.orders[id].refund_attempt, 4)
+        tick(241)
+        assert_eq(db.orders[id].refund_state, 'forfeited')
+        assert_eq(db.payouts[id .. ':cancel'].outcome, 'held')
+        assert_eq(db.payouts[id .. ':cancel'].amount, 135)
+        assert_eq(bal(ESCROW), POOL + 135, 'the money stays in escrow')
+        local n = txCount()
+        for _ = 1, 3 do tick(3601) end
+        O.RecoverPayments()
+        assert_eq(txCount(), n, 'no more ledger rows')
+        noUnknownQueries()
+    end)
+    it('a refund refused for another reason (escrow short) is not forfeited', function()
+        local id = placeOrder()
+        for n = 0, 5 do bank.failKeys[n == 0 and ('supply:' .. id .. ':cancel') or ('supply:%d:cancel:%d'):format(id, n)] = true end
+        assert_true(O.Cancel(OWNER, 'store', 'corner', id).data.refundPending)
+        for _ = 1, 5 do tick(3601) end
+        assert_eq(db.orders[id].refund_state, 'pending')
+        tick(3601)
+        assert_eq(db.orders[id].refund_state, 'done')
+        assert_eq(bal(BUYER), 135)
+        assert_eq(bal(ESCROW), POOL)
+    end)
+end)
+
+describe('(g) a trucking delivery needs a minimum goods value', function()
+    it('a delivery worth less than the freight minimum is refused with a clear message; collecting it is not', function()
+        bank.balances[BUYER] = 1000
+        local before = db.nextId
+        local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 1 } } })
+        assert_false(res.ok)
+        assert_eq(res.error, 'below_delivery_minimum')
+        assert_eq(res.data.minGoods, 150, 'the business\'s freight minimum')
+        assert_eq(res.data.subtotal, 4)
+        assert_true(res.message:find('at least $150 of goods', 1, true) ~= nil and res.message:find('has $4', 1, true) ~= nil, res.message)
+        assert_eq(bal(BUYER), 1000, 'nothing charged')
+        assert_eq(db.nextId, before, 'no order stored')
+        local pickup = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'pickup', cart = { { name = 'sandwich', quantity = 1 } } })
+        assert_true(pickup.ok, 'a pickup of the same goods is fine')
+        local big = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 38 } } })
+        assert_true(big.ok, '$152 of goods: ' .. tostring(big.error))
+        assert_eq(O.Pricing('shop', 'deli').minGoods, 150)
+        local q = O.Quote('shop', 'deli', 'trucking', 4)
+        assert_true(q.belowMinimum)
+        assert_eq(q.minGoods, 150)
+        assert_false(O.Quote('shop', 'deli', 'trucking', 150).belowMinimum)
+    end)
+    it('Config.SupplyChain.MinDeliveryGoods sets the minimum; 0 turns it off; nonsense means the default', function()
+        bank.balances[BUYER] = 5000
+        local function deliver(qty) return O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = qty } } }) end
+        Config.SupplyChain.MinDeliveryGoods = 50
+        local res = deliver(12)
+        assert_eq(res.error, 'below_delivery_minimum')
+        assert_eq(res.data.minGoods, 50)
+        assert_true(deliver(13).ok, '$52 of goods')
+        Config.SupplyChain.MinDeliveryGoods = 0
+        assert_true(deliver(1).ok, 'no minimum')
+        Config.SupplyChain.MinDeliveryGoods = -5
+        assert_eq(deliver(2).data.minGoods, 150)
+        Config.SupplyChain.MinDeliveryGoods = 'lots'
+        assert_eq(deliver(3).data.minGoods, 150)
+    end)
+end)
+
+describe('(h) buyer adapters registered from another resource', function()
+    -- what a function passed through an export becomes in FiveM: a callable table that errors when
+    -- indexed (a function reference), not a Lua function
+    local function funcref(fn)
+        return setmetatable({ __cfx_functionReference = 'pf-remote:' .. tostring(fn) }, {
+            __call = function(_, ...) return fn(...) end,
+            __index = function() error('Cannot index a funcref', 2) end,
+        })
+    end
+    it('route, pricing and ordering work through function references; a stopped adapter means no delivery, not an error', function()
+        local adapter = {}
+        for k, fn in pairs(O.kinds.shop) do adapter[k] = funcref(fn) end
+        adapter.governmentId = funcref(function(id) return 'restaurant:' .. id end)
+        O.RegisterBuyerKind('remote', adapter)
+        assert_true(O.Callable(adapter.route))
+        assert_true(O.Callable(print))
+        assert_false(O.Callable({}))
+        assert_false(O.Callable('route'))
+        local route = O.Route('remote', 'deli')
+        assert_true(route ~= nil, 'routed through the reference')
+        assert_eq(route.dropoff.label, 'Deli')
+        assert_eq(O.GovernmentId('remote', 'deli'), 'restaurant:deli')
+        assert_eq(O.Pricing('remote', 'deli').freight.min, 150)
+        bank.balances[BUYER] = 1000
+        local res = O.Create(OWNER, { kind = 'remote', buyerId = 'deli', method = 'trucking', cart = { { name = 'lockpick', quantity = 10 } } })
+        assert_true(res.ok, tostring(res.error))
+        assert_eq(res.data.freight, 150)
+        assert_eq(res.data.total, 200 + 30 + 150)
+        -- the adapter's resource stopped: its references error when called
+        adapter.route = setmetatable({ __cfx_functionReference = 'dead' }, { __call = function() error('No such function reference') end })
+        O.RegisterBuyerKind('remote', adapter)
+        assert_eq(O.Route('remote', 'deli'), nil)
+        assert_eq(O.Quote('remote', 'deli', 'trucking', 200), nil)
+        O.kinds.remote = nil
+    end)
+end)
+
+describe('(i) /supplyorders shows what accepting an order reserves', function()
+    it('in the supplier\'s own cases, at the price per case, with the pay on delivery', function()
+        Config.SupplyChain.CaseSize = { wine = 6 }
+        supplier('wine', 100, 2)
+        local id = placeOrder({ { name = 'wine', label = 'Red Wine', quantity = 12, cost = 18 } })
+        Mock.clientEvents = {}
+        commands.supplyorders.fn(SUPP, {})
+        local msgs = Mock.clientEventsNamed('chat:addMessage')
+        assert_eq(#msgs, 1)
+        local text = msgs[1].args[1].args[2]
+        assert_eq(text:find('#' .. id .. ':', 1, true), 1, text)
+        assert_true(text:find('2 cases of Red Wine (6 per case, 12 items) at $108 a case', 1, true) ~= nil, text)
+        assert_true(text:find('Pays $100 + $7.50 bonus on delivery', 1, true) ~= nil, text)
+        assert_true(text:find('quantity', 1, true) == nil, 'not the raw order lines: ' .. text)
+        -- the Supplier app shows the same lines
+        local st = app.h.status(SUPP, {})
+        assert_eq(st.orders[1].lines[1].quantity, 2)
+        assert_eq(st.orders[1].lines[1].label, 'Red Wine')
+        noUnknownQueries()
     end)
 end)

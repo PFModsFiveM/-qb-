@@ -175,6 +175,42 @@ describe('a run', function()
     end)
 end)
 
+describe('housing not ready', function()
+    it('a housing resource still starting skips the run and asks for an early retry', function()
+        houses = { { house = 'a', citizenid = 'CIT1', value = 100000 } }
+        Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() return nil, 'not_ready' end
+        local res = PropertyTax.Run(WED)
+        Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() return houses end
+        assert_eq(res.off, 'not_ready')
+        assert_eq(res.retry, true)
+        assert_eq(#bills, 0)
+        assert_eq(PropertyTax.Run(WED).billed, 1, 'billed once it is ready')
+    end)
+    it('a failing export is retried early too; a stopped resource waits for the next interval', function()
+        Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() error('boom') end
+        local res = PropertyTax.Run(WED)
+        Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() return houses end
+        assert_eq(res.retry, true)
+        started['pfm-houses'] = nil
+        res = PropertyTax.Run(WED)
+        assert_eq(res.off, 'no_housing')
+        assert_true(not res.retry)
+    end)
+    it('the scheduled task waits RetrySeconds after a run asking for a retry, then the interval again', function()
+        local threads, waits, n = {}, {}, 0
+        local createThread, wait, run = CreateThread, Wait, PropertyTax.Run
+        CreateThread = function(fn) threads[#threads + 1] = fn end
+        PropertyTax.Run = function() n = n + 1 if n == 1 then return { off = 'not_ready', retry = true } end return { billed = 1 } end
+        StartInfrastructureTasks = function() end
+        StartBackgroundTasks()
+        Wait = function(ms) waits[#waits + 1] = ms if #waits >= 3 then error('stop', 0) end end
+        pcall(threads[1])
+        CreateThread, Wait, PropertyTax.Run = createThread, wait, run
+        assert_eq(waits[2], Config.Taxes.PropertyTax.RetrySeconds * 1000, 'retried after a whole interval')
+        assert_eq(waits[3], Config.Taxes.AutoCollection.interval * 60000)
+    end)
+end)
+
 describe('CreateBill with a recurring key', function()
     it('refuses a malformed key before touching the database', function()
         CreateBill = createBill

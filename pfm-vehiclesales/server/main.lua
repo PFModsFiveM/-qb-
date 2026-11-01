@@ -22,7 +22,11 @@ PFUsedCars.Migrations = {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
         'ALTER TABLE `occasion_vehicles` ADD COLUMN IF NOT EXISTS `vehicle_state` TEXT NULL DEFAULT NULL',
     } },
+    -- money a sale still owes (retried until paid) and purchases whose charge the bank has not
+    -- confirmed yet (@pfm-vehicleshop/settlements.lua)
+    { version = 2, name = 'owed payments and held purchases', up = PFSettle.MigrationSteps('pfm_vehiclesales') },
 }
+PFSettle.Init('pfm_vehiclesales')
 
 function PFUsedCars.Start()
     local ok, done, err = pcall(function() return exports['pfm-core']:RunMigrations(GetCurrentResourceName(), PFUsedCars.Migrations) end)
@@ -30,6 +34,9 @@ function PFUsedCars.Start()
     if not PFUsedCars.dbReady then
         print('^1[pfm-vehiclesales]^7 migrations failed, listings do not keep the car record: ' .. tostring(ok and err or done))
     end
+    PFSettle.MailSender = Lang:t('mail.sender')
+    -- owed payments and held purchases from before a restart are picked up again by the sweep
+    PFSettle.Start()
 end
 
 AddEventHandler('onResourceStart', function(resource)
@@ -68,12 +75,21 @@ end
 -- Job fleet cars (pf-jobgarages job_garage_vehicles, active) belong to their job garage: pfm-garages
 -- never gives them out of a personal garage, so a buyer would pay for a car they can never take out.
 -- They are not listed or sold back. The table may not exist (pf-jobgarages not installed).
+-- A failed lookup is not cached and not taken as "no table" (that would let a fleet car through
+-- for 5 minutes): callers refuse while it cannot be told.
 local fleetTableKnown = nil
+--- true / false, or nil when the lookup failed.
 local function fleetTableExists()
     if fleetTableKnown == nil then
-        fleetTableKnown = (tonumber(MySQL.scalar.await(
-            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")) or 0) > 0
-        if not fleetTableKnown then SetTimeout(300000, function() fleetTableKnown = nil end) end
+        local ok, n = pcall(MySQL.scalar.await,
+            "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_garage_vehicles'")
+        n = ok and tonumber(n) or nil
+        if n == nil then return nil end
+        -- "no table" is asked again after 5 minutes (the resource may be installed meanwhile)
+        local exists = n > 0
+        fleetTableKnown = exists
+        if not exists then SetTimeout(300000, function() fleetTableKnown = nil end) end
+        return exists
     end
     return fleetTableKnown
 end
@@ -81,7 +97,9 @@ end
 --- true when the plate is an active fleet car; also true when that cannot be told (refused then).
 local function isFleetPlate(plate)
     local ok, fleet = pcall(function()
-        if not fleetTableExists() then return false end
+        local exists = fleetTableExists()
+        if exists == nil then error('fleet table lookup failed') end
+        if not exists then return false end
         return MySQL.scalar.await('SELECT id FROM job_garage_vehicles WHERE plate = ? AND active = 1 LIMIT 1', { plate }) ~= nil
     end)
     if not ok then return true end
@@ -89,10 +107,12 @@ local function isFleetPlate(plate)
 end
 
 --- The condition a DELETE that hands a car over adds, so a car put in a fleet after the check is not
---- taken in the same moment (the check and the delete are one statement). Returns sql, params.
+--- taken in the same moment (the check and the delete are one statement). Returns sql, params; nil
+--- when it cannot be told (the caller refuses).
 local function notInFleet(plate)
-    local ok, exists = pcall(fleetTableExists)
-    if ok and exists then
+    local exists = fleetTableExists()
+    if exists == nil then return nil end
+    if exists then
         return ' AND NOT EXISTS (SELECT 1 FROM job_garage_vehicles WHERE plate = ? AND active = 1)', { plate }
     end
     return '', {}
@@ -149,10 +169,16 @@ local function decodeState(text)
 end
 
 --- Puts a car into a player's garage record: the listing's model, mods and plate, plus the kept
---- columns (only those in `allowed`, when given). Returns the insert id or nil.
-local function insertOwned(Player, listing, allowed)
+--- columns (only those in `allowed`, when given). owner = { license, citizenid }. A car handed over
+--- at the lot is out (state 0, it spawns there); a parked one waits in the delivery garage.
+--- Returns the insert id or nil.
+local function insertOwned(owner, listing, allowed, parked)
     local cols = { 'license', 'citizenid', 'vehicle', 'hash', 'mods', 'plate', 'state' }
-    local vals = { Player.PlayerData.license, Player.PlayerData.citizenid, listing.model, GetHashKey(listing.model), listing.mods, listing.plate, 0 }
+    local vals = { owner.license, owner.citizenid, listing.model, GetHashKey(listing.model), listing.mods, listing.plate, parked and 1 or 0 }
+    if parked then
+        cols[#cols + 1] = 'garage'
+        vals[#vals + 1] = type(Config.DeliveryGarage) == 'string' and Config.DeliveryGarage or 'pillboxgarage'
+    end
     local state = decodeState(listing.vehicle_state)
     for _, col in ipairs(KEPT) do
         local v = tonumber(state[col])
@@ -197,6 +223,8 @@ local function lotCapacity()
     return n or 0
 end
 
+local function ownerOf(Player) return { license = Player.PlayerData.license, citizenid = Player.PlayerData.citizenid } end
+
 local function generateOID()
     local num = math.random(1, 10) .. math.random(111, 999)
 
@@ -205,8 +233,10 @@ end
 
 -- Callbacks
 
+-- What the lot shows (spots, contract, take-back): only those columns. The listing's vehicle_state
+-- (the seller's loan and the car's condition) stays on the server.
 QBCore.Functions.CreateCallback('qb-occasions:server:getVehicles', function(_, cb)
-    local result = MySQL.query.await('SELECT * FROM occasion_vehicles', {})
+    local result = MySQL.query.await('SELECT seller, price, description, plate, model, mods, occasionid FROM occasion_vehicles ORDER BY id', {}) or {}
     if result[1] then
         cb(result)
     else
@@ -276,7 +306,7 @@ RegisterNetEvent('qb-occasions:server:ReturnVehicle', function(vehicleData)
             if not claimed or (claimed.affectedRows or 0) < 1 then return end
             -- with the record it was listed with: a finance plan, the condition and the odometer
             -- come back unchanged (the row used to be written fresh, with every one reset)
-            if not insertOwned(Player, listing) then
+            if not insertOwned(ownerOf(Player), listing) then
                 -- the listing goes back up rather than the car being lost
                 relist(listing)
                 TriggerClientEvent('QBCore:Notify', src, Lang:t('error.lot_unavailable'), 'error', 3500)
@@ -311,6 +341,7 @@ local function listVehicle(src, Player, price, desc, mods)
     if listed >= lotCapacity() then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_space_on_lot'), 'error', 3500) end
     -- the car leaves the owner's garage only in the state that was checked (one statement)
     local fleetSql, fleetParams = notInFleet(plate)
+    if not fleetSql then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.lot_unavailable'), 'error', 3500) end
     local claimed = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? AND balance <= 0 AND depotprice <= 0' .. fleetSql,
         { plate, cid, table.unpack(fleetParams) })
     if not claimed or (claimed.affectedRows or 0) < 1 then
@@ -359,6 +390,19 @@ RegisterNetEvent('qb-occasions:server:sellVehicle', function(vehiclePrice, vehic
     if not ok then print('^1[pfm-vehiclesales]^7 listing failed: ' .. tostring(err)) end
 end)
 
+-- Errors the ledger returns before it writes anything (nothing moved), as in payouts.lua.
+local REFUSED_BEFORE_WRITE = {
+    insufficient_funds = true, invalid_request = true, invalid_account = true, same_account = true,
+    invalid_amount = true, invalid_key = true, bank_unavailable = true, ledger_unavailable = true, ledger_write_failed = true,
+}
+
+--- Whether a payment from the lot clearly paid nothing: failed or compensated, or refused before
+--- anything was written (also: the bank not running, the ledger row not written).
+local function clearlyUnpaid(res)
+    if res.state == 'failed' or res.state == 'compensated' then return true end
+    return res.state == nil and res.txId == nil and REFUSED_BEFORE_WRITE[res.error] == true
+end
+
 -- Sell the car the player sits in straight to the lot for half its catalogue price.
 RegisterNetEvent('qb-occasions:server:sellVehicleBack', function(vehData)
     local src = source
@@ -383,28 +427,67 @@ RegisterNetEvent('qb-occasions:server:sellVehicleBack', function(vehData)
     local payout = math.floor((tonumber(shared and shared.price) or 0) * 0.5)
     if payout < 1 then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_for_sale'), 'error', 3500) end
     local fleetSql, fleetParams = notInFleet(plate)
+    if not fleetSql then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.lot_unavailable'), 'error', 3500) end
     local ownsVehicle = MySQL.query.await('DELETE FROM player_vehicles WHERE plate = ? AND citizenid = ? AND balance <= 0 AND depotprice <= 0' .. fleetSql,
         { plate, cid, table.unpack(fleetParams) })
     if not ownsVehicle or (ownsVehicle.affectedRows or 0) < 1 then
         return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_your_vehicle'), 'error', 3500)
     end
-    local paid, res = PFPayout.Pay(src, 'bank', payout, {
-        key = ('pfm-vehiclesales:sellback:%s:%s:%s'):format(tostring(plate), cid, PFPayout.NewId()),
-        kind = 'sale', reason = 'Vehicle sold back',
-    })
+    local key = ('pfm-vehiclesales:sellback:%s:%s:%s'):format(tostring(plate), cid, PFPayout.NewId())
+    local paid, res = PFPayout.Pay(src, 'bank', payout, { key = key, kind = 'sale', reason = 'Vehicle sold back', quiet = true })
     if not paid then
-        -- not paid: the car stays the player's, unless the bank may still complete the payment
-        -- (the ledger's recovery settles that one; giving the car back too would pay twice)
         res = res or {}
-        if not (res.state == 'pending' or res.state == 'debited' or res.error == 'in_progress' or res.error == 'internal_error') then
+        if clearlyUnpaid(res) then
+            -- nothing was paid: the car stays the player's
             restoreRow(row)
+            return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.sellback_unpaid'), 'error', 5000)
         end
-        return
+        -- the bank may still complete it: the car is the lot's and the payment is kept and retried
+        -- until it is paid (the same key first, so it is never paid twice)
+        PFSettle.Owe({ key = key, to = cid, account = 'bank', amount = payout, kind = 'sale', reason = 'Vehicle sold back', label = 'the car you sold back' })
     end
     if DoesEntityExist(veh) then DeleteEntity(veh) end
     TriggerClientEvent('qb-occasions:client:soldBack', src, payout)
-    TriggerClientEvent('QBCore:Notify', src, Lang:t('success.sold_car_for_price', { value = payout }), 'success', 5500)
+    TriggerClientEvent('QBCore:Notify', src, Lang:t(paid and 'success.sold_car_for_price' or 'info.sold_back_pending', { value = payout }), paid and 'success' or 'primary', 5500)
 end)
+
+--- The money of a claimed listing once the buyer's money is in and the car is written: the seller's
+--- share and the tax. The payments are keyed and kept until paid, so a re-run pays nothing twice.
+local function payForSale(listing, buyer, sale)
+    PFSettle.Owe({ key = sale.key .. ':seller', to = listing.seller, account = 'bank', amount = sale.sellerAmount, kind = 'sale',
+        reason = 'Vehicle sold on the used lot', label = 'your car sold on the used lot' })
+    -- the tax was paid with the car; whatever the government does not take goes back to the buyer
+    local collected = 0
+    if sale.tax > 0 and GetResourceState('pf-government') == 'started' then
+        local ok, value = pcall(function()
+            return exports['pf-government']:CollectTaxAmount(sale.tax, 'vehicle_purchase', 'citizen', buyer.citizenid, 'vehicle_used_lot', sale.key .. ':tax', sale.subtotal)
+        end)
+        collected = ok and (tonumber(value) or 0) or 0
+    end
+    local uncollected = math.floor((sale.tax - collected) * 100 + 0.5) / 100
+    if uncollected > 0 then
+        PFSettle.Owe({ key = sale.key .. ':tax-refund', to = buyer.citizenid, account = 'bank', amount = uncollected, kind = 'refund', reason = 'Uncollected vehicle tax', label = 'uncollected vehicle tax' })
+    end
+    TriggerEvent('qb-log:server:CreateLog', 'vehicleshop', 'bought', 'green', '**' .. tostring(buyer.citizenid) .. '** has bought for ' .. tostring(listing.price) .. ' (' .. tostring(listing.plate) .. ') from **' .. tostring(listing.seller) .. '**')
+    -- the seller is told by mail (pf-citizen, the same mailbox on the phone, tablet and
+    -- computer; the old phone resource if that is what runs). The sale is done either way.
+    local shared = sharedVehicles[listing.model]
+    local mail = {
+        sender = Lang:t('mail.sender'),
+        subject = Lang:t('mail.subject'),
+        message = Lang:t('mail.message', { value = sale.sellerAmount, value2 = shared and shared.name or listing.model }),
+    }
+    local mailed = GetResourceState('pf-citizen') == 'started' and pcall(function() return exports['pf-citizen']:SendMail(listing.seller, mail) end)
+    if not mailed and GetResourceState('pfm-phone') == 'started' then
+        pcall(function() exports['pfm-phone']:sendNewMailToOffline(listing.seller, mail) end)
+    end
+    TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+    if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
+end
+
+local function notEnough(src, subtotal, taxAmount, total)
+    TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
+end
 
 RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
     local src = source
@@ -413,94 +496,140 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
     if onCooldown(src, 'occasionBuy', 3000) then return end
     if not isAtSaleLot(src) then return end
     local result = MySQL.query.await('SELECT * FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { vehicleData['plate'], vehicleData['oid'] })
-    if result[1] and next(result[1]) then
-        local subtotal = tonumber(result[1].price) or 0
-        -- the buyer pays the price their contract showed: a seller can reprice a listing from the
-        -- Used Cars app, so a price changed while the contract was open is refused, not charged
-        local accepted = tonumber(vehicleData.price)
-        if not accepted or math.abs(accepted - subtotal) > 0.005 then
-            TriggerClientEvent('QBCore:Notify', src, 'The price of this car changed. Open the contract again to see the new price.', 'error', 5000)
-            TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
-            return
-        end
-        local taxAmount = 0
+    local listing = result and result[1]
+    if not listing or not next(listing) then return end
+    local subtotal = tonumber(listing.price) or 0
+    -- the buyer pays the price their contract showed: a seller can reprice a listing from the
+    -- Used Cars app, so a price changed while the contract was open is refused, not charged
+    local accepted = tonumber(vehicleData.price)
+    if not accepted or math.abs(accepted - subtotal) > 0.005 then
+        TriggerClientEvent('QBCore:Notify', src, 'The price of this car changed. Open the contract again to see the new price.', 'error', 5000)
+        TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+        return
+    end
+    local buyerCid = Player.PlayerData.citizenid
+    if listing.seller == buyerCid then return end -- your own listing: take it back instead
+    -- an earlier purchase of theirs still waits on the bank: this click would charge them again
+    if PFSettle.BuyerWaiting(buyerCid) then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.payment_waiting'), 'error', 5000) end
+    -- a job fleet car is not sold (the buyer would pay for a car they can never take out); the
+    -- claim below repeats this in the same statement, so a car put in a fleet meanwhile is not sold
+    local fleetSql, fleetParams = notInFleet(listing.plate)
+    if not fleetSql or isFleetPlate(listing.plate) then
+        return TriggerClientEvent('QBCore:Notify', src, Lang:t(fleetSql and 'error.fleet_vehicle' or 'error.lot_unavailable'), 'error', 3500)
+    end
 
-        if subtotal > 0 and GetResourceState('pf-government') == 'started' then
-            local okTax, calcTax = pcall(function()
-                return exports['pf-government']:CalculateTax(subtotal, 'vehicle_purchase')
-            end)
-            if okTax then
-                taxAmount = tonumber(calcTax) or 0
-            end
-        end
-
-        local total = math.floor(((subtotal + taxAmount) * 100) + 0.5) / 100
-
-        if Player.PlayerData.money.bank >= total then
-            local listing = result[1]
-            local SellerCitizenId = listing.seller
-            local buyerCid = Player.PlayerData.citizenid
-            if SellerCitizenId == buyerCid then return end -- your own listing: take it back instead
-            local NewPrice = math.ceil((subtotal / 100) * 77)
-            -- 1) the buyer pays (keyed), 2) the listing is claimed by one DELETE, so of two buyers at
-            -- the same moment only one gets the car and the other is refunded, 3) the seller (online
-            -- or offline) and the tax are paid through the ledger. (RemoveMoney was not checked, both
-            -- buyers could get the car, and an offline seller's money record was rewritten.)
-            local key = ('pfm-vehiclesales:buy:%s:%s:%s'):format(tostring(listing.occasionid), tostring(listing.plate), PFPayout.NewId())
-            if not PFPayout.Charge(src, 'bank', total, { key = key, kind = 'purchase', reason = 'Used vehicle ' .. tostring(listing.plate) }) then
-                TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
-                return
-            end
-            -- the claim also needs the price unchanged (a reprice between the read above and here)
-            local claimed = MySQL.query.await('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?', { listing.plate, listing.occasionid, listing.price })
-            if not claimed or (claimed.affectedRows or 0) < 1 then
-                PFPayout.Pay(buyerCid, 'bank', total, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle already sold' })
-                TriggerClientEvent('QBCore:Notify', src, Lang:t('error.vehicle_does_not_exist'), 'error', 3500)
-                return
-            end
-            -- the car as listed: its condition and odometer, never the seller's loan
-            if not insertOwned(Player, listing, SOLD_WITH) then
-                -- the car could not be written: the buyer gets the money back and the car stays listed
-                relist(listing)
-                PFPayout.Pay(buyerCid, 'bank', total, { key = key .. ':refund', kind = 'refund', reason = 'Vehicle purchase failed' })
-                TriggerClientEvent('QBCore:Notify', src, Lang:t('error.lot_unavailable'), 'error', 3500)
-                return
-            end
-            PFPayout.Pay(SellerCitizenId, 'bank', NewPrice, { key = key .. ':seller', kind = 'sale', reason = 'Vehicle sold on the used lot', quiet = true })
-            TriggerEvent('qb-log:server:CreateLog', 'vehicleshop', 'bought', 'green', '**' .. GetPlayerName(src) .. '** has bought for ' .. listing.price .. ' (' .. listing.plate .. ') from **' .. SellerCitizenId .. '**')
-
-            -- the tax was paid with the car; whatever the government does not take goes back to the buyer
-            local collected = 0
-            if taxAmount > 0 and GetResourceState('pf-government') == 'started' then
-                local ok, value = pcall(function()
-                    return exports['pf-government']:CollectTaxAmount(taxAmount, 'vehicle_purchase', 'citizen', buyerCid, 'vehicle_used_lot', key .. ':tax', subtotal)
-                end)
-                collected = ok and (tonumber(value) or 0) or 0
-            end
-            local uncollected = math.floor((taxAmount - collected) * 100 + 0.5) / 100
-            if uncollected > 0 then
-                PFPayout.Pay(buyerCid, 'bank', uncollected, { key = key .. ':tax-refund', kind = 'refund', reason = 'Uncollected vehicle tax', quiet = true })
-            end
-
-            exports['pfm-core']:GrantVehicleSpawn(src, listing.model)
-            TriggerClientEvent('qb-occasions:client:BuyFinished', src, listing)
-            TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
-            if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
-            TriggerClientEvent('QBCore:Notify', src, ('Vehicle purchase complete. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'success')
-            -- the seller is told by mail (pf-citizen, the same mailbox on the phone, tablet and
-            -- computer; the old phone resource if that is what runs). The sale is done either way.
-            local shared = sharedVehicles[listing.model]
-            local mail = {
-                sender = Lang:t('mail.sender'),
-                subject = Lang:t('mail.subject'),
-                message = Lang:t('mail.message', { value = NewPrice, value2 = shared and shared.name or listing.model }),
-            }
-            local mailed = GetResourceState('pf-citizen') == 'started' and pcall(function() return exports['pf-citizen']:SendMail(SellerCitizenId, mail) end)
-            if not mailed and GetResourceState('pfm-phone') == 'started' then
-                pcall(function() exports['pfm-phone']:sendNewMailToOffline(SellerCitizenId, mail) end)
-            end
-        else
-            TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
+    local taxAmount = 0
+    if subtotal > 0 and GetResourceState('pf-government') == 'started' then
+        local okTax, calcTax = pcall(function()
+            return exports['pf-government']:CalculateTax(subtotal, 'vehicle_purchase')
+        end)
+        if okTax then
+            taxAmount = tonumber(calcTax) or 0
         end
     end
+    local total = math.floor(((subtotal + taxAmount) * 100) + 0.5) / 100
+    if Player.PlayerData.money.bank < total then return notEnough(src, subtotal, taxAmount, total) end
+
+    -- 1) the buyer pays (keyed), 2) the listing is claimed by one DELETE, so of two buyers at the
+    -- same moment only one gets the car and the other is refunded, 3) the seller (online or
+    -- offline) and the tax are paid through the ledger, each kept until it is paid.
+    local key = ('pfm-vehiclesales:buy:%s:%s:%s'):format(tostring(listing.occasionid), tostring(listing.plate), PFPayout.NewId())
+    local sale = { key = key, subtotal = subtotal, tax = taxAmount, total = total, sellerAmount = math.ceil((subtotal / 100) * 77) }
+    local buyer = ownerOf(Player)
+    local claimSql = 'DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?' .. fleetSql
+    local claimParams = { listing.plate, listing.occasionid, listing.price, table.unpack(fleetParams) }
+    local account, res = PFPayout.Charge(src, 'bank', total, { key = key, kind = 'purchase', reason = 'Used vehicle ' .. tostring(listing.plate), quiet = true })
+    if not account then
+        if type(res) == 'table' and res.unclear then
+            -- the bank has not confirmed the charge: no car now and no second charge. The listing
+            -- is claimed for this buyer so no one else buys it meanwhile; the sweep finishes the
+            -- sale when the money arrives (the car parked for them) or puts it back on the lot.
+            local claimed = MySQL.query.await(claimSql, claimParams)
+            claimed = claimed ~= nil and (claimed.affectedRows or 0) > 0
+            local hold = PFSettle.Hold({ flow = 'usedlot', key = key, accounts = { 'bank' }, citizenid = buyerCid, amount = total, plate = listing.plate,
+                txId = res.txId, data = { listing = listing, claimed = claimed, sale = sale, license = buyer.license } })
+            local garage = type(Config.DeliveryGarage) == 'string' and Config.DeliveryGarage or 'pillboxgarage'
+            TriggerClientEvent('QBCore:Notify', src, Lang:t(claimed and 'info.payment_held' or 'info.payment_held_gone', { garage = garage, ref = hold.ref }), 'primary', 10000)
+            TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+            if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
+            return
+        end
+        if type(res) == 'table' and (res.error == 'bank_unavailable' or res.error == 'ledger_unavailable') then
+            return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.bank_unavailable'), 'error', 3500)
+        end
+        return notEnough(src, subtotal, taxAmount, total)
+    end
+    -- the claim also needs the price unchanged (a reprice between the read above) and the car not in
+    -- a job fleet
+    local claimed = MySQL.query.await(claimSql, claimParams)
+    if not claimed or (claimed.affectedRows or 0) < 1 then
+        PFSettle.Owe({ key = key .. ':refund', to = buyerCid, account = 'bank', amount = total, kind = 'refund', reason = 'Vehicle already sold', label = 'a used car that was already sold' })
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.vehicle_does_not_exist'), 'error', 3500)
+        return
+    end
+    -- the car as listed: its condition and odometer, never the seller's loan
+    if not insertOwned(buyer, listing, SOLD_WITH) then
+        -- the car could not be written: the buyer gets the money back and the car stays listed
+        relist(listing)
+        PFSettle.Owe({ key = key .. ':refund', to = buyerCid, account = 'bank', amount = total, kind = 'refund', reason = 'Vehicle purchase failed', label = 'a used car purchase that failed' })
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.lot_unavailable'), 'error', 3500)
+        return
+    end
+    payForSale(listing, buyer, sale)
+    exports['pfm-core']:GrantVehicleSpawn(src, listing.model)
+    -- what the client spawns, not the listing's record (it holds the seller's loan columns)
+    TriggerClientEvent('qb-occasions:client:BuyFinished', src, { model = listing.model, plate = listing.plate, mods = listing.mods })
+    TriggerClientEvent('QBCore:Notify', src, ('Vehicle purchase complete. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'success')
 end)
+
+-- ── purchases that waited on the bank (settlements.lua) ────────────────────────────────────────
+-- The sweep runs one of these once a held charge settled. Rerun-safe: a car already written is
+-- found by its plate, a listing already back on the lot is not put back twice, payments are keyed.
+
+local function heldTell(cid, key, subs, kind) PFSettle.Tell(cid, Lang:t(key, subs), kind or 'primary', Lang:t('info.held_subject')) end
+
+local function labelOf(listing)
+    local v = sharedVehicles[listing.model]
+    return v and v.name or tostring(listing.model)
+end
+
+--- Puts a held listing back on the lot (once).
+local function releaseListing(hold)
+    local d = hold.data
+    if not d.claimed then return end
+    local l = d.listing
+    local there = MySQL.scalar.await('SELECT id FROM occasion_vehicles WHERE occasionid = ? AND plate = ?', { l.occasionid, l.plate })
+    if not there then relist(l) end
+    TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
+    if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
+end
+
+PFSettle.handlers.usedlot = {
+    charged = function(hold)
+        local d = hold.data
+        local l, sale = d.listing, d.sale
+        local buyer = { license = d.license, citizenid = hold.citizenid }
+        local owner = MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ?', { l.plate })
+        if d.claimed and (owner == nil or owner == hold.citizenid) then
+            -- the car is written now (parked for the buyer), or was by an earlier run of this handler
+            if owner == nil and not insertOwned(buyer, l, SOLD_WITH, true) then error('the vehicle could not be written') end
+            payForSale(l, buyer, sale)
+            heldTell(hold.citizenid, 'info.held_delivered', { vehicle = labelOf(l), plate = l.plate,
+                garage = type(Config.DeliveryGarage) == 'string' and Config.DeliveryGarage or 'pillboxgarage' }, 'success')
+            return
+        end
+        -- the listing was gone before the money arrived (sold, repriced, a fleet car): the money goes back
+        PFSettle.Owe({ key = sale.key .. ':refund', to = hold.citizenid, account = 'bank', amount = sale.total, kind = 'refund',
+            reason = 'Vehicle already sold', label = 'a used car that was no longer for sale' })
+        if d.claimed then releaseListing(hold) end
+        heldTell(hold.citizenid, 'info.held_refunded', { vehicle = labelOf(l), amount = sale.total })
+    end,
+    none = function(hold)
+        releaseListing(hold)
+        heldTell(hold.citizenid, 'info.held_cancelled', { vehicle = labelOf(hold.data.listing) })
+    end,
+    review = function(hold)
+        releaseListing(hold)
+        heldTell(hold.citizenid, 'info.held_review', { vehicle = labelOf(hold.data.listing), ref = '#' .. tostring(hold.id) }, 'error')
+    end,
+}

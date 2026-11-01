@@ -128,8 +128,9 @@ describe('pfm-smallresources cruise control tells the HUD when it starts and sto
     local ME, VEH = 7, 900
     local seat, speed, fuel = ME, 20.0, 50
     local pressed, justPressed = {}, {}
-    local sent, notes = {}, {}
+    local sent, notes, pushed = {}, {}, {}
     local env = clientEnv({
+        SetVehicleForwardSpeed = function(_, v) pushed[#pushed + 1] = v end,
         PlayerPedId = function() return ME end,
         GetVehiclePedIsIn = function() return VEH end,
         GetPedInVehicleSeat = function(_, s) return s == -1 and seat or 0 end,
@@ -161,7 +162,7 @@ describe('pfm-smallresources cruise control tells the HUD when it starts and sto
 
     BeforeEach = function()
         seat, speed, fuel = ME, 20.0, 50
-        pressed, justPressed, sent, notes = {}, {}, {}, {}
+        pressed, justPressed, sent, notes, pushed = {}, {}, {}, {}, {}
     end
 
     it('turning it on sends true once; pressing again while it runs starts no second loop', function()
@@ -205,14 +206,48 @@ describe('pfm-smallresources cruise control tells the HUD when it starts and sto
         tick(env, 1)
     end)
 
-    it('slowing down while steering keeps it on; slower once straight turns it off', function()
+    -- Steering and the handbrake are checked once, when cruise is switched on (the original
+    -- behaviour; batch 13 checked them every frame, so cruise let go in every curve and switched off
+    -- after most of them).
+    it('switched on going straight: the speed is held through a turn and cruise stays on', function()
         press()
         tick(env, 1)
-        pressed[63] = true
-        speed = 15.0
+        pressed[63] = true -- steering left
+        speed = 19.0       -- the turn costs a little speed
         tick(env, 3)
         assert_eq(#cruiseEvents(), 1, 'still on while steering')
+        assert_true(#pushed >= 3, 'held every frame of the turn')
+        assert_eq(pushed[#pushed], 20.0, 'at the cruise speed')
         pressed[63] = nil
+        tick(env, 2)
+        assert_eq(#cruiseEvents(), 1, 'still on once straight again')
+        justPressed[72] = true
+        tick(env, 1)
+        assert_eq(cruiseEvents()[2], false, 'the brake still ends it (and the HUD hears it)')
+    end)
+
+    it('switched on going straight: losing more than 1.5 m/s (a crash, a hill) turns it off', function()
+        press()
+        tick(env, 1)
+        pressed[76] = true -- the handbrake after activation does not stop the check
+        speed = 18.0
+        tick(env, 1)
+        local ev = cruiseEvents()
+        assert_eq(#ev, 2)
+        assert_eq(ev[2], false)
+        assert_eq(notes[#notes].msg, 'cruise.deactivated')
+    end)
+
+    it('switched on while steering: it never pushes the car and only the brake ends it', function()
+        pressed[64] = true
+        press()
+        tick(env, 1)
+        pressed[64] = nil
+        speed = 10.0
+        tick(env, 3)
+        assert_eq(#pushed, 0, 'no speed hold')
+        assert_eq(#cruiseEvents(), 1, 'still on: the HUD shows it')
+        justPressed[72] = true
         tick(env, 1)
         local ev = cruiseEvents()
         assert_eq(#ev, 2)

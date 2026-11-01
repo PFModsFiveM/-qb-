@@ -2001,7 +2001,7 @@ Mocked 1190 passed, 0 failed (143 files); real DB 349 passed, 0 failed (38 files
 - **Perishable wine:** with pf-restaurants running, `wine` and `grapejuice` are perishable everywhere, including wine sold in stores.
 - **NOS:** bottles players had saved in vehicle mods (client-written) are not carried over.
 - **Branch closures:** kept in memory; a restart reopens every branch.
-- **Live server.cfg:** remove any `ensure` lines for pfm-busjob, pfm-towjob, pfm-recyclejob and pfm-vineyard, and `[custom]` (old pf-mechanicjob copy). Do not add `setr sv_stateBagStrictMode true` yet: the third-party progressbar and pma-voice still write state from the client (see batch 12).
+- **Live server.cfg:** remove any `ensure` lines for pfm-busjob, pfm-towjob, pfm-recyclejob and pfm-vineyard, and `[custom]` (old pf-mechanicjob copy). Do not add `setr sv_stateBagStrictMode true` yet: the third-party progressbar and pma-voice still write state from the client (see batch 12). *Batch 13 changes this: patched copies start from [qb]; see the batch 13 owner decisions for the live steps.*
 - **Old CSS:** the old Business Manager, Order Supplies and Job Board CSS in `pf-computer/ui/css/style.css` and `pf-tablet/html/style.css` is now unused.
 
 ## Batch 12 — 2026-10-31: fixes from the pre-merge review
@@ -2027,7 +2027,7 @@ Mocked 1190 passed, 0 failed (143 files); real DB 349 passed, 0 failed (38 files
 | Strict state bags not ready | Staging no longer sets `sv_stateBagStrictMode`. The cfg and docs name the blockers: third-party `[standalone]/progressbar` (`inv_busy`), `[voice]/pma-voice`, and the old `[custom]/pf-mechanicjob` on live. |
 | Websites with cards or links can't be saved | The depth limit fits every editor module. "Too deep" and "too large" are separate errors. |
 | NOS | NOS state is saved as soon as it changes, so an emptied bottle no longer refills. Wear reports come only from the driver of their own current vehicle, capped by elapsed time. |
-| Tow rental | A per-character lock covers rent and contract requests. Return and report-lost work after leaving the job, with a return-only yard target for players who still hold a rental. |
+| Tow rental | A per-character lock covers rent and contract requests. Return and report-lost work after leaving the job, with a return-only yard target for players who still hold a rental. Batch 13 adds a return-only Tow app for them. |
 | News vehicles | The lock frees when the vehicle is gone or wrecked. On a new request, a vehicle the reporter left more than `Config.AbandonRange` away (stolen, sunk) is retired. Storing is decided by the server. The trunk is stocked once per issued vehicle. |
 | App Store paid installs | A per-character lock and a fresh ledger key per attempt. One charge per app, recorded in `pf_device_app_purchases` (migration v2), with a refund if recording fails. |
 | Phone invoice retry | The previous attempt is checked on the ledger. A new key is used only after a failed attempt, and "in progress" while one is pending. There is no 20-attempt dead end. Mails and events go out only when the business credit really moved money. |
@@ -2038,3 +2038,270 @@ Mocked 1190 passed, 0 failed (143 files); real DB 349 passed, 0 failed (38 files
 - **NOS garage save:** a periodic garage save in flight during an empty or level save can write older NOS values. This needs a change in `garage_sync.lua`.
 - **Government apps:** pf-computer passes announcement duration in days while pf-government reads seconds. This is older behaviour.
 - **Older issues from the review**, still open: the supplier markup on a cancelled order, Gruppe 6 "end contract" paying the tier maximum, the used-car lot erasing a loan, bank counter proximity, and the lock after an inventory search.
+
+Batch 13 fixed each of these. The gaps its checkers found are listed in the batch 13 section.
+
+## Batch 13 — 2026-11-01: the last review fixes and the owner decisions
+
+**Source:** the items batch 12 left open, the open findings of `REVIEW_main-9hq3gi.md`, and six owner decisions.
+- **Starting point:** a "WIP batch 13" commit (`-qb-` 721686a, `-pfscripts-` 6b91ddd) left by agents that were stopped mid-run. It passed the syntax check only (mocked 1455 passed / 3 failed, real DB 354 / 2).
+- **How:** eleven agents, one per area, finished it. A skeptic then checked each area against its goal. It reran the specs, ran the new specs against the WIP code and the code before it to see them fail, and wrote probe specs for paths the tests did not cover.
+- **Commits:** `-qb-` 80f97db, `-pfscripts-` 28ff205.
+
+**Results on the branch:**
+- mocked 1695 passed, 0 failed (182 files);
+- real database 414 passed, 0 failed (45 files);
+- browser-side: every JS spec green (11 files, 79 tests);
+- parallel ledger and fresh-install SQL checks pass.
+
+**Nothing has been tested in game.**
+
+### Banking (pfm-banking)
+- **Counter cash** (`server.lua`): cash withdraw and deposit, for own and society accounts, need the player within 5 m (`Config.CashRange.counter`) of a bank counter (`Config.locations`). The position is read on the server. Deposits are counter-only. Branch closures still apply. The WIP's "ATM session" is gone: a modified client could open it anywhere.
+- **ATMs** (`config.lua`, `server.lua`; the list is under the owner decisions): opening the ATM screen and withdrawing need a listed ATM within 4 m and a `bank_card`, both checked on the server. ATMs have no deposit.
+  - An unlisted ATM answers "This ATM is out of service" (new `error.atm` in all five locales; `it.lua` also gets the missing `toofar`).
+  - An empty list makes every ATM refuse and prints a warning at start. Counters keep working.
+  - New admin command `/atmcheck`: standing at an ATM, it says whether that ATM is listed, or prints the `vector3(...)` line to add.
+- **`PFPayout.Charge`** (`payouts.lua`): it moves to the next account (cash, then bank) only on a clear refusal: a `failed` transfer, or an error the ledger returns before writing anything (such as `insufficient_funds`).
+  - It stops on everything else: pending, debited, `in_progress`, `ledger_write_failed`, `internal_error`, unknown replies, a compensated transfer, and a failed `interrupted_unverified` row (the cash may have left before a crash).
+  - On an unclear stop it returns `false, res` with `res.unclear = true`, and tells the player unless the caller passed `quiet`.
+  - Every caller in both repos was read. None relied on falling through to the next account, and none was changed.
+- `README.md` explains the cash points and the new Charge behaviour.
+
+### Property tax (pf-government, pfm-houses)
+- **pfm-houses export** (`server/main.lua`): read-only `GetOwnedHouses()` returns `{ house, citizenid, value, label }`.
+  - The value is the price paid (`player_houses.purchase_price`), else the listing price, else 0 (then the minimum applies).
+  - It reads the database, so it is right even before pfm-houses has loaded its houses. A house with two rows counts once.
+  - pf-government never reads the housing tables.
+- **Migration pf-government v2** (`server/schema.lua`): `pf_gov_bills.bill_ref`, `bill_period` and the unique index `uq_bill_period_ref (bill_period, bill_ref)`. Bills without a period (fines, invoices) leave both empty and are not limited.
+- **`CreateBill`** (`server/bills.lua`): an optional 9th argument `{ ref, period }`. With it, the insert is `INSERT IGNORE` on the key, and a repeat returns `false, 'duplicate', existingId`. A malformed key, or a database without the migration, is refused. The NUI and export paths cannot pass it.
+- **New `server/property_tax.lua`:** `PropertyTax.Run(now)` bills each owned house once per week (rules under the owner decisions). One run at a time; houses already billed this week are skipped with one read, and the unique key settles a race. An online owner gets a notification.
+- **Scheduler** (`server/main.lua`, `StartBackgroundTasks`): the auto-collection thread was an empty placeholder. It now runs the property tax 60 s after start, then every `AutoCollection.interval` (30) minutes. The console command `govpropertytax` runs it on demand.
+- **Rate** (`config.lua`, `server/taxes.lua`): `property` joins `Taxes.Defaults` (0.50%) and `Enforcement` (0–5%), labelled "Property tax". After the first seed the database row is the live rate, set by the mayor like every other tax. `Config.Taxes.PropertyTax` holds on/off, minimum, due days, issuer and the housing resource. The unused `property_tax_frequency` setting is gone.
+- **Business overview** (`server/callbacks.lua`, `business:getStats`): the "unpaid taxes" alert now counts business bills only. It would have counted citizens' property tax.
+- `INTEGRATION.md` has a "Weekly Property Tax" section.
+
+### Computer and inventory (pf-computer, pfm-inventory)
+- **Job Board hiring news** (`pf-computer/server/jobboard.lua`): the `business.hiring` kind is registered again when pf-services starts (its `starting` state counts too), when pf-computer starts, and on `pf-services:server:ready`. The WIP's check before `Emit` stays as a fallback.
+- **Supply pickup** (`pf-computer/server/main.lua`, `startJobPickup`): for job businesses the boss check (`jobAdapter.canManage`, the same check pf-stores runs when the run ends) comes before the order is read and before any truck spawns. Staff get "Only the boss can collect supply orders." One pickup start per player at a time. The pf-stores `CanManageOrderBuyer` export is no longer called here.
+- **Announcements** (`handlers['gov:announcements:create']`): the duration is whole days 1–90, sent as seconds. The category is cleaned to letters, digits, spaces, `_` and `-`, at most 32 characters. Empty means pf-government's `general`.
+- **Search lock** (`pfm-inventory/server/main.lua`, `functions.lua`):
+  - client and server action locks are counted separately, so 8 client locks no longer block the `inv:search` lock;
+  - new `EndInventorySearchesBy(viewer)`: the search ends when the searcher opens their own inventory, a stash, a shop or a drop;
+  - close, walking away (the minute check or the next item move), and disconnect or logout of either player already ended it in the WIP.
+- **Busy-lock TTL** (`qb-inventory:server:setActionBusy(reason, busy, ttlSeconds)`): an optional TTL of 1–600 s, rounded up. No TTL keeps the 30-minute default. An invalid TTL changes nothing. A release ignores the TTL. A short lock ends within about a second of its TTL. Disconnect and logout still clear it.
+
+### Documents and phone (pf-citizen, pfm-phone)
+- **Documents** (`pf-citizen/server/documents.lua`, `mail.lua`): the WIP was kept and finished.
+  - Only the owner hands out a read-only link by mail. Anyone else who mails a document sends each recipient a locked copy, or points at the original when the recipient can already read it.
+  - Only the owner, or someone the owner or the server shared it with, can sign.
+  - Once someone else has signed, the owner's delete only hides it from the owner (`owner_hidden`, migration pf-citizen v2), and unsharing a signer is refused. These checks are inside the SQL statements.
+  - New: a failed signature no longer leaves the document locked with no signature (`D.Sign`).
+  - New: a person who gets a mail directly and as a business boss gets one copy (`M.SendFromPlayer`).
+  - UI (`mail.js`, `documents.js`): a document you don't own is marked "(copy)"; the Share dialog says the recipient gets a copy.
+- **Phone invoices** (`pfm-phone/server/main.lua`, `qb-phone.sql`):
+  - each invoice has its own `ledger_token`: a nullable column with a `DEFAULT (UUID())`, added by a guarded `ALTER` that runs only when the column or default is missing. Payment keys come from the token, so a reused invoice id no longer matches an old paid key. Rows without a token keep their id key;
+  - the default also gives a token to invoices other resources insert directly (pfm-policejob `/bill`);
+  - the business and the commission are paid before the row is deleted (`PayInvoiceLocked`); a decline takes the same lock as a payment;
+  - `CreateInvoice` caps the amount at the column limit and the ids at 50 characters; the token is never sent to the client.
+
+### EMS and Dispatch (pf-ambulancejob, pf-emsmdt, pf-services)
+- **The 3 WIP failures** were the spec's fault: the resource loads once per spec file and kept the earlier patient's open call. Each test now starts clean (also `citylinks_ems_spec`).
+- **Person-down calls** (`pf-ambulancejob/server/main.lua`):
+  - a call opens only when the server reads the player down, one per character;
+  - logging out to the character menu (`QBCore:Server:OnPlayerUnload`) closes it, like a drop, and only once;
+  - a character who left while down and comes back dead counts as down again;
+  - a call held back by the cooldown no longer blocks the next one;
+  - the city event goes out only for a new request.
+- **EMS MDT** (`pf-emsmdt/server/main.lua`, `pf-services/server/main.lua`): pf-services passes `requestId`, and the MDT matches calls by request id only. The WIP's match by title and position could delete an unrelated call. Cancelled or expired requests remove the call; completed ones show it as done.
+- **Dispatch** (`pf-services/server/requests.lua`, `apps.lua`, `shared/catalog.lua`, `html/apps/dispatch.js`):
+  - one job rule, `PFServices.WorksOn`, drives the list, accept and the waypoint, so Benny's and Beeker's get waypoints on mechanic calls;
+  - each `gov.request.*` kind declares its `govPermission` (businesses or licenses). Taking or completing one needs that permission through `pf-government:HasPermission`. A kind without one, or pf-government stopped, cannot be taken. Giving a request back needs no permission;
+  - the app hides Accept when the server says no, and points to the Business Requests app.
+
+### Fuel and cruise (pfm-fuel, pfm-smallresources, pf-hud)
+- **Fuel reports** (`pfm-fuel/server/main.lua`, `qb-fuel:server:syncFuel`): accepted only from the car's driver, only downward, and by at most `Config.MaxFuelBurnPerSecond` (0.5) per second since the last accepted value (counted up to 30 s). A car with no level yet takes its driver's first report.
+- **Refuelling** (pump callback, `setCanFuel`, jerry can):
+  - needs a real car within 10 m; the client's level is ignored;
+  - the pump charges only for what fits, refuses a full tank, and answers `(paid, newLevel, reason)`;
+  - a per-car lock (`withRefuelLock`) is taken before the payment wait;
+  - the jerry can edits a copy of the item info, so a failed swap leaves the can as it was.
+- **New server exports:** `SetVehicleFuel(entity, level)` and `GetVehicleFuel(entity)` (in the README).
+- **Client** (`client/main.lua`, `client/exports.lua`): the pump sets the level the server answered. A capped answer no longer pushes the driver's gauge back up; refuels always apply.
+- **Cruise indicator** (`pf-hud/client.lua`, `html/index.html`, `app.js`, `style.css`): the live HUD is the plain-JS `app.js`; the svelte source and the old bundle are not loaded. A cruise icon shows while cruise is on, and in layout edit mode.
+- **Cruise** (`pfm-smallresources/client/cruise.lua`): sends `false` however cruise ends (also when leaving the seat), starts no second loop, and checks steering and the handbrake every frame.
+
+### Jobs (pf-jobs)
+- **Bus** (`server/apps/bus.lua`): the WIP's per-player spawn lock was already correct: taken before the first wait, released on every path. Tests added.
+- **Gruppe 6 early end** (`server/apps/gruppe6.lua`): pays the contract's payout × bags handed in ÷ total bags, never the tier maximum. In a party the crew bonus applies to that share.
+  - Ending before any bag was collected now closes the contract with no pay for the crew and sends them to the return area (new client event `pf-jobs:gruppe6:returnWithoutBags`). Before, the contract was stuck.
+- **Gruppe 6 client** (`client/gruppe6.lua`): exactly one `returnVehicle` handler remains.
+- **Tow return after leaving the job** (`server/devices.lua`, `server/apps/tow.lua`, `client/tow.lua`, `html/apps/tow.js`):
+  - the Tow app is open to the tow job, or anyone whose character has an open rental;
+  - a former driver sees only the rental, the car on the bed, the bay flag and the depot, and can only return the flatbed or report it lost; every other method is refused and moves no money;
+  - after the rental settles, the app leaves their device;
+  - `/tow` takes a car off the bed whenever the server says one is on it.
+
+### Mechanic (pf-mechanicjob)
+- **Tow billing** (`server/advanced_systems.lua`, `config.lua`, `client/advanced_systems.lua`):
+  - only the shop's boss can order a tow, for a car within `Reach` (8 m);
+  - the server must read the car as broken: engine below 400, body below 300, a ruptured tank, or a part at 100% wear;
+  - the boss and the plate are locked before the first wait and checked again after it; the shop's account pays;
+  - other mechanics are told the boss can order a tow. The WIP's `MinBillingGrade` setting is gone.
+- **Repairs vs old wear reports** (`server/main.lua`, `repair.lua`, `consumables.lua`, `admin_customs.lua`): every server repair calls `PFMech.MarkWearRepaired`, which raises the car's wear epoch after the repaired wear is set. A report with an older epoch is dropped. The WIP's state-bag handler raised the epoch too early; it now only records known wear.
+- **NOS save order** (`server/garage_sync.lua`, `nos.lua`, `admin_customs.lua`): every NOS write goes through one ordered writer per plate (`PFMech.SaveNos`) that writes the newest state last. The 30 s wear save never writes NOS. The garage store queues its NOS snapshot with the wear. Admin NOS install and remove save at once.
+
+### Stores (pf-stores, pf-computer Order Supplies)
+- **Markup at delivery** (`server_orders.lua`): accepting a player-supplied order moves no money. The supplier's markup share is paid only at settlement (`O.Settle`). A cancel refunds the buyer the total minus what really left escrow, counted over every payout key. Accept-then-cancel can no longer drain escrow.
+- **Case sizes:** `caseSizeOf` (exported as `O.CaseSizeOf`) is the one place that reads `Config.SupplyChain.CaseSize`, always a whole number of at least 1. It is used for matching, reserving, `DepositStock` and the Supplier app. `CaseSize = 0` no longer stocks cases for free. A cancel returns the `reservedUnits` recorded at accept.
+- **Refund retries:** a cancel refund the ledger stored as failed is retried under `supply:<id>:cancel:<n>`, with a growing wait (15 s, up to 1 h; every owed refund once at start). Migration pf-stores v3 marks older cancelled orders whose refund never reached the ledger as owed.
+- **Freight on top** (rules under the owner decisions): `CreateOrder` answers include `freight`. New exports `GetDeliveryPricing(kind, buyerId)` and `QuoteOrder(kind, buyerId, method, subtotal)`. `ListSupplyOrders` and `GetStoreManagerData` (`server.lua`) return subtotal, markup and freight. The 7-day spend skips failed and cancelled orders.
+- **Apps** (`pf-computer/html/apps/ordersupplies.js`, `pf-stores/html/apps/supplier.js`), display only:
+  - the cart shows goods, markup, freight and an estimate when the server sends pricing; otherwise it says the extras are added on top;
+  - the notice after ordering shows what was charged; order cards show the breakdown when the server sends it; a cancel whose refund is still owed says so;
+  - the Supplier app shows "You earn $X + $Y bonus on delivery".
+
+### Strict state bags (progressbar, pma-voice, staging)
+- **Copies** in `-qb-`, under their own names: `progressbar` and `pma-voice`, with LICENSE and README kept (source under the owner decisions).
+  - Left out: `.github/`, a root `.gitignore`, and `ui/js/*.js.map` (build output that holds the upstream author's local path).
+  - A scan for steaxscripts and loaders over the Lua, the server JS and the UI bundles is clean.
+- **progressbar** (`client.lua`): no longer writes `inv_busy`. Each bar takes pfm-inventory's `progressbar` action lock with a TTL: the time left plus 10 s, at most 600 s, renewed for longer bars. It releases the lock only if it holds it.
+- **pma-voice** (new `server/module/state.lua`; `server/module/radio.lua`, `server/main.lua` and the client files):
+  - the client no longer writes replicated state. The server checks and writes `voiceIntent`, `disableRadio`, the four volumes, `proximity` and `radioActive`;
+  - rate limits: 20 per 5 s per player and key, 40 for radio talk. The latest value is applied when the window ends;
+  - `radioActive` is true only while the server has the player in a non-zero channel. Talking reaches only channel members. Leaving or switching radio clears it;
+  - joining sets `disableRadio` to 0 if unset and clears a `radioActive` left from before a restart.
+- **Staging** (`docs/staging/server.staging.cfg`): `setr sv_stateBagStrictMode true` is on. The scan spec now covers both copies.
+
+### Vehicles (pfm-vehiclesales, pfm-vehicleshop)
+- **Used lot** (`pfm-vehiclesales/server/main.lua`, `client/main.lua`, `qb-vehiclesales.sql`):
+  - financed, impounded (`depotprice > 0`) and active fleet cars are refused. The DELETE that hands the car over repeats each condition, so a car put in a fleet after the check is still refused;
+  - the server picks the car the seller sits in and reads the model and the sell-back price from its record (this needs OneSync);
+  - migration pfm-vehiclesales v1 adds `vehicle_state`. A listing keeps the car's finance columns, condition and odometer; taking it back restores them exactly. A buyer gets the condition and odometer, never a loan;
+  - the server removes the car from the world only after success. Before, the client deleted it even when the server refused;
+  - a full lot refuses new listings; a sell-back at price 0 is refused; a failed write puts the car or listing back, or refunds the buyer.
+- **Transfers** (`pfm-vehicleshop/server.lua`; `/transfervehicle` is the only ownership-change path in either repo):
+  - gifts and sales refuse fleet cars. Financed cars are refused when `Config.PreventFinanceSelling` is on; when it is off, the loan goes with the car and the buyer sees it before accepting;
+  - the car is locked before the first wait. Ownership changes in one UPDATE that checks the owner, the loan shown and the fleet again;
+  - a paid sale goes through `system:pfm-vehicleshop`: the buyer pays in, the car moves, then the seller is paid. If the car can't move, the buyer is refunded. All keys come from the offer id;
+  - an amount that isn't a number (`5k`) is refused; before, it gave the car away.
+- **Accept and pay** (`client.lua`, `server.lua`): the prompt sends `{ accept, id }`. Only the offer with that id is accepted. An old or missing id accepts nothing and leaves the current offer open.
+- **Dealer commission** (rules under the owner decisions): `html/apps/cardealer.js` shows both parts. The config comments and README are updated.
+
+### Owner decisions as built
+- **Dealer commission comes out of the dealership's share** (pfm-vehicleshop).
+  - The dealership gets the price minus the commission. The salesperson gets the commission: `Config.Commission` (10%), or `Config.FinanceCommission` (5%) for a financed sale.
+  - Both come from `system:pfm-vehicleshop`, which received the price, each once under its own key (`<offer>:dealership`, `<offer>:commission`). No money is created.
+  - The commission is clamped between 0 and the price.
+- **Freight on top, paid by the buyer** (pf-stores).
+  - A delivery costs goods + AI markup (15%) + freight. A pickup costs the goods only.
+  - The supplier gets the full goods value. A player supplier also gets half the markup at delivery; the rest goes back to the buyer. The driver gets the freight. Escrow pays out exactly the total.
+  - Orders placed before this change settle as they were charged.
+  - The old cap of freight at the goods value is gone, so the freight minimum applies to small orders: 12% of the goods, at least $250 for stores and $150 for restaurants and job businesses. A small order is cheapest as a pickup.
+- **ATMs** (pfm-banking `Config.ATMs`, 76 points; withdrawals within 4 m, `Config.CashRange.atm`).
+  - 71 points from esx_atm `Config.ATMLocations`: GPL-3.0, © 2015-2018 Jérémie N'gadi, read from the mirror github.com/ESX-Brasil/esx_atm at a11170f.
+  - 5 points from vRP `vrp/cfg/atms.lua`: MIT, © 2017 ImagicTheCat, github.com/ImagicTheCat/vRP at 8d35fdf. These are the vRP points more than 2 m from every esx_atm point; where the two lists share an ATM they agree within 1.6 m.
+  - Rejected: jsfour-atm ("All Rights Reserved"). The owner's pack has no ATM coordinates.
+  - An ATM missing from the list (other GTA ATMs, custom maps) refuses cash until it is added; `/atmcheck` gives the line.
+- **Weekly property tax** (pf-government).
+  - Each owned house gets one bill a week: 0.5% of its value (the mayor's `property` rate, 0–5%), at least $50 (`Config.Taxes.PropertyTax.Minimum`).
+  - `bill_type 'tax'`, to the owner as a citizen bill, so it shows in pf-citizen Bills. Due in 7 days. Title "Property tax: <address>, week of YYYY-MM-DD".
+  - The key is `house:<house>` plus the week (its Monday, 00:00 UTC). The unique index `(bill_period, bill_ref)` keeps it to one bill per house per week, even after a restart or a racing run.
+  - Unpaid bills go delinquent after due + 7 days through the existing escalation. Like any delinquent citizen bill, this suspends the owner's active licenses.
+  - No repossession: the house keeps its owner.
+  - Paying uses the existing `PayBillFromPlayer` path; the money goes to the treasury.
+  - A week the server was down is not billed later. Whoever owns the house at the first run of a week pays that week.
+- **progressbar and pma-voice copied into [qb]** from the owner's BigLeagueQB snapshot of 2025-10-19. The copies on the live server may differ from that snapshot. The originals (`[standalone]/progressbar`, `[voice]/pma-voice`) must be removed from the live server: two resources with one name conflict, and either one may start.
+- **Strict state bags on in staging** (`setr sv_stateBagStrictMode true`). On live, remove the two originals and `[custom]` (the old pf-mechanicjob) before turning it on.
+
+### What the checkers confirmed
+| Area | Confirmed |
+|---|---|
+| Banking | Counter cash uses the server position, before any ledger call. The ATM list matches both sources point for point, with the licences as stated; no invented coordinates. `Charge` was checked against every return path of the ledger's `Transfer`: no path takes money from a second account after the first may have moved money. The specs fail on the WIP and pre-WIP code. |
+| Property tax | One bill per house per week on every path (second run, restart, console command, a race between read and insert). Real DB amounts 1,250 / 600 / 50. Delinquency keeps the owner. Paid once in Bills, treasury credited. No client path reaches the recurring key. |
+| Computer and inventory | The Job Board kind is registered again after a pf-services restart. The boss check runs before any order read or spawn. Duration and category match pf-government's rules. The search lock clears on close, disconnect, logout and another inventory. The TTL is bounded and validated, and matches progressbar. |
+| Documents and phone | No path hands out a link except the owner's. Signature, delete and unshare checks are inside the SQL. The token column is added once. Pay and Decline share one lock, taken before the first wait. |
+| EMS and Dispatch | The 3 WIP failures were the spec's. The MDT call closes by id on every request close path. One call per character. Dispatch list, accept and waypoint use one rule. Government kinds need the same permission as Business Requests. |
+| Fuel and cruise | Only the driver lowers the level, capped by time. Refuels take no client value and lock before the charge. The live HUD is the plain-JS one. Cruise sends exactly one on and one off. |
+| Jobs | The bus lock comes before the first wait and is released on every path. The Gruppe 6 early end pays the share and never more than finishing. One return handler. The tow return-only view refuses every other action with no money moved. |
+| Mechanic | Boss only, damage and position read on the server, locks before the first wait (checked with a held wait). Every server path that lowers wear marks the epoch. NOS writes are ordered per plate; mutation checks fail without the fix. |
+| Stores | No money moves at accept. Full refund on cancel. Escrow pays out exactly the total. Case sizes come from one place. Refunds use a new key only after a stored failure. The adapters still send the goods subtotal. |
+| Strict state bags | The copies differ from the snapshot only in the patched files. The rescan is clean. With the originals swapped in, the scan finds exactly the 12 upstream client writes. The progressbar TTL matches pfm-inventory's 600 s cap. The staging line is on. |
+| Vehicles | Fleet, finance and impound refusals hold inside the DELETE or UPDATE. Take-back restores the loan; a buyer never gets one. Only the shown offer id is accepted. Dealership share + commission = price, each paid once. |
+
+### Gaps the checkers found
+| Area | Gap | Status |
+|---|---|---|
+| Banking | pfm-policejob `/bill` creates a phone invoice when `Charge` returns false. On an unclear result that later completes, the player pays twice. | handled in batch 13b |
+| Banking | Callers that make a new key per click (fuel, car wash, vehicle shop, truck robbery, rentals, taxi, farming, App Store, revive) can charge twice when the player retries after an unclear result (older). | handled in batch 13b |
+| Banking | On an unclear result, callers with their own error show two notices (pfm-shops bail), and the tow app says "insufficient funds". | handled in batch 13b |
+| Property tax | While pfm-houses' database is not ready, the export uses the listing price instead of the price paid. | handled in batch 13b |
+| Property tax | The government Fines app does not list citizens' property-tax bills, so staff cannot see or waive them. The dashboard's pending-bill count now includes them. | handled in batch 13b |
+| Computer and inventory | A search is bound to range only if the searcher is within 5 m after the 1.5 s opening wait. Police search and rob need only 2.5 m, so a searcher who steps away during the wait can loot from any distance and keep the target locked. | handled in batch 13b |
+| Computer and inventory | TAB does not free a searched player at once (the `inventory` command stops on `inv_busy` first); only the minute sweep does. The spec skips that key path. | handled in batch 13b |
+| Computer and inventory | During the 1.5 s wait the target can reopen their own inventory and keep it open for the whole search (older). | handled in batch 13b |
+| Computer and inventory | The pickup lock is per player, not per order: two bosses can spawn two trucks for one order. No money moves. | handled in batch 13b |
+| Documents and phone | A key the ledger recovers as `interrupted_unverified` is treated as failed, and a new key charges again: a crash mid-transfer can still charge twice. Two specs assert this as correct. | handled in batch 13b |
+| Documents and phone | A decline does not check the invoice's ledger keys. After a completed or in-flight charge the payer can decline: they are charged and the business is never paid. | handled in batch 13b |
+| Documents and phone | If the business credit is interrupted, the row is deleted and the payment returns true while the business stays unpaid. The `:society` key never moves to a new attempt key. | handled in batch 13b |
+| Documents and phone | After a crash between the payouts and the delete, the retry sends no settled event or mail, so the Bills history misses the invoice. | handled in batch 13b |
+| Documents and phone | A copy holds only the title and body, not the signatures. Mailed copies count against the recipient's document limit. A failed delivery leaves an orphan copy. An attachment dropped for lack of room is still reported ok. | handled in batch 13b |
+| EMS and Dispatch | If the patient logs out, drops or is revived while the request insert is still running, the request and its MDT call stay open until expiry (900 s). | handled in batch 13b |
+| EMS and Dispatch | A player who crashes or logs out in last stand and comes back within the 60 s cooldown gets no call. | handled in batch 13b |
+| EMS and Dispatch | A standing player at 101–150 health who fakes last stand gets one call at their real position (design limit kept from the WIP). | handled in batch 13b |
+| Fuel and cruise | A new car's first level is still its driver's first report (any 0–100): no spawner calls `SetVehicleFuel` yet. | handled in batch 13b |
+| Fuel and cruise | Cruise now checks steering and the handbrake every frame (not asked for): speed is not held in a turn, and cruise may switch off after a curve. | handled in batch 13b |
+| Fuel and cruise | A car that is not networked can no longer be pump-refuelled. A car with no shared level is charged for the full litres asked, with no room check. | handled in batch 13b |
+| Fuel and cruise | The pump works next to any car anywhere, at the base price (older). | handled in batch 13b |
+| Jobs | Gruppe 6: the truck's storage target is removed after the truck is deleted, which does nothing in game (the target is kept under the net id). | handled in batch 13b |
+| Jobs | Bus: the spec runs without the database read, so it does not prove the lock comes before the first database wait. | handled in batch 13b |
+| Jobs | Gruppe 6: the zero-bag end clears only current group members; lost bags still block an early end; ending in the 250 ms bag recount window pays nothing. | handled in batch 13b |
+| Jobs | Tow: a former driver with an owed contract cannot claim the pay. An open Tow window keeps the driver layout until it refreshes. The client comment about a restart is misleading. | handled in batch 13b |
+| Mechanic | The tow cooldown is used up even when the request fails. The client offers a tow only at engine 30% or less. Busy and cooldown refusals are silent. No committed spec holds the first wait. | handled in batch 13b |
+| Mechanic | The 30 s wear save takes its snapshot before its database wait, so a repair in that window can leave pre-repair wear saved. | handled in batch 13b |
+| Stores | `O.Settle` and AI delivery retry fixed ledger keys after a stored failure: the order never settles and its money stays in escrow. | handled in batch 13b |
+| Stores | `O.Route` (and pf-services `RegisterRequestHandler`) accept only a Lua function. Adapters registered through exports arrive as function references in FiveM, so restaurant and job-business deliveries probably get no route in game. | handled in batch 13b |
+| Stores | The cart estimate and the order-card breakdown need pf-computer's `business:supplies:catalog` and `orders:list` to pass the pricing. Until then the app shows generic wording. | handled in batch 13b |
+| Stores | A buyer account that is gone for good gets a new failed refund row about once an hour, forever (no `forfeited` state). | handled in batch 13b |
+| Stores | `/supplyorders` prints the buyer's lines without converting them; the `ListSupplyOrders` mock in `stores_trucking_ledger_spec` is stale. | handled in batch 13b |
+| Strict state bags | The progressbar copy has no LICENSE (the snapshot had none; upstream is GPL-3.0). | handled in batch 13b |
+| Strict state bags | Proximity `index` and `mode` are checked for type and range only, not against `Cfg.voiceModes`. | handled in batch 13b |
+| Strict state bags | Switching channel while holding push-to-talk clears `radioActive` until release. A server-side `disableRadio` write would not reach the client's copy (no such writer exists). | handled in batch 13b |
+| Vehicles | `buyVehicle` does not check the fleet again: a listing made before this fix, or during pf-jobgarages' add-to-fleet race, can sell a fleet car. | handled in batch 13b |
+| Vehicles | `getVehicles` sends every listing's `vehicle_state` (finance and condition) to all clients. | handled in batch 13b |
+| Vehicles | `fleetTableExists` caches "no table" for 5 minutes, so a failed lookup lets fleet cars through. | handled in batch 13b |
+| Vehicles | A failed seller payout or buyer refund after a paid transfer is never retried. An unclear buyer charge can leave the buyer charged with no car. | handled in batch 13b |
+
+### Known, not fixed here (older, or outside this batch)
+- **pfm-banking:** the ATM PIN is checked only in the UI; `Config.useDailyLimit` / `dailyLimit` are unused. Only an attribution line was added for the 5 MIT (vRP) points.
+- **pf-government:** `ProcessBillLateFees` never runs (`os.time` on a number). Fixing only that line would add 10% every hour, compounding: an owner decision. House utility bills use `target_type 'property'`, which `pf_gov_bills` does not allow.
+- **pfm-phone:** pfm-policejob `/bill` inserts into `phone_invoices` itself instead of calling `CreateInvoice`. The Bills history is keyed by invoice id.
+- **pf-services and MDTs:** the police MDT ignores `requestId`, so police calls stay on its board after the request closes. pf-government's Business Requests keeps its own permission list (a spec catches drift). A citizen's own medic call is not closed when they log out; it expires after 15 minutes (true for every citizen request). pf-services never raises `pf-services:server:ready` (optional; the restart is covered).
+- **pf-computer:** no computer screen calls `gov:announcements:create`. Keep pf-stores' `CanManageOrderBuyer`: pfm-worldobjects uses it.
+- **pfm-garages:** `updateVehicleStats` still saves the fuel level the client sends.
+- **pf-jobs:** Gruppe 6 `vehicleReturned` clears the sender's contract without checks (pays nothing). A tow contract in progress keeps its car and spot until the former driver disconnects.
+- **pfm-vehicleshop / pf-jobgarages:** repossession deletes the car's row but leaves its active `job_garage_vehicles` row. Old listings without `vehicle_state` come back with default columns; a loan erased by an earlier listing can't be recovered.
+- **pf-hud:** `svelte-source` and the old `html/index.js` / `index.css` are unused and could be retired.
+
+### Database migrations (rerun-safe)
+- pf-government v2: `bill_ref`, `bill_period`, unique `uq_bill_period_ref`;
+- pf-stores v3: older cancelled orders with an unsent refund marked as owed;
+- pfm-vehiclesales v1: `occasion_vehicles` and its `vehicle_state` column (also in `qb-vehiclesales.sql`);
+- pf-citizen v2: `owner_hidden` (from the WIP);
+- pfm-phone: a guarded `ALTER` adds `ledger_token` and its `DEFAULT (UUID())` (also in `qb-phone.sql`).
+
+### Tests
+- **New mocked specs:** `fix9hq2_inventory_action_busy_ttl`, `fix9hq2_emsmdt_request_close`, `fix9hq2_cruise_hud`, `fix9hq2_jobs_tow_return`, `fix9hq2_mechanic_wear_epoch`, `fix9hq2_mechanic_nos_save_order`, `fix9hq2_vehicle_prompts_client`, `government_property_tax`, `progressbar_busy`, `pmavoice_state`. The WIP's `fix9hq2_*` specs were finished so they test the goal.
+- **New real-DB specs:** `fix9hq2_banking_charge_unclear`, `fix9hq2_dispatch_visibility`, `government_property_tax`, `phone_invoice_tokens`, `vehiclesales_listing`. `citizen_documents` gained 10 tests. `supply_chain` and `vineyard_restaurant_supply` now expect the markup share at delivery.
+- **New JS specs:** `ordersupplies_totals`, `pfhud_cruise`, `pfservices_dispatch_app`.
+- Mocked 1695 / 0, real DB 414 / 0, JS all green; `ledger_parallel` and `sql_install_check` pass.
+
+### Things to know before live
+- **Freight minimum on small orders:** confirm it. An employee with supply-order permission at a store or restaurant can place tiny delivery orders and drive them for $150–250 each from the business account. It is real work for real pay and creates no money.
+- **Delinquent property tax suspends licenses** (the existing escalation for citizen bills).
+- **`qb-phone.sql`** now needs a database with expression defaults: MariaDB 10.2+ or MySQL 8.0.13+. It fails on MySQL 5.7.
+- **Used lot:** listing and selling back need OneSync (the server reads which car the seller sits in).
+- **pma-voice:** replicated values (`radioActive`, proximity, volumes) appear after one round trip, so pf-hud's radio icon lags by about the ping. Server code must not write `disableRadio` itself.
+- **pfm-inventory** allows 30 client lock events per 10 s. Very fast back-to-back bars could lose a hold or a release; a lost release still ends after the bar's time plus 10 s.
+- **Fuel:** the 0.5 per second cap is not checked against real burn at `GlobalFuelConsumptionMultiplier` 4.5. If cars burn faster, other players see the level catch up slowly; raise `Config.MaxFuelBurnPerSecond`.
+- **Mechanic repairs** rely on FiveM sending one car's state-bag changes to clients in the order the server set them (wear, then epoch).

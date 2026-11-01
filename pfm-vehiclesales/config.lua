@@ -1,6 +1,7 @@
 Config = Config or {}
 
 Config.UseTarget = GetConvar('UseTarget', 'false') == 'true'
+Config.DeliveryGarage = 'pillboxgarage'   -- where a bought car is parked when its payment cleared later (the bank was slow to confirm it)
 
 Config.Zones = {
     ["SandyOccasions"] = {

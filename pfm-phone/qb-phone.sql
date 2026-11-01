@@ -19,9 +19,12 @@ CREATE TABLE IF NOT EXISTS `phone_invoices` (
   `reason` varchar(256) default null,
   -- unique per invoice, the base of its ledger payment keys (invoice ids can be reused). The UUID()
   -- default also gives one to invoices other resources insert directly. pfm-phone adds the column
-  -- and the default on start to tables created before them; older rows keep NULL and their
-  -- id-based keys.
+  -- and the default on start to tables created before them; a row without a token gets one when it
+  -- is first paid (after its id-based keys are checked).
   `ledger_token` varchar(40) default (uuid()),
+  -- NULL: open; 'paying': being charged, or charged and waiting for the business to be credited
+  -- (finished by pfm-phone's sweep). pfm-phone adds it on start to tables created before it.
+  `pay_state` varchar(16) default null,
   PRIMARY KEY (`id`),
   KEY `citizenid` (`citizenid`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4;

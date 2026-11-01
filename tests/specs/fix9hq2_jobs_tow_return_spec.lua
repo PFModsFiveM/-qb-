@@ -5,7 +5,14 @@
 -- (server/devices.lua, __access); a former driver gets a view of the rental alone and every other
 -- action is refused, and the app leaves their device once the rental is settled. On the world side
 -- /tow takes a car off the bed whenever the server says one is on it (client/tow.lua), since the
--- return refuses a loaded truck and the client's own hook state is lost on a resource restart.
+-- return refuses a loaded truck and the client's own hook state is set only when its attach event
+-- found both cars (one not streamed in yet, or a missed event, leaves the server holding a hook the
+-- client does not know about).
+-- A former driver whose last contract's pay the bank missed (payment_due) also keeps the app and
+-- collects the pay from the return-only view; an open window switches to that view when the player
+-- leaves the job (the job change pushes the tow state, and the app fetches its view again). A
+-- deposit charge the bank has not settled yet is told as such (not "you cannot pay"), and the retry
+-- asks under the same key, so the deposit is never taken twice.
 load_resource('tests/lua/ledger_env.lua')
 QBCore = QBCoreMock
 
@@ -27,7 +34,11 @@ function SetVehicleDoorsLocked() end
 function GetVehicleEngineHealth() return 1000.0 end
 function GetVehicleBodyHealth() return 1000.0 end
 SetTimeout = function() end
-local function started(name) return name ~= 'pf-services' and 'started' or 'missing' end
+local bankDown = false
+local function started(name)
+    if name == 'pfm-banking' and bankDown then return 'missing' end
+    return name ~= 'pf-services' and 'started' or 'missing'
+end
 GetResourceState = started
 
 local installs = {}
@@ -91,6 +102,7 @@ end
 BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
+    bankDown = false
     Mock.clock = Mock.clock + 100000
     for src = 1, 3 do PFJobsTow.Dropped(src) end
     for _, cid in ipairs({ 'CID1', 'CID2', 'CID3' }) do PFJobsTow.ForgetCitizen(cid) end
@@ -140,7 +152,7 @@ describe('Tow app for a player who left the tow job', function()
         leaveJob(DRIVER)
         local cash, bank = money(DRIVER, 'cash'), money(DRIVER, 'bank')
         for _, call in ipairs({
-            { 'rentFlatbed', { model = 'flatbed' } }, { 'startContract' }, { 'cancelContract' }, { 'claimPay' },
+            { 'rentFlatbed', { model = 'flatbed' } }, { 'startContract' }, { 'cancelContract' },
             { 'acceptRequest', { id = 3 } }, { 'completeRequest', { id = 3 } }, { 'releaseRequest', { id = 3 } },
         }) do
             local res = rpc(DRIVER, call[1], call[2])
@@ -148,6 +160,8 @@ describe('Tow app for a player who left the tow job', function()
             assert_eq(res.error, 'not_tow', call[1])
             assert_eq(res.view.returnOnly, true, call[1] .. ' answers with the return-only view')
         end
+        -- collecting owed pay is open to them (below); with nothing owed it pays nothing
+        assert_eq(rpc(DRIVER, 'claimPay').error, 'nothing_owed')
         assert_eq(money(DRIVER, 'cash'), cash)
         assert_eq(money(DRIVER, 'bank'), bank)
     end)
@@ -230,6 +244,148 @@ describe('Tow app for a player who left the tow job', function()
         local res = rpc(DRIVER, 'returnFlatbed')
         assert_eq(res.ok, true)
         assert_eq(res.refund, DEPOSIT)
+    end)
+end)
+
+-- a contract delivered while the bank is down: its pay is owed (payment_due)
+local function deliverUnpaid()
+    local truck = rentTruck()
+    assert_eq(rpc(DRIVER, 'startContract').ok, true)
+    local car = Mock.nextNetId
+    local c = PFJobsTow.View(DRIVER).contract
+    Mock.coords[truck] = vector3(c.x, c.y, c.z)
+    Mock.coords[car] = vector3(c.x, c.y + 6, c.z)
+    Mock.coords[DRIVER] = vector3(c.x + 2, c.y, c.z)
+    assert_eq(PFJobsTow.Hook(DRIVER, car, true).ok, true)
+    Mock.clock = Mock.clock + 900
+    local drop = C.DropOff.coords
+    Mock.coords[truck], Mock.coords[car], Mock.coords[DRIVER] = drop, drop, drop
+    bankDown = true
+    assert_eq(PFJobsTow.Unhook(DRIVER, true).delivered, false)
+    bankDown = false
+    assert_eq(PFJobsTow.View(DRIVER).contract.stage, 'payment_due')
+    return truck, c
+end
+local function returnTruck(truck)
+    Mock.coords[DRIVER], Mock.coords[truck] = BAY, BAY
+    assert_eq(rpc(DRIVER, 'returnFlatbed').ok, true)
+end
+
+describe('Tow pay owed to a driver who left the job', function()
+    it('is collected from the return-only view, once, and then the app leaves the device', function()
+        local truck, c = deliverUnpaid()
+        returnTruck(truck)
+        leaveJob(DRIVER)
+        assert_true(seesTow(DRIVER), 'kept for the pay owed, with no rental')
+        local v = rpc(DRIVER, 'getInit')
+        assert_eq(v.returnOnly, true)
+        assert_eq(v.rental, nil)
+        assert_eq(v.owed.pay, c.pay)
+        assert_eq(v.owed.plate, c.plate)
+        for _, field in ipairs({ 'requests', 'contract', 'stats', 'level', 'vehicles', 'config', 'contractBlocker' }) do
+            assert_eq(v[field], nil, field .. ' is not shown')
+        end
+        local bank = money(DRIVER, 'bank')
+        Mock.reset()
+        local res = rpc(DRIVER, 'claimPay')
+        assert_eq(res.ok, true, 'it was refused as not_tow before')
+        assert_eq(res.paid, c.pay)
+        assert_eq(money(DRIVER, 'bank'), bank + c.pay)
+        assert_eq(#LedgerEnv.paid('pf-jobs:tow:contract:'), 1)
+        assert_eq(appsChangedFor(DRIVER), 1, 'the device is told to drop the app')
+        assert_false(seesTow(DRIVER))
+        assert_eq(rpc(DRIVER, 'claimPay').error, 'not_authorized', 'no second pay')
+        assert_eq(#LedgerEnv.paid('pf-jobs:tow:contract:'), 1)
+    end)
+
+    it('shows the pay next to an open rental; the app stays for the rental after the claim', function()
+        local _, c = deliverUnpaid()
+        leaveJob(DRIVER)
+        local v = rpc(DRIVER, 'refresh')
+        assert_true(v.rental ~= nil and v.owed ~= nil)
+        assert_eq(rpc(DRIVER, 'claimPay').paid, c.pay)
+        assert_true(seesTow(DRIVER), 'the flatbed is still to return')
+        assert_eq(rpc(DRIVER, 'refresh').owed, nil)
+    end)
+
+    it('a claim the bank still cannot pay stays owed, and the same key pays it later', function()
+        local truck, c = deliverUnpaid()
+        returnTruck(truck)
+        leaveJob(DRIVER)
+        bankDown = true
+        assert_eq(rpc(DRIVER, 'claimPay').error, 'bank_unavailable')
+        bankDown = false
+        assert_eq(rpc(DRIVER, 'refresh').owed.pay, c.pay)
+        assert_eq(rpc(DRIVER, 'claimPay').ok, true)
+        assert_eq(#LedgerEnv.paid('pf-jobs:tow:contract:'), 1)
+    end)
+end)
+
+describe('Tow app open while the player leaves the job', function()
+    local function statePushes(src)
+        local n = 0
+        for _, e in ipairs(Mock.clientEventsNamed('pf-jobs:tow:client:state')) do if e.target == src then n = n + 1 end end
+        return n
+    end
+
+    it('the job change pushes the state, and the view the app then fetches is the return-only one', function()
+        rentTruck()
+        assert_eq(rpc(DRIVER, 'refresh').returnOnly, nil, "the driver's layout")
+        Mock.reset()
+        leaveJob(DRIVER)
+        Mock.fireEvent('QBCore:Server:OnJobUpdate', nil, DRIVER, Mock.players[DRIVER].PlayerData.job)
+        assert_eq(statePushes(DRIVER), 1, 'the open app is told to fetch its view again')
+        assert_eq(rpc(DRIVER, 'refresh').returnOnly, true)
+    end)
+
+    it('a player with nothing open is not pushed (the app just leaves their device)', function()
+        Mock.reset()
+        leaveJob(DRIVER)
+        Mock.fireEvent('QBCore:Server:OnJobUpdate', nil, DRIVER, Mock.players[DRIVER].PlayerData.job)
+        assert_eq(statePushes(DRIVER), 0)
+        assert_false(seesTow(DRIVER))
+    end)
+end)
+
+describe('Tow deposit the bank has not settled', function()
+    it('is told as still settling (not "cannot pay"), and the retry uses the same key', function()
+        Mock.coords[DRIVER] = BAY
+        local bankExports = Mock.exportsByResource['pfm-banking']
+        local realTransfer = bankExports.Transfer
+        local keys = {}
+        bankExports.Transfer = function(_, opts)
+            keys[#keys + 1] = opts.key
+            return { ok = false, state = 'pending', txId = 77, error = 'in_progress' }
+        end
+        local res = rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' })
+        assert_eq(res.error, 'deposit_pending')
+        assert_eq(res.message, PFJobsTow.Messages.deposit_pending)
+        assert_true(res.message ~= PFJobsTow.Messages.insufficient_funds, 'it used to say "You cannot pay the deposit"')
+        assert_eq(#keys, 1, 'not tried on the bank account too')
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).error, 'deposit_pending')
+        assert_eq(keys[2], keys[1], 'asked again under the same key')
+        -- the ledger settles it: the same key now goes through, and the truck comes out
+        bankExports.Transfer = realTransfer
+        local ok = rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' })
+        assert_eq(ok.ok, true)
+        local charged = LedgerEnv.paid('pf-jobs:tow:rent:')
+        assert_eq(#charged, 1, 'one deposit')
+        assert_eq(charged[1].idempotency_key, keys[1])
+        assert_eq(money(DRIVER, 'cash'), 1000 - DEPOSIT)
+        -- the next rental after this one has its own key again
+        assert_eq(PFJobsTow.View(DRIVER).rental.deposit, DEPOSIT)
+    end)
+
+    it('a payment the bank turned down says nothing was charged', function()
+        Mock.coords[DRIVER] = BAY
+        local bankExports = Mock.exportsByResource['pfm-banking']
+        local realTransfer = bankExports.Transfer
+        bankExports.Transfer = function() return { ok = false, state = 'compensated', txId = 78, error = 'reversed' } end
+        local res = rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' })
+        bankExports.Transfer = realTransfer
+        assert_eq(res.error, 'payment_failed')
+        assert_eq(res.message, PFJobsTow.Messages.payment_failed)
+        assert_eq(PFJobsTow.View(DRIVER).rental, nil)
     end)
 end)
 

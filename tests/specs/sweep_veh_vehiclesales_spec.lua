@@ -18,7 +18,7 @@ FakeDB.extraPatterns = {
     { 'FROM players WHERE citizenid = ?', function() return { sellerRow } end },
 }
 
-LedgerEnv.load('pfm-vehiclesales', { 'pfm-vehiclesales/config.lua', 'pfm-vehiclesales/server/main.lua' })
+LedgerEnv.load('pfm-vehiclesales', { 'pfm-vehiclesales/config.lua', 'pfm-vehicleshop/settlements.lua', 'pfm-vehiclesales/server/main.lua' })
 
 local SELLER, OTHER = 1, 2
 local LOT = vector3(Config.Zones.SandyOccasions.BuyVehicle.x, Config.Zones.SandyOccasions.BuyVehicle.y, Config.Zones.SandyOccasions.BuyVehicle.z)

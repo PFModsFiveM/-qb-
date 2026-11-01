@@ -3,6 +3,8 @@
 -- near parked cars drained them all. Now only the driver reports, a report only lowers the level,
 -- by at most what driving burns since the last level written, and raises come from the server's
 -- refuel paths (a paid pump refill, the player's own jerry can) or server code (SetVehicleFuel).
+-- A car's first level comes from the server (fix13b_fuel_first_level_spec); here the server gives
+-- it with SetVehicleFuel or from the stored level of its plate. The pump sells at a station only.
 load_resource('tests/lua/fivem_mocks.lua')
 
 local states = {}
@@ -27,6 +29,9 @@ PFPayout = {
     end,
 }
 
+local stored = {} -- player_vehicles.fuel by plate
+MySQL.scalar = setmetatable({ await = function(_, p) return stored[p[1]] end }, { __call = function() end })
+
 Config = nil
 load_resource('pfm-fuel/Config.lua')
 load_resource('pfm-fuel/server/main.lua')
@@ -38,18 +43,16 @@ CollectFuelTax = function(...) taxed[#taxed + 1] = { ... } end
 
 local DRIVER, OWNER, PASSERBY, FARAWAY = 1, 2, 3, 4
 local CAR, OTHER, PED = 500, 501, 600
-local HERE = vector3(100.0, 100.0, 30.0)
+local HERE = Config.GasStations[18] -- at a gas station
 local fuelExports = Mock.exportsByResource['__self']
 
 local function fuel(veh) return Entity(veh).state['qb-fuel'] end
 local function sync(src, netId, level) Mock.fireNet('qb-fuel:server:syncFuel', src, netId, level) end
 local function later(seconds) Mock.gameTimer = Mock.gameTimer + seconds * 1000 end
 local function refill(src, litres, netId) return Mock.callCallback('qb-fuel:server:refillVehicle', src, litres, netId) end
---- gives `veh` a shared level `level` as a driver would, then leaves the car empty
+--- gives `veh` the shared level `level` (server code, as a spawner would); nobody is in it
 local function parked(veh, level)
-    Mock.vehicleOf[DRIVER] = veh
-    sync(DRIVER, veh, level)
-    Mock.vehicleOf[DRIVER] = nil
+    assert_eq(fuelExports.SetVehicleFuel(veh, level), true)
     assert_eq(fuel(veh), level + 0.0)
 end
 
@@ -57,7 +60,8 @@ BeforeEach = function()
     Mock.reset()
     Mock.players, Mock.vehicleOf, Mock.coords = {}, {}, {}
     Mock.gameTimer = Mock.gameTimer + 100000
-    states, owners, charged, taxed = {}, {}, {}, {}
+    states, owners, charged, taxed, stored = {}, {}, {}, {}, {}
+    Mock.plates = {}
     PFPayout.duringCharge = nil
     entityType = { [CAR] = 2, [OTHER] = 2, [PED] = 1 }
     for _, src in ipairs({ DRIVER, OWNER, PASSERBY, FARAWAY }) do Mock.newPlayer(src) end
@@ -94,14 +98,16 @@ describe('fix9hq2 vehiclefx: who may lower a car\'s shared fuel', function()
         assert_eq(fuel(CAR), 80.0)
     end)
 
-    it('a new car with no shared level takes only its driver\'s first report', function()
-        sync(PASSERBY, CAR, 30)
+    it('a new car with no shared level: only its driver\'s report starts the lookup, and the server\'s level is set', function()
+        Mock.plates[CAR] = 'OWN30'
+        stored.OWN30 = 30
+        sync(PASSERBY, CAR, 90)
         owners[CAR] = OWNER
-        sync(OWNER, CAR, 30)
+        sync(OWNER, CAR, 90)
         assert_eq(fuel(CAR), nil)
         Mock.vehicleOf[DRIVER] = CAR
-        sync(DRIVER, CAR, 30)
-        assert_eq(fuel(CAR), 30.0)
+        sync(DRIVER, CAR, 90)
+        assert_eq(fuel(CAR), 30.0, 'the stored level, not the report')
     end)
 
     it('the driver\'s report never raises it', function()
@@ -116,8 +122,8 @@ end)
 
 describe('fix9hq2 vehiclefx: the driver lowers it at most as fast as driving burns', function()
     it('a drop is capped at 0.5 per second since the last level written', function()
+        parked(CAR, 80)
         Mock.vehicleOf[DRIVER] = CAR
-        sync(DRIVER, CAR, 80)
         later(10)
         sync(DRIVER, CAR, 0)
         assert_eq(fuel(CAR), 75.0, '10 s: 5 at most')
@@ -148,8 +154,8 @@ describe('fix9hq2 vehiclefx: the driver lowers it at most as fast as driving bur
 
     it('the cap follows Config.MaxFuelBurnPerSecond; a bad value falls back to 0.5', function()
         Config.MaxFuelBurnPerSecond = 2
+        parked(CAR, 80)
         Mock.vehicleOf[DRIVER] = CAR
-        sync(DRIVER, CAR, 80)
         later(10)
         sync(DRIVER, CAR, 0)
         assert_eq(fuel(CAR), 60.0)
@@ -191,9 +197,13 @@ describe('fix9hq2 vehiclefx: refuelling raises it on the server', function()
         assert_eq(refill(PASSERBY, 20, CAR), false, 'unpaid')
         Mock.players[PASSERBY].cannotPay = nil
         later(5)
-        local ok, _, why = refill(FARAWAY, 20, CAR)
+        Mock.coords[OWNER] = HERE + vector3(30.0, 0, 0) -- at the station, 30 m from the car
+        local ok, _, why = refill(OWNER, 20, CAR)
         assert_eq(ok, false, 'far from the car')
         assert_eq(why, 'no_vehicle')
+        local ok2, _, why2 = refill(FARAWAY, 20, CAR)
+        assert_eq(ok2, false, 'far from the car and from any station')
+        assert_eq(why2, 'no_station')
         later(5)
         assert_eq(refill(PASSERBY, 20, nil), false, 'no car')
         later(5)
@@ -204,14 +214,14 @@ describe('fix9hq2 vehiclefx: refuelling raises it on the server', function()
         assert_eq(fuel(CAR), 50.0)
     end)
 
-    it('a car with no shared level yet: paid, but the client\'s word is not taken for its level', function()
+    it('a car with no shared level yet: the server gives it one first, and charges only the room it leaves', function()
+        Mock.plates[CAR] = 'OWN90'
+        stored.OWN90 = 90
         local paid, level = refill(PASSERBY, 20, CAR)
         assert_eq(paid, true)
-        assert_eq(level, nil)
-        assert_eq(fuel(CAR), nil, 'its driver\'s first report sets it')
-        Mock.vehicleOf[PASSERBY] = CAR
-        sync(PASSERBY, CAR, 35)
-        assert_eq(fuel(CAR), 35.0)
+        assert_eq(level, 100.0)
+        assert_eq(charged[1].amount, 50, '10 litres fit')
+        assert_eq(fuel(CAR), 100.0)
     end)
 
     it('the refill cooldown still applies', function()
@@ -317,8 +327,10 @@ end)
 
 describe('fix9hq2 vehiclefx: the honest flow end to end', function()
     it('a new car gets its first value, drives down, refuels at the pump, drives down again', function()
+        Mock.plates[CAR], stored.GARAGE1 = 'GARAGE1 ', 40
         Mock.vehicleOf[DRIVER] = CAR
         sync(DRIVER, CAR, 40)                                     -- taken out of the garage
+        assert_eq(fuel(CAR), 40.0, 'its stored level')
         for _ = 1, 6 do later(10) sync(DRIVER, CAR, fuel(CAR) - 2) end -- a minute of driving
         assert_eq(fuel(CAR), 28.0)
         Mock.vehicleOf[DRIVER] = nil                              -- gets out at the pump

@@ -197,19 +197,34 @@ QBCore.Commands.Add('fine', Lang:t('commands.fine'), { { name = 'id', help = Lan
     -- Bank first, then cash, through the ledger; the fine then goes to the department.
     -- (RemoveMoney + AddMoney were two separate steps that a crash could split.)
     local key = ('pfm-policejob:fine:%s:%s'):format(billed.PlayerData.citizenid, PFPayout.NewId())
-    local paidFrom = PFPayout.Charge(billed, { 'bank', 'cash' }, amount, { key = key, kind = 'fine', reason = 'Police fine', quiet = true })
+    local paidFrom, res = PFPayout.Charge(billed, { 'bank', 'cash' }, amount, { key = key, kind = 'fine', reason = 'Police fine', quiet = true })
     if paidFrom then
         PFPayout.PaySociety(biller.PlayerData.job.name, amount, { key = key .. ':society', reason = 'Fine' })
         TriggerClientEvent('QBCore:Notify', source, Lang:t('info.fine_issued'), 'success')
         TriggerClientEvent('QBCore:Notify', billed.PlayerData.source, Lang:t('info.received_fine'))
-    else
-        MySQL.insert('INSERT INTO phone_invoices (citizenid, amount, society, sender, sendercitizenid) VALUES (?, ?, ?, ?, ?)', { billed.PlayerData.citizenid, amount, biller.PlayerData.job.name, biller.PlayerData.charinfo.firstname, biller.PlayerData.citizenid }, function(id)
-            if id then
-                TriggerClientEvent('qb-phone:client:AcceptorDenyInvoice', billed.PlayerData.source, id, biller.PlayerData.charinfo.firstname, biller.PlayerData.job.name, biller.PlayerData.citizenid, amount, GetInvokingResource())
-            end
-        end)
-        TriggerClientEvent('qb-phone:RefreshPhone', billed.PlayerData.source)
+        return
     end
+    -- The bank has not settled the charge (the money may have been taken): an invoice on top of it
+    -- could make them pay twice, so none is sent. The ledger's recovery settles the charge.
+    if type(res) == 'table' and res.unclear then
+        TriggerClientEvent('QBCore:Notify', source, 'The bank is still processing this fine. No invoice was sent; check again later.', 'error')
+        return
+    end
+    -- Could not pay: the fine becomes a phone invoice, created by pfm-phone itself (it gives the
+    -- invoice its own ledger token, so paying it is keyed to this invoice and never to a reused id).
+    local ok, id = pcall(function()
+        return exports['pfm-phone']:CreateInvoice({
+            citizenid = billed.PlayerData.citizenid, amount = amount, society = biller.PlayerData.job.name,
+            sender = biller.PlayerData.charinfo.firstname, sendercitizenid = biller.PlayerData.citizenid, reason = 'Police fine',
+        })
+    end)
+    if not ok or not id then
+        TriggerClientEvent('QBCore:Notify', source, 'The fine could not be sent as an invoice', 'error')
+        return
+    end
+    TriggerClientEvent('qb-phone:client:AcceptorDenyInvoice', billed.PlayerData.source, id, biller.PlayerData.charinfo.firstname, biller.PlayerData.job.name, biller.PlayerData.citizenid, amount, GetCurrentResourceName())
+    TriggerClientEvent('qb-phone:RefreshPhone', billed.PlayerData.source)
+    TriggerClientEvent('QBCore:Notify', source, 'They could not pay: the fine was sent to their phone as an invoice', 'primary')
 end)
 
 -- Evidence

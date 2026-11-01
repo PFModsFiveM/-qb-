@@ -53,6 +53,8 @@ local refuelVehicle = function(veh)
 
     if canLiter == 0 then return QBCore.Functions.Notify(Lang:t('error.no_fuel_can'), 'error') end
     if vehFuel == 100 then return QBCore.Functions.Notify(Lang:t('error.vehicle_full'), 'error') end
+    -- the server keeps the level and can only fill a car it knows (a networked one)
+    if not NetworkGetEntityIsNetworked(veh) then return QBCore.Functions.Notify(Lang:t('error.not_networked'), 'error') end
 
     local liter = canLiter + vehFuel > 100 and 100 - vehFuel or canLiter
 
@@ -66,7 +68,7 @@ local refuelVehicle = function(veh)
         disableCombat = true,
     }, {}, {}, {}, function()
         -- the server pours what left the can into this car's shared level
-        TriggerServerEvent('qb-fuel:server:setCanFuel', canLiter - liter, NetworkGetEntityIsNetworked(veh) and NetworkGetNetworkIdFromEntity(veh) or nil)
+        TriggerServerEvent('qb-fuel:server:setCanFuel', canLiter - liter, NetworkGetNetworkIdFromEntity(veh))
         SetPedAmmo(ped, `WEAPON_PETROLCAN`, canLiter - liter)
         exports['pfm-fuel']:SetFuel(veh, vehFuel + liter)
         QBCore.Functions.Notify(Lang:t('success.refueled'), 'success')
@@ -214,6 +216,7 @@ local refillVehicleFuel = function(liter)
     if not veh or veh == -1 or not DoesEntityExist(veh) then return QBCore.Functions.Notify(Lang:t('error.no_nozzle'), 'error') end
     if not Entity(veh).state['nozzleAttached'] then return QBCore.Functions.Notify(Lang:t('error.no_nozzle'), 'error') end
     if dis > 5 then return end
+    if not NetworkGetEntityIsNetworked(veh) then return QBCore.Functions.Notify(Lang:t('error.not_networked'), 'error') end
 
     local ped = PlayerPedId()
     ClearPedTasks(ped)
@@ -236,16 +239,19 @@ local refillVehicleFuel = function(liter)
     }, {}, {}, {}, function()
         -- paid for on the server, which also raises this car's shared level and answers with it
         local before = exports['pfm-fuel']:GetFuel(veh) or 0
-        local netId = NetworkGetEntityIsNetworked(veh) and NetworkGetNetworkIdFromEntity(veh) or nil
+        local netId = NetworkGetNetworkIdFromEntity(veh)
         QBCore.Functions.TriggerCallback('qb-fuel:server:refillVehicle', function(success, level, reason)
             if not success then
                 ClearPedTasks(ped)
+                if reason == 'payment' then return end -- the bank's own message says why
                 local why = reason == 'full' and 'error.vehicle_full' or reason == 'busy' and 'error.vehicle_busy'
-                    or reason == 'no_vehicle' and 'error.no_vehicle' or 'error.no_money'
+                    or reason == 'no_vehicle' and 'error.no_vehicle' or reason == 'no_station' and 'error.no_station'
+                    or 'error.no_money'
                 return QBCore.Functions.Notify(Lang:t(why), 'error')
             end
             removeObjects()
-            -- the server's level when the car has one (its state bag may already have raised ours)
+            -- the server's level (its state bag may already have raised ours); litres added to ours
+            -- only when fuel sync is off
             exports['pfm-fuel']:SetFuel(veh, tonumber(level) or (math.floor(before) + liter))
             QBCore.Functions.Notify(Lang:t('success.refueled'), 'success')
             ClearPedTasks(ped)
@@ -262,7 +268,9 @@ local showFuelMenu = function()
     if dis > 5 then return QBCore.Functions.Notify(Lang:t('error.no_vehicle')) end
     -- all-in per-litre price (station-local, tax included) comes from the server
     QBCore.Functions.TriggerCallback('qb-fuel:server:getPumpPrice', function(allInPrice)
-        CurrentPumpPrice = allInPrice or Config.FuelPrice
+        -- false: the server does not know a station here, so this pump does not sell
+        if not allInPrice then return QBCore.Functions.Notify(Lang:t('error.no_station'), 'error') end
+        CurrentPumpPrice = allInPrice
         SendNUIMessage({
             action = 'show',
             price = CurrentPumpPrice,

@@ -146,7 +146,12 @@ $(document).on('click', '.pay-invoice', function(event){
             invoiceId: InvoiceData.id,
             senderCitizenId: InvoiceData.sendercitizenid
         }), function(CanPay){
-            if (CanPay) {
+            // 'in_progress': the bank is still settling this payment (nothing is charged twice)
+            if (CanPay === 'in_progress') {
+                QB.Phone.Notifications.Add("fas fa-university", "QBank", "This payment is being processed", "#badc58", 1500);
+            } else if (CanPay === 'unknown_society') {
+                QB.Phone.Notifications.Add("fas fa-university", "QBank", "This business cannot receive payments right now", "#badc58", 1500);
+            } else if (CanPay === true) {
                 $("#"+InvoiceId).animate({
                     left: 30+"vh",
                 }, 300, function(){
@@ -193,15 +198,22 @@ $(document).on('click', '.decline-invoice', async function(event) {
     }
 });
 
+// Invoice text (business, sender, reason) is set by whoever sent the invoice: shown as text, never as HTML.
+function InvoiceText(value) {
+    return $('<div>').text(value === null || value === undefined ? '' : String(value)).html();
+}
+
 QB.Phone.Functions.LoadBankInvoices = function(invoices) {
     if (invoices !== null) {
         $(".bank-app-invoices-list").html("");
 
         $.each(invoices, function(i, invoice){
-            var Elem = '<div class="bank-app-invoice" id="invoiceid-'+invoice.id+'"> <div class="bank-app-invoice-title">'+invoice.society+' <span style="font-size: 1vh; color: gray;">(Sender: '+invoice.sender+')</span></div>' + (typeof invoice.reason === 'string' ? `<div class="bank-app-invoice-reason">${invoice.reason}</div>` : '') + '<div class="bank-app-invoice-info"><div class="bank-app-invoice-amount">&#36; '+invoice.amount+'</div> <div class="bank-app-invoice-buttons"> <i class="fas fa-check-circle pay-invoice"></i>'+ (invoice.candecline === 1 ? '<i class="fas fa-times-circle decline-invoice"></i>' : '') + '</div></div></div>';
+            var id = parseInt(invoice.id, 10);
+            if (!(id > 0)) return;
+            var Elem = '<div class="bank-app-invoice" id="invoiceid-'+id+'"> <div class="bank-app-invoice-title">'+InvoiceText(invoice.society)+' <span style="font-size: 1vh; color: gray;">(Sender: '+InvoiceText(invoice.sender)+')</span></div>' + (typeof invoice.reason === 'string' ? `<div class="bank-app-invoice-reason">${InvoiceText(invoice.reason)}</div>` : '') + '<div class="bank-app-invoice-info"><div class="bank-app-invoice-amount">&#36; '+InvoiceText(invoice.amount)+'</div> <div class="bank-app-invoice-buttons"> <i class="fas fa-check-circle pay-invoice"></i>'+ (invoice.candecline === 1 ? '<i class="fas fa-times-circle decline-invoice"></i>' : '') + '</div></div></div>';
 
             $(".bank-app-invoices-list").append(Elem);
-            $("#invoiceid-"+invoice.id).data('invoicedata', invoice);
+            $("#invoiceid-"+id).data('invoicedata', invoice);
         });
     }
 }

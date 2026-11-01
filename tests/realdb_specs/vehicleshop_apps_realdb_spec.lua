@@ -45,6 +45,7 @@ local function loadShop()
     Config = nil
     load_resource('pfm-banking/payouts.lua')
     load_resource('pfm-vehicleshop/config.lua')
+    load_resource('pfm-vehicleshop/settlements.lua')
     load_resource('pfm-vehicleshop/server.lua')
     load_resource('pfm-vehicleshop/server_apps.lua')
     PFShop.Start()

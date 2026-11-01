@@ -23,7 +23,7 @@
 |---|---|---|
 | Staging start order without duplicate resources | AWAITING TEST | `docs/staging/server.staging.cfg`; 102 resources start on the local FXServer with ox_lib |
 | Dependencies (oxmysql, ox_lib + cfxlua-require, PolyZone, menuv) | BLOCKED (live) | Verified on staging; missing on the live server. kq_wheeldamage needs its Tebex entitlement |
-| Live `server.cfg` (enable pfm-core/[qb], connection string, remove duplicates) | BLOCKED | Needs the owner, on a copy, with a copy of the live database |
+| Live `server.cfg` (enable pfm-core/[qb], connection string, remove duplicates) | BLOCKED | Needs the owner, on a copy, with a copy of the live database. Batch 13: also delete `[standalone]/progressbar` and `[voice]/pma-voice` (patched copies start from [qb]) |
 | Versioned migrations (`pf_schema_migrations`) | AWAITING TEST | Rerun-safe; tested on stock schemas, not on a copy of live data |
 | Install SQL files on a fresh database | AWAITING TEST | `tests/realdb/sql_install_check.js` |
 | Credentials rotation after the malware incident | BLOCKED | Owner action: DB password, webhooks, license key |
@@ -37,6 +37,8 @@
 | Payouts, charges, refunds for jobs, robberies, shops, houses, phone, police, vehicles, hospital, MDT, admin, fees | AWAITING TEST | `PFPayout`; one remaining direct path by design: the pfm-core paycheck |
 | Business accounts (society) and transaction history | AWAITING TEST | |
 | Fail closed when banking is down | AWAITING TEST | e2e spec |
+| Cash only where the player stands: bank counters (5 m) and listed ATMs (4 m, bank card, withdrawals only) | AWAITING TEST | Batch 13 owner decision. 76 sourced ATM points (esx_atm GPL-3.0, vRP MIT); an unlisted ATM refuses until added (`/atmcheck`). The ATM PIN is still checked only in the UI |
+| `PFPayout.Charge` stops on an unclear result instead of trying the next account | AWAITING TEST | Batch 13; returns `res.unclear`. Caller follow-ups (police `/bill`, per-click keys) are in batch 13b |
 
 ## 3. Government
 
@@ -45,6 +47,7 @@
 | Roles and permissions, NUI router identity | AWAITING TEST | Router sets the real sender |
 | Taxes (sales, business revenue tax on the ledger) | AWAITING TEST | |
 | Bills, fines, payment from the payer | AWAITING TEST | |
+| Weekly property tax (0.5% of house value, minimum $50, one bill per house per week) | AWAITING TEST | Batch 13 owner decision. `bill_type 'tax'`, unique `(bill_period, bill_ref)`; delinquent like other bills (this suspends licenses); no repossession. Late fees never run for any bill (owner decision pending) |
 | Business registry (restaurants, stores, mechanic shops), closure, power enforcement at sale | AWAITING TEST | |
 | Ownership transfers driving store/restaurant owners | AWAITING TEST | Mechanic shops are job-owned |
 | Licenses | AWAITING TEST | Record only, not required to trade (owner decision) |
@@ -69,6 +72,7 @@
 | System | Status | Notes |
 |---|---|---|
 | One order lifecycle (stores, restaurants, job businesses): pricing, payment, duplicates, cancellation, AI and player suppliers, trucker priority, AI delivery | AWAITING TEST | End-to-end real-DB spec over the real resources |
+| Supply order money: freight on top (paid by the buyer), supplier markup at delivery, case sizes in one place, cancel refunds retried under new keys | AWAITING TEST | Batch 13 owner decision on freight. The freight minimum now applies to small orders ($250 stores, $150 restaurants and job businesses): owner to confirm. Checker gaps in batch 13b |
 | Persistent pallets with own stash, sealed contents, unpack once, restart restore | AWAITING TEST | |
 | Restaurant ordering from PF Computer | AWAITING TEST | |
 | Cooking: stock-backed, all-or-nothing, doneness, burnt, quality, dish freshness | AWAITING TEST | |
@@ -85,6 +89,12 @@
 | Mechanic: checkout, work orders, staff, parts via job-business supply orders into `bizstash-<job>` | AWAITING TEST | pf-mechanicjob now starts on staging (ox_lib) |
 | Police job: evidence, impound, fines, jail | AWAITING TEST | |
 | Police MDT: police-only handlers, records, jail items | AWAITING TEST | `/mdt_seed` is admin-only and off by default (`Config.AllowSeedCommand`) |
+| Mechanic tow billing (boss only, broken car nearby), repairs not undone by old wear reports, NOS saved in order | AWAITING TEST | Batch 13 |
+| Bus spawn lock, Gruppe 6 early end paid by share, tow return after leaving the job | AWAITING TEST | Batch 13; a return-only Tow app for former drivers |
+| Used lot (no financed, impounded or fleet cars; take-back keeps the loan), `/transfervehicle` fleet and finance rules, accept by offer id | AWAITING TEST | Batch 13. Listing and sell-back need OneSync |
+| Dealer commission out of the dealership's share | AWAITING TEST | Batch 13 owner decision: dealership gets price minus commission, salesperson the commission |
+| Fuel level owned by the server (only the driver drains it; refuels only through the server) | PARTIAL | Batch 13. A new car's first level still comes from its driver (no spawner calls `SetVehicleFuel` yet): batch 13b |
+| Cruise control indicator in pf-hud | AWAITING TEST | Batch 13 |
 
 ## 7. Computer and tablet
 
@@ -108,6 +118,11 @@
 | Computer without fake data (job board, business manager, persistence, security fixes) | AWAITING TEST | Restaurants hire through pf-restaurants `AddStaff` (batch 11) |
 | pf over pfm duplicates | AWAITING TEST | Removed: pfm-cityhall, pfm-hud, pfm-taxijob, pfm-garbagejob (batch 10); pfm-busjob, pfm-towjob, pfm-recyclejob, pfm-vineyard (batch 11). Kept: pfm-shops, pfm-garages, pfm-newsjob (no complete pf version) |
 | Police and EMS MDT inside the tablet and computer (1:1, same page) with their dispatch | AWAITING TEST | Requests from pf-services land on the MDT dispatch board |
+| EMS person-down calls opened by the server and closed with the patient's request | AWAITING TEST | Batch 13. Two edge cases (logout during the insert, reconnect within the cooldown) in batch 13b. The police MDT still ignores `requestId` |
+| Dispatch: one job rule (Benny's and Beeker's waypoints), government requests need the pf-government permission | AWAITING TEST | Batch 13 |
+| Documents: only the owner hands out links, others mail a copy, signed documents survive the owner's delete | AWAITING TEST | Batch 13 |
+| Phone invoices: one ledger token per invoice, paid exactly once across a crash | PARTIAL | Batch 13 added the token. The `interrupted_unverified` path, a decline after a charge and an interrupted business credit: batch 13b |
+| Job Board after a pf-services restart, boss-only supply pickup, announcement days and category | AWAITING TEST | Batch 13 |
 
 ## 7c. Every framework system as a device app (batch 11)
 
@@ -127,7 +142,8 @@
 | Item | Status | Notes |
 |---|---|---|
 | Server-event sweep (~1,150 handlers) | AWAITING TEST | |
-| Client-replicated state bags (`sv_stateBagStrictMode`) | BLOCKED | Our resources write state bags on the server only (scan spec). Strict mode stays off: third-party `[standalone]/progressbar` (`inv_busy`) and `[voice]/pma-voice` (radio and voice state) still write from the client. Live server.cfg must also drop `[custom]`, which holds an old pf-mechanicjob |
+| Client-replicated state bags (`sv_stateBagStrictMode`) | AWAITING TEST | Batch 13: on in staging. No client in [qb] or [pfscripts] writes replicated state (scan spec, which now covers the copies). progressbar and pma-voice run as patched copies in [qb], from the owner's BigLeagueQB snapshot of 2025-10-19 (the live copies may differ). Live: delete `[standalone]/progressbar`, `[voice]/pma-voice` and `[custom]` (old pf-mechanicjob) before turning it on |
+| Inventory search lock and action-lock TTL | PARTIAL | Batch 13: the search ends on close, logout, disconnect and another inventory; TTL 1–600 s. A searcher who steps away during the 1.5 s opening wait stays unbound: batch 13b |
 
 ## 9. Batch log (newest first)
 - **Batch 8 (2026-10-26):**
@@ -165,6 +181,16 @@
   - announcements need the permission;
   - website saves, NOS, tow rental, news vehicles, App Store and phone invoices;
   - strict state bags back off until progressbar and pma-voice are patched.
+- **Batch 13 (2026-11-01, branch `main-9hq3gi`):** the remaining review findings and six owner decisions (`-qb-` 80f97db, `-pfscripts-` 28ff205):
+  - bank cash only at a counter or a listed ATM; `PFPayout.Charge` stops on unclear results;
+  - weekly property tax;
+  - supply orders: freight on top, markup at delivery, case sizes, refund retries;
+  - dealer commission from the dealership's share; used lot and transfers refuse fleet and financed cars;
+  - documents, phone invoice tokens, EMS calls, Dispatch, Job Board, supply pickup, inventory search;
+  - fuel, cruise, mechanic tows, wear and NOS, bus, Gruppe 6, tow return;
+  - patched progressbar and pma-voice in [qb]; strict state bags on in staging.
+
+  Checker gaps are handled in batch 13b (see the report).
 
 ## 10. Latest pushed commits
 - **`-qb-` main:** 09be222 at the start of batch 8; then the batch 8 docs and code. See `git log -1 origin/main`.

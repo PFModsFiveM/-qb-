@@ -82,8 +82,8 @@ local OWNER = 1
 local function zone(scope, ref, x, heading)
     assert(DeliveryZones.Set(scope, ref, { x = x, y = 50.0, z = 20.0, heading = heading or 0.0 }, { label = ref .. ' bay', cid = 'GOV1', name = 'Official' }))
 end
-local function order(storeId)
-    return O.Create(OWNER, { kind = 'store', buyerId = storeId, method = 'trucking', cart = { { name = 'lockpick', quantity = 5 } } })
+local function order(storeId, qty)
+    return O.Create(OWNER, { kind = 'store', buyerId = storeId, method = 'trucking', cart = { { name = 'lockpick', quantity = qty or 5 } } })
 end
 
 BeforeEach = function()
@@ -129,7 +129,9 @@ describe('delivery position precedence', function()
         assert_eq(route.source, 'district_zone')
         assert_eq(route.dropoff.coords.x, 4321.0)
         assert_eq(route.pickup.label, 'Wholesale Distributor')
-        assert_true(order('bare').ok)
+        -- the default trucking's $150 freight minimum is also its minimum goods value
+        assert_eq(order('bare').error, 'below_delivery_minimum')
+        assert_true(order('bare', 8).ok, '$160 of goods')
     end)
     it('a store with trucking switched off gets no delivery, zone or not', function()
         zone('business', 'store:off', 999.0)

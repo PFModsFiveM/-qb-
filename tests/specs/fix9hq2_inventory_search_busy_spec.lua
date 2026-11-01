@@ -38,6 +38,7 @@ BeforeEach = function()
     Mock.players = {}
     Mock.coords = {}
     Mock.clock = Mock.clock + 100000
+    Mock.invokingResource = nil
     for _, src in ipairs({ TARGET, COP, ROBBER }) do Mock.newPlayer(src) end
     for _, src in ipairs({ TARGET, COP, ROBBER }) do
         Mock.fireEvent('playerDropped', src)   -- forget server-side state of earlier tests
@@ -124,7 +125,9 @@ describe('a search lock on the searched player', function()
 
     it('an admin search opened from afar is not range bound, and still ends on drop', function()
         Mock.coords[COP] = vector3(500, 0, 0)
+        Mock.invokingResource = 'pfm-adminmenu'      -- the admin menu called the export
         OpenInventoryById(COP, TARGET)
+        Mock.invokingResource = nil
         CheckInventorySearches()
         assert_eq(busy(TARGET), true)
         Mock.players[COP] = nil

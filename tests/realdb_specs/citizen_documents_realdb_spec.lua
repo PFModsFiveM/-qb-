@@ -321,3 +321,157 @@ describe('documents when a character is deleted', function()
         assert_eq(D.Get(C3, { id = fromC }).document.title, 'Invite', 'C keeps their own document')
     end)
 end)
+
+-- runs fn once just before the next insert containing `fragment`; `fail` makes that insert fail
+local function beforeInsert(fragment, fn, fail)
+    local insert = MySQL.insert
+    MySQL.insert = setmetatable({ await = function(q, params)
+        if type(q) == 'string' and q:find(fragment, 1, true) and (not fail or fail(params)) then
+            MySQL.insert = insert
+            if fn then fn() end
+            if fail then return nil end
+        end
+        return insert.await(q, params)
+    end }, { __call = function(_, ...) return insert(...) end })
+    return function() MySQL.insert = insert end
+end
+local function copies(cid) return count('SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = ? AND copied_from IS NOT NULL AND deleted_at IS NULL', { cid }) end
+local function withLimits(own, received, fn)
+    local cfg = CitizenConfig.Documents
+    local a, b = cfg.MaxPerCitizen, cfg.MaxReceivedCopies
+    cfg.MaxPerCitizen, cfg.MaxReceivedCopies = own, received
+    local ok, err = pcall(fn)
+    cfg.MaxPerCitizen, cfg.MaxReceivedCopies = a, b
+    assert(ok, err)
+end
+local function clearDocs()
+    for _, t in ipairs({ 'pf_citizen_documents', 'pf_citizen_document_shares', 'pf_citizen_document_signatures' }) do MySQL.query.await('DELETE FROM ' .. t) end
+end
+
+describe('a copy of a signed document', function()
+    it('the record column is there (migration 3, run twice at start)', function()
+        assert_eq(count([[SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'pf_citizen_documents' AND COLUMN_NAME = 'copied_signatures']]), 1)
+        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-citizen' AND version = 3"), 1)
+    end)
+    it('a mailed copy carries the signatures as a read-only record, never as signatures on the copy', function()
+        local id = D.Save(A, { title = 'Car sale', body = 'A sells the car to B for $9000' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        assert_eq(D.Sign(A, { id = id }).ok, true)
+        local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Proof', message = 'Signed contract', attachments = { { type = 'document', id = id } } })
+        assert_eq(res.ok, true, tostring(res.error))
+        local copy = lastAttachment('CID3')
+        assert_true(copy ~= nil and copy ~= id)
+        local doc = D.Get(C3, { id = copy }).document
+        assert_eq(#doc.signatures, 0, 'the record became signatures on the copy')
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_signatures WHERE document_id = ?', { copy }), 0)
+        assert_eq(doc.othersSigned, false)
+        local rec = doc.signatureRecord
+        assert_true(rec ~= nil, 'the copy looks unsigned')
+        assert_eq(#rec.signatures, 2)
+        local names = { rec.signatures[1].name, rec.signatures[2].name }
+        table.sort(names)
+        assert_eq(table.concat(names, ','), 'Test Player1,Test Player2')
+        local fp = MySQL.scalar.await("SELECT SHA2(CONCAT('Car sale', '\n', 'A sells the car to B for $9000'), 256)")
+        assert_eq(rec.signatures[1].fingerprint, fp)
+        assert_eq(rec.signatures[1].matches, true)
+        assert_true(rec.signatures[1].at ~= nil)
+        -- a record does not keep the copy from its owner: C3 deletes it like any document of theirs
+        assert_eq(D.Delete(C3, { id = copy }).deleted, true)
+    end)
+    it('a copy of that copy keeps the record; changing the text of a copy drops it', function()
+        local id = D.Save(A, { title = 'Lease', body = 'Rent $500' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        local res = D.Share(B, { id = id, to = '5550003', mode = 'copy' })
+        assert_eq(res.ok, true, tostring(res.error))
+        local again = D.Share(C3, { id = res.id, to = '5550001', mode = 'copy' })
+        assert_eq(again.ok, true, tostring(again.error))
+        assert_eq(#D.Get(A, { id = again.id }).document.signatureRecord.signatures, 1)
+        local listed
+        for _, d in ipairs(D.List(C3).mine) do if d.id == res.id then listed = d end end
+        assert_eq(listed.copy, true)
+        assert_eq(listed.signedOriginal, true)
+        assert_eq(D.Save(C3, { id = res.id, title = 'Lease', body = 'Rent $1' }).ok, true)
+        assert_eq(D.Get(C3, { id = res.id }).document.signatureRecord, nil)
+        assert_eq(MySQL.scalar.await('SELECT copied_signatures FROM pf_citizen_documents WHERE id = ?', { res.id }), nil)
+    end)
+end)
+
+describe('copies others send', function()
+    it('count against their own limit, never against the documents a citizen writes', function()
+        clearDocs()
+        withLimits(2, 3, function()
+            local id = D.Save(A, { title = 'Flyer', body = 'Sale' }).id
+            D.Share(A, { id = id, to = '5550002', mode = 'link' })
+            for i = 1, 3 do
+                local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Flyer ' .. i, message = 'x', attachments = { { type = 'document', id = id } } })
+                assert_eq(res.ok, true, tostring(res.error))
+            end
+            assert_eq(copies('CID3'), 3)
+            assert_eq(D.Save(C3, { title = 'Mine 1', body = 'a' }).ok, true, 'copies filled the room for their own documents')
+            assert_eq(D.Save(C3, { title = 'Mine 2', body = 'b' }).ok, true)
+            assert_eq(D.Save(C3, { title = 'Mine 3', body = 'c' }).error, 'too_many_documents')
+            local mails = #box('CID3', 'inbox')
+            assert_eq(M.SendFromPlayer(B, { to = '5550003', subject = 'Flyer 4', message = 'x', attachments = { { type = 'document', id = id } } }).error, 'recipient_full')
+            assert_eq(#box('CID3', 'inbox'), mails, 'nothing is sent')
+            assert_eq(D.Share(B, { id = id, to = '5550003', mode = 'copy' }).error, 'recipient_full')
+            assert_eq(copies('CID3'), 3)
+            assert_eq(#D.List(C3).mine, 5)
+        end)
+    end)
+    it('the limit is checked in the copy statement: room taken after the check sends the mail without it and tells the sender', function()
+        clearDocs()
+        withLimits(10, 1, function()
+            local id = D.Save(A, { title = 'Offer', body = 'Ten crates' }).id
+            D.Share(A, { id = id, to = '5550002', mode = 'link' })
+            local other = D.Save(A, { title = 'Other', body = 'x' }).id
+            local undo = beforeInsert('SELECT ?, d.title, d.body, d.id', function()
+                MySQL.insert.await('INSERT INTO pf_citizen_documents (owner_cid, title, body, copied_from, locked) VALUES (?, ?, ?, ?, 1)', { 'CID3', 'Other', 'x', other })
+            end)
+            local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Offer', message = 'x', attachments = { { type = 'document', id = id } } })
+            undo()
+            assert_eq(res.ok, true, tostring(res.error))
+            assert_eq(res.delivered, 1)
+            assert_true(res.missing ~= nil, 'the sender was not told')
+            assert_eq(res.missing[1].recipient, 'Test Player3')
+            assert_eq(res.missing[1].document, 'Offer')
+            assert_eq(res.missing[1].error, 'recipient_full')
+            assert_eq(copies('CID3'), 1, 'over the limit')
+            assert_eq(lastAttachment('CID3'), nil)
+        end)
+    end)
+end)
+
+describe('copies and links only for a delivered mail', function()
+    local toC3 = function(params) return params and params[1] == 'CID3' end
+    it('a mail to them that is not stored leaves no copy behind', function()
+        clearDocs()
+        local id = D.Save(A, { title = 'Quote', body = 'Paint $800' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        local undo = beforeInsert('INTO player_mails', nil, toC3)
+        local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Quote', message = 'x', attachments = { { type = 'document', id = id } } })
+        undo()
+        assert_eq(res.ok, false)
+        assert_eq(res.error, 'not_stored')
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0, 'an orphan copy')
+        -- two recipients, one not stored: the other gets it and the sender is told who did not
+        undo = beforeInsert('INTO player_mails', nil, toC3)
+        res = M.SendFromPlayer(B, { to = '5550003, 5550001', subject = 'Quote', message = 'x', attachments = { { type = 'document', id = id } } })
+        undo()
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(res.delivered, 1)
+        assert_eq(res.undelivered[1], 'Test Player3')
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0)
+    end)
+    it("the owner's mail that is not stored takes back the link it made", function()
+        local id = D.Save(A, { title = 'Plan', body = 'x' }).id
+        local undo = beforeInsert('INTO player_mails', nil, toC3)
+        local res = M.SendFromPlayer(A, { to = '5550003', subject = 'Plan', message = 'x', attachments = { { type = 'document', id = id } } })
+        undo()
+        assert_eq(res.error, 'not_stored')
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_shares WHERE document_id = ? AND citizenid = ?', { id, 'CID3' }), 0)
+        assert_eq(D.Get(C3, { id = id }).error, 'not_found')
+    end)
+end)

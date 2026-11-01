@@ -6,7 +6,7 @@ load_resource('tests/lua/fivem_mocks.lua')
 
 -- ── the document tables, in memory ───────────────────────────────────
 local S
-local function resetStore() S = { docs = {}, shares = {}, sigs = {}, mails = {}, nextDoc = 0, before = nil } end
+local function resetStore() S = { docs = {}, shares = {}, sigs = {}, mails = {}, nextDoc = 0, before = nil, failMailTo = nil } end
 resetStore()
 local function key(d, c) return tostring(tonumber(d)) .. '|' .. tostring(c) end
 local function has(q, t) return q:find(t, 1, true) ~= nil end
@@ -15,6 +15,13 @@ local function given(d, cid)   -- the MAY_SIGN condition
     if d.owner_cid == cid then return true end
     local h = S.shares[key(d.id, cid)]
     return h ~= nil and (h.shared_by == d.owner_cid or h.shared_by == 'system')
+end
+-- the database's SHA-256 of a document's text, in this model the text itself
+local function fingerprint(d) return 'sha:' .. tostring(d.title) .. '\n' .. tostring(d.body) end
+local function copiesOf(cid)
+    local n = 0
+    for _, d in pairs(S.docs) do if d.owner_cid == cid and d.copied_from and not d.deleted and d.owner_hidden == 0 then n = n + 1 end end
+    return n
 end
 local function othersSigned(d)
     for _, s in pairs(S.sigs) do if s.document_id == d.id and s.citizenid ~= d.owner_cid then return true end end
@@ -29,7 +36,10 @@ local function handle(kind, q, p)
         fn()
     end
     if has(q, 'player_mails') then
-        if kind == 'insert' then S.mails[#S.mails + 1] = { cid = p[1], subject = p[3], folder = p[8], attachments = p[14] }; return #S.mails end
+        if kind == 'insert' then
+            if S.failMailTo and p[1] == S.failMailTo and p[8] ~= 'sent' then return nil end   -- the insert fails
+            S.mails[#S.mails + 1] = { cid = p[1], subject = p[3], folder = p[8], attachments = p[14] }; return #S.mails
+        end
         if kind == 'query' then return {} end
         if kind == 'scalar' then return 0 end
         if kind == 'single' then return nil end
@@ -40,7 +50,7 @@ local function handle(kind, q, p)
             local d = live(p[1])
             if not d then return nil end
             return { id = d.id, owner_cid = d.owner_cid, title = d.title, body = d.body, copied_from = d.copied_from,
-                locked = d.locked, owner_hidden = d.owner_hidden, created = 1, updated = 1 }
+                locked = d.locked, owner_hidden = d.owner_hidden, copied_signatures = d.copied_signatures, created = 1, updated = 1 }
         end
         return nil   -- players table: everyone here is online
     end
@@ -52,17 +62,28 @@ local function handle(kind, q, p)
         if has(q, 'COUNT(*) FROM pf_citizen_documents WHERE owner_cid = ?') then
             local n = 0
             for _, d in pairs(S.docs) do
-                if d.owner_cid == p[1] and not d.deleted and (d.owner_hidden == 0 or not has(q, 'owner_hidden')) then n = n + 1 end
+                if d.owner_cid == p[1] and not d.deleted and (d.owner_hidden == 0 or not has(q, 'owner_hidden'))
+                    and not (has(q, 'copied_from IS NULL') and d.copied_from) then n = n + 1 end
             end
             return n
         end
+        if has(q, 'c.copied_from IS NOT NULL') then return copiesOf(p[1]) end
+        if has(q, 'SELECT SHA2(CONCAT(title') then local d = live(p[1]); return d and fingerprint(d) end
         error('unexpected scalar: ' .. q)
     end
     if kind == 'insert' then
-        if has(q, 'INSERT INTO pf_citizen_documents') then
+        if has(q, 'INSERT INTO pf_citizen_documents') and has(q, 'SELECT ?, d.title, d.body, d.id') then
+            -- a copy: { owner, locked, record, source id, owner, room }; the room check is in the statement
+            local src = live(p[4])
+            if not src or copiesOf(p[5]) >= p[6] then return 0 end
             S.nextDoc = S.nextDoc + 1
-            S.docs[S.nextDoc] = { id = S.nextDoc, owner_cid = p[1], title = p[2], body = p[3], copied_from = p[4],
-                locked = has(q, ', 1)') and 1 or 0, owner_hidden = 0 }
+            S.docs[S.nextDoc] = { id = S.nextDoc, owner_cid = p[1], title = src.title, body = src.body, copied_from = src.id,
+                locked = p[2], copied_signatures = p[3], owner_hidden = 0 }
+            return S.nextDoc
+        end
+        if has(q, 'INSERT INTO pf_citizen_documents (owner_cid, title, body) VALUES') then
+            S.nextDoc = S.nextDoc + 1
+            S.docs[S.nextDoc] = { id = S.nextDoc, owner_cid = p[1], title = p[2], body = p[3], locked = 0, owner_hidden = 0 }
             return S.nextDoc
         end
         error('unexpected insert: ' .. q)
@@ -71,7 +92,7 @@ local function handle(kind, q, p)
         if has(q, 'FROM pf_citizen_document_signatures WHERE document_id = ?') then
             local out = {}
             for _, s in pairs(S.sigs) do
-                if s.document_id == tonumber(p[1]) then out[#out + 1] = { citizenid = s.citizenid, name = s.name, fingerprint = 'fp', at = 1 } end
+                if s.document_id == tonumber(p[1]) then out[#out + 1] = { citizenid = s.citizenid, name = s.name, fingerprint = s.fingerprint or 'fp', at = s.at or 1 } end
             end
             table.sort(out, function(a, b) return a.citizenid < b.citizenid end)
             return out
@@ -86,7 +107,8 @@ local function handle(kind, q, p)
             local out = {}
             for _, d in pairs(S.docs) do
                 if d.owner_cid == p[1] and not d.deleted and (d.owner_hidden == 0 or not has(q, 'owner_hidden')) then
-                    out[#out + 1] = { id = d.id, title = d.title, locked = d.locked, updated = 1, signs = 0, shares = 0 }
+                    out[#out + 1] = { id = d.id, title = d.title, locked = d.locked, updated = 1, signs = 0, shares = 0,
+                        copy = d.copied_from and 1 or 0, signed_original = d.copied_signatures and 1 or 0 }
                 end
             end
             return out
@@ -119,6 +141,15 @@ local function handle(kind, q, p)
             local d = live(p[3])
             if not d or d.owner_cid ~= p[4] or d.locked ~= 0 then return 0 end
             d.title, d.body = p[1], p[2]
+            if has(q, 'copied_signatures = NULL') then d.copied_signatures = nil end
+            return 1
+        end
+        if has(q, 'DELETE d FROM pf_citizen_documents') then
+            local d = S.docs[tonumber(p[1]) or -1]
+            if not d or d.owner_cid ~= p[2] or not d.copied_from then return 0 end
+            for _, sg in pairs(S.sigs) do if sg.document_id == d.id then return 0 end end
+            for _, h in pairs(S.shares) do if h.document_id == d.id then return 0 end end
+            S.docs[d.id] = nil
             return 1
         end
         if has(q, 'SET d.locked = 0') then
@@ -135,7 +166,8 @@ local function handle(kind, q, p)
             if has(q, 'shared_by') and not given(d, cid) then return 0 end
             local k = key(d.id, cid)
             if S.sigs[k] then return 0 end
-            S.sigs[k] = { document_id = d.id, citizenid = cid, name = name }
+            S.sigClock = (S.sigClock or 0) + 1
+            S.sigs[k] = { document_id = d.id, citizenid = cid, name = name, fingerprint = fingerprint(d), at = S.sigClock }
             return 1
         end
         if has(q, 'deleted_at = NOW()') then
@@ -291,19 +323,167 @@ describe('documents attached to player mail', function()
         assert_eq(refs[1], refs[2])
         assert_eq(S.docs[refs[1]].owner_cid, 'CID3')
     end)
-    it('a recipient with no room for the copy: nothing is sent', function()
-        local max = CitizenConfig.Documents.MaxPerCitizen
-        CitizenConfig.Documents.MaxPerCitizen = 1
+    it('a recipient with no room for another copy: nothing is sent', function()
+        local max = CitizenConfig.Documents.MaxReceivedCopies
+        CitizenConfig.Documents.MaxReceivedCopies = 1
         local ok, err = pcall(function()
             local id = newDoc(A, 'Memo')
             D.Share(A, { id = id, to = '5550002', mode = 'link' })
-            newDoc(C3, 'Full')
-            local mails = #S.mails
+            assert_true(D.Share(A, { id = newDoc(A, 'Earlier'), to = '5550003', mode = 'copy' }).ok, 'the one copy they have room for')
+            local mails, docs = #S.mails, S.nextDoc
             local res = M.SendFromPlayer(B, { to = '5550003', subject = 'x', message = 'y', attachments = { { type = 'document', id = id } } })
             assert_eq(res.error, 'recipient_full')
             assert_eq(#S.mails, mails)
+            assert_eq(S.nextDoc, docs, 'a copy was made')
         end)
-        CitizenConfig.Documents.MaxPerCitizen = max
+        CitizenConfig.Documents.MaxReceivedCopies = max
+        assert(ok, err)
+    end)
+end)
+
+describe('copies others send have a limit of their own', function()
+    local function withLimits(own, copies, fn)
+        local cfg = CitizenConfig.Documents
+        local a, b = cfg.MaxPerCitizen, cfg.MaxReceivedCopies
+        cfg.MaxPerCitizen, cfg.MaxReceivedCopies = own, copies
+        local ok, err = pcall(fn)
+        cfg.MaxPerCitizen, cfg.MaxReceivedCopies = a, b
+        assert(ok, err)
+    end
+    it('mailed copies never use the room for documents the citizen writes', function()
+        withLimits(2, 3, function()
+            local id = newDoc(A, 'Flyer', 'Sale on Friday')
+            D.Share(A, { id = id, to = '5550002', mode = 'link' })
+            for i = 1, 3 do
+                local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Flyer ' .. i, message = 'x', attachments = { { type = 'document', id = id } } })
+                assert_eq(res.ok, true, tostring(res.error))
+            end
+            assert_eq(copiesOf('CID3'), 3)
+            -- C3 still writes their own documents, up to their own limit
+            assert_eq(D.Save(C3, { title = 'Mine 1', body = 'a' }).ok, true)
+            assert_eq(D.Save(C3, { title = 'Mine 2', body = 'b' }).ok, true)
+            assert_eq(D.Save(C3, { title = 'Mine 3', body = 'c' }).error, 'too_many_documents')
+            -- and a fourth copy is refused as a copy, whatever their own documents
+            local res = M.SendFromPlayer(B, { to = '5550003', subject = 'Flyer 4', message = 'x', attachments = { { type = 'document', id = id } } })
+            assert_eq(res.error, 'recipient_full')
+            assert_eq(D.Share(B, { id = id, to = '5550003', mode = 'copy' }).error, 'recipient_full')
+            assert_eq(#D.List(C3).mine, 5, 'copies and own documents are all listed')
+        end)
+    end)
+    it('a citizen whose own documents are full still receives copies', function()
+        withLimits(1, 5, function()
+            newDoc(C3, 'Full')
+            local id = newDoc(A, 'Notice')
+            D.Share(A, { id = id, to = '5550002', mode = 'link' })
+            assert_eq(M.SendFromPlayer(B, { to = '5550003', subject = 'n', message = 'x', attachments = { { type = 'document', id = id } } }).ok, true)
+            assert_eq(copiesOf('CID3'), 1)
+        end)
+    end)
+end)
+
+describe('a copy of a signed document', function()
+    local function signedContract()
+        local id = newDoc(A, 'Car sale', 'A sells the car to B for $9000')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        assert_eq(D.Sign(A, { id = id }).ok, true)
+        return id
+    end
+    it('carries the signatures as a record that is never a signature on the copy', function()
+        local id = signedContract()
+        assert_eq(M.SendFromPlayer(B, { to = '5550003', subject = 'Proof', message = 'Signed', attachments = { { type = 'document', id = id } } }).ok, true)
+        local copy = attachedRef(lastMailTo('CID3'))
+        assert_true(copy ~= id)
+        local doc = D.Get(C3, { id = copy }).document
+        assert_eq(#doc.signatures, 0, 'the record became signatures on the copy')
+        assert_eq(doc.othersSigned, false)
+        assert_eq(doc.signedByMe, false)
+        local rec = doc.signatureRecord
+        assert_true(rec ~= nil, 'no record of the signatures')
+        assert_eq(#rec.signatures, 2)
+        assert_eq(rec.signatures[1].name, 'Test Player2', 'oldest first')
+        assert_eq(rec.signatures[2].name, 'Test Player1')
+        assert_eq(rec.signatures[1].fingerprint, fingerprint(S.docs[id]))
+        assert_eq(rec.signatures[1].matches, true, 'the copy holds the signed text')
+        assert_eq(rec.signatures[1].cid, nil, 'citizen ids stay on the server')
+        -- the copy's owner deletes it like any document of their own
+        assert_eq(D.Delete(C3, { id = copy }).deleted, true)
+        -- the original is unchanged
+        assert_eq(#D.Get(A, { id = id }).document.signatures, 2)
+        assert_eq(D.Get(A, { id = id }).document.signatureRecord, nil)
+    end)
+    it('a copy of that copy keeps the record; an edited copy loses it', function()
+        local id = signedContract()
+        local res = D.Share(B, { id = id, to = '5550003', mode = 'copy' })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(#D.Get(C3, { id = res.id }).document.signatureRecord.signatures, 2)
+        assert_eq(D.List(C3).mine[1].signedOriginal, true)
+        -- C3 passes their copy on: the record goes along
+        local again = D.Share(C3, { id = res.id, to = '5550001', mode = 'copy' })
+        assert_eq(#D.Get(A, { id = again.id }).document.signatureRecord.signatures, 2)
+        -- saving the same text keeps it; changing the text drops it (it is no longer what they signed)
+        assert_eq(D.Save(C3, { id = res.id, title = 'Car sale', body = 'A sells the car to B for $9000' }).ok, true)
+        assert_true(D.Get(C3, { id = res.id }).document.signatureRecord ~= nil)
+        assert_eq(D.Save(C3, { id = res.id, title = 'Car sale', body = 'A sells the car to B for $1' }).ok, true)
+        assert_eq(D.Get(C3, { id = res.id }).document.signatureRecord, nil)
+    end)
+    it('an unsigned document makes a copy without a record', function()
+        local id = newDoc(A, 'Note')
+        local res = D.Share(A, { id = id, to = '5550003', mode = 'copy' })
+        assert_eq(D.Get(C3, { id = res.id }).document.signatureRecord, nil)
+        assert_eq(S.docs[res.id].copied_signatures, nil)
+    end)
+end)
+
+describe('copies and links only for a delivered mail', function()
+    it('a mail that cannot be stored takes its copy back', function()
+        local id = newDoc(A, 'Quote')
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        S.failMailTo = 'CID3'
+        local res = M.SendFromPlayer(B, { to = '5550003', subject = 'q', message = 'x', attachments = { { type = 'document', id = id } } })
+        assert_eq(res.ok, false)
+        assert_eq(res.error, 'not_stored')
+        assert_eq(copiesOf('CID3'), 0, 'an orphan copy was left')
+        -- with a second recipient the mail still goes to them, and the sender hears who did not get it
+        res = M.SendFromPlayer(B, { to = '5550003, 5550001', subject = 'q', message = 'x', attachments = { { type = 'document', id = id } } })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(res.delivered, 1)
+        assert_eq(res.undelivered[1], 'Test Player3')
+        assert_eq(copiesOf('CID3'), 0)
+    end)
+    it("the owner's mail that cannot be stored takes its new link back, not one given before", function()
+        local id = newDoc(A, 'Plan')
+        S.failMailTo = 'CID3'
+        assert_eq(M.SendFromPlayer(A, { to = '5550003', subject = 'p', message = 'x', attachments = { { type = 'document', id = id } } }).error, 'not_stored')
+        assert_eq(S.shares[key(id, 'CID3')], nil, 'a link nobody was told about')
+        S.failMailTo = nil
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        S.failMailTo = 'CID2'
+        M.SendFromPlayer(A, { to = '5550002', subject = 'p', message = 'x', attachments = { { type = 'document', id = id } } })
+        assert_true(S.shares[key(id, 'CID2')] ~= nil, 'the earlier link was taken')
+    end)
+    it('room taken between the check and the copy: the mail goes without it and the sender is told', function()
+        local max = CitizenConfig.Documents.MaxReceivedCopies
+        CitizenConfig.Documents.MaxReceivedCopies = 1
+        local ok, err = pcall(function()
+            local id = newDoc(A, 'Offer', 'Ten crates')
+            D.Share(A, { id = id, to = '5550002', mode = 'link' })
+            -- another copy reaches C3 after the room check, just before this mail's copy
+            S.before = { match = 'SELECT ?, d.title, d.body, d.id', fn = function()
+                S.nextDoc = S.nextDoc + 1
+                S.docs[S.nextDoc] = { id = S.nextDoc, owner_cid = 'CID3', title = 'Other', body = 'x', copied_from = 999, locked = 1, owner_hidden = 0 }
+            end }
+            local res = M.SendFromPlayer(B, { to = '5550003', subject = 'o', message = 'x', attachments = { { type = 'document', id = id } } })
+            assert_eq(res.ok, true, tostring(res.error))
+            assert_eq(res.delivered, 1)
+            assert_true(res.missing ~= nil, 'the sender was not told')
+            assert_eq(res.missing[1].recipient, 'Test Player3')
+            assert_eq(res.missing[1].document, 'Offer')
+            assert_eq(res.missing[1].error, 'recipient_full')
+            assert_eq(attachedRef(lastMailTo('CID3')), nil, 'the mail points at nothing')
+            assert_eq(copiesOf('CID3'), 1, 'over the limit')
+        end)
+        CitizenConfig.Documents.MaxReceivedCopies = max
         assert(ok, err)
     end)
 end)

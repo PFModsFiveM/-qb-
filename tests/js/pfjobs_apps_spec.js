@@ -1,6 +1,7 @@
 // pf-jobs NUI modules in a simulated browser (jsdom) on the pf-devices runtime: the Tow app renders
 // the server's state as text on the tablet and the computer and sends only ids and models (and shows
-// a player who left the tow job only their flatbed return); the Gruppe 6
+// a player who left the tow job only their flatbed return and pay still owed, also when the job
+// changes with the window open); the Gruppe 6
 // and Garbage apps send crew shares as a list and buy upgrades by id; the Bus app takes a depot bus.
 // Run: node js/pfjobs_apps_spec.js
 const fs = require('fs');
@@ -183,6 +184,64 @@ const towView = () => ({
             eq(env.win.__xss, undefined);
         });
     }
+
+    for (const device of ['tablet', 'computer']) {
+        await it(`${device}: a former driver collects pay still owed from the return-only view`, async () => {
+            const owedView = () => ({
+                ok: true, playerId: 1, returnOnly: true, atBay: false,
+                owed: { plate: 'BRK00042', model: EVIL, pay: 312 },
+                depot: { label: 'Hayes', x: 489, y: -1331 },
+            });
+            const settled = { ok: true, playerId: 1, returnOnly: true, atBay: false, depot: { label: 'Hayes', x: 489, y: -1331 } };
+            const env = makeWindow(device, {
+                'tow.getInit': owedView, 'tow.refresh': owedView,
+                'tow.claimPay': () => ({ ok: true, paid: 312, view: settled }),
+            });
+            await env.win.PFApps.refresh();
+            await env.win.PFApps.open('tow');
+            await settle();
+            const root = env.root('tow');
+            ok(root.textContent.includes('BRK00042'), 'the delivered contract');
+            ok(root.textContent.includes('$312'), 'the pay owed');
+            ok(root.textContent.includes(EVIL), 'server text as text');
+            eq(root.querySelectorAll('img').length, 0);
+            ok(!root.textContent.includes('rental is settled'), 'no "settled" while pay is owed');
+            eq(root.querySelectorAll('[data-tab]').length, 0, 'still no driver tabs');
+            eq(root.querySelectorAll('[data-action="rentFlatbed"],[data-action="startContract"],[data-action="returnFlatbed"]').length, 0);
+            [...root.querySelectorAll('button')].find((b) => b.textContent === 'Collect pay').click();
+            await settle();
+            const sent = env.rpcs.find((r) => r.method === 'claimPay');
+            ok(sent, 'claim asked for');
+            eq(JSON.stringify(sent.payload || {}), '{}', 'nothing but the method');
+            ok(env.notes.some((n) => n.m === '$312 paid to your bank'), 'the pay is told (the app closes after)');
+            ok(!root.textContent.includes('BRK00042'), 'the claimed pay is gone from the screen');
+            eq(env.win.__xss, undefined);
+        });
+    }
+
+    await it('Tow app: an open window switches to the return-only view when the player leaves the job', async () => {
+        let left = false;
+        const returnOnly = () => ({
+            ok: true, playerId: 1, returnOnly: true, atBay: true,
+            rental: { model: 'flatbed', label: 'Flatbed', plate: 'TOWR7777', deposit: 250, orphaned: false, present: true },
+            depot: { label: 'Hayes', x: 489, y: -1331 },
+        });
+        const env = makeWindow('tablet', { 'tow.getInit': towView, 'tow.refresh': () => (left ? returnOnly() : towView()) });
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('tow');
+        await settle();
+        const root = env.root('tow');
+        ok(root.querySelectorAll('[data-tab]').length > 0, "the driver's layout");
+        // the job changes: the server pushes the tow state, the app fetches its view again
+        left = true;
+        env.win.PFApps.handleMessage({ action: 'pfapp:event', app: 'tow', event: 'state', payload: {} });
+        await new Promise((r) => setTimeout(r, 320));
+        await settle();
+        eq(root.querySelectorAll('[data-tab]').length, 0, 'no driver tabs any more');
+        ok(root.textContent.includes('Flatbed return'), 'the return-only view');
+        ok(root.textContent.includes('TOWR7777'));
+        eq(root.querySelectorAll('[data-action="rentFlatbed"],[data-action="startContract"],[data-action="acceptRequest"]').length, 0);
+    });
 
     await it('Tow app: a returned flatbed leaves the driver\'s screen (views replace, not merge)', async () => {
         const after = towView();

@@ -3,6 +3,9 @@
 // PFOrders.Quote). The cart estimate uses the pricing the server sends (deliveryPricing); without it
 // the cart says the extras are added. After ordering, the amount charged comes from the server, and
 // a refund that is still owed is said to be pending. Display only: the payload stays item + quantity.
+// Batch 13b: a delivery under the minimum goods value (deliveryPricing.minGoods) says so and cannot be
+// placed from the cart (the server refuses it too, with its own message); a cancelled order card says
+// whether its refund is still owed.
 // Run: node js/ordersupplies_totals_spec.js
 const fs = require('fs');
 const path = require('path');
@@ -94,8 +97,13 @@ function handlers(opts) {
         'ordersupplies.orders': () => ({ ok: true, data: [
             { id: 8, createdAt: Date.now(), status: 'pending', orderStatus: 'awaiting_delivery', fulfillment: 'delivery', total: 236.25,
               subtotal: 75, markup: 11.25, freight: 150, items: [{ label: EVIL, quantity: 3 }], cancellable: true },
-        ] }),
-        'ordersupplies.create': () => ({ ok: true, message: EVIL, data: { orderId: 9, total: 236.25, subtotal: 75, markup: 11.25, freight: 150 } }),
+        ].concat(opts.cancelled ? [
+            { id: 5, createdAt: Date.now(), status: 'cancelled', orderStatus: 'cancelled', fulfillment: 'delivery', total: 400,
+              subtotal: 200, markup: 30, freight: 170, items: [], cancellable: false, refundState: opts.cancelled },
+        ] : []) }),
+        'ordersupplies.create': () => (opts.refuse
+            ? { ok: false, error: 'below_delivery_minimum', message: 'Trucker delivery needs at least $150 of goods; this order has $75. Add more, or collect it yourself.' }
+            : { ok: true, message: EVIL, data: { orderId: 9, total: 236.25, subtotal: 75, markup: 11.25, freight: 150 } }),
         'ordersupplies.cancel': () => (opts.refundPending ? { ok: true, data: { orderId: 8, refundPending: true } } : { ok: true, data: { orderId: 8, refunded: 236.25 } }),
     };
 }
@@ -166,6 +174,46 @@ async function cartWithThree(env) {
         env.button('Cancel and refund').click();
         await settle();
         ok(env.notes.some((n) => n.m.includes('refund could not be paid yet') && n.m.includes('retried')), env.notes.map((n) => n.m).join(' | '));
+        env.clean();
+    });
+
+    await it('a delivery under the minimum goods value says so and cannot be placed; collecting it can', async () => {
+        const env = makeWindow(handlers({ pricing: Object.assign({}, PRICING, { minGoods: 150 }) }));
+        await env.open();
+        await cartWithThree(env);
+        await env.chip('Trucker delivery');
+        ok(env.text().includes('Trucker delivery needs at least $150 of goods (this cart has $75). Add more, or collect it.'), env.text());
+        ok(env.button('Place order').disabled, 'the cart cannot place it');
+        await env.chip('Collect it');
+        ok(!env.text().includes('needs at least'), 'no minimum for collecting');
+        ok(!env.button('Place order').disabled);
+        env.clean();
+    });
+
+    await it('the server\'s refusal of a small delivery is shown as it says it', async () => {
+        const env = makeWindow(handlers({ pricing: PRICING, refuse: true }));
+        await env.open();
+        await cartWithThree(env);
+        await env.chip('Trucker delivery');
+        env.button('Place order').click();
+        await settle();
+        ok(env.notes.some((n) => n.t === 'error' && n.m.includes('needs at least $150 of goods')), env.notes.map((n) => n.m).join(' | '));
+        env.clean();
+    });
+
+    await it('a cancelled order says whether its refund is still owed or could not be paid', async () => {
+        let env = makeWindow(handlers({ pricing: PRICING, cancelled: 'pending' }));
+        await env.open();
+        await env.tab('History');
+        ok(env.text().includes('the refund is still owed and retried automatically'), env.text());
+        env = makeWindow(handlers({ pricing: PRICING, cancelled: 'forfeited' }));
+        await env.open();
+        await env.tab('History');
+        ok(env.text().includes('the refund could not be paid'), env.text());
+        env = makeWindow(handlers({ pricing: PRICING, cancelled: 'done' }));
+        await env.open();
+        await env.tab('History');
+        ok(env.text().includes('Cancelled and refunded'), env.text());
         env.clean();
     });
 

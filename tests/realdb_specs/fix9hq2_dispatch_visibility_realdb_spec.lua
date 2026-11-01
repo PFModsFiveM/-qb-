@@ -30,10 +30,13 @@ Mock.exportsByResource['pf-devices'] = {
     RegisterApp = function() return true end,
     RegisterAppHandlers = function(_, id, map) handlers[id] = map return true end,
 }
--- pf-government's role check: src -> { perm = true }
+-- pf-government's role check: src -> { perm = true }; the permission per kind comes from its real
+-- list and export (loaded below)
 local govPerms = {}
+local govRequestPermission
 Mock.exportsByResource['pf-government'] = {
     HasPermission = function(_, src, perm) return (govPerms[src] or {})[perm] == true end,
+    GetRequestPermission = function(_, kind) return govRequestPermission(kind) end,
 }
 
 function GetCurrentResourceName() return 'pf-services' end
@@ -48,6 +51,12 @@ load_resource('[pfscripts]/pf-services/server/apps.lua')
 load_resource('[pfscripts]/pf-services/server/main.lua')
 assert(RunMigrations('pf-services', PFServices.Migrations))
 PFServices.RegisterApps()
+
+GovApps = { Define = function() end }
+load_resource('[pfscripts]/pf-government/server/apps/requests.lua')
+load_resource('[pfscripts]/pf-government/server/registry_views.lua')
+govRequestPermission = Mock.selfExport('GetRequestPermission')
+assert(govRequestPermission, 'pf-government exports GetRequestPermission')
 
 local CITIZEN, LSC, BENNY, BEEKER, COP, CLERK, LICENSER = 1, 2, 3, 4, 5, 6, 7
 

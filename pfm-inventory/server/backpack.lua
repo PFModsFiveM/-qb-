@@ -15,6 +15,8 @@ QBCore.Functions.CreateCallback('qb-inventory:server:getBackpack', function(sour
     if not Config.Backpack or not Config.Backpack.Enabled then return cb(nil) end
     local Player = QBCore.Functions.GetPlayer(source)
     if not Player then return cb(nil) end
+    -- a searched player's backpack stays shut until the search ends
+    if IsBeingSearched(source) then return cb(nil) end
 
     local backpack = findBackpack(Player)
     if not backpack then return cb(nil) end

@@ -386,6 +386,8 @@ function PFShop.Start()
     local ok, done, err = pcall(function() return exports['pfm-core']:RunMigrations(GetCurrentResourceName(), PFShop.Migrations) end)
     PFShop.dbReady = ok and done == true
     if not PFShop.dbReady then print('^1[pfm-vehicleshop]^7 migrations failed, dealership stock and sales are not tracked: ' .. tostring(ok and err or done)) end
+    -- owed payments and held sales from before a restart are picked up again by the sweep
+    PFSettle.Start()
     PFShop.RegisterApps()
 end
 

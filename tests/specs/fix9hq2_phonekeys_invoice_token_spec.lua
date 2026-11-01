@@ -1,15 +1,17 @@
 -- pfm-phone invoice ledger keys come from a per-invoice token, not from the invoice id: an invoice
 -- under a reused id (truncated table, MySQL < 8.0 AUTO_INCREMENT reset) is charged, rows from before
--- the token keep their id key, and every new invoice gets its own token (the column and its UUID()
--- default are added once). Paying is exactly once across crashes: a pending or debited attempt is
--- never charged again, a failed or refunded one moves to the next attempt key without any cap, and
--- the business is paid before the row is deleted.
+-- the token keep their id key when it holds their charge (otherwise they get a token first), and
+-- every new invoice gets its own token (the columns and the UUID() default are added once). Paying
+-- is exactly once across crashes: a pending, debited or interrupted_unverified attempt is never
+-- charged again, a failed or refunded one moves to the next attempt key without any cap, and the
+-- business is paid before the row is deleted. (fix9hq3_phone_invoice_settle_spec covers the rest.)
 load_resource('tests/lua/ledger_env.lua')
 
 local invoices = {}       -- [id] = row
 local inserts = {}        -- { params, query } of every INSERT INTO phone_invoices
 local hasColumn = true    -- phone_invoices.ledger_token exists
 local uuidDefault = true  -- ... with DEFAULT (UUID())
+local hasPayState = true  -- phone_invoices.pay_state exists
 local alters, defaultAlters, columnReads = 0, 0, 0
 local nextId = 1
 local uuids = 0
@@ -33,10 +35,35 @@ FakeDB.extraPatterns = {
     { 'INSERT INTO player_mails', function() return 1 end },
     { 'information_schema.COLUMNS', function()
         columnReads = columnReads + 1
-        return { { n = hasColumn and 1 or 0, def = hasColumn and (uuidDefault and 'uuid()' or 'NULL') or nil } }
+        local out = {}
+        if hasColumn then out[#out + 1] = { name = 'ledger_token', def = uuidDefault and 'uuid()' or 'NULL' } end
+        if hasPayState then out[#out + 1] = { name = 'pay_state' } end
+        return out
     end },
     { ADD_COLUMN, function() return addColumn() end },
     { SET_DEFAULT, function() return setDefault() end },
+    { 'ADD COLUMN `pay_state`', function() hasPayState = true return {} end },
+    { "UPDATE phone_invoices SET pay_state = 'paying' WHERE id = ? AND citizenid = ? AND pay_state IS NULL", function(p)
+        local row = invoices[tonumber(p[1])]
+        if row and row.citizenid == p[2] and row.pay_state == nil then row.pay_state = 'paying' return { affectedRows = 1 } end
+        return { affectedRows = 0 }
+    end },
+    { "UPDATE phone_invoices SET pay_state = NULL WHERE id = ? AND citizenid = ? AND pay_state = 'paying'", function(p)
+        local row = invoices[tonumber(p[1])]
+        if row and row.citizenid == p[2] and row.pay_state == 'paying' then row.pay_state = nil return { affectedRows = 1 } end
+        return { affectedRows = 0 }
+    end },
+    { 'UPDATE phone_invoices SET ledger_token = ? WHERE id = ?', function(p)
+        local row = invoices[tonumber(p[2])]
+        if row and row.citizenid == p[3] and (row.ledger_token == nil or row.ledger_token == p[4]) then row.ledger_token = p[1] return { affectedRows = 1 } end
+        return { affectedRows = 0 }
+    end },
+    { 'SELECT charinfo FROM players WHERE citizenid = ?', function() return nil end },
+    { "SELECT id, citizenid FROM phone_invoices WHERE pay_state = 'paying'", function()
+        local out = {}
+        for _, r in pairs(invoices) do if r.pay_state == 'paying' then out[#out + 1] = { id = r.id, citizenid = r.citizenid } end end
+        return out
+    end },
     { 'INSERT INTO phone_invoices', function(p, q)
         inserts[#inserts + 1] = p
         local id = nextId
@@ -65,7 +92,7 @@ FakeDB.extraPatterns = {
     end },
     { 'DELETE FROM phone_invoices WHERE id = ? and citizenid = ? and candecline = ?', function(p)
         local row = invoices[tonumber(p[1])]
-        if row and row.citizenid == p[2] and row.candecline == p[3] then invoices[tonumber(p[1])] = nil return 1 end
+        if row and row.citizenid == p[2] and row.candecline == p[3] and row.pay_state == nil then invoices[tonumber(p[1])] = nil return 1 end
         return 0
     end },
 }
@@ -122,7 +149,7 @@ end
 BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
-    hasColumn, uuidDefault, alters, defaultAlters, columnReads, nextId, uuids = true, true, 0, 0, 0, 1, 0
+    hasColumn, uuidDefault, hasPayState, alters, defaultAlters, columnReads, nextId, uuids = true, true, true, 0, 0, 0, 1, 0
     invoices, inserts, onTx = {}, {}, nil
     FakeDB.extraPatterns[3] = { ADD_COLUMN, function() return addColumn() end }
     FakeDB.extraPatterns[4] = { SET_DEFAULT, function() return setDefault() end }
@@ -147,10 +174,13 @@ describe('a reused invoice id', function()
         assert_eq(police(), 1000)
         assert_eq(settled('paid'), 2)
     end)
-    it('a malformed token falls back to the id key', function()
+    it('a malformed token is treated as none: after the id keys are checked it gets a usable one', function()
         invoices[8] = { id = 8, citizenid = 'CID1', amount = 100, society = 'police', sendercitizenid = '', candecline = 1, ledger_token = 'bad token:with:colons' }
+        local row = invoices[8]
         assert_eq(pay(8), true)
-        assert_true(FakeDB.byKey['pfm-phone:invoice:8:bank'].state == 'completed')
+        assert_true(row.ledger_token ~= 'bad token:with:colons')
+        assert_true(FakeDB.byKey['pfm-phone:invoice:tok:' .. row.ledger_token .. ':bank'].state == 'completed')
+        assert_true(FakeDB.byKey['pfm-phone:invoice:8:bank'] == nil)
     end)
     it('is charged again: the new invoice does not find the old invoice paid', function()
         local id = create()
@@ -199,21 +229,23 @@ describe('an invoice from before the token', function()
         assert_eq(invoices[42], nil)
         assert_eq(settled('paid'), 1)         -- the business was credited now: reported once
     end)
-    it('without a charge yet is charged on its id key', function()
+    it('without a charge yet gets a token and is charged on it, not on its id key', function()
         invoices[43] = { id = 43, citizenid = 'CID1', amount = 300, society = 'police', sendercitizenid = '', candecline = 1 }
+        local row = invoices[43]
         assert_eq(pay(43), true)
         assert_eq(bank(), 1700)
-        assert_true(FakeDB.byKey['pfm-phone:invoice:43:bank'].state == 'completed')
+        assert_true(FakeDB.byKey['pfm-phone:invoice:tok:' .. row.ledger_token .. ':bank'].state == 'completed')
+        assert_true(FakeDB.byKey['pfm-phone:invoice:43:bank'] == nil)
     end)
-    it('a reused pre-token row whose old invoice was fully paid reports nothing again', function()
+    it('a reused pre-token row whose old invoice (same payer and amount) was fully paid on the id keys reports nothing again', function()
+        assert_eq(PFLedger.Transfer({ from = 'player:CID1:bank', to = 'system:pfm-phone', amount = 300, key = 'pfm-phone:invoice:44:bank', kind = 'purchase' }).ok, true)
+        assert_eq(PFPayout.PaySociety('police', 300, { key = 'pfm-phone:invoice:44:society' }), true)
         invoices[44] = { id = 44, citizenid = 'CID1', amount = 300, society = 'police', sendercitizenid = '', candecline = 1 }
         assert_eq(pay(44), true)
-        assert_eq(settled('paid'), 1)
-        invoices[44] = { id = 44, citizenid = 'CID1', amount = 300, society = 'police', sendercitizenid = '', candecline = 1 }
-        assert_eq(pay(44), true)
-        assert_eq(bank(), 1700)
+        assert_eq(bank(), 1700)                       -- never charged twice (the same payer and amount)
         assert_eq(police(), 300)
-        assert_eq(settled('paid'), 1)
+        assert_eq(settled('paid'), 0)                 -- every payout was made before: nothing new to report
+        assert_eq(invoices[44], nil)
     end)
 end)
 
@@ -236,11 +268,11 @@ describe('paying exactly once across a crash', function()
         assert_eq(charges(key), 1)
         assert_eq(settled('paid'), 1)
     end)
-    it('a pending attempt waits; once recovery fails it, the next key charges once', function()
+    it('a pending attempt waits; recovered as interrupted_unverified it still waits, and moves on only once reconciled', function()
         local id = create()
         local key = base(id)
         assert_eq(PFLedger.Transfer({ from = 'player:CID1:bank', to = 'system:pfm-phone', amount = 500, key = key .. ':bank', kind = 'purchase' }).ok, true)
-        -- interrupted before the debit counted: the money is still the player's
+        -- interrupted before the debit counted: the money is still the player's (the server cannot know)
         FakeDB.byKey[key .. ':bank'].state = 'pending'
         Mock.players[A].PlayerData.money.bank = 2000
         local ok, err = pay(id)
@@ -251,6 +283,14 @@ describe('paying exactly once across a crash', function()
         PFLedger.Recover()
         PFLedger.STALE_PENDING_SECONDS, PFLedger.STALE_DEBITED_SECONDS = stalePending, staleDebited
         assert_eq(FakeDB.byKey[key .. ':bank'].state, 'failed')
+        assert_eq(FakeDB.byKey[key .. ':bank'].error, 'interrupted_unverified')
+        ok, err = pay(id)
+        assert_eq(ok, false)
+        assert_eq(err, 'in_progress')                 -- unclear: no new key
+        assert_true(FakeDB.byKey[key .. ':retry2:bank'] == nil, 'charged again on the next key')
+        assert_eq(bank(), 2000)
+        FakeDB.byKey[key .. ':bank'].error = 'checked_not_taken' -- an admin reconciles it: not taken
+        assert_eq(PFPhoneInvoices.Sweep(), 1)          -- the invoice is open again
         assert_eq(pay(id), true)
         assert_eq(bank(), 1500)
         assert_eq(police(), 500)
@@ -306,10 +346,14 @@ describe('paying exactly once across a crash', function()
     it('the business is credited before the invoice row goes', function()
         local id = create()
         local order = {}
-        local del = FakeDB.extraPatterns[7][2]
-        FakeDB.extraPatterns[7][2] = function(p) order[#order + 1] = police(); return del(p) end
+        local entry
+        for _, e in ipairs(FakeDB.extraPatterns) do
+            if e[1] == 'DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?' then entry = e end
+        end
+        local del = entry[2]
+        entry[2] = function(p) order[#order + 1] = police(); return del(p) end
         local ok, err = pcall(function() assert_eq(pay(id), true) end)
-        FakeDB.extraPatterns[7][2] = del
+        entry[2] = del
         assert(ok, err)
         assert_eq(order[1], 500)
     end)
@@ -386,7 +430,7 @@ end)
 
 describe('the ledger_token column', function()
     it('is added once with its UUID() default when missing, and not touched when present', function()
-        hasColumn, uuidDefault = false, false
+        hasColumn, uuidDefault, hasPayState = false, false, false
         load()
         create()
         assert_eq(alters, 1)
@@ -415,7 +459,7 @@ describe('the ledger_token column', function()
         assert_true(type(inserts[1][8]) == 'string' and inserts[1][8] ~= '')
     end)
     it('when it cannot be added, invoices are still created (id keys, as before), and it is not retried on every invoice', function()
-        hasColumn, uuidDefault = false, false
+        hasColumn, uuidDefault, hasPayState = false, false, false
         FakeDB.extraPatterns[3] = { ADD_COLUMN, function() error('ALTER command denied') end }
         load()
         local id = create()

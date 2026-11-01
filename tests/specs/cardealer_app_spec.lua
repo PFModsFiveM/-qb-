@@ -90,6 +90,9 @@ FakeDB.extraPatterns = {
     { 'FROM pfm_vehicleshop_sales WHERE shop IN (?) AND created_at', function() return { { n = #sales, revenue = 0, mine = 0 } } end },
     { 'UPDATE pfm_vehicleshop_sales SET', function() anonymised = anonymised + 1 return 1 end },
 }
+-- the settlement tables (settlements.lua): nothing held or owed in these tests
+FakeDB.extraPatterns[#FakeDB.extraPatterns + 1] = { "FROM pfm_vehicleshop_held WHERE state IN ('waiting', 'finishing')", function() return {} end }
+FakeDB.extraPatterns[#FakeDB.extraPatterns + 1] = { 'INSERT IGNORE INTO pfm_vehicleshop_owed', function() return 1 end }
 
 local registered, handlers, pushes = {}, {}, {}
 Mock.exportsByResource['pf-devices'] = {
@@ -109,7 +112,7 @@ Mock.exportsByResource['pf-government'] = {
     ChargeVehicleRegistration = function(_, cid, data) registrations[#registrations + 1] = { cid = cid, plate = data.plate } return true, 500 end,
 }
 
-LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/server.lua', 'pfm-vehicleshop/server_apps.lua' })
+LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/settlements.lua', 'pfm-vehicleshop/server.lua', 'pfm-vehicleshop/server_apps.lua' })
 
 local BUYER, DEALER, STRANGER = 1, 2, 3
 local LUX = Config.Shops.luxury.Location

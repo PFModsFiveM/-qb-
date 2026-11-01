@@ -6,9 +6,10 @@ local newExports = function(funcName, func)
 end
 
 -- The shared fuel level ('qb-fuel' on the vehicle) is written by the server only
--- (sv_stateBagStrictMode): the driver's client reports its level and the server only lets it go
--- down, as fast as driving burns fuel (a new car takes its driver's first report); refuelling
--- raises it on the server (pump, jerry can).
+-- (sv_stateBagStrictMode): a car's first level comes from the server (its stored level, else
+-- Config.DefaultFuel; the driver's first report only prompts that lookup), then the driver's
+-- client reports its level and the server only lets it go down, as fast as driving burns fuel;
+-- refuelling raises it on the server (pump, jerry can).
 local reportFuel = function(vehicle, fuel)
     if not Config.SyncFuelBetweenPlayers or not NetworkGetEntityIsNetworked(vehicle) then return end
     TriggerServerEvent('qb-fuel:server:syncFuel', NetworkGetNetworkIdFromEntity(vehicle), fuel + 0.0)
@@ -23,6 +24,7 @@ local SetFuel = function(vehicle, fuel)
     SetVehicleFuelLevel(vehicle, fuel + 0.0)
     reportFuel(vehicle, fuel)
     -- a car spawned a moment ago may not be known to the server yet: report once more shortly
+    -- (a spawner's level stands on this client until the server's first level arrives)
     SetTimeout(1500, function()
         if DoesEntityExist(vehicle) then reportFuel(vehicle, GetVehicleFuelLevel(vehicle)) end
     end)

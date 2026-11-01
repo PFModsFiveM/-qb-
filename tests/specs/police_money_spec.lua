@@ -17,7 +17,13 @@ Mock.exportsByResource['pfm-inventory'] = {
     RemoveItem = function() return true end,
     OpenInventoryById = function() end,
 }
-FakeDB.extraPatterns = { { 'INSERT INTO phone_invoices', function() return 1 end } }
+local directInserts = 0    -- the old /fine wrote phone_invoices itself (no ledger token)
+FakeDB.extraPatterns = { { 'INSERT INTO phone_invoices', function() directInserts = directInserts + 1 return 1 end } }
+-- pfm-phone's CreateInvoice export; nil answer = the phone is not running / refused it
+local phoneInvoices, phoneAnswer = {}, 41
+Mock.exportsByResource['pfm-phone'] = {
+    CreateInvoice = function(_, data) phoneInvoices[#phoneInvoices + 1] = data return phoneAnswer end,
+}
 
 LedgerEnv.load('pfm-policejob', { 'pfm-policejob/config.lua', 'pfm-policejob/server/main.lua', 'pfm-policejob/server/commands.lua', 'pfm-policejob/server/interactions.lua' })
 
@@ -30,6 +36,7 @@ BeforeEach = function()
     LedgerEnv.reset()
     Mock.players, Mock.coords = {}, {}
     bags, inventoryFull = {}, false
+    directInserts, phoneInvoices, phoneAnswer = 0, {}, 41
     FakeDB.society('police', 0)
     local cop = Mock.newPlayer(COP)
     cop.PlayerData.job = { name = 'police', type = 'leo', onduty = true }
@@ -51,6 +58,45 @@ describe('/fine', function()
         Commands.fine(COP, { tostring(SUSPECT), '400' })   -- cannot pay: invoice, nothing taken
         assert_eq(money(SUSPECT).cash, 100)
         assert_eq(police(), 400)
+    end)
+    it('one they cannot pay becomes a phone invoice made by pfm-phone, not a row written here', function()
+        Mock.players[SUSPECT].PlayerData.money = { cash = 10, bank = 10 }
+        Commands.fine(COP, { tostring(SUSPECT), '400' })
+        assert_eq(directInserts, 0)
+        assert_eq(#phoneInvoices, 1)
+        local inv = phoneInvoices[1]
+        assert_eq(inv.citizenid, 'CID2')
+        assert_eq(inv.amount, 400)
+        assert_eq(inv.society, 'police')
+        assert_eq(inv.sendercitizenid, 'CID1')
+        assert_eq(#Mock.clientEventsNamed('qb-phone:RefreshPhone'), 1)
+        assert_eq(money(SUSPECT).bank, 10)
+        assert_eq(police(), 0)
+    end)
+    it('the officer is told when the phone could not create the invoice', function()
+        Mock.players[SUSPECT].PlayerData.money = { cash = 0, bank = 0 }
+        phoneAnswer = nil
+        Commands.fine(COP, { tostring(SUSPECT), '400' })
+        local told = false
+        for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do
+            if e.target == COP and tostring(e.args[1]):find('could not be sent', 1, true) then told = true end
+        end
+        assert_true(told)
+        assert_eq(directInserts, 0)
+    end)
+    it('a charge the bank has not settled sends no invoice on top of it', function()
+        -- the debit left the online player's money, then the state write broke: the charge is unclear
+        FakeDB.failNext.setState = true
+        Commands.fine(COP, { tostring(SUSPECT), '400' })
+        assert_eq(money(SUSPECT).bank, 600)
+        assert_eq(#phoneInvoices, 0)
+        assert_eq(directInserts, 0)
+        assert_eq(police(), 0)
+        local told = false
+        for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do
+            if e.target == COP and tostring(e.args[1]):find('still processing', 1, true) then told = true end
+        end
+        assert_true(told)
     end)
     it('refuses missing, oversized and off-duty fines', function()
         Commands.fine(COP, { tostring(SUSPECT) })

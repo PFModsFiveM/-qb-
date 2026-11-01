@@ -11,6 +11,7 @@ Config.FilterByMake = false                           -- adds a make list before
 Config.SortAlphabetically = true                      -- will sort make, category, and vehicle selection menus alphabetically
 Config.HideCategorySelectForOne = true                -- will hide the category selection menu if a shop only sells one category of vehicle or a make has only one category
 Config.SaleDistance = 3.0                             -- a dealer sells to a customer standing this close (meters, server positions)
+Config.DeliveryGarage = 'pillboxgarage'               -- where a car is parked when its payment cleared later (the bank was slow to confirm it)
 -- Stock of the managed dealerships (the cardealer job). Each sale takes one car; the dealership buys
 -- new cars from the manufacturer out of its society account in the Dealer app. Free-use shops are
 -- not limited.

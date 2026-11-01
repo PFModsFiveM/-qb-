@@ -39,6 +39,7 @@ function GetCurrentResourceName() return 'pfm-vehiclesales' end
 Config = nil
 load_resource('pfm-banking/payouts.lua')
 load_resource('pfm-vehiclesales/config.lua')
+load_resource('pfm-vehicleshop/settlements.lua')
 load_resource('pfm-vehiclesales/server/main.lua')
 PFUsedCars.Start()
 assert(PFUsedCars.dbReady, 'pfm-vehiclesales migrations')

@@ -1,8 +1,10 @@
--- pfm-phone invoice ledger tokens on a real database: the column and its UUID() default are added
--- once to a table created before them (older rows keep NULL and their id keys), every invoice gets
--- a unique token (also one another resource inserts directly), and paying moves money exactly once
--- on the real ledger: a reused id is charged, a pending or debited attempt is waited for, failed
--- attempts move to the next key without a cap, and a crash before the delete is finished safely.
+-- pfm-phone invoice ledger tokens on a real database: the columns (ledger_token with its UUID()
+-- default, pay_state) are added once to a table created before them (older rows keep NULL and are
+-- checked against their id keys), every invoice gets a unique token (also one another resource
+-- inserts directly), and paying moves money exactly once on the real ledger: a reused id is charged,
+-- a pending, debited or interrupted_unverified attempt is waited for, failed attempts move to the
+-- next key without a cap, a charged invoice is never declined, and a half-paid one (the business
+-- credit cut off) is finished by the sweep on the next key.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 function IsDuplicityVersion() return true end
@@ -99,7 +101,10 @@ describe('the ledger_token column on a table from before it', function()
             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND COLUMN_NAME = 'ledger_token']])
         assert_eq(col.nullable, 'YES')
         assert_true(tostring(col.def):lower():find('uuid', 1, true) ~= nil, tostring(col.def))
-        assert_eq(#alters, 2)
+        local ps = MySQL.single.await([[SELECT IS_NULLABLE AS nullable, COLUMN_DEFAULT AS def FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND COLUMN_NAME = 'pay_state']])
+        assert_eq(ps.nullable, 'YES')
+        assert_eq(#alters, 3)                          -- ledger_token, pay_state, the UUID() default
         assert_eq(token(900), nil)
         assert_true(type(token(id)) == 'string' and #token(id) > 0)
         -- a restart finds both and runs no ALTER
@@ -166,10 +171,10 @@ describe('paying an invoice on the real ledger', function()
         assert_eq(society(), 400)
         assert_eq(charges(base), 1)
     end)
-    it('a pending attempt is waited for; once recovery fails it the next key charges once', function()
+    it('a pending attempt is waited for, also once recovery marks it interrupted_unverified; reconciled, the next key charges once', function()
         local id = create(250)
         local base = 'pfm-phone:invoice:tok:' .. token(id)
-        -- the attempt was stored, then the server stopped before the debit
+        -- the attempt was stored, then the server stopped (an online payer: the debit cannot be verified)
         MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state)
             VALUES ('txcrash1', ?, 'purchase', 'player:CID1:bank', 'system:pfm-phone', 250, 'pending')]], { base .. ':bank' })
         local ok, err = phone.PayInvoice(A, id)
@@ -177,6 +182,17 @@ describe('paying an invoice on the real ledger', function()
         assert_eq(bank(), 5000)
         recover()
         assert_eq(state(base .. ':bank'), 'failed')
+        assert_eq(MySQL.scalar.await('SELECT error FROM pf_transactions WHERE idempotency_key = ?', { base .. ':bank' }), 'interrupted_unverified')
+        ok, err = phone.PayInvoice(A, id)
+        assert_eq(ok, false)
+        assert_eq(err, 'in_progress')
+        assert_eq(state(base .. ':retry2:bank'), nil)
+        assert_eq(MySQL.scalar.await('SELECT pay_state FROM phone_invoices WHERE id = ?', { id }), 'paying')
+        assert_eq(select(2, phone.DeclineInvoice(A, id)), 'in_progress')
+        -- an admin reconciles it: the money never left
+        MySQL.update.await("UPDATE pf_transactions SET error = 'checked_not_taken' WHERE idempotency_key = ?", { base .. ':bank' })
+        assert_eq(PFPhoneInvoices.Sweep(), 1)
+        assert_eq(MySQL.scalar.await('SELECT pay_state FROM phone_invoices WHERE id = ?', { id }), nil)
         assert_eq(phone.PayInvoice(A, id), true)
         assert_eq(bank(), 4750)
         assert_eq(state(base .. ':retry2:bank'), 'completed')
@@ -208,5 +224,102 @@ describe('paying an invoice on the real ledger', function()
         assert_eq(bank(), 4850)
         assert_eq(society(), 150)
         assert_eq(rowCount(id), 0)
+    end)
+end)
+
+describe('settling a half-paid invoice on the real database', function()
+    it('a charged invoice is not declined: the payment is finished and the business paid', function()
+        local id = create(200)
+        local base = 'pfm-phone:invoice:tok:' .. token(id)
+        assert_eq(PFLedger.Transfer({ from = 'player:CID1:bank', to = 'system:pfm-phone', amount = 200, key = base .. ':bank', kind = 'purchase' }).ok, true)
+        local ok, err = phone.DeclineInvoice(A, id)
+        assert_eq(ok, false)
+        assert_eq(err, 'not_open')
+        assert_eq(rowCount(id), 0)
+        assert_eq(society(), 200)
+        assert_eq(bank(), 4800)
+    end)
+    it('a business credit cut off by a crash: paying is not reported done; the sweep pays it once on the next key', function()
+        local id = create(350)
+        local base = 'pfm-phone:invoice:tok:' .. token(id)
+        assert_eq(PFLedger.Transfer({ from = 'player:CID1:bank', to = 'system:pfm-phone', amount = 350, key = base .. ':bank', kind = 'purchase' }).ok, true)
+        MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state)
+            VALUES ('txcrash2', ?, 'deposit', 'system:pfm-phone', 'society:mechanic', 350, 'pending')]], { base .. ':society' })
+        local ok, err = phone.PayInvoice(A, id)
+        assert_eq(ok, false)
+        assert_eq(err, 'in_progress')
+        assert_eq(rowCount(id), 1)
+        assert_eq(MySQL.scalar.await('SELECT pay_state FROM phone_invoices WHERE id = ?', { id }), 'paying')
+        assert_eq(society(), 0)
+        recover() -- a system source: failed / interrupted, nothing moved
+        assert_eq(state(base .. ':society'), 'failed')
+        assert_eq(PFPhoneInvoices.Sweep(), 1)
+        assert_eq(state(base .. ':society:retry2'), 'completed')
+        assert_eq(society(), 350)
+        assert_eq(rowCount(id), 0)
+        assert_eq(bank(), 4650)
+        assert_eq(charges(base), 1)
+    end)
+    it('a row without a token: a pending charge on its id key waits; with none it gets a token first', function()
+        MySQL.insert.await("INSERT INTO phone_invoices (id, citizenid, amount, society, sender, ledger_token) VALUES (9901, 'CID1', 90, 'mechanic', 'Old', NULL)")
+        MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state)
+            VALUES ('txcrash3', 'pfm-phone:invoice:9901:bank', 'purchase', 'player:CID1:bank', 'system:pfm-phone', 90, 'pending')]])
+        assert_eq(select(2, phone.PayInvoice(A, 9901)), 'in_progress')
+        assert_eq(token(9901), nil)
+        assert_eq(state('pfm-phone:invoice:9901:retry2:bank'), nil)
+        MySQL.insert.await("INSERT INTO phone_invoices (id, citizenid, amount, society, sender, ledger_token) VALUES (9902, 'CID1', 60, 'mechanic', 'Old', NULL)")
+        assert_eq(phone.PayInvoice(A, 9902), true)
+        assert_eq(bank(), 4940)
+        assert_eq(state('pfm-phone:invoice:9902:bank'), nil)
+        assert_eq(tonumber(MySQL.scalar.await([[SELECT COUNT(*) FROM pf_transactions WHERE state = 'completed'
+            AND idempotency_key LIKE 'pfm-phone:invoice:tok:%:bank' AND amount = 60]])), 1)
+        assert_eq(society(), 60)
+    end)
+end)
+
+describe('second round on the real database', function()
+    it('the sweep pages past invoices that wait for good and still finishes a later half-paid one', function()
+        -- 60 invoices whose charge was recovered as interrupted_unverified: they wait for an admin
+        for i = 0, 59 do
+            local id = 9500 + i
+            MySQL.insert.await("INSERT INTO phone_invoices (id, citizenid, amount, society, sender, ledger_token, pay_state) VALUES (?, 'CID1', 10, 'mechanic', 'Old', ?, 'paying')",
+                { id, 'stuck' .. id })
+            MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state, error)
+                VALUES (?, ?, 'purchase', 'player:CID1:bank', 'system:pfm-phone', 10, 'failed', 'interrupted_unverified')]],
+                { 'txstuck' .. id, 'pfm-phone:invoice:tok:stuck' .. id .. ':bank' })
+        end
+        -- behind them, an invoice charged before a crash, its business not credited yet
+        MySQL.insert.await("INSERT INTO phone_invoices (id, citizenid, amount, society, sender, ledger_token, pay_state) VALUES (9700, 'CID1', 120, 'mechanic', 'Bob', 'late9700', 'paying')")
+        assert_eq(PFLedger.Transfer({ from = 'player:CID1:bank', to = 'system:pfm-phone', amount = 120, key = 'pfm-phone:invoice:tok:late9700:bank', kind = 'purchase' }).ok, true)
+        startPhone() -- a restart: the sweep starts from the first row
+        local realPrint = print
+        print = function() end -- one admin warning per stuck invoice
+        local ok, err = pcall(function()
+            for _ = 1, 3 do PFPhoneInvoices.Sweep() end
+        end)
+        print = realPrint
+        assert_true(ok, tostring(err))
+        assert_eq(rowCount(9700), 0)
+        assert_eq(society(), 120)
+        assert_eq(bank(), 4880)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM phone_invoices WHERE id BETWEEN 9500 AND 9559 AND pay_state = 'paying'")), 60)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pfm-phone:invoice:tok:stuck%:retry2:bank'")), 0)
+        MySQL.update.await('DELETE FROM phone_invoices WHERE id BETWEEN 9500 AND 9559')
+    end)
+    it("a row keyed by id: an older invoice's business credit under the same id does not count for this one", function()
+        -- invoice 9910 of another payer was paid in full on the id keys, then the id came back
+        MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state)
+            VALUES ('txold9910a', 'pfm-phone:invoice:9910:bank', 'purchase', 'player:CIDX:bank', 'system:pfm-phone', 500, 'completed')]])
+        MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state)
+            VALUES ('txold9910b', 'pfm-phone:invoice:9910:society', 'deposit', 'system:pfm-phone', 'society:mechanic', 500, 'completed')]])
+        -- the new invoice 9910 (no token) was charged on its next id key, then the server stopped
+        MySQL.insert.await("INSERT INTO phone_invoices (id, citizenid, amount, society, sender, ledger_token) VALUES (9910, 'CID1', 500, 'mechanic', 'Bob', NULL)")
+        assert_eq(PFLedger.Transfer({ from = 'player:CID1:bank', to = 'system:pfm-phone', amount = 500, key = 'pfm-phone:invoice:9910:retry2:bank', kind = 'purchase' }).ok, true)
+        assert_eq(phone.PayInvoice(A, 9910), true)
+        assert_eq(bank(), 4500)                       -- charged once
+        assert_eq(society(), 500)                     -- and the business paid for this invoice
+        assert_eq(state('pfm-phone:invoice:9910:society:retry2'), 'completed')
+        assert_eq(rowCount(9910), 0)
+        assert_eq(token(9910), nil)
     end)
 end)

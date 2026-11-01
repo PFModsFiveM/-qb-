@@ -2,8 +2,9 @@
 --   (a) the waypoint uses the list's visibility rule (the kind's job list), so a Benny's or
 --       Beeker's mechanic gets the waypoint of a mechanic.roadside call they see and accept;
 --   (b) City Hall business requests (gov.request.*) are claimable from the generic Dispatch app
---       only with the permission pf-government's Business Requests app checks for that kind (the
---       kind's govPermission in pf-services' catalog, checked here against pf-government's own list).
+--       only with the permission pf-government's Business Requests app checks for that kind, read
+--       from pf-government itself (its GetRequestPermission export over GovRequests.Kinds, loaded
+--       here from the real files), so the list exists in one place.
 -- The list itself (ListForJob, SQL) is stubbed here with the same rule; the real query is covered by
 -- realdb_specs/fix9hq2_dispatch_visibility_realdb_spec.lua.
 load_resource('tests/lua/fivem_mocks.lua')
@@ -23,6 +24,20 @@ Mock.exportsByResource['pf-devices'] = {
     PushToCitizen = function() return true end,
 }
 
+load_resource('[pfscripts]/pf-services/server/schema.lua')
+load_resource('[pfscripts]/pf-services/server/events.lua')
+load_resource('[pfscripts]/pf-services/server/requests.lua')
+load_resource('[pfscripts]/pf-services/server/apps.lua')
+load_resource('[pfscripts]/pf-services/server/main.lua')
+PFServices.RegisterApps()
+
+-- pf-government's own list of request permissions (Business Requests app) and its real export
+GovApps = { Define = function() end }
+load_resource('[pfscripts]/pf-government/server/apps/requests.lua')
+load_resource('[pfscripts]/pf-government/server/registry_views.lua')
+local govRequestPermission = Mock.selfExport('GetRequestPermission')
+assert(govRequestPermission, 'pf-government exports GetRequestPermission')
+
 -- pf-government's permission check: src -> { perm = true }
 local govPerms, permCalls = {}, {}
 Mock.exportsByResource['pf-government'] = {
@@ -30,14 +45,8 @@ Mock.exportsByResource['pf-government'] = {
         permCalls[#permCalls + 1] = { src = src, perm = perm }
         return (govPerms[src] or {})[perm] == true
     end,
+    GetRequestPermission = function(_, kind) return govRequestPermission(kind) end,
 }
-
-load_resource('[pfscripts]/pf-services/server/schema.lua')
-load_resource('[pfscripts]/pf-services/server/events.lua')
-load_resource('[pfscripts]/pf-services/server/requests.lua')
-load_resource('[pfscripts]/pf-services/server/apps.lua')
-load_resource('[pfscripts]/pf-services/server/main.lua')
-PFServices.RegisterApps()
 
 -- requests held here; accept / complete / list record what reached the request layer
 local REQ, accepted, completed = {}, {}, {}
@@ -166,14 +175,17 @@ describe('(b) City Hall requests on the generic Dispatch app', function()
         assert_eq(#permCalls, 0, 'no government check for non-government kinds')
     end)
 
-    it("the catalog's permission per kind is the one pf-government's Business Requests app checks", function()
-        GovApps = { Define = function() end }
-        load_resource('[pfscripts]/pf-government/server/apps/requests.lua')
+    it("Dispatch applies the permission pf-government's Business Requests app checks, for every kind", function()
         local govKinds = GovRequests.Kinds
         local n = 0
         for kind, def in pairs(govKinds) do
             n = n + 1
-            assert_eq(PFServices.GetRequestKind(kind).govPermission, def.perm, kind)
+            assert_eq(govRequestPermission(kind), def.perm, kind)
+            REQ[10 + n] = { id = 10 + n, kind = kind, job = 'government', status = 'open', title = kind }
+            govPerms[CLERK] = { [def.perm] = true }
+            permCalls = {}
+            assert_true(handlers.dispatch.accept(CLERK, { id = 10 + n }).ok, kind)
+            assert_eq(permCalls[1].perm, def.perm, kind)
         end
         assert_true(n >= 4)
         for kind in pairs(PFCatalog.Requests) do
@@ -181,15 +193,47 @@ describe('(b) City Hall requests on the generic Dispatch app', function()
         end
     end)
 
-    it('a gov.request kind registered at runtime is gated by its own permission', function()
+    it("pf-government's list is the only one: changing it there changes what Dispatch allows", function()
+        local def = GovRequests.Kinds['gov.request.license']
+        def.perm = 'businesses'
+        local licenser = handlers.dispatch.accept(LICENSER, { id = 2 })
+        local boss = handlers.dispatch.accept(BOSS, { id = 2 })
+        def.perm = 'licenses'
+        assert_eq(licenser.error, 'no_permission', 'licenses no longer covers it')
+        assert_true(boss.ok, 'businesses now does')
+    end)
+
+    it('a gov.request kind pf-government does not work is never claimable, whatever its registration says', function()
         assert_true(PFServices.RegisterRequestKind('gov.request.permit', { label = 'Permit', job = 'government', govPermission = 'licenses' }))
         REQ[5] = { id = 5, kind = 'gov.request.permit', job = 'government', status = 'open', title = 'Permit' }
-        assert_eq(handlers.dispatch.accept(CLERK, { id = 5 }).error, 'no_permission')
-        assert_true(handlers.dispatch.accept(LICENSER, { id = 5 }).ok)
-        -- without a permission it is never claimable from Dispatch
-        assert_true(PFServices.RegisterRequestKind('gov.request.other', { label = 'Other', job = 'government' }))
-        REQ[6] = { id = 6, kind = 'gov.request.other', job = 'government', status = 'open', title = 'Other' }
-        assert_eq(handlers.dispatch.accept(BOSS, { id = 6 }).error, 'no_permission')
+        assert_eq(handlers.dispatch.accept(LICENSER, { id = 5 }).error, 'no_permission')
+        assert_eq(handlers.dispatch.accept(BOSS, { id = 5 }).error, 'no_permission')
+        -- once pf-government works it, its permission applies
+        GovRequests.Kinds['gov.request.permit'] = { short = 'permit', perm = 'licenses', label = 'Permit' }
+        local clerk = handlers.dispatch.accept(CLERK, { id = 5 })
+        local licenser = handlers.dispatch.accept(LICENSER, { id = 5 })
+        GovRequests.Kinds['gov.request.permit'] = nil
+        assert_eq(clerk.error, 'no_permission')
+        assert_true(licenser.ok, licenser.error)
+    end)
+
+    it("pf-government's export answers only for the kinds it works", function()
+        assert_eq(govRequestPermission('gov.request.license'), 'licenses')
+        assert_eq(govRequestPermission('gov.request.slot'), 'businesses')
+        assert_eq(govRequestPermission('mechanic.roadside'), nil)
+        assert_eq(govRequestPermission('gov.request.nope'), nil)
+        assert_eq(govRequestPermission(nil), nil)
+        assert_eq(govRequestPermission({ 'gov.request.license' }), nil)
+    end)
+
+    it('an older pf-government without the export: nothing is claimable (never open by default)', function()
+        local gov = Mock.exportsByResource['pf-government']
+        local real = gov.GetRequestPermission
+        gov.GetRequestPermission = nil
+        local a = handlers.dispatch.accept(BOSS, { id = 2 })
+        gov.GetRequestPermission = real
+        assert_eq(a.error, 'no_permission')
+        assert_eq(#accepted, 0)
     end)
 
     it('giving a request back needs no permission (a demoted clerk is not stuck with it)', function()

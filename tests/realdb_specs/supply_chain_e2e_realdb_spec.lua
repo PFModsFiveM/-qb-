@@ -56,6 +56,9 @@ Config.NpcJobs = { Enabled = false }
 Config.SupplyChain = {
     PlayerSuppliers = false, AIMarkup = 0.15, DriverPrioritySeconds = 120, DriverMaxSeconds = 1800,
     AIDeliverySeconds = 300, PalletModel = 'prop_boxpile_06b', DuplicateWindowSeconds = 10,
+    -- the chain follows one small order ($40 of goods) end to end, so the minimum goods value of a
+    -- delivery is off here (0); '1. ordering' checks that the default refuses this order
+    MinDeliveryGoods = 0,
 }
 Config.Logging.Enabled = false
 QBCoreMock.Shared.Items.supply_crate = { name = 'supply_crate', label = 'Supply Crate', weight = 5000, type = 'item', unique = true, image = 'x.png' }
@@ -160,6 +163,22 @@ describe('1. ordering on PF Computer', function()
         assert_eq(res.data.businessType, 'restaurant')
         assert_true(#res.data.catalog.items > 10, 'ingredients listed: ' .. #res.data.catalog.items)
         assert_true(res.data.deliveryAvailable, 'the receiving point makes delivery available')
+    end)
+    it('with the default minimum ($150, the freight minimum), this small delivery is refused, with the reason shown', function()
+        Config.SupplyChain.MinDeliveryGoods = nil
+        local catalog = pc(BOSS, 'business:supplies:catalog', { mode = 'job' })
+        assert_eq(catalog.data.deliveryPricing.minGoods, 150, 'the app is told the minimum')
+        assert_eq(catalog.data.deliveryPricing.freight.min, 150)
+        fund(1000)
+        local before = society('restaurant_' .. BID)
+        local res = pc(BOSS, 'business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = CART })
+        Config.SupplyChain.MinDeliveryGoods = 0
+        assert_false(res.ok)
+        assert_eq(res.error, 'below_delivery_minimum')
+        assert_true(tostring(res.message):find('at least $150 of goods', 1, true) ~= nil, tostring(res.message))
+        assert_eq(society('restaurant_' .. BID), before, 'nothing charged')
+        -- give the money back so the chain below starts unfunded
+        assert_true(PFLedger.Transfer({ from = 'society:restaurant_' .. BID, to = 'system:test', amount = before, key = PFLedger.AutoKey('unfund'), kind = 'test' }).ok)
     end)
     it('an unfunded restaurant cannot order, and no money moves', function()
         local res = pc(BOSS, 'business:supplies:orders:create', { mode = 'job', fulfillment = 'delivery', items = CART })

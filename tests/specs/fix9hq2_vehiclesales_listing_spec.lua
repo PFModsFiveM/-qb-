@@ -71,8 +71,11 @@ FakeDB.extraPatterns = {
         return 1
     end },
 }
+-- the settlement tables (settlements.lua): nothing held or owed in these tests
+FakeDB.extraPatterns[#FakeDB.extraPatterns + 1] = { "FROM pfm_vehiclesales_held WHERE state IN ('waiting', 'finishing')", function() return {} end }
+FakeDB.extraPatterns[#FakeDB.extraPatterns + 1] = { 'INSERT IGNORE INTO pfm_vehiclesales_owed', function() return 1 end }
 
-LedgerEnv.load('pfm-vehiclesales', { 'pfm-vehiclesales/config.lua', 'pfm-vehiclesales/server/main.lua' })
+LedgerEnv.load('pfm-vehiclesales', { 'pfm-vehiclesales/config.lua', 'pfm-vehicleshop/settlements.lua', 'pfm-vehiclesales/server/main.lua' })
 Mock.exportsByResource['pfm-phone'] = { sendNewMailToOffline = function() end }
 
 local SELLER, BUYER = 1, 2

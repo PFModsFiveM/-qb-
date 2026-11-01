@@ -17,16 +17,21 @@ end
 -- seized cash is held here until an officer opens the evidence bag (server/main.lua pays from it)
 EVIDENCE_ACCOUNT = 'system:pfm-policejob-evidence'
 
+-- A search or robbery starts only within this distance, and pfm-inventory ends it as soon as the two
+-- are further apart (the searcher can no longer take items from a distance).
+local SEARCH_REACH = 2.5
+
 RegisterNetEvent('police:server:SearchPlayer', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if not IsOnDutyLeo(Player) then return end
     local player, distance = QBCore.Functions.GetClosestPlayer(src)
-    if player ~= -1 and distance < 2.5 then
+    if player ~= -1 and distance < SEARCH_REACH then
         local SearchedPlayer = exports['pfm-core']:GetPlayer(tonumber(player))
         if not SearchedPlayer then return end
-        exports['pfm-inventory']:OpenInventoryById(src, tonumber(player))
+        -- nothing to report when the search did not open (e.g. one of them stepped away meanwhile)
+        if not exports['pfm-inventory']:OpenInventoryById(src, tonumber(player), { reach = SEARCH_REACH }) then return end
         TriggerClientEvent('QBCore:Notify', src, Lang:t('info.cash_found', { cash = SearchedPlayer.PlayerData.money['cash'] }))
         TriggerClientEvent('QBCore:Notify', player, Lang:t('info.being_searched'))
     else
@@ -313,7 +318,7 @@ RegisterNetEvent('police:server:RobPlayer', function(playerId)
     local targetPed = GetPlayerPed(playerId)
     local playerCoords = GetEntityCoords(playerPed)
     local targetCoords = GetEntityCoords(targetPed)
-    if #(playerCoords - targetCoords) > 2.5 then return DropPlayer(src, 'Attempted exploit abuse') end
+    if #(playerCoords - targetCoords) > SEARCH_REACH then return DropPlayer(src, 'Attempted exploit abuse') end
 
     local Player = exports['pfm-core']:GetPlayer(src)
     local SearchedPlayer = exports['pfm-core']:GetPlayer(playerId)
@@ -334,7 +339,7 @@ RegisterNetEvent('police:server:RobPlayer', function(playerId)
         })
         if not res.ok then money = 0 end
     end
-    exports['pfm-inventory']:OpenInventoryById(src, playerId)
+    exports['pfm-inventory']:OpenInventoryById(src, playerId, { reach = SEARCH_REACH })
     TriggerClientEvent('QBCore:Notify', SearchedPlayer.PlayerData.source, Lang:t('info.cash_robbed', { money = money }))
     TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t('info.stolen_money', { stolen = money }))
 end)

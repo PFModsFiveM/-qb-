@@ -98,6 +98,7 @@ RegisterCommand('closeInv', function(source)
 end, false)
 
 RegisterCommand('hotbar', function(source)
+    IsBeingSearched(source) -- a stale search on this player ends here (see the inventory key below)
     if Player(source).state.inv_busy then return end
     local QBPlayer = exports['pfm-core']:GetPlayer(source)
     if not QBPlayer then return end
@@ -144,6 +145,9 @@ function CheckVehicleStorage(source, inventory)
 end
 
 RegisterCommand('inventory', function(source)
+    -- a search on this player whose searcher left or walked away ends here, before the busy check
+    -- below, so the inventory key frees them at once instead of at the next search check
+    IsBeingSearched(source)
     if Player(source).state.inv_busy then return end
     local QBPlayer = exports['pfm-core']:GetPlayer(source)
     if not QBPlayer then return end

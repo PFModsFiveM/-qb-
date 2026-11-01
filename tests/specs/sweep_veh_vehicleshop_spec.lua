@@ -33,7 +33,7 @@ FakeDB.extraPatterns = {
     { 'UPDATE player_vehicles SET financetime = ? WHERE plate = ?', function(p) financeUpdates[#financeUpdates + 1] = p; return 1 end },
 }
 
-LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/server.lua' })
+LedgerEnv.load('pfm-vehicleshop', { 'pfm-vehicleshop/config.lua', 'pfm-vehicleshop/settlements.lua', 'pfm-vehicleshop/server.lua' })
 
 local BUYER, DEALER, STRANGER = 1, 2, 3
 local PDM = Config.Shops.pdm.Location

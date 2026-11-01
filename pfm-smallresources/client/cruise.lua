@@ -40,6 +40,10 @@ local function triggerCruiseControl(veh)
         local speed = GetEntitySpeed(veh)
         if speed > 0 and GetVehicleCurrentGear(veh) > 0 then
             speed = GetEntitySpeed(veh)
+            -- checked once, when cruise is switched on (the original behaviour): switched on while
+            -- going straight, it holds the speed through turns; switched on while steering or on the
+            -- handbrake, it does not push the car and only the brake ends it
+            local isTurningOrHandbraking = IsControlPressed(2, 76) or IsControlPressed(2, 63) or IsControlPressed(2, 64)
             if GetResourceState('pfm-fuel') == 'started' then
                 if exports['pfm-fuel']:GetFuel(veh) <= 10 then
                     QBCore.Functions.Notify(Lang:t('cruise.not_Enough_Fuel'), 'error')
@@ -58,8 +62,6 @@ local function triggerCruiseControl(veh)
                 local switchedOff = false
                 while speed > 0 and DoesEntityExist(veh) and GetPedInVehicleSeat(veh, -1) == ped do
                     Wait(0)
-                    -- checked every frame: steering or the handbrake pauses the hold
-                    local isTurningOrHandbraking = IsControlPressed(2, 76) or IsControlPressed(2, 63) or IsControlPressed(2, 64)
                     if not isTurningOrHandbraking and GetEntitySpeed(veh) < speed - 1.5 then
                         switchedOff = true
                         break

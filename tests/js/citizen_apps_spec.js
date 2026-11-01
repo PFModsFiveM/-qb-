@@ -179,6 +179,48 @@ const mailHandlers = () => ({
         eq(env.win.__xss, undefined, 'script ran');
     });
 
+    await it('documents: a copy shows the original\'s signatures as a record, apart from its own signatures', async () => {
+        const env = makeWindow('tablet', {
+            'documents.list': () => ({ ok: true, mine: [{ id: 8, title: 'Car sale', own: true, copy: true, signedOriginal: true, locked: true }], shared: [] }),
+            'documents.get': () => ({ ok: true, document: { id: 8, title: 'Car sale', body: 'A sells the car', own: true, locked: true, copiedFrom: 3,
+                canEdit: false, signatures: [], sharedWith: [],
+                signatureRecord: { omitted: 2, signatures: [{ name: EVIL, at: now, fingerprint: 'cd'.repeat(32), matches: true }] } } }),
+        });
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('documents', { open: 8 });
+        await settle();
+        const root = env.$('.pfc-docs');
+        const record = root.querySelector('.pfc-sign-record');
+        ok(record, 'no record shown');
+        ok(record.textContent.includes('Signatures on the original'), 'record not labelled');
+        ok(record.textContent.includes('matches this text'), 'no fingerprint check shown');
+        ok(record.textContent.includes('and 2 more'), 'omitted count');
+        ok(record.textContent.includes(EVIL), 'name shown as text');
+        eq(root.querySelectorAll('img').length, 0, 'a signer name became HTML');
+        eq(root.querySelectorAll('.pfc-sign:not(.pfc-sign-copy)').length, 0, 'the record shown as a signature on the copy');
+        ok(root.querySelector('.pfc-item-sub').textContent.includes('copy'), 'the list does not say it is a copy');
+    });
+
+    await it('mail: the sender is told which recipient did not get a document', async () => {
+        const handlers = mailHandlers();
+        handlers['mail.send'] = () => ({ ok: true, id: 9, delivered: 2, missing: [{ recipient: 'Ann', document: '<i>Quote</i>', error: 'recipient_full' }],
+            undelivered: ['Carl'] });
+        const env = makeWindow('computer', handlers);
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('mail', { compose: { subject: 'Quote', attachments: [{ type: 'document', id: 5, title: 'Quote', own: false }] } });
+        await settle();
+        const dialog = env.$('.pfc-dialog');
+        dialog.querySelector('input').value = '5550003, 5550004';
+        dialog.querySelector('textarea').value = 'See attached';
+        [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Send').click();
+        await settle();
+        const note = env.notes.find((n) => n.m.startsWith('Sent, but'));
+        ok(note, 'no warning: ' + JSON.stringify(env.notes));
+        ok(note.m.includes('Ann did not get "iQuote/i"') && note.m.includes('no room'), note.m);
+        ok(note.m.includes('Not delivered to Carl'), note.m);
+        ok(!note.m.includes('<'), 'markup passed into the notification');
+    });
+
     await it('calendar: renders the month, escapes titles and creates with a timestamp', async () => {
         const env = makeWindow('tablet', {
             'calendar.list': () => ({ ok: true, canPostCity: false, businesses: [], events: [{ id: 1, scope: 'city', title: EVIL, starts: now + 3600, remind: 0, canEdit: false, subscribed: false, ownerName: 'City' }] }),

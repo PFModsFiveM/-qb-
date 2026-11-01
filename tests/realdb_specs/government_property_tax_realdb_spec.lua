@@ -344,3 +344,21 @@ describe('unpaid bills', function()
         for _, b in ipairs(Bills.List(2).open) do assert_true(b.key ~= 'gov:' .. bill.id, 'not listed for another citizen') end
     end)
 end)
+
+describe('pfm-houses still starting', function()
+    it('reports no houses until it can read the prices paid; the run waits and then bills the price paid', function()
+        local W9 = W1 + 56 * DAY                       -- week of 2026-12-28
+        PFHouses.dbReady = false
+        local list, why = exports['pfm-houses']:GetOwnedHouses()
+        assert_eq(list, nil, 'listing prices handed out as values')
+        assert_eq(why, 'not_ready')
+        local res = PropertyTax.Run(W9)
+        assert_eq(res.off, 'not_ready')
+        assert_true(res.retry, 'the scheduled task would wait a whole interval')
+        assert_eq(#weekBills('2026-12-28'), 0, 'billed on listing prices')
+        PFHouses.dbReady = true
+        res = PropertyTax.Run(W9 + 120)
+        assert_eq(res.billed, 3)
+        assert_eq(tonumber(taxBills("bill_ref = 'house:vinewood1' AND bill_period = '2026-12-28'", {})[1].amount), 1250, '0.5% of the 250,000 paid, not of the 300,000 listing')
+    end)
+end)

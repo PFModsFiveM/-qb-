@@ -572,6 +572,17 @@ RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, e
     if not Player then return end
     if type(plate) ~= 'string' then return end
     fuel = clampNumber(fuel, 0, 100, 100)
+    -- The client's level is saved only up to the level pfm-fuel keeps for this car on the server
+    -- (it may be lower: the server lowers it no faster than driving burns). A modded client could
+    -- otherwise park any car with a full tank. No car or no server level: the client's, as before.
+    if GetResourceState('pfm-fuel') == 'started' then
+        local ok, level = pcall(function()
+            local veh = PFGarages.FindVehicle(plate)
+            return veh and exports['pfm-fuel']:GetVehicleFuel(veh) or nil
+        end)
+        level = ok and tonumber(level) or nil
+        if level and fuel > math.floor(level) then fuel = math.max(0, math.floor(level)) end
+    end
     engine = clampNumber(engine, 0, 1000, 1000)
     body = clampNumber(body, 0, 1000, 1000)
     MySQL.update('UPDATE player_vehicles SET fuel = ?, engine = ?, body = ? WHERE plate = ? AND citizenid = ?', { fuel, engine, body, plate, Player.PlayerData.citizenid })

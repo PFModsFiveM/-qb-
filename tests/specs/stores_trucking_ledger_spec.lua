@@ -85,7 +85,8 @@ FakeDB.extraPatterns = {
         end
         return out
     end },
-    { 'SELECT id, method, status, total, items_json, created_at, delivered_at FROM pf_store_supply_orders WHERE store_id = ?', function(p)
+    -- pf-stores ListSupplyOrders (the store's order list, also behind pf-computer's Order Supplies)
+    { 'SELECT id, method, status, total, items_json, created_at, delivered_at, subtotal, ai_markup, freight_payout, refund_state FROM pf_store_supply_orders WHERE store_id = ?', function(p)
         local out = {}
         for i = #Store.orders, 1, -1 do
             local o = Store.orders[i]
@@ -98,9 +99,12 @@ FakeDB.extraPatterns = {
         return { { owner_citizenid = r and r.owner_citizenid } }
     end },
     { 'SELECT id, method, status, external_contract_id, total, created_at FROM pf_store_supply_orders WHERE store_id = ? AND owner_citizenid', function() return {} end },
+    -- PFOrders createOrder: (store_id, buyer_kind, buyer_ref, owner_citizenid, method, 'created', total,
+    -- subtotal, ai_markup, items_json, created_at, freight_payout, 'pending')
     { 'INSERT INTO pf_store_supply_orders', function(p)
         local id = #Store.orders + 1
-        Store.orders[id] = { id = id, store_id = p[1], owner_citizenid = p[2], method = p[3], status = p[4], total = p[5], items_json = p[6], created_at = p[7], freight_payout = p[8] }
+        Store.orders[id] = { id = id, store_id = p[1], buyer_kind = p[2], buyer_ref = p[3], owner_citizenid = p[4], method = p[5], status = 'created',
+            total = p[6], subtotal = p[7], ai_markup = p[8], items_json = p[9], created_at = p[10], freight_payout = p[11], payment_state = 'pending' }
         return id
     end },
     { 'SELECT id, store_id, status, items_json FROM pf_store_supply_orders WHERE id = ?', function(p) return { orderById(p[1]) } end },
@@ -510,6 +514,43 @@ describe('pf-computer Order Supplies for player-owned stores', function()
         for _, it in ipairs(res.data.catalog.items) do prices[it.item] = it.pricePerCase end
         assert_eq(prices.sandwich, 4)
         assert_eq(prices.lockpick, 20)
+    end)
+    it('order cards carry what each order cost, and the catalog the delivery pricing from pf-stores', function()
+        setJob(OWNER, 'unemployed')
+        Store.orders = {
+            { id = 1, store_id = 'corner', method = 'pickup', status = 'unpacked', total = 40, subtotal = 40, ai_markup = 0, freight_payout = 0,
+              items_json = '[{"name":"sandwich","quantity":10,"cost":4}]', created_at = 1000 },
+            { id = 2, store_id = 'corner', method = 'trucking', status = 'awaiting_delivery', total = 1400, subtotal = 1000, ai_markup = 150, freight_payout = 250,
+              items_json = '[{"name":"lockpick","quantity":50,"cost":20}]', created_at = 2000 },
+            { id = 3, store_id = 'corner', method = 'trucking', status = 'cancelled', total = 1400, subtotal = 1000, ai_markup = 150, freight_payout = 250,
+              items_json = '[]', created_at = 3000, refund_state = 'pending' },
+            { id = 4, store_id = 'other', method = 'trucking', status = 'awaiting_delivery', total = 9, subtotal = 9, ai_markup = 0, freight_payout = 0, items_json = '[]', created_at = 1 },
+        }
+        local list = pc('business:supplies:orders:list', OWNER)
+        assert_true(list.ok, tostring(list.error))
+        assert_eq(#list.data, 3, 'only this store\'s orders')
+        local byId = {}
+        for _, o in ipairs(list.data) do byId[o.id] = o end
+        local d = byId[2]
+        assert_eq(d.fulfillment, 'delivery')
+        assert_eq(d.total, 1400)
+        assert_eq(d.subtotal, 1000)
+        assert_eq(d.markup, 150)
+        assert_eq(d.freight, 250)
+        assert_eq(d.totalCases, 50)
+        assert_true(d.cancellable)
+        assert_eq(byId[1].subtotal, 40)
+        assert_eq(byId[1].freight, 0)
+        assert_eq(byId[3].refundState, 'pending', 'a refund still owed is shown')
+        assert_eq(d.owner_citizenid, nil, 'nothing else from the order row')
+        local cat = pc('business:supplies:catalog', OWNER)
+        assert_true(cat.ok)
+        local pricing = cat.data.deliveryPricing
+        assert_true(pricing ~= nil, 'pricing sent with the catalog')
+        assert_eq(pricing.markupRate, 0.15)
+        assert_eq(pricing.freight.rate, 0.12)
+        assert_eq(pricing.freight.min, 250)
+        assert_eq(pricing.minGoods, 250)
     end)
     it('someone who owns no store and has no business is refused cleanly (this used to crash the handler)', function()
         setJob(SHOPPER, 'unemployed')
