@@ -93,6 +93,7 @@ S.SQL = {
     openHeld = "SELECT * FROM {HELD} WHERE state IN ('waiting', 'finishing') ORDER BY id LIMIT 100",
     markHeld = 'UPDATE {HELD} SET state = ?, outcome = ? WHERE id = ? AND state = ?',
     saveHeld = 'UPDATE {HELD} SET data = ? WHERE id = ?',
+    plateHolds = "SELECT id, data FROM {HELD} WHERE plate = ? AND id <> ? AND state IN ('waiting', 'finishing')",
 }
 
 local function db(kind, name, params)
@@ -269,6 +270,16 @@ function S.SaveData(hold)
     if hold.id then db('update', 'saveHeld', { json.encode(hold.data), hold.id }) end
 end
 
+--- The other holds of the same car that still wait or finish (their data decoded), or nil when
+--- they cannot be read.
+function S.OtherHolds(hold)
+    if not hold.plate or not HELD then return {} end
+    local rows = db('query', 'plateHolds', { hold.plate, tonumber(hold.id) or 0 })
+    if type(rows) ~= 'table' then return nil end
+    for _, row in ipairs(rows) do row.data = decode(row.data) end
+    return rows
+end
+
 local function ledgerRow(key)
     local ok, tx = pcall(function() return exports['pfm-banking']:GetTransaction(key) end)
     if not ok then return nil, true end
@@ -343,7 +354,13 @@ function S.SettleHold(hold)
         log(('%s hold %s (%s) failed, retried next sweep: %s'):format(hold.flow, tostring(hold.id), outcome, tostring(err)))
         return false
     end
-    mark(hold, outcome == 'review' and 'review' or 'done', hold.outcome, 'finishing')
+    -- the hold keeps blocking the car and the buyer until its end is stored: while the row still
+    -- says 'finishing' the next sweep runs the handler again, and a payment made meanwhile would
+    -- change what that run finds (a finance payment applied twice, or refunded after it was applied)
+    if not mark(hold, outcome == 'review' and 'review' or 'done', hold.outcome, 'finishing') then
+        log(('%s hold %s (%s) finished but could not be marked; it runs again next sweep'):format(hold.flow, tostring(hold.id), outcome))
+        return false
+    end
     track(hold, -1)
     if outcome == 'review' then
         log(('%s hold %s: charge %s was interrupted during the debit; staff must check it (see /ledgerreconcile)'):format(hold.flow, tostring(hold.id), hold.charge_key))

@@ -56,9 +56,10 @@ describe('AddItem input validation', function()
         assert_eq(countItem(items, 'lockpick'), 0)
     end)
     it('refuses to overwrite a different item in an explicit slot', function()
-        local items = Mock.players[SRC].PlayerData.items
         assert_true(AddItem(SRC, 'goldbar', 1, 3))
         assert_false(AddItem(SRC, 'lockpick', 1, 3), 'slot 3 holds a goldbar')
+        -- read again: the inventory hands pfm-core a new items table (SetPlayerData)
+        local items = Mock.players[SRC].PlayerData.items
         assert_eq(itemAt(items, 3).name, 'goldbar', 'goldbar not destroyed')
     end)
     it('copies info so callers cannot share a table between stacks', function()
@@ -103,6 +104,7 @@ describe('batch-aware stacking', function()
         local items = Mock.players[SRC].PlayerData.items
         local batch1, batch2 = itemAt(items, 1).info.fresh.batch, itemAt(items, 2).info.fresh.batch
         Mock.fireNet(MOVE, SRC, 'player', 'player', 1, 2, 2, 2)
+        items = Mock.players[SRC].PlayerData.items -- the move hands pfm-core a new items table
         local total, stacks = countItem(items, 'sandwich')
         assert_eq(total, 5)
         assert_eq(stacks, 2, 'batches kept apart')

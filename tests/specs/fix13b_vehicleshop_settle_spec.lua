@@ -613,3 +613,157 @@ describe('repossession', function()
     end)
 end)
 
+
+-- ── second round: a database error at the one step after a charge ──────────────────────────────
+
+local function patternFor(text)
+    for _, pat in ipairs(FakeDB.extraPatterns) do if pat[1] == text then return pat end end
+end
+--- Makes the statement `text` fail `times` times (once by default) while `when()` is true.
+local function failQuery(text, when, times)
+    local pat = patternFor(text)
+    local orig = pat[2]
+    local left = times or 1
+    pat[2] = function(p)
+        if left > 0 and (not when or when(p)) then
+            left = left - 1
+            error('injected: database connection lost')
+        end
+        return orig(p)
+    end
+    return function() pat[2] = orig end
+end
+
+describe('a dealer sale whose plate lookup fails', function()
+    local function atLuxury() for _, src in ipairs({ BUYER, DEALER, STRANGER }) do Mock.coords[src] = vector3(LUX.x, LUX.y, LUX.z) end end
+
+    it('stops before any stock is taken or money charged (the plate came after the charge)', function()
+        atLuxury()
+        Mock.fireNet('qb-vehicleshop:server:sellShowroomVehicle', DEALER, 'cognoscenti', BUYER)
+        local restore = failQuery('SELECT plate FROM player_vehicles WHERE plate = ?')
+        local res = PFShop.AnswerOffer(BUYER, true, lastPrompt().id)
+        restore()
+        assert_eq(res.error, 'server_error')
+        assert_eq(money(BUYER).bank, 200000, 'nothing charged')
+        assert_eq(store.stock['luxury:cognoscenti'] or Config.Stock.Initial, Config.Stock.Initial, 'no stock taken')
+        assert_eq(count(vehicles), 0)
+        assert_eq(#holds(), 0)
+    end)
+
+    it('an unclear charge keeps the plate it was given before the charge: held, then delivered once', function()
+        atLuxury()
+        Mock.fireNet('qb-vehicleshop:server:sellShowroomVehicle', DEALER, 'cognoscenti', BUYER)
+        failCredit = true
+        -- any plate lookup after the charge fails (the checker's probe): there must be none
+        local restore = failQuery('SELECT plate FROM player_vehicles WHERE plate = ?', function() return not failCredit end, 5)
+        answer(BUYER, true)
+        restore()
+        assert_eq(money(BUYER).bank, 100000, 'the money left the buyer')
+        local h = holds()
+        assert_eq(#h, 1, 'the sale is held')
+        local plate = json.decode(h[1].data).plate
+        assert_true(type(plate) == 'string' and #plate > 0, 'with its plate')
+        assert_eq(store.stock['luxury:cognoscenti'], Config.Stock.Initial - 1, 'reserved')
+        settle()
+        assert_eq(count(vehicles), 1)
+        assert_eq(vehicles[plate].citizenid, 'CID1')
+        settle()
+        assert_eq(count(vehicles), 1)
+        assert_eq(money(BUYER).bank, 100000, 'charged once')
+    end)
+end)
+
+describe('a held sale whose end could not be stored', function()
+    local function financed()
+        vehicles['FIN002'] = { citizenid = 'CID1', vehicle = 'blista', plate = 'FIN002', balance = 8000, paymentamount = 1000, paymentsleft = 8, financetime = 100 }
+        return vehicles.FIN002
+    end
+    local MARK = 'UPDATE pfm_vehicleshop_held SET state = ?, outcome = ? WHERE id = ? AND state = ?'
+
+    it('keeps blocking the car until it is marked done: a second payment waits, nothing is applied twice or refunded', function()
+        local car = financed()
+        money(BUYER).cash = 5000
+        failCredit = true
+        assert_eq(PFShop.FinancePayment(BUYER, 'FIN002', 1000).error, 'payment_held')
+        local restore = failQuery(MARK, function(p) return p[1] == 'done' end)
+        settle()
+        restore()
+        assert_eq(car.balance, 7000, 'applied')
+        assert_eq(holds()[1].state, 'finishing', 'not marked done')
+        assert_true(PFSettle.PlateHeld('FIN002'), 'still blocks the car')
+        assert_eq(PFShop.FinancePayment(BUYER, 'FIN002', 1000).error, 'payment_waiting', 'the old code let this through, then refunded the first payment')
+        settle()
+        assert_eq(holds()[1].state, 'done')
+        assert_false(PFSettle.PlateHeld('FIN002'))
+        assert_true(PFShop.FinancePayment(BUYER, 'FIN002', 1000).ok)
+        settle()
+        assert_eq(car.balance, 6000)
+        assert_eq(money(BUYER).cash, 3000, 'two payments, no money created')
+        assert_eq(#owed(), 0, 'nothing refunded')
+    end)
+
+    it('a re-run after the block was lost (a restart that could not read the holds) does not refund the applied payment', function()
+        local car = financed()
+        money(BUYER).cash = 5000
+        failCredit = true
+        PFShop.FinancePayment(BUYER, 'FIN002', 1000)
+        local restore = failQuery(MARK, function(p) return p[1] == 'done' end)
+        settle()
+        restore()
+        -- a restart whose read of the open holds fails: nothing blocks the car any more
+        local restoreRead = failQuery("FROM pfm_vehicleshop_held WHERE state IN ('waiting', 'finishing')")
+        PFSettle.Start()
+        restoreRead()
+        assert_false(PFSettle.PlateHeld('FIN002'))
+        assert_true(PFShop.FinancePayment(BUYER, 'FIN002', 1000).ok, 'the next instalment')
+        assert_eq(car.balance, 6000)
+        settle()   -- the first hold runs again: it was applied, so it is neither applied again nor refunded
+        assert_eq(holds()[1].state, 'done')
+        assert_eq(car.balance, 6000)
+        assert_eq(money(BUYER).cash, 3000, 'no money created')
+        assert_eq(#owed(), 0)
+    end)
+end)
+
+describe('a paid transfer whose change of owner fails in the database', function()
+    local CLAIM = 'UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ? AND citizenid = ? AND balance <= ?'
+    local function sellerInCar()
+        vehicles['MYCAR2'] = { citizenid = 'CID3', vehicle = 'blista', plate = 'MYCAR2', balance = 0 }
+        Mock.vehicleOf[STRANGER] = 901
+        Mock.plates[901] = 'MYCAR2'
+    end
+
+    it('is held (paid) and finished by the sweep: the car moves and the seller is paid once', function()
+        sellerInCar()
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        local restore = failQuery(CLAIM)
+        local res = PFShop.AnswerOffer(BUYER, true, lastPrompt().id)
+        restore()
+        assert_eq(res.error, 'payment_held', 'the old code returned server_error and kept the money')
+        assert_eq(money(BUYER).bank, 195000)
+        assert_eq(vehicles.MYCAR2.citizenid, 'CID3')
+        assert_true(told(BUYER, 'general.transfer_finishing'))
+        assert_true(told(STRANGER, 'general.transfer_finishing_seller'))
+        assert_true(PFSettle.PlateHeld('MYCAR2'), 'the car cannot be given away meanwhile')
+        PFSettle.Sweep()
+        assert_eq(vehicles.MYCAR2.citizenid, 'CID1')
+        assert_eq(money(STRANGER).bank, 205000)
+        PFSettle.Sweep()
+        assert_eq(money(STRANGER).bank, 205000, 'paid once')
+        assert_eq(money(BUYER).bank, 195000, 'charged once')
+    end)
+
+    it('the update ran but its answer was lost: the car is found moved and the seller paid, nothing refunded', function()
+        sellerInCar()
+        Commands.transfervehicle(STRANGER, { tostring(BUYER), '5000' })
+        local pat = patternFor(CLAIM)
+        local orig = pat[2]
+        pat[2] = function(p) pat[2] = orig orig(p) error('injected: connection lost after the write') end
+        PFShop.AnswerOffer(BUYER, true, lastPrompt().id)
+        pat[2] = orig
+        assert_eq(vehicles.MYCAR2.citizenid, 'CID1', 'it did move')
+        PFSettle.Sweep()
+        assert_eq(money(STRANGER).bank, 205000)
+        assert_eq(money(BUYER).bank, 195000, 'not refunded')
+    end)
+end)

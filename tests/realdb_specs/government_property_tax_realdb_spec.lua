@@ -350,7 +350,8 @@ describe('pfm-houses still starting', function()
         local W9 = W1 + 56 * DAY                       -- week of 2026-12-28
         PFHouses.dbReady = false
         local list, why = exports['pfm-houses']:GetOwnedHouses()
-        assert_eq(list, nil, 'listing prices handed out as values')
+        -- false rather than nil: a nil first value could lose the reason across the export boundary
+        assert_eq(list, false, 'listing prices handed out as values')
         assert_eq(why, 'not_ready')
         local res = PropertyTax.Run(W9)
         assert_eq(res.off, 'not_ready')

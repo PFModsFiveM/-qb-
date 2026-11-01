@@ -662,7 +662,7 @@ describe('pf-news apps', function()
         assert_eq(registered.news.category, 'media')
         assert_eq(siteDefs['news.ls'].entry, registered.news.entry)
         assert_eq(siteDefs['news.ls'].access.anyone, true)
-        for method, fn in pairs(appHandlers.news) do assert_eq(siteHandlers['news.ls'][method], fn, method) end
+        for method, fn in pairs(appHandlers.news) do assert_eq(Mock.funcrefTarget(siteHandlers['news.ls'][method]), Mock.funcrefTarget(fn), method) end
         assert_eq(registered.newsroom.access.jobs.reporter, 0)
         assert_eq(registered.newsroom.devices[1], 'tablet')
     end)

@@ -23,7 +23,8 @@ BeforeEach = function()
     Posts, removed = {}, {}
     for _, src in ipairs({ A, B, FAR }) do
         local p = Mock.newPlayer(src)
-        p.SetInventory = function() end
+        -- like pfm-inventory's SetInventory: the resource edits its copy of the items and hands it back
+        p.SetInventory = function(items) p.PlayerData.items = items end
     end
     Mock.coords = { [A] = vector3(0, 0, 0), [B] = vector3(1.5, 0, 0), [FAR] = vector3(400, 0, 0) }
     Mock.clock = Mock.clock + 100

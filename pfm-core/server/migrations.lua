@@ -18,6 +18,17 @@ CREATE TABLE IF NOT EXISTS `pf_schema_migrations` (
 
 local running = {}
 
+-- A resource that calls exports['pfm-core']:RunMigrations passes its list through the export, so a
+-- step given as a function arrives as a callable table (a FiveM function reference) and must be
+-- recognised as one; resources that include this file directly pass real functions.
+local function callable(v)
+    if type(v) == 'function' then return true end
+    if type(v) ~= 'table' then return false end
+    if type(rawget(v, '__cfx_functionReference')) == 'string' then return true end
+    local mt = getmetatable(v)
+    return type(mt) == 'table' and rawget(mt, '__call') ~= nil
+end
+
 --- True when the column exists in the current database.
 function MigrationColumnExists(tableName, columnName)
     local count = MySQL.scalar.await([[
@@ -59,7 +70,7 @@ function RunMigrations(resource, migrations)
 
         for _, m in ipairs(ordered) do
             if not applied[m.version] then
-                if type(m.up) == 'function' then
+                if callable(m.up) then
                     m.up()
                 else
                     for _, sql in ipairs(m.up or {}) do MySQL.query.await(sql) end

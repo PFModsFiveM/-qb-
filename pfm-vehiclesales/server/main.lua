@@ -485,6 +485,19 @@ local function payForSale(listing, buyer, sale)
     if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
 end
 
+--- The claim that hands a listing to one buyer: one DELETE that also needs the price the buyer saw
+--- and the car not in a job fleet. Returns true / false, or nil when its result is not known (the
+--- query failed, so it may or may not have run); the sweep then reads the lot (resolveClaim).
+local function claimListing(listing, fleetSql, fleetParams)
+    local ok, res = pcall(MySQL.query.await, 'DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?' .. fleetSql,
+        { listing.plate, listing.occasionid, listing.price, table.unpack(fleetParams) })
+    if not ok or type(res) ~= 'table' then
+        print(('^1[pfm-vehiclesales]^7 claim of listing %s (%s) failed: %s'):format(tostring(listing.occasionid), tostring(listing.plate), tostring(res)))
+        return nil
+    end
+    return (res.affectedRows or 0) > 0
+end
+
 local function notEnough(src, subtotal, taxAmount, total)
     TriggerClientEvent('QBCore:Notify', src, ('Not enough money. Subtotal: $%.2f | Tax: $%.2f | Total: $%.2f'):format(subtotal, taxAmount, total), 'error', 3500)
 end
@@ -536,20 +549,20 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
     local key = ('pfm-vehiclesales:buy:%s:%s:%s'):format(tostring(listing.occasionid), tostring(listing.plate), PFPayout.NewId())
     local sale = { key = key, subtotal = subtotal, tax = taxAmount, total = total, sellerAmount = math.ceil((subtotal / 100) * 77) }
     local buyer = ownerOf(Player)
-    local claimSql = 'DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?' .. fleetSql
-    local claimParams = { listing.plate, listing.occasionid, listing.price, table.unpack(fleetParams) }
+    local garage = type(Config.DeliveryGarage) == 'string' and Config.DeliveryGarage or 'pillboxgarage'
     local account, res = PFPayout.Charge(src, 'bank', total, { key = key, kind = 'purchase', reason = 'Used vehicle ' .. tostring(listing.plate), quiet = true })
     if not account then
         if type(res) == 'table' and res.unclear then
             -- the bank has not confirmed the charge: no car now and no second charge. The listing
-            -- is claimed for this buyer so no one else buys it meanwhile; the sweep finishes the
-            -- sale when the money arrives (the car parked for them) or puts it back on the lot.
-            local claimed = MySQL.query.await(claimSql, claimParams)
-            claimed = claimed ~= nil and (claimed.affectedRows or 0) > 0
+            -- is claimed for this buyer so no one else buys it meanwhile, and the purchase is held;
+            -- the sweep finishes the sale when the money arrives (the car parked for them) or puts
+            -- it back on the lot. A claim whose result was lost (its query failed) is held as
+            -- unknown and read from the lot when the hold settles.
+            local claimed = claimListing(listing, fleetSql, fleetParams)
             local hold = PFSettle.Hold({ flow = 'usedlot', key = key, accounts = { 'bank' }, citizenid = buyerCid, amount = total, plate = listing.plate,
                 txId = res.txId, data = { listing = listing, claimed = claimed, sale = sale, license = buyer.license } })
-            local garage = type(Config.DeliveryGarage) == 'string' and Config.DeliveryGarage or 'pillboxgarage'
-            TriggerClientEvent('QBCore:Notify', src, Lang:t(claimed and 'info.payment_held' or 'info.payment_held_gone', { garage = garage, ref = hold.ref }), 'primary', 10000)
+            local text = claimed == true and 'info.payment_held' or claimed == false and 'info.payment_held_gone' or 'info.payment_held_pending'
+            TriggerClientEvent('QBCore:Notify', src, Lang:t(text, { garage = garage, ref = hold.ref }), 'primary', 10000)
             TriggerClientEvent('qb-occasion:client:refreshVehicles', -1)
             if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
             return
@@ -561,8 +574,17 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
     end
     -- the claim also needs the price unchanged (a reprice between the read above) and the car not in
     -- a job fleet
-    local claimed = MySQL.query.await(claimSql, claimParams)
-    if not claimed or (claimed.affectedRows or 0) < 1 then
+    local claimed = claimListing(listing, fleetSql, fleetParams)
+    if claimed == nil then
+        -- paid, but whether the listing was claimed is not known: the sale is stored like one that
+        -- waited on the bank (its charge is complete) and the sweep finishes it from what the lot
+        -- says then: the car parked for the buyer, or the money back
+        local hold = PFSettle.Hold({ flow = 'usedlot', key = key, accounts = { 'bank' }, citizenid = buyerCid, amount = total, plate = listing.plate,
+            txId = type(res) == 'table' and res.txId or nil, data = { listing = listing, sale = sale, license = buyer.license } })
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('info.purchase_finishing', { garage = garage, ref = hold.ref }), 'primary', 10000)
+        return
+    end
+    if not claimed then
         PFSettle.Owe({ key = key .. ':refund', to = buyerCid, account = 'bank', amount = total, kind = 'refund', reason = 'Vehicle already sold', label = 'a used car that was already sold' })
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.vehicle_does_not_exist'), 'error', 3500)
         return
@@ -583,8 +605,10 @@ RegisterNetEvent('qb-occasions:server:buyVehicle', function(vehicleData)
 end)
 
 -- ── purchases that waited on the bank (settlements.lua) ────────────────────────────────────────
--- The sweep runs one of these once a held charge settled. Rerun-safe: a car already written is
--- found by its plate, a listing already back on the lot is not put back twice, payments are keyed.
+-- The sweep runs one of these once a held charge settled (or, for a paid purchase whose claim
+-- query failed, at once: its charge is complete). Rerun-safe: a car already written is found by its
+-- plate, a listing already back on the lot is not put back twice, payments are keyed, and a claim
+-- whose result was lost is read from the lot once and stored.
 
 local function heldTell(cid, key, subs, kind) PFSettle.Tell(cid, Lang:t(key, subs), kind or 'primary', Lang:t('info.held_subject')) end
 
@@ -604,13 +628,53 @@ local function releaseListing(hold)
     if PFUsedCars and PFUsedCars.Changed then PFUsedCars.Changed() end
 end
 
+--- Whether this held purchase claimed its listing. A claim whose result was lost (its query
+--- failed) is read from the lot: still listed means it did not run (once the money arrived,
+--- `claimNow` claims it now); gone means this claim took it, unless the car belongs to someone
+--- else again (another buyer, the seller took it back) or another waiting purchase of the same car
+--- recorded the claim (or, both unknown, is older). The answer is stored with the hold. A read that
+--- fails raises, and the sweep tries again.
+local function resolveClaim(hold, claimNow)
+    local d = hold.data
+    if d.claimed ~= nil then return d.claimed end
+    local l = d.listing
+    local listed = MySQL.query.await('SELECT * FROM occasion_vehicles WHERE plate = ? AND occasionid = ?', { l.plate, l.occasionid })
+    if type(listed) ~= 'table' then error('the lot could not be read') end
+    if listed[1] then
+        if claimNow then
+            local fleetSql, fleetParams = notInFleet(l.plate)
+            if not fleetSql then error('the fleet check is not available') end
+            local claimed = claimListing(l, fleetSql, fleetParams)
+            if claimed == nil then error('the listing could not be claimed') end
+            d.claimed = claimed
+        else
+            d.claimed = false
+        end
+    else
+        local owners = MySQL.query.await('SELECT citizenid AS owner FROM player_vehicles WHERE plate = ?', { l.plate })
+        if type(owners) ~= 'table' then error('the vehicle could not be read') end
+        local others = PFSettle.OtherHolds(hold)
+        if not others then error('the other held purchases could not be read') end
+        -- no owner, or this buyer already (an earlier run of the handler wrote the car)
+        local mine = owners[1] == nil or owners[1].owner == hold.citizenid
+        for _, other in ipairs(others) do
+            local c = other.data.claimed
+            if c == true or (c == nil and (tonumber(other.id) or 0) < (tonumber(hold.id) or math.huge)) then mine = false end
+        end
+        d.claimed = mine
+    end
+    PFSettle.SaveData(hold)
+    return d.claimed
+end
+
 PFSettle.handlers.usedlot = {
     charged = function(hold)
         local d = hold.data
         local l, sale = d.listing, d.sale
         local buyer = { license = d.license, citizenid = hold.citizenid }
+        local claimed = resolveClaim(hold, true)
         local owner = MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ?', { l.plate })
-        if d.claimed and (owner == nil or owner == hold.citizenid) then
+        if claimed and (owner == nil or owner == hold.citizenid) then
             -- the car is written now (parked for the buyer), or was by an earlier run of this handler
             if owner == nil and not insertOwned(buyer, l, SOLD_WITH, true) then error('the vehicle could not be written') end
             payForSale(l, buyer, sale)
@@ -625,10 +689,12 @@ PFSettle.handlers.usedlot = {
         heldTell(hold.citizenid, 'info.held_refunded', { vehicle = labelOf(l), amount = sale.total })
     end,
     none = function(hold)
+        resolveClaim(hold, false)
         releaseListing(hold)
         heldTell(hold.citizenid, 'info.held_cancelled', { vehicle = labelOf(hold.data.listing) })
     end,
     review = function(hold)
+        resolveClaim(hold, false)
         releaseListing(hold)
         heldTell(hold.citizenid, 'info.held_review', { vehicle = labelOf(hold.data.listing), ref = '#' .. tostring(hold.id) }, 'error')
     end,

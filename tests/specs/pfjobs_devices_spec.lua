@@ -283,6 +283,31 @@ describe('pf-jobs device apps: gruppe 6', function()
         assert_eq(#eventsTo('pf-jobs:gruppe6:returnWithoutBags', GUARD), 1)
     end)
 
+    it("ending from the app counts what changed: an 'Already ending' answer is not reported as done", function()
+        install(GUARD, 'gruppe6')
+        Config.Gruppe6.ServerSideStash = true
+        local carried = 0
+        local f = Mock.players[GUARD].Functions
+        f.AddItem = function(name, n) if name == 'moneybag' then carried = carried + n end return true end
+        f.GetItemByName = function(name) if name == 'moneybag' and carried > 0 then return { name = name, amount = carried } end end
+        rpc(GUARD, 'gruppe6', 'startSearch')
+        rpc(GUARD, 'gruppe6', 'acceptContract', { index = 0 })
+        local data = eventsTo('pf-jobs:gruppe6:startContract', GUARD)[1].args[1]
+        local loc = data.pickupSequence[1]
+        Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
+        for _ = 1, data.locationBags[1] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', GUARD, loc, 1) end
+        assert_true(carried > 0, 'bags collected')
+        local res = rpc(GUARD, 'gruppe6', 'endContract')
+        assert_eq(res.ok, true, 'off to the vault')
+        assert_eq(res.view.contract.earlyEnd, true)
+        res = rpc(GUARD, 'gruppe6', 'endContract')
+        assert_eq(res.ok, false, "'Already ending': nothing changed")
+        carried = 0 -- the bags are lost: asking again writes them off and closes the contract
+        res = rpc(GUARD, 'gruppe6', 'endContract')
+        assert_eq(res.ok, true)
+        assert_eq(res.view.contract, nil)
+    end)
+
     it('refuses bad gruppe 6 payloads', function()
         install(GUARD, 'gruppe6')
         rpc(GUARD, 'gruppe6', 'createGroup')

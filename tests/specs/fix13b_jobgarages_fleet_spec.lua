@@ -160,3 +160,44 @@ describe('a repossessed car leaves the fleet', function()
         assert_eq(despawned[1].args[1], 'REPO01')
     end)
 end)
+
+describe('a repossession whose fleet update fails', function()
+    local DEACTIVATE = 'UPDATE job_garage_vehicles SET active = 0, `out` = 0'
+    local function failOnce(text)
+        for _, pat in ipairs(FakeDB.extraPatterns) do
+            if pat[1] == text then
+                local orig = pat[2]
+                pat[2] = function() pat[2] = orig error('injected: database connection lost') end
+                return
+            end
+        end
+    end
+
+    it('is asked again later until the fleet entry is closed (the old code left it active)', function()
+        owned.REPO02 = { citizenid = 'CIDM', vehicle = 'flatbed' }
+        add('REPO02')
+        local id = next(fleet)
+        owned.REPO02 = nil
+        timeouts = {}
+        failOnce(DEACTIVATE)
+        TriggerEvent('pfm-vehicleshop:server:vehicleRepossessed', 'REPO02', 'CIDM')
+        assert_eq(fleet[id].active, 1, 'the update failed')
+        assert_eq(#timeouts, 1, 'a retry is scheduled')
+        runTimeouts()
+        assert_eq(fleet[id].active, 0, 'closed on the retry')
+        assert_eq(#timeouts, 0, 'no more retries')
+    end)
+
+    it('a failed lookup of the car record is asked again too, and a car still owned is left alone', function()
+        owned.REPO03 = { citizenid = 'CIDM', vehicle = 'flatbed' }
+        add('REPO03')
+        local id = next(fleet)
+        timeouts = {}
+        failOnce('SELECT 1 FROM player_vehicles WHERE plate = ?')
+        TriggerEvent('pfm-vehicleshop:server:vehicleRepossessed', 'REPO03', 'CIDM')
+        assert_eq(#timeouts, 1)
+        runTimeouts()   -- the record is still there: nothing to do, no more retries
+        assert_eq(fleet[id].active, 1)
+        assert_eq(#timeouts, 0)
+    end)
+end)

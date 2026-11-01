@@ -43,6 +43,9 @@ local Translations = {
         -- a charge the bank has not confirmed yet: no car now, never charged again, settled on its own
         payment_held = 'Your bank has not confirmed this payment yet. You will not be charged again. The car is held for you: when the payment clears it is parked at %{garage}; if it does not, the car goes back on the lot and nothing is taken. Reference %{ref}.',
         payment_held_gone = 'Your bank has not confirmed this payment yet, and the car was sold or changed meanwhile. You will not be charged again: if the payment clears, the money is returned to you. Reference %{ref}.',
+        payment_held_pending = 'Your bank has not confirmed this payment yet. You will not be charged again. When it clears, the car is parked for you at %{garage} if it is still for sale, or the money is returned; if it does not clear, nothing is taken. Reference %{ref}.',
+        -- paid, but the lot's database failed while handing the car over: the sweep finishes it
+        purchase_finishing = 'Your payment went through, but the lot could not hand the car over just now. The sale finishes on its own within a few minutes: the car is parked for you at %{garage}, or, if it is no longer for sale, your money is returned. Reference %{ref}.',
         sold_back_pending = 'You sold your car to the lot for $%{value}. The bank is still processing the payment; it reaches your account automatically.',
         held_subject = 'Your used car purchase',
         held_delivered = 'Your payment cleared. The %{vehicle} (%{plate}) is parked for you at %{garage}.',

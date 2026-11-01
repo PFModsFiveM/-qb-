@@ -88,31 +88,54 @@ end
 -- One server change per car at a time when it waits on the database: the first-level lookup and
 -- the refuels (the pump works out how much fits before the payment, so a second refuel landing in
 -- that wait would make the first pay for fuel that no longer fits).
-local carBusy = {} -- [vehicle entity] = true
+local carBusy = {} -- [vehicle entity] = 'lookup' (its first level is being looked up) or 'refuel'
 
---- Runs fn(...) holding `veh`'s lock; false when another change holds it.
-local function withCarLock(veh, fn, ...)
-    if carBusy[veh] then return false end
-    carBusy[veh] = true
+--- Runs fn(...) holding locks[id] (set to `kind`); false when it is already held.
+local function withLock(locks, id, kind, fn, ...)
+    if locks[id] then return false end
+    locks[id] = kind
     local results = table.pack(pcall(fn, ...))
-    carBusy[veh] = nil
+    locks[id] = nil
     if not results[1] then error(results[2], 0) end
     return true, table.unpack(results, 2, results.n)
 end
+
+--- Runs fn(...) holding `veh`'s lock; false when another change holds it.
+local function withCarLock(veh, kind, fn, ...) return withLock(carBusy, veh, kind, fn, ...) end
 
 -- ====================|| FIRST LEVEL || ==================== --
 -- A plate set on its owner's client (a car spawned on the server and given its plate there) reaches
 -- the server a moment later: an unknown plate is looked up once more after this long.
 local PLATE_SETTLE_MS = 2000
+-- a refuel landing while the first level is looked up waits this long for it (the settle wait plus
+-- the database) instead of being told someone else is refuelling
+local LOOKUP_WAIT_MS, LOOKUP_POLL_MS = PLATE_SETTLE_MS + 3000, 100
 
---- The plate the server sees on `veh`, trimmed (the database keeps plates trimmed), or nil.
-local function serverPlate(veh)
-    local text = GetVehicleNumberPlateText(veh)
+local function waitForLookup(veh)
+    local waited = 0
+    while carBusy[veh] == 'lookup' and waited < LOOKUP_WAIT_MS do
+        Wait(LOOKUP_POLL_MS)
+        waited = waited + LOOKUP_POLL_MS
+    end
+end
+
+-- Which owned car a level belongs to. A car's own plate is what its owner's client shows, so it can
+-- be changed: server code that spawns an owned car names its row (UseStoredFuel), and each first
+-- level remembers the plate it was given for. pfm-garages saves a parked car's fuel only up to the
+-- level of a car whose level was given for that car's plate (GetVehicleFuel(veh, plate)).
+local namedPlate = {}  -- [vehicle entity] = the plate of the owned row server code spawned it as
+local levelPlate = {}  -- [vehicle entity] = the plate (upper case) its level was given for
+
+--- `text` trimmed (the database keeps plates trimmed), or nil when empty or longer than a plate.
+local function cleanPlate(text)
     if type(text) ~= 'string' then return nil end
     text = text:gsub('^%s+', ''):gsub('%s+$', '')
     if text == '' or #text > 8 then return nil end
     return text
 end
+
+--- The plate the server sees on `veh`, trimmed, or nil.
+local function serverPlate(veh) return cleanPlate(GetVehicleNumberPlateText(veh)) end
 
 --- The level stored for the owned car with this plate (when it was last parked), or nil; the
 --- second value is true when the database could not be read.
@@ -138,14 +161,18 @@ end
 local function ensureLevel(veh)
     local current = sharedLevel(veh)
     if current or not Config.SyncFuelBetweenPlayers then return current end
-    local plate = serverPlate(veh)
+    -- the row server code named (the plate it set reaches the server only through the owner's
+    -- client, which could show another), else the plate the server sees
+    local named = namedPlate[veh]
+    local plate = named or serverPlate(veh)
     local level, failed = storedFuel(plate)
     if failed then return nil end
-    if level == nil then
+    if level == nil and not named then
         Wait(PLATE_SETTLE_MS)
         if not DoesEntityExist(veh) then return nil end
-        local now = serverPlate(veh)
+        local now = namedPlate[veh] or serverPlate(veh)
         if now and now ~= plate then
+            plate = now
             level, failed = storedFuel(now)
             if failed then return nil end
         end
@@ -155,6 +182,7 @@ local function ensureLevel(veh)
     current = sharedLevel(veh)
     if current then return current end
     level = level ~= nil and roundLevel(level) or defaultFuel()
+    levelPlate[veh] = plate and plate:upper() or nil
     writeVehicleFuel(veh, level)
     return level
 end
@@ -190,7 +218,7 @@ RegisterNetEvent('qb-fuel:server:syncFuel', function(netId, level)
     if sharedLevel(veh) == nil then
         -- the server gives a new car its first level; this report is not taken as it (a report
         -- landing while the lookup runs finds the car busy and is dropped)
-        withCarLock(veh, ensureLevel, veh)
+        withCarLock(veh, 'lookup', ensureLevel, veh)
         return
     end
     local accepted = acceptedDriverLevel(veh, level)
@@ -229,18 +257,55 @@ exports('SetVehicleFuel', function(vehicle, level)
     local veh = serverVehicle(vehicle)
     level = finiteNumber(level)
     if not veh or not level then return false end
+    local plate = namedPlate[veh] or serverPlate(veh)
+    levelPlate[veh] = plate and plate:upper() or nil
     writeVehicleFuel(veh, roundLevel(level))
     return true
 end)
 
-exports('GetVehicleFuel', function(vehicle)
+-- Server code that spawns an owned car names the row it is (`plate` as player_vehicles keeps it):
+-- the car's first level is what that row stored, whatever plate the car shows later. A garage
+-- calls it right after it creates the car and sets the plate.
+exports('UseStoredFuel', function(vehicle, plate)
     local veh = serverVehicle(vehicle)
-    return veh and sharedLevel(veh) or nil
+    plate = cleanPlate(plate)
+    if not veh or not plate then return false end
+    namedPlate[veh] = plate
+    if Config.SyncFuelBetweenPlayers and sharedLevel(veh) == nil then
+        -- looked up now, before the owner's client could show the server another plate
+        CreateThread(function() withCarLock(veh, 'lookup', ensureLevel, veh) end)
+    end
+    return true
 end)
+
+-- The car's shared level, or nil. With `plate`: only when the level was given for the car with
+-- that plate (a car showing another car's plate does not answer for it).
+exports('GetVehicleFuel', function(vehicle, plate)
+    local veh = serverVehicle(vehicle)
+    if not veh then return nil end
+    if plate ~= nil then
+        plate = cleanPlate(plate)
+        if not plate or levelPlate[veh] ~= plate:upper() then return nil end
+    end
+    return sharedLevel(veh)
+end)
+
+-- Whether this server keeps fuel levels (Config.SyncFuelBetweenPlayers); when not, the client's
+-- level is all there is.
+exports('IsFuelSynced', function() return Config.SyncFuelBetweenPlayers == true end)
 
 AddEventHandler('entityRemoved', function(entity)
     lastLevelAt[entity] = nil
+    namedPlate[entity] = nil
+    levelPlate[entity] = nil
 end)
+
+-- After a restart of this resource the cars already out keep their levels (state bags): the plates
+-- they show now are taken as the plates those levels were given for.
+for _, veh in ipairs(GetAllVehicles and GetAllVehicles() or {}) do
+    local plate = sharedLevel(veh) and serverPlate(veh)
+    if plate then levelPlate[veh] = plate:upper() end
+end
 
 AddEventHandler('playerDropped', function()
     local src = source
@@ -248,7 +313,89 @@ AddEventHandler('playerDropped', function()
     syncRate[src] = nil
 end)
 
--- ====================|| EVENTS || ==================== --
+-- ====================|| PURCHASES || ==================== --
+-- Every sale is one ledger charge under its own key. A charge whose outcome the bank did not know
+-- yet (result.unclear: pending, debited, interrupted) is never charged again under a new key: it is
+-- kept, and this player's next purchase of the same kind first asks the bank again under that
+-- charge's own key and amount, and hands over what it paid for once it went through. A paid sale
+-- whose goods cannot be handed over is refunded under the charge's key plus ':refund'; a refund
+-- the bank did not take is kept the same way and paid before that player's next purchase of the
+-- kind. (Kept in memory: a restart forgets them, and the ledger's recovery settles the charges.)
+local unsettled = {}  -- [citizenid .. ':' .. kind] = a charge { key, amount, ... } or a refund owed
+local purchasing = {} -- [citizenid] = true while one of this player's purchases runs
+
+local function notify(Player, key)
+    TriggerClientEvent('QBCore:Notify', Player.PlayerData.source, Lang:t(key), 'error')
+end
+
+--- Pays `charge` back to `account`; false when the bank did not take it (then kept as owed).
+local function refund(Player, kind, account, charge)
+    local slot = Player.PlayerData.citizenid .. ':' .. kind
+    local ok = PFPayout.Pay(Player, account, charge.amount, { key = charge.key .. ':refund', kind = 'refund', reason = 'Fuel refund', quiet = true })
+    unsettled[slot] = not ok and { refund = true, account = account, key = charge.key, amount = charge.amount } or nil
+    return ok == true
+end
+
+--- Charges this player for a purchase of `kind`. Returns the account paid from (false when not
+--- paid), the ledger result and the charge: this player's unsettled one of this kind (its own key,
+--- amount and fields) or a new one (key from `keyPrefix`, `amount`, the fields of `extra`).
+local function chargeOnce(Player, kind, keyPrefix, amount, reason, extra)
+    local cid = Player.PlayerData.citizenid
+    local charge = unsettled[cid .. ':' .. kind]
+    if charge and charge.refund then
+        if not refund(Player, kind, charge.account, charge) then
+            return false, { ok = false, error = 'refund_unpaid' }, nil
+        end
+        charge = nil
+    end
+    if not charge then
+        charge = extra or {}
+        charge.key = ('%s:%s:%s'):format(keyPrefix, cid, PFPayout.NewId())
+        charge.amount = amount
+    end
+    local account, res = PFPayout.Charge(Player, Config.MoneyType, charge.amount, { key = charge.key, kind = 'purchase', reason = reason })
+    unsettled[cid .. ':' .. kind] = (not account and type(res) == 'table' and res.unclear == true) and charge or nil
+    return account, res, charge
+end
+
+--- Why a charge was not paid: nil for not enough money (the caller says so), else 'payment', with
+--- the player told why when the payout module did not tell them (it tells about a bank that is
+--- not running and a charge it could not settle, not about a clear refusal).
+local function paymentRefused(Player, res)
+    if type(res) ~= 'table' then return nil end
+    if res.error == 'refund_unpaid' then
+        notify(Player, 'error.refund_pending')
+        return 'payment'
+    end
+    local told = res.unclear ~= nil or res.error == 'bank_unavailable' or res.error == 'ledger_unavailable'
+    if told then return 'payment' end
+    if res.error == 'insufficient_funds' then return nil end
+    notify(Player, 'error.payment_declined')
+    return 'payment'
+end
+
+--- Runs fn(...) as this player's only purchase in progress; false when another one runs.
+local function asOnlyPurchase(Player, fn, ...)
+    return withLock(purchasing, Player.PlayerData.citizenid, true, fn, ...)
+end
+
+--- A paid refill goes into `veh` (all its litres: the room was checked before the charge) and its
+--- tax to the city. When the car is gone or the litres no longer fit (a refill the bank only now
+--- confirms, or a car removed during the payment), it is refunded instead: nothing poured, no tax.
+local function pourPaidRefill(Player, veh, account, charge)
+    local exists = DoesEntityExist(veh)
+    local current = exists and sharedLevel(veh) or nil
+    local gone = not exists or (Config.SyncFuelBetweenPlayers and current == nil)
+    if gone or (current and current + charge.litres > 100.0) then
+        notify(Player, refund(Player, 'pump', account, charge) and 'error.refunded' or 'error.refund_pending')
+        return false, current or false, 'payment'
+    end
+    local level = addVehicleFuel(veh, charge.litres)
+    if (charge.taxRate or 0) > 0 then
+        CollectFuelTax(charge.subtotal, Player.PlayerData.citizenid, charge.amount - charge.subtotal, charge.key)
+    end
+    return true, level
+end
 
 --- Pays for and pours a pump refill (runs under the car's lock); returns paid, level, reason.
 local function pumpRefill(src, Player, veh, litres, stationIndex)
@@ -269,33 +416,30 @@ local function pumpRefill(src, Player, veh, litres, stationIndex)
     local subtotal = math.floor(litres * perLitre * 100 + 0.5) / 100
     local taxRate = GetFuelTaxRate and GetFuelTaxRate() or 0
     local finalPrice = math.floor(subtotal * (1 + taxRate) + 0.5)
-
-    -- paid through the pfm-banking ledger; the tax inside the price goes to pf-government by its
-    -- exact amount under the same key
-    local key = ('pfm-fuel:refuel:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
     if finalPrice <= 0 then return false end
-    local account, res = PFPayout.Charge(Player, Config.MoneyType, finalPrice, { key = key, kind = 'purchase', reason = 'Fuel' })
-    if not account then
-        -- not enough money; anything else (the bank down, a payment still being settled) the
-        -- payout module has already told the player, and no fuel is poured for it
-        if type(res) == 'table' and res.error ~= 'insufficient_funds' then
-            return false, current or false, 'payment'
-        end
-        return false
-    end
-    local level = addVehicleFuel(veh, litres)
-    if taxRate > 0 then
-        CollectFuelTax(subtotal, Player.PlayerData.citizenid, finalPrice - subtotal, key)
-    end
-    return true, level
+
+    -- paid through the pfm-banking ledger (a refill the bank had not settled goes first, with its
+    -- own litres and price); the tax inside the price goes to pf-government by its exact amount
+    -- under the same key
+    local account, res, charge = chargeOnce(Player, 'pump', 'pfm-fuel:refuel', finalPrice, 'Fuel',
+        { litres = litres, subtotal = subtotal, taxRate = taxRate })
+    if not account then return false, current or false, paymentRefused(Player, res) end
+    return pourPaidRefill(Player, veh, account, charge)
+end
+
+--- The pump refill under the player's purchase lock, then the car's lock.
+local function pumpForPlayer(src, Player, veh, litres, stationIndex)
+    -- a car whose first level is being looked up is waited for, not reported busy
+    waitForLookup(veh)
+    return withCarLock(veh, 'refuel', pumpRefill, src, Player, veh, litres, stationIndex)
 end
 
 --- A pump refill of `litres` into the car with network id `netId` (the one the nozzle is in).
 --- Answers (paid, newLevel, reason): newLevel is the car's shared level after the refill (false on
 --- a failure; nil only with fuel sync off); reason is 'no_station' (the player is not at a fuel
 --- station), 'full' (nothing fits), 'busy' (someone else is refuelling it), 'no_vehicle' (no
---- such car beside the player) or 'payment' (the bank did not take it; the player was told why);
---- nil when the player has not enough money.
+--- such car beside the player) or 'payment' (the bank did not take it, or an earlier refill was
+--- settled or refunded instead; the player was told); nil when the player has not enough money.
 QBCore.Functions.CreateCallback('qb-fuel:server:refillVehicle', function(src, cb, litres, netId)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return cb(false) end
@@ -309,40 +453,51 @@ QBCore.Functions.CreateCallback('qb-fuel:server:refillVehicle', function(src, cb
     -- the fuel goes into a real car beside the player, so it is paid for only if that car is there
     local veh = refuelTarget(src, netId)
     if not veh then return cb(false, false, 'no_vehicle') end
-    local free, paid, level, reason = withCarLock(veh, pumpRefill, src, Player, veh, litres, stationIndex)
-    if not free then return cb(false, sharedLevel(veh) or false, 'busy') end
+    local onlyOne, free, paid, level, reason = asOnlyPurchase(Player, pumpForPlayer, src, Player, veh, litres, stationIndex)
+    if not onlyOne or not free then return cb(false, sharedLevel(veh) or false, 'busy') end
     if paid then return cb(true, level) end
     cb(false, level or false, reason)
 end)
 
 -- Buying or filling a can happens at a pump, so only at a station the server knows (a can filled
 -- anywhere would be a pump anywhere). Pouring a can into a car works anywhere.
+local function buyJerryCan(Player)
+    local account, res = chargeOnce(Player, 'jerrycan', 'pfm-fuel:jerrycan', Config.JerryCanCost, 'Jerry can')
+    if not account then
+        if not paymentRefused(Player, res) then notify(Player, 'error.no_money') end
+        return
+    end
+    Player.AddItem('weapon_petrolcan', 1, nil, { fuel = Config.JerryCanLitre, ammo = Config.JerryCanLitre })
+end
+
 RegisterServerEvent('qb-fuel:server:buyJerryCan', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if not StationForPlayer(src) then return Player.Notify(Lang:t('error.no_station'), 'error') end
-
-    if PFPayout.Charge(Player, Config.MoneyType, Config.JerryCanCost, { key = ('pfm-fuel:jerrycan:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Jerry can' }) then
-        Player.AddItem('weapon_petrolcan', 1, nil, { fuel = Config.JerryCanLitre, ammo = Config.JerryCanLitre })
-    end
+    asOnlyPurchase(Player, buyJerryCan, Player)
 end)
+
+local function refillJerryCan(Player)
+    local jerryCan = Player.GetItemByName('weapon_petrolcan')
+    if not jerryCan then return Player.Notify(Lang:t('error.no_jerrycan'), 'error') end
+    local account, res = chargeOnce(Player, 'canrefill', 'pfm-fuel:refill', Config.JerryCanRefillCost, 'Jerry can refill')
+    if not account then
+        if not paymentRefused(Player, res) then notify(Player, 'error.no_money') end
+        return
+    end
+    jerryCan.info.fuel = Config.JerryCanLitre
+    jerryCan.info.ammo = Config.JerryCanLitre
+    Player.RemoveItem('weapon_petrolcan', 1, jerryCan.slot)
+    Player.AddItem('weapon_petrolcan', 1, nil, jerryCan.info)
+end
 
 RegisterServerEvent('qb-fuel:server:refillJerryCan', function()
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if not StationForPlayer(src) then return Player.Notify(Lang:t('error.no_station'), 'error') end
-
-    local jerryCan = Player.GetItemByName('weapon_petrolcan')
-    if not jerryCan then return Player.Notify(Lang:t('error.no_jerrycan'), 'error') end
-
-    if PFPayout.Charge(Player, Config.MoneyType, Config.JerryCanRefillCost, { key = ('pfm-fuel:refill:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId()), kind = 'purchase', reason = 'Jerry can refill' }) then
-        jerryCan.info.fuel = Config.JerryCanLitre
-        jerryCan.info.ammo = Config.JerryCanLitre
-        Player.RemoveItem('weapon_petrolcan', 1, jerryCan.slot)
-        Player.AddItem('weapon_petrolcan', 1, nil, jerryCan.info)
-    end
+    asOnlyPurchase(Player, refillJerryCan, Player)
 end)
 
 -- `netId` is the car being filled from the can (within reach). What leaves the can (it can only
@@ -386,7 +541,8 @@ local function pourCan(src, fuel, netId)
     local veh = refuelTarget(src, netId)
     if not veh then return end
 
-    local free = withCarLock(veh, pourIntoCar, src, veh, math.floor(fuel))
+    waitForLookup(veh)
+    local free = withCarLock(veh, 'refuel', pourIntoCar, src, veh, math.floor(fuel))
     if not free then Player.Notify(Lang:t('error.vehicle_busy'), 'error') end
 end
 

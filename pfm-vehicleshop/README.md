@@ -21,6 +21,7 @@
 * Every charge goes through the pfm-banking ledger. If the bank cannot say yet whether a purchase, a dealer sale, a paid `/transfervehicle` or a finance payment was taken, the buyer gets no car yet and is never charged again for it. The sale is stored (`pfm_vehicleshop_held`) and finished on its own once the ledger settles: the car is parked in `Config.DeliveryGarage`, or the reservation (stock, the car) is released when nothing was taken. A charge interrupted during the debit is not decided automatically: the buyer is told to contact staff with the reference, and `/ledgerreconcile` lists the transfer.
 * Money a sale still owes after the buyer paid (the seller, a refund, the dealership's share, the commission) is stored (`pfm_vehicleshop_owed`) when the bank does not complete it, and retried every minute with numbered ledger keys until it is paid, once.
 * pfm-vehiclesales uses the same file (`@pfm-vehicleshop/settlements.lua`) with its own tables.
+* A sale that was paid but whose next database step failed (a paid transfer whose change of owner did not go through) is stored the same way and finished by the sweep from what the database says then. The dealer's plate is picked before any stock is taken or money charged. A held sale keeps blocking its car and buyer until its end is stored, so a payment made meanwhile cannot be applied twice or refunded after it was applied.
 * A repossessed car leaves any job fleet (pf-jobgarages listens for `pfm-vehicleshop:server:vehicleRepossessed`).
 
 **Planned Updates**

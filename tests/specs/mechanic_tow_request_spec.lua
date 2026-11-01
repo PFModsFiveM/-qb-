@@ -276,6 +276,35 @@ describe('the cooldown and the refusals', function()
         assert_eq(#requests, 1)
     end)
 
+    it("pf-services' reason is told (it was always 'No tow service is available'), and costs no cooldown", function()
+        local answer
+        Mock.exportsByResource['pf-services'].CreateRequest = function() return answer end
+        local cases = {
+            { { ok = false, error = 'superseded', by = 4, byKind = 'tow.impound' }, 'The police already have this car on an impound order' },
+            { { ok = false, error = 'superseded', by = 5, byKind = 'other.kind' }, 'Another service is already handling this car' },
+            { { ok = false, error = 'insufficient_funds' }, 'The shop account cannot pay for a tow' },
+            { { ok = false, error = 'bank_unavailable' }, 'The bank did not respond. No tow was ordered' },
+            { { ok = false, error = 'db_error' }, 'The tow order could not be saved. Try again' },
+            { { ok = false, error = 'unknown_kind' }, 'No tow service is available' },
+        }
+        for _, c in ipairs(cases) do
+            answer = c[1]
+            ask(MECH, { plate = 'BROKE01' })
+            assert_eq(lastNote(MECH), c[2], tostring(c[1].error))
+        end
+        Mock.exportsByResource['pf-services'].CreateRequest = createRequest
+        ask(MECH, { plate = 'BROKE01' })
+        assert_eq(#requests, 1, 'none of them started the cooldown')
+    end)
+
+    it('a request the shop account could not fund is posted unpaid, and the boss is told so', function()
+        Mock.exportsByResource['pf-services'].CreateRequest = function()
+            return { ok = true, id = 3, request = { id = 3, reward = 0, escrow = 'failed' } }
+        end
+        ask(MECH, { plate = 'BROKE01' })
+        assert_eq(lastNote(MECH), 'Tow requested to your shop. The shop account could not cover the fee, so it is posted unpaid')
+    end)
+
     it('a new request starts the cooldown, and the boss is told how long it runs', function()
         ask(MECH, { plate = 'BROKE01' })
         assert_eq(#requests, 1)

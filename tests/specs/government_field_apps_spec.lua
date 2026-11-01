@@ -349,7 +349,7 @@ describe('business request flow', function()
     it('registers a completion check for every government request kind', function()
         assert_true(GovRequests.RegisterHandlers())
         for _, kind in ipairs({ 'gov.request.slot', 'gov.request.inspection', 'gov.request.license', 'gov.request.delivery_zone' }) do
-            assert_true(FS.handlers[kind] ~= nil and type(FS.handlers[kind].canComplete) == 'function', kind)
+            assert_true(FS.handlers[kind] ~= nil and Mock.callable(FS.handlers[kind].canComplete), kind)
         end
     end)
     it('a slot request completes only after an approval at the recorded spot', function()

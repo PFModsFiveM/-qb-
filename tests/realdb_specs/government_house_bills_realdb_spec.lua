@@ -387,3 +387,135 @@ describe('the Fines app', function()
         assert_eq(GovApps.Fines.recent(CLERK, { filter = 'nonsense' }).filter, 'all')
     end)
 end)
+
+-- runs fn once, just before the next update whose SQL contains `fragment`
+local function beforeUpdate(fragment, fn)
+    local update = MySQL.update.await
+    MySQL.update.await = function(q, p)
+        if type(q) == 'string' and q:find(fragment, 1, true) then
+            MySQL.update.await = update
+            fn()
+        end
+        return update(q, p)
+    end
+    return function() MySQL.update.await = update end
+end
+
+describe('payments racing other writes', function()
+    it('a late fee landing while a payment is written is not marked paid with it', function()
+        local id = newBill('RACE1', 100, T0)
+        Mock.clock = T0 + DAY + 60
+        local undo = beforeUpdate('SET amount_paid = ?, status = ?', function()
+            assert_eq(ProcessBillLateFees().applied, 1)
+        end)
+        local ok, _, status, applied = PayBill(id, 100, 'RACE1', 'Payer')
+        undo()
+        assert_true(ok)
+        local b = bill(id)
+        assert_eq(num(b.amount), 110, 'the fee')
+        assert_eq(num(b.amount_paid), 100)
+        assert_eq(b.status, 'partial', 'marked paid without the fee')
+        assert_eq(status, 'partial')
+        assert_eq(applied, 100)
+    end)
+    it('two payments written at the same moment both count', function()
+        local id = newBill('RACE2', 100, T0 + 30 * DAY)
+        local inner
+        local undo = beforeUpdate('SET amount_paid = ?, status = ?', function()
+            inner = { PayBill(id, 30, 'RACE2', 'Other terminal') }
+        end)
+        local ok, _, _, applied = PayBill(id, 50, 'RACE2', 'Payer')
+        undo()
+        assert_true(ok)
+        assert_true(inner[1])
+        assert_eq(num(bill(id).amount_paid), 80, 'one payment overwrote the other')
+        assert_eq(applied, 50)
+        -- the rest due is what is applied: 20 of 50 asked
+        local ok2, _, status, applied2 = PayBill(id, 50, 'RACE2', 'Payer')
+        assert_true(ok2)
+        assert_eq(applied2, 20)
+        assert_eq(status, 'paid')
+    end)
+end)
+
+describe('escalation', function()
+    it('one bill that fails does not stop the others or the run', function()
+        local a = newBill('ESC1', 40, T0 - 30 * DAY)
+        local b = newBill('ESC2', 40, T0 - 30 * DAY)
+        Mock.clock = T0
+        local orig = UtilityAccountOfBill
+        UtilityAccountOfBill = function(row, owners)
+            if tonumber(row.id) == tonumber(a) then error('Lock wait timeout exceeded') end
+            return orig(row, owners)
+        end
+        local printOrig = print
+        print = function() end
+        local ok, res = pcall(ProcessBillEscalation)
+        print = printOrig
+        UtilityAccountOfBill = orig
+        assert_true(ok, 'the run aborted: ' .. tostring(res))
+        assert_eq(bill(b).status, 'delinquent', 'the next bill was skipped')
+    end)
+    it('a bill paid while the run reads it is not made delinquent', function()
+        local id = newBill('ESC3', 60, T0 - 30 * DAY)
+        Mock.clock = T0
+        local query = MySQL.query.await
+        MySQL.query.await = function(q, p)
+            local out = query(q, p)
+            if type(q) == 'string' and q:find('AND due_date < ?', 1, true) then
+                MySQL.query.await = query
+                MySQL.update.await("UPDATE pf_gov_bills SET amount_paid = amount, status = 'paid' WHERE id = ?", { id })
+            end
+            return out
+        end
+        ProcessBillEscalation()
+        MySQL.query.await = query
+        assert_eq(bill(id).status, 'paid')
+    end)
+    it('waiving the delinquent house bill brings back the power the system cut; a staff cut stays', function()
+        MySQL.update.await("UPDATE player_houses SET citizenid = 'OWNA' WHERE house = 'vinewood1'")
+        assert_true(exports['pf-government']:RegisterProperty('vinewood1', '1 Vinewood Hills', 'OWNA', 'Ann Owner'))
+        MySQL.query.await("DELETE FROM pf_gov_bills WHERE bill_ref LIKE 'utility:property:%'")
+        RestoreService('property', 'vinewood1', 'both', 'GOV1', 'x')
+        local T = T0 + 100 * DAY
+        ProcessUtilityBilling(T)
+        local b = houseUtilityBills('vinewood1')[1]
+        assert_eq(b.target_id, 'OWNA')
+        Mock.clock = T + 15 * DAY
+        ProcessBillEscalation()
+        assert_false(HasPower('property', 'vinewood1'), 'not cut')
+        assert_true(WaiveBill(b.id, 'GOV1', 'Clerk', 'mistake'))
+        assert_true(HasPower('property', 'vinewood1'), 'still cut for a waived bill')
+        -- a cut staff made stays, whatever is waived
+        ProcessUtilityBilling(T + 20 * DAY)
+        local b2 = houseUtilityBills('vinewood1', "AND status = 'unpaid'")[1]
+        Mock.clock = T + 40 * DAY
+        ProcessBillEscalation()
+        DisconnectService('property', 'vinewood1', 'power', 'GOV1', 'Inspector', 'Safety')
+        assert_true(WaiveBill(b2.id, 'GOV1', 'Clerk', 'mistake'))
+        assert_false(HasPower('property', 'vinewood1'), 'a staff cut-off was lifted')
+        RestoreService('property', 'vinewood1', 'both', 'GOV1', 'x')
+    end)
+    it("a house sold without the sale reaching us is not cut for the seller's bill", function()
+        MySQL.query.await("DELETE FROM pf_gov_bills WHERE bill_ref LIKE 'utility:property:%'")
+        MySQL.update.await("UPDATE player_houses SET citizenid = 'OWNA' WHERE house = 'vinewood1'")
+        assert_true(exports['pf-government']:RegisterProperty('vinewood1', '1 Vinewood Hills', 'OWNA', 'Ann Owner'))
+        local T = T0 + 200 * DAY
+        ProcessUtilityBilling(T)
+        local b = houseUtilityBills('vinewood1')[1]
+        assert_eq(b.target_id, 'OWNA')
+        -- sold through pfm-houses' transfer, which does not register the sale with the government
+        MySQL.update.await("UPDATE player_houses SET citizenid = 'NEWX' WHERE house = 'vinewood1'")
+        Mock.clock = T + 15 * DAY
+        ProcessBillEscalation()
+        assert_eq(bill(b.id).status, 'delinquent', 'the seller keeps their debt')
+        assert_true(HasPower('property', 'vinewood1'), "the buyer's house was cut for the seller's bill")
+        -- while the seller still owns it, the cut happens as before
+        MySQL.update.await("UPDATE player_houses SET citizenid = 'OWNA' WHERE house = 'vinewood1'")
+        ProcessUtilityBilling(T + 16 * DAY)
+        Mock.clock = T + 31 * DAY
+        ProcessBillEscalation()
+        assert_false(HasPower('property', 'vinewood1'))
+        RestoreService('property', 'vinewood1', 'both', 'GOV1', 'x')
+    end)
+end)

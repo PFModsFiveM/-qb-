@@ -352,6 +352,13 @@ end
 
 local function bankUp() return GetResourceState('pfm-banking') == 'started' end
 
+-- A player from exports['pfm-core']:GetPlayer is a copy taken when it was fetched: after AddMoney /
+-- RemoveMoney its PlayerData still holds the old balance, so replies read the coins again.
+local function liveCoins(src)
+    local P = exports['pfm-core']:GetPlayer(src)
+    return P and P.PlayerData and P.PlayerData.money and P.PlayerData.money.crypto or nil
+end
+
 local idSeq = 0
 local function newId()
     idSeq = idSeq + 1
@@ -416,7 +423,7 @@ function T.Buy(src, coins, ref)
         end
         Player.AddMoney('crypto', coins, 'bought crypto')
         TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, Lang:t('credit.you_have_qbit_purchased', { dataCoins = coins }), 'Credit')
-        return { ok = true, coins = coins, price = price, total = total, portfolio = Player.PlayerData.money.crypto }
+        return { ok = true, coins = coins, price = price, total = total, portfolio = liveCoins(src) }
     end)
 end
 
@@ -447,7 +454,7 @@ function T.Sell(src, coins, ref)
             return { ok = false, error = res and res.error or 'bank_unavailable' }
         end
         TriggerClientEvent('qb-phone:client:AddTransaction', src, nil, nil, Lang:t('debit.you_have_sold', { dataCoins = coins }), 'Debit')
-        return { ok = true, coins = coins, price = price, total = amount, portfolio = Player.PlayerData.money.crypto }
+        return { ok = true, coins = coins, price = price, total = amount, portfolio = liveCoins(src) }
     end)
 end
 
@@ -513,7 +520,7 @@ function T.Send(src, walletId, coins, ref)
                 COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(money, '$.crypto')) AS DECIMAL(20,6)), 0) + ?) WHERE citizenid = ?]],
                 { coins, target.citizenid })
         end
-        return { ok = true, coins = coins, portfolio = Player.PlayerData.money.crypto, recipient = target.citizenid }
+        return { ok = true, coins = coins, portfolio = liveCoins(src), recipient = target.citizenid }
     end)
 end
 
@@ -532,7 +539,7 @@ QBCore.Functions.CreateCallback('qb-crypto:server:BuyCrypto', function(source, c
     if onCooldown(source, 'buy', 1000) then return cb(false) end
     local res = T.Buy(source, data.Coins, newId())
     if not res.ok then return cb(false) end
-    cb(cryptoData(Player))
+    cb(cryptoData(exports['pfm-core']:GetPlayer(source) or Player)) -- Player is the copy from before the trade
 end)
 
 QBCore.Functions.CreateCallback('qb-crypto:server:SellCrypto', function(source, cb, data)
@@ -540,7 +547,7 @@ QBCore.Functions.CreateCallback('qb-crypto:server:SellCrypto', function(source, 
     if not Player or not sanitizeCoins(data and data.Coins) then return cb(false) end
     local res = T.Sell(source, data.Coins, newId())
     if not res.ok then return cb(false) end
-    cb(cryptoData(Player))
+    cb(cryptoData(exports['pfm-core']:GetPlayer(source) or Player)) -- Player is the copy from before the trade
 end)
 
 QBCore.Functions.CreateCallback('qb-crypto:server:TransferCrypto', function(source, cb, data)

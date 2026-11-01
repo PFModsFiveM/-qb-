@@ -365,3 +365,129 @@ describe('owed payments on the lot', function()
         assert_eq(#owedRows(), 0)
     end)
 end)
+
+-- ── second round: the claim query fails after the buyer was charged ────────────────────────────
+
+FakeDB.extraPatterns[#FakeDB.extraPatterns + 1] = { 'SELECT citizenid AS owner FROM player_vehicles WHERE plate = ?', function(p)
+    return owned[p[1]] and { { owner = owned[p[1]].citizenid } } or {}
+end }
+FakeDB.extraPatterns[#FakeDB.extraPatterns + 1] = { "SELECT id, data FROM pfm_vehiclesales_held WHERE plate = ? AND id <> ? AND state IN ('waiting', 'finishing')", function(p)
+    return rowsOf(store.held, function(r) return r.plate == p[1] and r.id ~= p[2] and (r.state == 'waiting' or r.state == 'finishing') end)
+end }
+
+local CLAIM = 'DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?'
+--- The claim fails once: before it ran (`ran` false) or after it deleted the listing (its answer lost).
+local function claimFailsOnce(ran)
+    for _, pat in ipairs(FakeDB.extraPatterns) do
+        if pat[1] == CLAIM then
+            local orig = pat[2]
+            pat[2] = function(p)
+                pat[2] = orig
+                if ran then orig(p) end
+                error('injected: database connection lost')
+            end
+            return
+        end
+    end
+end
+local function heldData() return json.decode(holds()[1].data) end
+local SELLER_SHARE = math.ceil(9000 / 100 * 77)
+
+describe('an unclear charge whose claim query fails (the checker\'s probe)', function()
+    it('the purchase is still held; when the charge completes the listing is claimed then and the car parked, once', function()
+        listCar('PRB001')
+        failCredit = true
+        claimFailsOnce(false)
+        buy('PRB001')
+        assert_eq(balance(BUYER), 41000, 'the money left the buyer')
+        assert_eq(#holds(), 1, 'the old code aborted here: no hold, no refund, no message')
+        assert_eq(heldData().claimed, nil, 'the claim is unknown')
+        assert_true(told(BUYER, 'info.payment_held_pending'))
+        assert_true(listings.PRB001 ~= nil, 'the claim did not run')
+        settle()
+        assert_eq(listings.PRB001, nil, 'claimed when the money arrived')
+        assert_true(owned.PRB001 ~= nil and owned.PRB001.citizenid == 'CID2', 'the buyer\'s car')
+        assert_eq(owned.PRB001.state, 1, 'parked')
+        assert_eq(balance(SELLER), 1000 + SELLER_SHARE)
+        settle()
+        assert_eq(balance(SELLER), 1000 + SELLER_SHARE, 'paid once')
+        assert_eq(balance(BUYER), 41000, 'charged once')
+        assert_eq(#owedRows(), 0, 'nothing refunded')
+    end)
+
+    it('a claim that ran but whose answer was lost is read from the lot: nothing taken puts the car back, once', function()
+        listCar('PRB002')
+        intercept['^pfm%-vehiclesales:buy:.*:bank$'] = { ok = false, error = 'ledger_write_failed' }
+        claimFailsOnce(true)
+        buy('PRB002')
+        intercept = {}
+        assert_eq(listings.PRB002, nil, 'the claim did run')
+        assert_eq(#holds(), 1)
+        Mock.clock = Mock.clock + PFSettle.MISSING_GRACE + 1
+        PFSettle.Sweep()
+        assert_true(listings.PRB002 ~= nil, 'back on the lot (the old code would have lost the listing)')
+        assert_eq(owned.PRB002, nil)
+        assert_eq(balance(BUYER), 50000)
+        PFSettle.Sweep()
+        assert_eq(count(listings), 1, 'put back once')
+    end)
+end)
+
+describe('a paid purchase whose claim query fails', function()
+    it('is held (its charge complete) and finished by the sweep: the car parked for the buyer, the seller paid once', function()
+        listCar('PRB003')
+        claimFailsOnce(false)
+        buy('PRB003')
+        assert_eq(balance(BUYER), 41000)
+        assert_eq(owned.PRB003, nil, 'no car yet')
+        assert_eq(#Mock.clientEventsNamed('qb-occasions:client:BuyFinished'), 0)
+        assert_true(told(BUYER, 'info.purchase_finishing'), 'the buyer is told what happens')
+        assert_eq(#holds(), 1)
+        PFSettle.Sweep()
+        assert_true(owned.PRB003 ~= nil and owned.PRB003.citizenid == 'CID2')
+        assert_eq(owned.PRB003.garage, Config.DeliveryGarage)
+        assert_eq(listings.PRB003, nil)
+        assert_eq(balance(SELLER), 1000 + SELLER_SHARE)
+        PFSettle.Sweep()
+        assert_eq(balance(SELLER), 1000 + SELLER_SHARE, 'once')
+        assert_eq(balance(BUYER), 41000, 'charged once, not refunded')
+        assert_true(told(BUYER, 'info.held_delivered'))
+    end)
+
+    it('the claim ran but its answer was lost: the car is found claimed and delivered, nothing refunded', function()
+        listCar('PRB004')
+        claimFailsOnce(true)
+        buy('PRB004')
+        assert_eq(listings.PRB004, nil)
+        PFSettle.Sweep()
+        assert_true(owned.PRB004 ~= nil and owned.PRB004.citizenid == 'CID2')
+        assert_eq(balance(BUYER), 41000)
+        assert_eq(balance(SELLER), 1000 + SELLER_SHARE)
+    end)
+
+    it('the car is someone else\'s by the time the sweep looks: the buyer is refunded, the seller not paid', function()
+        listCar('PRB005')
+        claimFailsOnce(true)
+        buy('PRB005')
+        owned.PRB005 = { citizenid = 'CID9', plate = 'PRB005', vehicle = 'sultan' }
+        PFSettle.Sweep()
+        assert_eq(owned.PRB005.citizenid, 'CID9')
+        assert_eq(balance(BUYER), 50000, 'refunded')
+        assert_eq(balance(SELLER), 1000)
+        assert_eq(listings.PRB005, nil, 'not put back (it was not this buyer\'s claim)')
+    end)
+
+    it('another waiting purchase of the same car recorded the claim: this one is refunded', function()
+        listCar('PRB006')
+        claimFailsOnce(true)
+        buy('PRB006')
+        -- an older held purchase of the same car that recorded its claim
+        store.n = store.n + 1
+        store.held[store.n] = { id = 0, flow = 'usedlot', charge_key = 'other', accounts = 'bank', citizenid = 'CID7', plate = 'PRB006', amount = 1,
+            data = json.encode({ claimed = true }), state = 'waiting', created = Mock.clock }
+        PFSettle.Sweep()
+        assert_eq(owned.PRB006, nil, 'not this buyer\'s car')
+        assert_eq(balance(BUYER), 50000, 'refunded')
+        store.held[store.n] = nil
+    end)
+end)

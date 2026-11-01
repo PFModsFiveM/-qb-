@@ -45,11 +45,21 @@ assert(PFShop.dbReady, 'pfm-vehicleshop migrations')
 
 -- the write that completes a charge fails once (the money left the buyer; recovery completes it)
 local failCredit = false
+-- one database error at a given step: the 'done' mark of a held sale, a transfer's change of owner
+local failDoneMark, failTransferClaim = false, false
 local realUpdate = MySQL.update
 MySQL.update = setmetatable({ await = function(q, p)
     if failCredit and q == PFLedger.SQL.setState and p[1] == 'completed' and p[4] == 'debited' then
         failCredit = false
         error('injected: the credit write failed')
+    end
+    if failDoneMark and q:find('pfm_vehicleshop_held SET state = ?, outcome = ?', 1, true) and p[1] == 'done' then
+        failDoneMark = false
+        error('injected: database connection lost')
+    end
+    if failTransferClaim and q:find('UPDATE player_vehicles SET citizenid = ?, license = ? WHERE plate = ?', 1, true) then
+        failTransferClaim = false
+        error('injected: database connection lost')
     end
     return realUpdate.await(q, p)
 end }, { __call = function(_, ...) return realUpdate(...) end })
@@ -74,7 +84,7 @@ BeforeEach = function()
     p.PlayerData.license = 'license:1'
     p.PlayerData.source = BUYER
     Mock.coords[BUYER] = vector3(PDM.x, PDM.y, PDM.z)
-    failCredit = false
+    failCredit, failDoneMark, failTransferClaim = false, false, false
     states['pfm-banking'] = nil
     states['pf-jobgarages'] = nil
 end
@@ -207,5 +217,60 @@ describe('repossession on the database', function()
         assert_eq(MySQL.scalar.await('SELECT id FROM player_vehicles WHERE plate = ?', { plate }), nil)
         assert_true(MySQL.scalar.await('SELECT id FROM player_vehicles WHERE plate = ?', { other }) ~= nil)
         assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM job_garage_vehicles WHERE plate = ? AND active = 1', { plate })), 0)
+    end)
+end)
+
+describe('a database error at the step after a charge, on the database', function()
+    it('a held finance payment whose done mark fails keeps the car blocked until it is marked; applied once, nothing refunded', function()
+        local plate = 'VSM' .. runNo
+        MySQL.insert.await([[INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state, balance, paymentamount, paymentsleft, financetime)
+            VALUES ('license:1', ?, 'blista', '1', '{}', ?, 'pillboxgarage', 1, 8000, 1000, 8, 100)]], { cid, plate })
+        failCredit = true
+        assert_eq(PFShop.FinancePayment(BUYER, plate, 1000).error, 'payment_held')
+        failDoneMark = true
+        settle()
+        assert_eq(tonumber(MySQL.scalar.await('SELECT balance FROM player_vehicles WHERE plate = ?', { plate })), 7000, 'applied')
+        assert_eq(MySQL.scalar.await('SELECT state FROM pfm_vehicleshop_held WHERE plate = ?', { plate }), 'finishing')
+        assert_eq(PFShop.FinancePayment(BUYER, plate, 1000).error, 'payment_waiting', 'still blocked')
+        assert_eq(json.decode(MySQL.scalar.await('SELECT data FROM pfm_vehicleshop_held WHERE plate = ?', { plate })).applied, true, 'the application is stored')
+        settle()
+        assert_eq(MySQL.scalar.await('SELECT state FROM pfm_vehicleshop_held WHERE plate = ?', { plate }), 'done')
+        assert_true(PFShop.FinancePayment(BUYER, plate, 1000).ok)
+        settle()
+        assert_eq(tonumber(MySQL.scalar.await('SELECT balance FROM player_vehicles WHERE plate = ?', { plate })), 6000)
+        assert_eq(money(BUYER).cash, 18000, 'two payments, no money created')
+        assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM pfm_vehicleshop_owed WHERE ledger_key LIKE ?', { '%' .. plate .. '%' })), 0, 'nothing refunded')
+    end)
+
+    it('a paid transfer whose change of owner fails is held and finished by the sweep: the car moves, the seller is paid once', function()
+        local SELLER = 2
+        local sellerCid = 'VSSELL' .. runNo
+        local seller = Mock.newPlayer(SELLER, sellerCid)
+        seller.PlayerData.money = { cash = 0, bank = 1000 }
+        seller.PlayerData.license = 'license:2'
+        seller.PlayerData.source = SELLER
+        Mock.coords[SELLER] = Mock.coords[BUYER]
+        local plate = 'VST' .. runNo
+        MySQL.insert.await([[INSERT INTO player_vehicles (license, citizenid, vehicle, hash, mods, plate, garage, state, balance)
+            VALUES ('license:2', ?, 'blista', '1', '{}', ?, 'pillboxgarage', 0, 0)]], { sellerCid, plate })
+        Mock.vehicleOf[SELLER] = 950
+        Mock.plates[950] = plate
+        Commands.transfervehicle(SELLER, { tostring(BUYER), '5000' })
+        local prompts = Mock.clientEventsNamed('qb-vehicleshop:client:confirmPurchase')
+        local offer = prompts[#prompts].args[1]
+        failTransferClaim = true
+        local res = PFShop.AnswerOffer(BUYER, true, offer.id)
+        assert_eq(res.error, 'payment_held', 'the old code returned server_error and kept the money')
+        assert_eq(money(BUYER).cash, 15000, 'paid')
+        assert_eq(MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ?', { plate }), sellerCid, 'not moved yet')
+        local hold = MySQL.single.await('SELECT * FROM pfm_vehicleshop_held WHERE plate = ?', { plate })
+        assert_eq(hold.flow, 'transfer')
+        PFSettle.Sweep()
+        assert_eq(MySQL.scalar.await('SELECT citizenid FROM player_vehicles WHERE plate = ?', { plate }), cid, 'moved')
+        assert_eq(money(SELLER).cash, 5000, 'the seller is paid in the kind of money the buyer used')
+        assert_eq(MySQL.scalar.await('SELECT state FROM pfm_vehicleshop_held WHERE id = ?', { hold.id }), 'done')
+        PFSettle.Sweep()
+        assert_eq(money(SELLER).cash, 5000, 'once')
+        assert_eq(money(BUYER).cash, 15000, 'charged once')
     end)
 end)

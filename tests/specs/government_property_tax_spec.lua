@@ -186,6 +186,24 @@ describe('housing not ready', function()
         assert_eq(#bills, 0)
         assert_eq(PropertyTax.Run(WED).billed, 1, 'billed once it is ready')
     end)
+    it('false alone means not ready: the reason may not cross the export boundary', function()
+        houses = { { house = 'a', citizenid = 'CIT1', value = 100000 } }
+        local said = {}
+        local printOrig = print
+        print = function(...) said[#said + 1] = table.concat({ ... }, ' ') end
+        Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() return false end
+        local res = PropertyTax.Run(WED)
+        local res2 = PropertyTax.Run(WED)
+        Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() return houses end
+        print = printOrig
+        assert_eq(res.off, 'not_ready')
+        assert_eq(res.retry, true)
+        assert_eq(res2.off, 'not_ready')
+        local errors = 0
+        for _, line in ipairs(said) do if line:find('returned no list', 1, true) then errors = errors + 1 end end
+        assert_eq(errors, 0, 'reported as a failed export')
+        assert_eq(#bills, 0)
+    end)
     it('a failing export is retried early too; a stopped resource waits for the next interval', function()
         Mock.exportsByResource['pfm-houses'].GetOwnedHouses = function() error('boom') end
         local res = PropertyTax.Run(WED)
@@ -225,6 +243,48 @@ describe('CreateBill with a recurring key', function()
         assert_false(ok, 'no unique key, no recurring bill')
         assert_eq(msg, 'Database error')
         assert_eq(#Mock.dbCalls, 0)
+    end)
+end)
+
+describe('the background loops', function()
+    -- oxmysql raises on a SQL error: one failed run must not end the loop for the rest of the session
+    local function startLoops()
+        local threads = {}
+        local createThread = CreateThread
+        CreateThread = function(fn) threads[#threads + 1] = fn end
+        StartInfrastructureTasks = function() end
+        StartBackgroundTasks()
+        CreateThread = createThread
+        return threads
+    end
+    it('the hourly late fee and escalation loop survives a run that raises', function()
+        local fees, escalations = 0, 0
+        local saved = { ProcessBillLateFees, ProcessBillEscalation, Wait, print }
+        ProcessBillLateFees = function() fees = fees + 1 if fees == 1 then error('Deadlock found when trying to get lock') end end
+        ProcessBillEscalation = function() escalations = escalations + 1 error('Lock wait timeout exceeded') end
+        local threads = startLoops()
+        local waits = 0
+        Wait = function() waits = waits + 1 if waits > 3 then error('stop', 0) end end
+        print = function() end
+        local ok, err = pcall(threads[#threads])         -- the late fee loop is started last
+        ProcessBillLateFees, ProcessBillEscalation, Wait, print = saved[1], saved[2], saved[3], saved[4]
+        assert_eq(err, 'stop', 'the loop ended on an error: ' .. tostring(err))
+        assert_eq(fees, 3)
+        assert_eq(escalations, 3)
+    end)
+    it('the utility billing loop survives a run that raises', function()
+        local runs = 0
+        local saved = { ProcessUtilityBilling, Wait, print, Config.Utilities.EnablePower }
+        Config.Utilities.EnablePower = true
+        ProcessUtilityBilling = function() runs = runs + 1 if runs == 1 then error('Lost connection to MySQL server') end return { billed = 0 } end
+        local threads = startLoops()
+        local waits = 0
+        Wait = function() waits = waits + 1 if waits > 3 then error('stop', 0) end end
+        print = function() end
+        local ok, err = pcall(threads[#threads - 1])     -- utilities come just before the late fees
+        ProcessUtilityBilling, Wait, print, Config.Utilities.EnablePower = saved[1], saved[2], saved[3], saved[4]
+        assert_eq(err, 'stop', 'the loop ended on an error: ' .. tostring(err))
+        assert_eq(runs, 3)
     end)
 end)
 

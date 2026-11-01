@@ -2,10 +2,10 @@
 -- server really pays, what the player carries, the hours (also enforced at the counter when the
 -- shop keeps hours) and the player's melting job; read-only.
 load_resource('tests/lua/ledger_env.lua')
-LedgerEnv.load('pfm-pawnshop', { 'pfm-pawnshop/config.lua', 'pfm-pawnshop/server/main.lua', 'pfm-pawnshop/server/devices.lua' })
-
+-- before the resource loads: it reads the items once, through exports['pfm-core']:GetShared (a copy)
 QBCoreMock.Shared.Items.goldchain = { name = 'goldchain', label = 'Gold Chain', weight = 100, type = 'item' }
 QBCoreMock.Shared.Items.rolex = { name = 'rolex', label = 'Golden Watch', weight = 100, type = 'item' }
+LedgerEnv.load('pfm-pawnshop', { 'pfm-pawnshop/config.lua', 'pfm-pawnshop/server/main.lua', 'pfm-pawnshop/server/devices.lua' })
 local app = {}
 Mock.exportsByResource['pf-devices'] = {
     RegisterApp = function(_, def) app.def = def return true end,

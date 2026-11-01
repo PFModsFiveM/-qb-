@@ -102,7 +102,7 @@ end)
 describe('a tow order that ends without a delivery', function()
     it('registers onClosed, which writes the impound once', function()
         local h = handlers['tow.impound']
-        assert_true(type(h.onClosed) == 'function', 'tow.impound handles closing untowed')
+        assert_true(Mock.callable(h.onClosed), 'tow.impound handles closing untowed')
         local req = { id = 71, status = 'expired', plate = 'ABC123', meta = { fullImpound = false, price = 750, body = 900, engine = 800, fuel = 50 } }
         h.onClosed(req, 'expired')
         assert_eq(#sql('depotprice'), 1, 'impound written')

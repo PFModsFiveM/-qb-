@@ -51,9 +51,19 @@ MySQL.update = setmetatable({ await = function(q, p)
 end }, { __call = function(_, ...) return realUpdate(...) end })
 -- runs in the moment the buyer's claim on a listing executes
 local onClaim = nil
+-- the claim's query fails once: 'before' it ran, or 'after' it ran (its answer lost)
+local claimFails = nil
 local realQuery = MySQL.query
 MySQL.query = setmetatable({ await = function(q, p)
-    if onClaim and q:find('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?', 1, true) then local f = onClaim onClaim = nil f() end
+    if q:find('DELETE FROM occasion_vehicles WHERE plate = ? AND occasionid = ? AND price = ?', 1, true) then
+        if onClaim then local f = onClaim onClaim = nil f() end
+        if claimFails then
+            local how = claimFails
+            claimFails = nil
+            if how == 'after' then realQuery.await(q, p) end
+            error('injected: database connection lost')
+        end
+    end
     return realQuery.await(q, p)
 end }, { __call = function(_, ...) return realQuery(...) end })
 -- replies the bank gives for given keys instead of running the transfer
@@ -105,7 +115,7 @@ BeforeEach = function()
     buyer.PlayerData.license = 'license:2'
     for src in pairs(Mock.players) do Mock.players[src].PlayerData.source = src Mock.coords[src] = LOT end
     MySQL.query.await('DELETE FROM occasion_vehicles')
-    failCredit, onClaim, intercept = false, nil, {}
+    failCredit, onClaim, intercept, claimFails = false, nil, {}, nil
 end
 
 describe("the lot's listing callback on the database", function()
@@ -207,5 +217,66 @@ describe('owed payments of the lot on the database', function()
         PFSettle.Sweep()
         assert_eq(balance(SELLER), 1000 + SHARE)
         assert_eq(completed('pfm-vehiclesales:buy:OC' .. plate .. ':%:seller%'), 1)
+    end)
+end)
+
+describe('a claim query that fails after the charge, on the database', function()
+    local function hold(plate) return MySQL.single.await('SELECT * FROM pfm_vehiclesales_held WHERE plate = ?', { plate }) end
+
+    it('an unclear charge, then the claim fails before it ran: held as unknown, claimed and delivered when the charge completes', function()
+        local plate = 'USX' .. runNo
+        list(plate)
+        failCredit = true
+        claimFails = 'before'
+        buy(plate)
+        assert_eq(balance(BUYER), 41000)
+        local h = hold(plate)
+        assert_true(h ~= nil, 'held (the old code aborted: no hold, no refund)')
+        assert_eq(json.decode(h.data).claimed, nil, 'unknown')
+        assert_true(listing(plate) ~= nil)
+        settle()
+        assert_eq(listing(plate), nil)
+        assert_eq(owned(plate).citizenid, buyerCid)
+        assert_eq(balance(SELLER), 1000 + SHARE)
+        assert_eq(json.decode(hold(plate).data).claimed, true, 'the answer is stored')
+        settle()
+        assert_eq(balance(SELLER), 1000 + SHARE, 'paid once')
+        assert_eq(balance(BUYER), 41000, 'charged once')
+    end)
+
+    it('a paid purchase whose claim ran but whose answer was lost: found claimed and delivered by the sweep', function()
+        local plate = 'USY' .. runNo
+        list(plate)
+        claimFails = 'after'
+        buy(plate)
+        assert_eq(balance(BUYER), 41000)
+        assert_eq(listing(plate), nil)
+        assert_eq(owned(plate), nil, 'no car yet')
+        assert_eq(hold(plate).state, 'waiting')
+        PFSettle.Sweep()
+        assert_eq(owned(plate).citizenid, buyerCid)
+        assert_eq(tonumber(owned(plate).state), 1, 'parked')
+        assert_eq(balance(SELLER), 1000 + SHARE)
+        assert_eq(hold(plate).state, 'done')
+        PFSettle.Sweep()
+        assert_eq(balance(BUYER), 41000)
+        assert_eq(balance(SELLER), 1000 + SHARE)
+    end)
+
+    it('another waiting purchase of the car recorded the claim: this buyer is refunded, nothing delivered', function()
+        local plate = 'USZ' .. runNo
+        list(plate)
+        claimFails = 'after'
+        buy(plate)
+        local mine = hold(plate)
+        -- an older held purchase of the same car that recorded its claim
+        MySQL.insert.await([[INSERT INTO pfm_vehiclesales_held (id, flow, charge_key, accounts, citizenid, plate, amount, data, state, created)
+            VALUES (?, 'usedlot', ?, 'bank', 'USOTHER', ?, 1, ?, 'waiting', ?)]], { mine.id - 100000, 'other:' .. plate, plate, json.encode({ claimed = true }), os.time() })
+        PFSettle.Sweep()
+        assert_eq(owned(plate), nil)
+        assert_eq(balance(BUYER), 50000, 'refunded')
+        assert_eq(balance(SELLER), 1000)
+        MySQL.query.await('DELETE FROM pfm_vehiclesales_held WHERE charge_key = ?', { 'other:' .. plate })
+        assert_eq(json.decode(MySQL.single.await('SELECT data FROM pfm_vehiclesales_held WHERE id = ?', { mine.id }).data).claimed, false, 'the answer is stored')
     end)
 end)

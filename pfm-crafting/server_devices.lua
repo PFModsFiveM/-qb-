@@ -19,7 +19,11 @@ end
 
 -- crafting XP is kept under metadata.rep (server.lua uses Player.GetRep)
 local function repOf(Player, xpType)
-    if type(Player.GetRep) == 'function' then return tonumber(Player.GetRep(xpType)) or 0 end
+    -- Player comes from pfm-core, so GetRep is a function reference (a callable table), not a function
+    local getRep = Player.GetRep
+    if type(getRep) == 'function' or (type(getRep) == 'table' and type(rawget(getRep, '__cfx_functionReference')) == 'string') then
+        return tonumber(getRep(xpType)) or 0
+    end
     local rep = Player.PlayerData.metadata and Player.PlayerData.metadata.rep
     return tonumber(type(rep) == 'table' and rep[xpType]) or 0
 end

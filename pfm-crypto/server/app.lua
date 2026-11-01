@@ -102,7 +102,9 @@ local function trade(src, fn)
     if onCooldown(Player.PlayerData.citizenid) then return { ok = false, error = 'slow_down' } end
     local res = fn(Player)
     if res.ok then
-        res.wallet = { coins = tonumber(Player.PlayerData.money.crypto) or 0, bank = tonumber(Player.PlayerData.money.bank) or 0 }
+        -- Player is pfm-core's copy from before the trade: read the balances again
+        local now = playerOf(src) or Player
+        res.wallet = { coins = tonumber(now.PlayerData.money.crypto) or 0, bank = tonumber(now.PlayerData.money.bank) or 0 }
     end
     return res
 end

@@ -27,9 +27,9 @@ Mock.exportsByResource['oxmysql'] = {
     execute = function(_, sql, params, cb) return call(sql, params, cb) end,
     query = function(_, sql, params, cb) return call(sql, params, cb) end,
     fetch = function(_, sql, params, cb) return call(sql, params, cb) end,
-    insert = function(_, sql, params, cb) if type(cb) == 'function' then cb(1) end return 1 end,
-    update = function(_, sql, params, cb) if type(cb) == 'function' then cb(1) end return 1 end,
-    scalar = function(_, sql, params, cb) if type(cb) == 'function' then cb(0) end return 0 end,
+    insert = function(_, sql, params, cb) if Mock.callable(cb) then cb(1) end return 1 end,
+    update = function(_, sql, params, cb) if Mock.callable(cb) then cb(1) end return 1 end,
+    scalar = function(_, sql, params, cb) if Mock.callable(cb) then cb(0) end return 0 end,
 }
 
 function GetCurrentResourceName() return 'pf-policemdt-DEV' end

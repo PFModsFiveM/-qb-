@@ -389,6 +389,121 @@ describe('Tow deposit the bank has not settled', function()
     end)
 end)
 
+describe('Tow: round-2 checks (an unclear deposit through a bank outage, owed pay keys, claims at once)', function()
+    local bankExports = Mock.exportsByResource['pfm-banking']
+    local realTransfer, realGet = bankExports.Transfer, bankExports.GetTransaction
+    local function restoreBank() bankExports.Transfer, bankExports.GetTransaction = realTransfer, realGet end
+
+    it('a retry while the bank is down keeps the unsettled key: the next try asks under it again', function()
+        Mock.coords[DRIVER] = BAY
+        local keys = {}
+        bankExports.Transfer = function(_, opts)
+            keys[#keys + 1] = opts.key
+            return { ok = false, state = 'pending', txId = 77, error = 'in_progress' }
+        end
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).error, 'deposit_pending')
+        -- the ledger is not ready (its startup recovery), then pfm-banking is stopped
+        bankExports.Transfer = function(_, opts)
+            keys[#keys + 1] = opts.key
+            return { ok = false, error = 'ledger_unavailable' }
+        end
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).error, 'bank_unavailable')
+        bankDown = true
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).error, 'bank_unavailable')
+        bankDown = false
+        restoreBank()
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).ok, true)
+        local charged = LedgerEnv.paid('pf-jobs:tow:rent:')
+        assert_eq(#charged, 1, 'one deposit')
+        assert_eq(keys[2], keys[1])
+        assert_eq(charged[1].idempotency_key, keys[1], "the first unclear charge's key, never a new one")
+        assert_eq(money(DRIVER, 'cash'), 1000 - DEPOSIT)
+    end)
+
+    it('a refused deposit (settled) frees the key: the next rental asks under a new one', function()
+        Mock.coords[DRIVER] = BAY
+        local keys = {}
+        bankExports.Transfer = function(_, opts)
+            keys[#keys + 1] = opts.key
+            return { ok = false, state = 'pending', txId = 77, error = 'in_progress' }
+        end
+        rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' })
+        bankExports.Transfer = function(_, opts)
+            keys[#keys + 1] = opts.key
+            return { ok = false, duplicate = true, state = 'compensated', txId = 77, error = 'reversed' }
+        end
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).error, 'payment_failed')
+        restoreBank()
+        assert_eq(rpc(DRIVER, 'rentFlatbed', { model = 'flatbed' }).ok, true)
+        local charged = LedgerEnv.paid('pf-jobs:tow:rent:')
+        assert_eq(#charged, 1)
+        assert_true(charged[1].idempotency_key ~= keys[1], 'the reversed key returns its reversal forever')
+    end)
+
+    it('owed pay the bank turned down for good is claimed under the next numbered key', function()
+        local truck = deliverUnpaid()
+        returnTruck(truck)
+        local dead
+        bankExports.Transfer = function(self, opts)
+            if opts.key:find('pf-jobs:tow:contract:', 1, true) == 1 and (dead == nil or opts.key == dead) then
+                -- the credit to the player failed and was reversed: the ledger keeps this result
+                dead = opts.key
+                return { ok = false, duplicate = true, state = 'compensated', txId = 90, error = 'credit_failed' }
+            end
+            return realTransfer(opts) -- the real ledger export (registered by pfm-banking: no self)
+        end
+        bankExports.GetTransaction = function(self, k)
+            if k == dead then return { state = 'compensated', error = 'credit_failed' } end
+            return realGet(k)
+        end
+        local first = rpc(DRIVER, 'claimPay')
+        assert_eq(first.error, 'pay_pending', 'not told as a bank that did not answer')
+        local bank = money(DRIVER, 'bank')
+        local res = rpc(DRIVER, 'claimPay')
+        restoreBank()
+        assert_eq(res.ok, true, 'the first key returned its refusal forever')
+        local rows = LedgerEnv.paid('pf-jobs:tow:contract:')
+        assert_eq(#rows, 1)
+        assert_eq(rows[1].idempotency_key, dead .. ':1')
+        assert_eq(money(DRIVER, 'bank'), bank + res.paid)
+        assert_eq(rpc(DRIVER, 'claimPay').error, 'nothing_owed')
+        assert_eq(#LedgerEnv.paid('pf-jobs:tow:contract:'), 1)
+    end)
+
+    it('two claims at once: the second is refused while the first waits on the bank, and it counts once', function()
+        local truck = deliverUnpaid()
+        returnTruck(truck)
+        local before = PFJobsTow.View(DRIVER).stats
+        local nested
+        bankExports.Transfer = function(self, opts)
+            if not nested and opts.key:find('pf-jobs:tow:contract:', 1, true) == 1 then
+                nested = PFJobsTow.ClaimPay(DRIVER, true) -- a second claim while the bank works on the first
+            end
+            return realTransfer(opts) -- the real ledger export (registered by pfm-banking: no self)
+        end
+        local res = PFJobsTow.ClaimPay(DRIVER, true)
+        restoreBank()
+        assert_eq(res.ok, true)
+        assert_eq(nested.error, 'busy')
+        local after = PFJobsTow.View(DRIVER).stats
+        assert_eq(after.contracts, before.contracts + 1, 'the contract counts once')
+        assert_eq(after.earned, before.earned + res.paid, 'its pay counts once')
+        assert_eq(#LedgerEnv.paid('pf-jobs:tow:contract:'), 1)
+    end)
+
+    it("a window's refresh carries the config for a driver (a return-only window that becomes one again)", function()
+        rentTruck()
+        leaveJob(DRIVER)
+        local ro = rpc(DRIVER, 'getInit')
+        assert_eq(ro.returnOnly, true)
+        assert_eq(ro.config, nil)
+        Mock.players[DRIVER].PlayerData.job = { name = 'tow', grade = { level = 0 }, onduty = true }
+        local v = rpc(DRIVER, 'refresh')
+        assert_eq(v.returnOnly, nil)
+        assert_true(type(v.config) == 'table' and v.config.payBase ~= nil, 'the contracts tab has its numbers')
+    end)
+end)
+
 -- ── the world side: /tow on the client ──────────────────────────────
 
 local CLIENT = '[pfscripts]/pf-jobs/client/tow.lua'

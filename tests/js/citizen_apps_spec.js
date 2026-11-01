@@ -201,6 +201,25 @@ const mailHandlers = () => ({
         ok(root.querySelector('.pfc-item-sub').textContent.includes('copy'), 'the list does not say it is a copy');
     });
 
+    await it('documents: a signature made on an earlier copy is not shown as one on the original', async () => {
+        const env = makeWindow('tablet', {
+            'documents.list': () => ({ ok: true, mine: [{ id: 9, title: 'Car sale', own: true, copy: true, signedOriginal: true, locked: true }], shared: [] }),
+            'documents.get': () => ({ ok: true, document: { id: 9, title: 'Car sale', body: 'A sells the car', own: true, locked: true, copiedFrom: 8,
+                canEdit: false, signatures: [], sharedWith: [],
+                signatureRecord: { omitted: 0, signatures: [
+                    { name: 'Ann', at: now - 60, fingerprint: 'cd'.repeat(32), matches: true },
+                    { name: 'Bob', at: now, fingerprint: 'cd'.repeat(32), matches: true, onCopy: true }] } } }),
+        });
+        await env.win.PFApps.refresh();
+        await env.win.PFApps.open('documents', { open: 9 });
+        await settle();
+        const rows = [...env.$('.pfc-docs').querySelectorAll('.pfc-sign-copy')].map((r) => r.textContent);
+        eq(rows.length, 2);
+        ok(rows[0].includes('Ann signed the original'), rows[0]);
+        ok(rows[1].includes('Bob signed an earlier copy') && !rows[1].includes('signed the original'), rows[1]);
+        ok(env.$('.pfc-sign-record').textContent.includes('Signatures on the original and earlier copies'), 'heading');
+    });
+
     await it('mail: the sender is told which recipient did not get a document', async () => {
         const handlers = mailHandlers();
         handlers['mail.send'] = () => ({ ok: true, id: 9, delivered: 2, missing: [{ recipient: 'Ann', document: '<i>Quote</i>', error: 'recipient_full' }],

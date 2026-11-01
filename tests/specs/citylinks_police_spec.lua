@@ -83,7 +83,7 @@ end)
 describe('drug seizure', function()
     it('the seizure listener is registered with the inventory', function()
         local found = false
-        for _, l in ipairs(listeners) do if l.kind == 'ItemMoved' and l.fn == PoliceOnItemMoved then found = true end end
+        for _, l in ipairs(listeners) do if l.kind == 'ItemMoved' and Mock.funcrefTarget(l.fn) == PoliceOnItemMoved then found = true end end
         assert_true(found)
     end)
     it('drugs an officer takes from a suspect are one lead with the totals', function()

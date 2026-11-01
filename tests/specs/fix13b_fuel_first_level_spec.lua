@@ -6,6 +6,11 @@
 -- The pump sells only at a station the server knows (pricing.lua GetStationIndexForCoords, or
 -- Config.ExtraPumps); jerry cans pour anywhere. A car with no level is charged only for the room
 -- the server computes from that first level.
+-- Round 2: server code that spawns an owned car names its row (UseStoredFuel), so a plate the
+-- owner's client changes before the first report cannot turn the stored level into a full tank;
+-- each first level remembers the plate it was given for, and GetVehicleFuel(veh, plate) answers
+-- only for that plate (pfm-garages caps a parked car's saved fuel with it). A refuel landing while
+-- the first level is looked up waits for it instead of being told the car is busy.
 load_resource('tests/lua/fivem_mocks.lua')
 
 local states = {}
@@ -27,11 +32,16 @@ MySQL.scalar = setmetatable({ await = function(query, p)
     return stored[p[1]]
 end }, { __call = function() end })
 -- the plate settle wait: onWait runs inside it (the owner's client syncing the plate)
-local waits, onWait = {}, nil
+local waits, onWait, yieldWaits = {}, nil, false
 function Wait(ms)
     waits[#waits + 1] = ms
     if onWait then local f = onWait onWait = nil f() end
+    -- (a test running a handler in a coroutine lets other handlers run during this wait)
+    if yieldWaits and coroutine.isyieldable() then coroutine.yield('wait') end
 end
+local threads = {}
+function CreateThread(fn) threads[#threads + 1] = fn end
+local function runThreads() local list = threads threads = {} for _, fn in ipairs(list) do fn() end end
 
 local charged = {}
 PFPayout = {
@@ -81,8 +91,9 @@ BeforeEach = function()
     Mock.players, Mock.vehicleOf, Mock.coords, Mock.plates = {}, {}, {}, {}
     Mock.gameTimer = Mock.gameTimer + 100000
     states, charged, stored, lookups, waits = {}, {}, {}, {}, {}
-    duringLookup, onWait, dbDown, PFPayout.result = nil, nil, false, nil
+    duringLookup, onWait, dbDown, PFPayout.result, yieldWaits, threads = nil, nil, false, nil, false, {}
     entityType = { [CAR] = 2, [PED] = 1 }
+    Mock.fireEvent('entityRemoved', nil, CAR) -- each test's car is a new one (the handle is reused)
     for _, src in ipairs({ DRIVER, PUMPER, OTHER }) do Mock.newPlayer(src) giveCan(src, 0) end
     Config.SyncFuelBetweenPlayers = true
     Config.DefaultFuel = DefaultConfig.DefaultFuel
@@ -153,7 +164,10 @@ describe('fix13b fuel: a car\'s first level comes from the server', function()
         sync(DRIVER, 100)
         assert_eq(#lookups, 1, 'one lookup')
         assert_eq(pump[1], false)
-        assert_eq(pump[3], 'busy')
+        assert_eq(pump[3], 'busy', 'a lookup that does not end within its wait: busy')
+        local polled = 0
+        for _, ms in ipairs(waits) do if ms == 100 then polled = polled + 1 end end
+        assert_eq(polled, 2 * 50, 'the pump and the can each waited 5 s for it (in 100 ms steps), no longer')
         assert_eq(#charged, 0)
         assert_eq(can.can.info.fuel, 40, 'the can was not poured')
         assert_eq(can.notes[1], 'error.vehicle_busy')
@@ -197,6 +211,124 @@ describe('fix13b fuel: a car\'s first level comes from the server', function()
         sync(DRIVER, 100)
         assert_eq(#lookups, 0)
         assert_eq(fuel(CAR), nil)
+    end)
+end)
+
+describe('fix13b fuel round 2: the row server code names, and the plate a level was given for', function()
+    it('a car spawned as an owned row (UseStoredFuel) starts at that row\'s level at once, whatever plate its owner\'s client shows', function()
+        stored.GARAGE1 = 12
+        Mock.plates[CAR] = 'ZZFAKE1' -- the owner's client changed the plate before its first report
+        assert_eq(fuelExports.UseStoredFuel(CAR, ' GARAGE1 '), true)
+        runThreads()
+        assert_eq(fuel(CAR), 12.0, 'looked up when the garage named it, not at the first report')
+        assert_eq(#lookups, 1)
+        assert_eq(lookups[1].plate, 'GARAGE1')
+        assert_eq(#waits, 0, 'no plate settle wait for a named row')
+        sync(DRIVER, 100)
+        assert_eq(fuel(CAR), 12.0, 'the report does not raise it')
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'GARAGE1'), 12.0)
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'garage1  '), 12.0, 'trimmed, any case')
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'ZZFAKE1'), nil, 'it does not answer for the plate it shows')
+        assert_eq(fuelExports.GetVehicleFuel(CAR), 12.0, 'without a plate: the level, as before')
+    end)
+
+    it('named after the first report started: the lookup uses the named row', function()
+        stored.GARAGE1 = 30
+        Mock.plates[CAR] = '46EEK572'
+        onWait = function() fuelExports.UseStoredFuel(CAR, 'GARAGE1') end -- during the settle wait
+        sync(DRIVER, 100)
+        assert_eq(fuel(CAR), 30.0)
+        assert_eq(lookups[2].plate, 'GARAGE1')
+        runThreads() -- its own lookup finds the level there and changes nothing
+        assert_eq(#lookups, 2)
+    end)
+
+    it('a plate changed before the first report (no row named): the default, which does not answer for the real plate', function()
+        stored.GARAGE1 = 12
+        Mock.plates[CAR] = 'ZZFAKE1'
+        sync(DRIVER, 100)
+        assert_eq(fuel(CAR), 100.0)
+        Mock.plates[CAR] = 'GARAGE1' -- back to its real plate to park it
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'GARAGE1'), nil, 'so pfm-garages cannot store that full tank for GARAGE1')
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'ZZFAKE1'), 100.0)
+    end)
+
+    it('SetVehicleFuel gives the level for the named row, else for the plate the car shows', function()
+        Mock.plates[CAR] = 'JOB123'
+        fuelExports.SetVehicleFuel(CAR, 50)
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'JOB123'), 50.0)
+        fuelExports.UseStoredFuel(CAR, 'OWN9')
+        fuelExports.SetVehicleFuel(CAR, 60)
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'OWN9'), 60.0)
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 'JOB123'), nil)
+        runThreads()
+        assert_eq(#lookups, 0, 'a car that has a level is not looked up')
+    end)
+
+    it('UseStoredFuel and GetVehicleFuel refuse non-vehicles and bad plates; a removed car forgets its row', function()
+        assert_eq(fuelExports.UseStoredFuel(PED, 'OWN1'), false)
+        assert_eq(fuelExports.UseStoredFuel(9999, 'OWN1'), false)
+        assert_eq(fuelExports.UseStoredFuel(CAR, ''), false)
+        assert_eq(fuelExports.UseStoredFuel(CAR, 'WAYTOOLONGPLATE'), false)
+        assert_eq(fuelExports.UseStoredFuel(CAR, 42), false)
+        assert_eq(#threads, 0)
+        fuelExports.SetVehicleFuel(CAR, 50)
+        assert_eq(fuelExports.GetVehicleFuel(CAR, 42), nil)
+        fuelExports.UseStoredFuel(CAR, 'OWN1')
+        Mock.fireEvent('entityRemoved', nil, CAR)
+        states = {}
+        Mock.plates[CAR], stored.OTHER1 = 'OTHER1', 25 -- the handle reused by another car
+        sync(DRIVER, 100)
+        assert_eq(lookups[1].plate, 'OTHER1')
+        assert_eq(fuel(CAR), 25.0)
+    end)
+
+    it('IsFuelSynced tells other resources whether the server keeps levels', function()
+        assert_eq(fuelExports.IsFuelSynced(), true)
+        Config.SyncFuelBetweenPlayers = false
+        assert_eq(fuelExports.IsFuelSynced(), false)
+        fuelExports.UseStoredFuel(CAR, 'OWN1')
+        assert_eq(#threads, 0, 'nothing is looked up with sync off')
+    end)
+end)
+
+describe('fix13b fuel round 2: a refuel during the first-level lookup waits for it', function()
+    it('the pump arriving during the lookup waits, then sells only the room the stored level leaves', function()
+        Mock.plates[CAR], stored.OWN40 = 'OWN40', 40
+        local pump, co
+        duringLookup = function()
+            -- the pump lands while the database answers the lookup; it polls in its own thread
+            yieldWaits = true
+            co = coroutine.create(function() pump = { refill(PUMPER, 80) } end)
+            assert_eq(select(2, coroutine.resume(co)), 'wait')
+        end
+        sync(DRIVER, 100)
+        assert_eq(fuel(CAR), 40.0, 'the lookup finished')
+        assert_eq(pump, nil, 'the pump was still waiting')
+        local ok, err = coroutine.resume(co)
+        assert_true(ok, tostring(err))
+        assert_eq(coroutine.status(co), 'dead')
+        assert_eq(pump[1], true, 'not busy: it sold once the lookup ended')
+        assert_eq(pump[2], 100.0)
+        assert_eq(#charged, 1)
+        assert_eq(charged[1].amount, math.floor(60 * GetStationFuelPrice(18) + 0.5), '60 litres fit, not 80')
+        assert_eq(#lookups, 1)
+    end)
+
+    it('a jerry can poured during the lookup waits for it too', function()
+        Mock.plates[CAR], stored.OWN90 = 'OWN90', 90
+        local p = giveCan(OTHER, 40)
+        local co
+        duringLookup = function()
+            yieldWaits = true
+            co = coroutine.create(function() Mock.fireNet('qb-fuel:server:setCanFuel', OTHER, 0, CAR) end)
+            coroutine.resume(co)
+        end
+        sync(DRIVER, 100)
+        assert_true(coroutine.resume(co))
+        assert_eq(fuel(CAR), 100.0)
+        assert_eq(p.can.info.fuel, 30, 'only the 10 litres that fit')
+        assert_eq(#p.notes, 0, 'no busy message')
     end)
 end)
 

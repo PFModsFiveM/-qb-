@@ -10,7 +10,11 @@
 --     truck's trunk) are now written off, so the contract closes with what was handed in.
 --   * In shared-stash mode the bags taken from a pickup are counted 250 ms after the move. Ending
 --     in that window took the zero-bag path: no pay, and bags in the pocket. The end now waits for
---     that count first.
+--     that count first. The move arrives from pfm-inventory's client as a net event, which pf-jobs
+--     must register to receive at all (fired here with Mock.fireNet); a burst of them makes one count.
+--   * Round 2: a close at the vault with nothing left to hand in sends the client on to the truck
+--     return; an end asked during a deposit, during another end's wait, or by a member who leaves
+--     during the wait changes nothing; a trunk under the padded plate text counts.
 load_resource('tests/lua/ledger_env.lua')
 QBCore = QBCoreMock
 QBCoreMock.Shared.Items.moneybag = { name = 'moneybag', label = 'Money Bag', weight = 0 }
@@ -253,6 +257,65 @@ describe('Gruppe 6: an early end whose bags were lost', function()
         assert_eq(view(LEAD).contract.bagsTaken, n, 'none written off')
     end)
 
+    it("bags in the trunk count under the id the client opened it with (the plate padded to 8)", function()
+        accept(LEAD)
+        Mock.fireNet('pf-jobs:gruppe6:spawnVehicle', LEAD)
+        local data = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')[1].args[1]
+        assert_eq(#data.plate, 6, 'a G6 plate is shorter than the 8 characters the game shows')
+        local loc = data.pickupSequence[1]
+        Mock.fireNet('pf-jobs:gruppe6:openPickupStash', LEAD, loc, 1)
+        for _ = 1, data.locationBags[1] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', LEAD, loc, 1) end
+        local n = carried[LEAD]
+        carried[LEAD] = 0
+        -- pfm-inventory keeps the trunk under the client's untrimmed plate text
+        invs['trunk- ' .. data.plate .. ' '] = { items = { { name = 'moneybag', amount = n } } }
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        assert_eq(view(LEAD).contract.bagsTaken, n, 'none written off')
+        assert_eq(eventsFor('pf-jobs:gruppe6:goToDeposit', LEAD), 1)
+    end)
+
+    it('a close at the vault with nothing left to hand in sends the client on to return the truck', function()
+        local _, taken = collect(LEAD, 2)
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        carried[LEAD] = 2
+        atVault(LEAD)
+        Mock.fireNet('pf-jobs:gruppe6:depositComplete', LEAD)
+        local prog = Mock.clientEventsNamed('pf-jobs:gruppe6:depositProgress')
+        assert_eq(prog[#prog].args[1], 2)
+        assert_eq(prog[#prog].args[2], taken, 'more bags owed: keep depositing')
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD) -- the rest is lost: written off, close it at the vault
+        local before = eventsFor('pf-jobs:gruppe6:depositProgress', LEAD)
+        Mock.fireNet('pf-jobs:gruppe6:depositComplete', LEAD)
+        assert_eq(#paid(), 1, 'paid for the 2 bags')
+        assert_eq(eventsFor('pf-jobs:gruppe6:depositProgress', LEAD), before + 1, 'the client is told all bags are in')
+        prog = Mock.clientEventsNamed('pf-jobs:gruppe6:depositProgress')
+        assert_eq(prog[#prog].args[1], 2)
+        assert_eq(prog[#prog].args[2], 2, 'deposited = total: on to the vault door and the truck return')
+    end)
+
+    it('an end asked while a deposit takes the bags is refused, and the bags are not written off', function()
+        local data, taken, total = collect(LEAD, 1)
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        atVault(LEAD)
+        local p = Mock.players[LEAD]
+        local remove = p.Functions.RemoveItem
+        local note
+        p.Functions.RemoveItem = function(name, n)
+            local ok = remove(name, n)
+            -- the bags have left the pocket but are not counted as handed in yet
+            Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+            note = lastNote(LEAD)
+            return ok
+        end
+        Mock.fireNet('pf-jobs:gruppe6:depositComplete', LEAD)
+        p.Functions.RemoveItem = remove
+        assert_true(tostring(note):find('being handed in', 1, true) ~= nil, 'told to wait')
+        assert_eq(eventsFor('pf-jobs:gruppe6:returnWithoutBags', LEAD), 0, 'not closed as lost')
+        local rows = paid()
+        assert_eq(#rows, 1)
+        assert_eq(rows[1].amount, math.floor(data.payout * taken / total), 'every bag handed in is paid')
+    end)
+
     it("in a party, a member's bags count while they hold the contract, and are written off once they leave", function()
         party(M2)
         accept(LEAD)
@@ -279,8 +342,8 @@ describe('Gruppe 6 shared-stash mode: ending while bags are being counted', func
         assert_true(stash ~= nil and stash.items[1].amount >= n, 'the pickup stash holds the bags')
         stash.items[1].amount = stash.items[1].amount - n
         carried[src] = carried[src] + n
-        -- pfm-inventory raises its move event; the bags are counted 250 ms later
-        Mock.fireEvent('qb-inventory:server:SetInventoryData', src, id, 'player')
+        -- pfm-inventory's client sends its move as a net event; the bags are counted 250 ms later
+        Mock.fireNet('qb-inventory:server:SetInventoryData', src, id, 'player')
     end
 
     it('waits for the count instead of ending with no pay', function()
@@ -296,6 +359,66 @@ describe('Gruppe 6 shared-stash mode: ending while bags are being counted', func
         atVault(LEAD)
         Mock.fireNet('pf-jobs:gruppe6:depositComplete', LEAD)
         assert_eq(#paid(), 1, 'the bag is paid for')
+    end)
+
+    it('a burst of move events makes one count and one more pass, then the mark clears', function()
+        G6.ServerSideStash = false
+        local data = accept(LEAD)
+        takeFromStash(LEAD, data, 1)
+        local id = ('pf_gruppe6_pickup_%s_%s'):format(data.pickupSequence[1], 1)
+        for _ = 1, 50 do Mock.fireNet('qb-inventory:server:SetInventoryData', LEAD, id, 'player') end
+        assert_eq(#timers, 1, 'one count queued, however often the event is sent')
+        tick()
+        assert_eq(#timers, 1, 'one more pass for the moves reported meanwhile')
+        tick()
+        assert_eq(#timers, 0)
+        assert_eq(view(LEAD).contract.bagsTaken, 1, 'the bag is counted once')
+        ticking = false -- nothing left to count: the end does not wait
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        assert_eq(eventsFor('pf-jobs:gruppe6:goToDeposit', LEAD), 1)
+    end)
+
+    it('a second end while the first waits for the count is refused at once', function()
+        G6.ServerSideStash = false
+        local data = accept(LEAD)
+        takeFromStash(LEAD, data, 1)
+        local second
+        local wait = Wait
+        Wait = function()
+            if not second then
+                Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+                second = lastNote(LEAD)
+            end
+            wait()
+        end
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        Wait = wait
+        assert_eq(second, 'Already ending this contract. One moment.')
+        assert_eq(eventsFor('pf-jobs:gruppe6:goToDeposit', LEAD), 1, 'one end')
+    end)
+
+    it('a member who leaves the party during the wait leaves the contract as it was', function()
+        G6.ServerSideStash = false
+        party(M2)
+        local data = accept(LEAD)
+        takeFromStash(LEAD, data, 1)
+        tick() -- the leader's bag is counted
+        assert_eq(view(LEAD).contract.bagsTaken, 1)
+        takeFromStash(M2, data, 1)
+        local left = false
+        local wait = Wait
+        Wait = function()
+            if not left then left = true; Mock.fireNet('pf-jobs:gruppe6:leaveGroup', M2) end
+            wait()
+        end
+        Mock.fireNet('pf-jobs:gruppe6:endContract', M2)
+        Wait = wait
+        assert_eq(view(M2).contract, nil, 'off the contract')
+        assert_eq(eventsFor('pf-jobs:gruppe6:goToDeposit', M2), 0)
+        assert_eq(view(LEAD).contract.earlyEnd, false, 'not marked as ending: nobody was sent to the vault')
+        Mock.fireNet('pf-jobs:gruppe6:endContract', LEAD)
+        assert_false(tostring(lastNote(LEAD)):find('Already ending', 1, true) ~= nil, "the leader's end is not refused")
+        assert_eq(eventsFor('pf-jobs:gruppe6:goToDeposit', LEAD), 1, 'the leader goes to the vault with the bag')
     end)
 
     it('a count that does not come in time leaves the contract running (asked to try again)', function()

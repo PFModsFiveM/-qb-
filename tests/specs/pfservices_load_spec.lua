@@ -57,7 +57,7 @@ describe('pf-services apps', function()
         assert_true(#dir.services > 0)
         assert_eq(handlers.directory.waypoint(1, { id = 'nope' }).error, 'no_location')
         assert_true(registered.dispatch.access.handler == true)
-        assert_true(type(handlers.dispatch.__access) == 'function')
+        assert_true(Mock.callable(handlers.dispatch.__access))
         local p = Mock.newPlayer(1)
         p.PlayerData.job = { name = 'tow', onduty = true, grade = { level = 0 } }
         assert_true(handlers.dispatch.__access(1))

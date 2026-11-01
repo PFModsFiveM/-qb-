@@ -1,6 +1,7 @@
 -- pfm-fuel on the real database: a car with no shared fuel level gets its first one from
 -- player_vehicles.fuel by the plate the server sees (trimmed, as the table keeps it); a plate with
 -- no row, or a row with no level, gets Config.DefaultFuel. The driver's report is never the level.
+-- A row named by the spawner (UseStoredFuel) is used whatever plate the car shows.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 RealDB.exec('pfm-garages/player_vehicles.sql')
@@ -14,6 +15,7 @@ end
 function GetEntityType(e) return (e >= 500 and e < 600) and 2 or 1 end
 function DoesEntityExist() return true end
 PFPayout = { NewId = function() return '1' end, Charge = function() return false end }
+function CreateThread(fn) fn() end
 
 Config = nil
 load_resource('pfm-fuel/Config.lua')
@@ -54,6 +56,14 @@ describe('fix13b fuel: the first level from player_vehicles (real database)', fu
         Config.DefaultFuel = 80
         assert_eq(firstReport(503, 'TAXI4242', 100), 80.0, 'no row')
         assert_eq(firstReport(504, 'NOFUEL1', 100), 80.0, 'NULL level')
+    end)
+
+    it('a garage car named by its row starts at that row\'s level though its client shows another plate', function()
+        Mock.plates[507] = 'ZZFAKE1'
+        assert_eq(Mock.exportsByResource['__self'].UseStoredFuel(507, 'OWN23'), true)
+        assert_eq(fuel(507), 23.0)
+        assert_eq(Mock.exportsByResource['__self'].GetVehicleFuel(507, 'OWN23'), 23.0)
+        assert_eq(firstReport(507, 'ZZFAKE1', 100), 23.0, 'the report changes nothing')
     end)
 
     it('a plate the database cannot hold (too long) or an empty one is not looked up', function()

@@ -5,8 +5,10 @@
 -- the repair was undone. Worse, a newer save queued after the repair could land first and the older
 -- one over it. Wear writes now go through one ordered writer per plate, like the NOS ones; every
 -- server repair raises the car's wearEpoch (PFMech.MarkWearRepaired), and the writer compares it: a
--- write older than the car's epoch is snapped again before it goes out, and a repair that landed
--- during a write is written straight after it.
+-- write older than the car's epoch is snapped again before it goes out, and a repair that lands
+-- while a write is waiting or running snaps the repaired car at once (PFMech.WearRepaired) and is
+-- written straight after it, even if the car is gone by then. A failed write, or an error in the
+-- writer, does not leave the plate counted as saved or blocked.
 -- Database writes can be held here (in flight) and released later.
 load_resource('tests/lua/fivem_mocks.lua')
 QBCore = QBCoreMock
@@ -96,6 +98,13 @@ end
 local function release(slot)
     slot.land()
     assert(coroutine.resume(slot.co))
+end
+-- the held write lands and the save it belongs to reports an error (returned)
+local function releaseFailing(slot)
+    slot.land()
+    local ok, err = coroutine.resume(slot.co)
+    assert(not ok, 'the save reports the failure')
+    return tostring(err)
 end
 local function heldWear() for i, s in ipairs(held) do if s.named.brakes ~= nil then return table.remove(held, i) end end end
 local function wearWrites() local n = 0 for _, w in ipairs(inserts) do if w.brakes ~= nil then n = n + 1 end end return n end
@@ -190,7 +199,7 @@ describe('the 30 s driving save and a repair', function()
         assert_eq(wearWrites(), 2)
     end)
 
-    it('a car gone by the end of the write is not written again', function()
+    it('a car gone by the end of the write still keeps the repair (snapped at the repair)', function()
         holdWrites = true
         local store = async('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)
         local wear = heldWear()
@@ -200,6 +209,58 @@ describe('the 30 s driving save and a repair', function()
         Mock.fireEvent('entityRemoved', nil, CAR)
         release(wear)
         assert_eq(coroutine.status(store), 'dead')
-        assert_eq(wearWrites(), 1, 'no write from a car that is gone')
+        assert_eq(wearWrites(), 2, 'the repaired car, snapped while it was there, is written after')
+        assert_eq(saved().brakes, 0)
+        assert_eq(saved().engineHealth, 900, "the store's own readings go with it")
+        assert_eq(respawnWear().brakes, 0, 'it comes back repaired')
+    end)
+
+    it('a repair with no save in flight writes nothing by itself', function()
+        repair()
+        assert_eq(wearWrites(), 0, 'the next save writes it')
+        Mock.fireNet('pf_mech:sync:cacheVehicleState', OWNER, { plate = PLATE, netId = CAR, props = props })
+        assert_eq(saved().brakes, 0)
+    end)
+end)
+
+describe('the wear writer when a write fails', function()
+    it('a queued save that fails is not counted as written: the driving sync saves again at its next report', function()
+        holdWrites = true
+        local first = async('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)
+        local wear = heldWear()
+        holdWrites = false
+        -- the driving sync joins the write in flight and is told its save went out
+        st(CAR).partDamage.brakes = 70
+        Mock.fireNet('pf_mech:sync:cacheVehicleState', OWNER, { plate = PLATE, netId = CAR, props = props })
+        local insert = MySQL.insert.await
+        MySQL.insert.await = function(q, p)
+            if q:find('`brakes`', 1, true) then MySQL.insert.await = insert; error('database gone') end
+            return insert(q, p)
+        end
+        local err = releaseFailing(wear)                                  -- the queued sync write fails
+        assert_true(err:find('database gone', 1, true) ~= nil, 'the newest write failed: the store is told')
+        assert_eq(coroutine.status(first), 'dead')
+        assert_eq(saved().brakes, 55, 'only the first write landed')
+        Mock.fireNet('pf_mech:sync:cacheVehicleState', OWNER, { plate = PLATE, netId = CAR, props = props })
+        assert_eq(saved().brakes, 70, 'saved at the next report, not 30 s later')
+    end)
+
+    it('an error outside the database write does not leave the plate blocked', function()
+        holdWrites = true
+        local first = async('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)
+        local wear = heldWear()
+        holdWrites = false
+        local store = async('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)
+        local exists = DoesEntityExist
+        DoesEntityExist = function(e) DoesEntityExist = exists; error('native failed') end
+        assert_true(releaseFailing(wear):find('native failed', 1, true) ~= nil)
+        assert_eq(coroutine.status(first), 'dead')
+        assert_eq(coroutine.status(store), 'dead')
+        DoesEntityExist = exists
+        local before = wearWrites()
+        st(CAR).partDamage.brakes = 80
+        Mock.fireNet('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)
+        assert_eq(wearWrites(), before + 1, 'the next save is written (the writer was released)')
+        assert_eq(saved().brakes, 80)
     end)
 end)

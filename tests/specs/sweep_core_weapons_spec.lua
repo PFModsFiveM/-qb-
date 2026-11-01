@@ -32,7 +32,8 @@ BeforeEach = function()
     Mock.players = {}
     perms = {}
     local p = Mock.newPlayer(P)
-    p.SetInventory = function() end
+    -- like pfm-inventory's SetInventory: pfm-weapons edits its copy of the items and hands it back
+    p.SetInventory = function(items) p.PlayerData.items = items end
     p.GetItemBySlot = function(slot) return p.PlayerData.items[slot] end
     p.PlayerData.items[1] = { name = 'weapon_pistol', slot = 1, amount = 1, info = { ammo = 10 } }
     p.PlayerData.items[2] = { name = 'pistol_ammo', slot = 2, amount = 2, info = {} }

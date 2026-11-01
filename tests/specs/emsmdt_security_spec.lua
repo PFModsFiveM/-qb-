@@ -37,9 +37,9 @@ Mock.exportsByResource['oxmysql'] = {
     execute = function(_, sql, params, cb) return call(sql, params, cb) end,
     query = function(_, sql, params, cb) return call(sql, params, cb) end,
     fetch = function(_, sql, params, cb) return call(sql, params, cb) end,
-    insert = function(_, sql, params, cb) call(sql, params) if type(cb) == 'function' then cb(1) end return 1 end,
-    update = function(_, sql, params, cb) call(sql, params) if type(cb) == 'function' then cb(1) end return 1 end,
-    scalar = function(_, sql, params, cb) call(sql, params) if type(cb) == 'function' then cb(0) end return 0 end,
+    insert = function(_, sql, params, cb) call(sql, params) if Mock.callable(cb) then cb(1) end return 1 end,
+    update = function(_, sql, params, cb) call(sql, params) if Mock.callable(cb) then cb(1) end return 1 end,
+    scalar = function(_, sql, params, cb) call(sql, params) if Mock.callable(cb) then cb(0) end return 0 end,
 }
 local function ran(fragment)
     local n = 0

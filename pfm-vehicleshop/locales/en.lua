@@ -77,6 +77,9 @@ local Translations = {
         finance_payment_held = "Your bank has not confirmed this finance payment yet. You will not be charged again: it is applied to your loan when it clears, or nothing is taken. Reference %{ref}.",
         transfer_held = "Your bank has not confirmed the payment for %{vehicle} yet. You will not be charged again. The car becomes yours when it clears; if it does not, nothing is taken. Reference %{ref}.",
         transfer_held_seller = "The buyer's bank has not confirmed the payment yet. The car stays yours until it clears, then it moves to them and you are paid. Reference %{ref}.",
+        -- paid, but the change of owner failed in the database: the sweep finishes it
+        transfer_finishing = "Your payment for %{vehicle} went through, but the car could not change hands just now. It finishes on its own within a few minutes: the car becomes yours, or your money is returned. Reference %{ref}.",
+        transfer_finishing_seller = "The buyer paid, but the car could not change hands just now. It finishes on its own: the car moves to them and you are paid, or the buyer gets the money back. Reference %{ref}.",
         sale_held_seller = "The customer's bank has not confirmed the payment yet. The sale finishes on its own when it clears. Reference %{ref}.",
         held_subject = "Your vehicle payment",
         held_delivered = "Your payment cleared. Your %{vehicle} (%{plate}) is parked for you at %{garage}.",

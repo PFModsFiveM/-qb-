@@ -243,7 +243,7 @@ local refillVehicleFuel = function(liter)
         QBCore.Functions.TriggerCallback('qb-fuel:server:refillVehicle', function(success, level, reason)
             if not success then
                 ClearPedTasks(ped)
-                if reason == 'payment' then return end -- the bank's own message says why
+                if reason == 'payment' then return end -- the server (or the bank) already told the player why
                 local why = reason == 'full' and 'error.vehicle_full' or reason == 'busy' and 'error.vehicle_busy'
                     or reason == 'no_vehicle' and 'error.no_vehicle' or reason == 'no_station' and 'error.no_station'
                     or 'error.no_money'

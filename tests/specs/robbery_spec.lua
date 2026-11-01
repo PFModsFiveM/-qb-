@@ -20,6 +20,13 @@ Mock.exportsByResource['pfm-inventory'] = {
 setmetatable(QBCoreMock.Shared.Items, { __index = function(_, k) return { name = k, label = k, unique = false } end })
 
 load_resource('pfm-houserobbery/config.lua')
+-- pfm-houserobbery reads the items once through exports['pfm-core']:GetShared('Items'), a copy (the
+-- metatable above does not cross the export), so its reward items are real entries
+for _, tier in pairs(Config.Rewards) do
+    for _, list in pairs(tier) do
+        for _, r in ipairs(list) do QBCoreMock.Shared.Items[r.item] = { name = r.item, label = r.item, unique = false } end
+    end
+end
 load_resource('pfm-houserobbery/server/main.lua')
 load_resource('pfm-bankrobbery/sh_config.lua')
 load_resource('pfm-bankrobbery/sv_config.lua')

@@ -137,12 +137,8 @@ end
 RegisterServerEvent = RegisterNetEvent
 function AddEventHandler(name, fn) Mock.eventHandlers[name] = fn end
 function TriggerClientEvent(name, target, ...) Mock.clientEvents[#Mock.clientEvents + 1] = { name = name, target = target, args = { ... } } end
-function TriggerEvent(name, ...)
-    Mock.serverEvents[#Mock.serverEvents + 1] = { name = name, args = { ... } }
-    -- server-local events reach AddEventHandler handlers, as in FiveM
-    local handler = Mock.eventHandlers[name]
-    if handler then handler(...) end
-end
+-- TriggerEvent (server-local events reach AddEventHandler handlers) is defined with the resource
+-- boundary below: handlers receive packed copies.
 function CreateThread() end
 Citizen = { CreateThread = CreateThread, Wait = function() end }
 function SetTimeout() end
@@ -195,15 +191,8 @@ function SetEntityRoutingBucket() end
 function GetPlayerRoutingBucket() return 0 end
 function TaskPlayAnim() end
 
---- Invokes a registered QBCore server callback and returns what it passed to cb.
-function Mock.callCallback(name, src, ...)
-    local fn = Mock.callbacks[name]
-    assert(fn, 'no callback registered for ' .. name)
-    local result
-    fn(src, function(...) result = { ... } end, ...)
-    if not result then return nil end
-    return table.unpack(result)
-end
+-- Mock.callCallback(name, src, ...) invokes a registered QBCore server callback and returns what
+-- it passed to cb; it is defined with the resource boundary below (cb arrives as a funcref).
 
 --- Invokes a registered net event as if `src` triggered it from a client.
 function Mock.fireNetAll(name, src, ...)
@@ -343,16 +332,156 @@ function Mock.newPlayer(src, citizenid)
     return p
 end
 
+-- ── resource boundary (msgpack) ───────────────────────────────────
+-- In FiveM an export call packs its arguments and its results with msgpack, and so does a call
+-- through a function reference and TriggerEvent. So, on the other side:
+--   * tables are copies: a change made there never reaches the caller, a returned table is not
+--     shared state, a table referenced twice arrives as two tables; metatables are dropped
+--     (vectors survive: they are native values in FiveM);
+--   * a function, also one nested in a table, arrives as a function reference ("funcref"): a table
+--     with a string __cfx_functionReference. type() says 'table'; it can be called (that call packs
+--     its arguments and results again) but indexing any other key errors;
+--   * a table that contains itself cannot be packed: the caller gets an error.
+-- Mock.pack / Mock.cross emulate that for every export a resource registers with exports(), for
+-- the QBCore object (GetCoreObject), server callbacks and TriggerEvent. Use Mock.callable(v) in a
+-- spec where code would use a callable check.
+local FUNCREF_KEY = '__cfx_functionReference'
+local funcrefTarget = setmetatable({}, { __mode = 'k' }) -- funcref -> the function it calls
+local funcrefCount = 0
+local funcrefMeta = {}
+local packValue
+
+local function newFuncref(target)
+    funcrefCount = funcrefCount + 1
+    local ref = setmetatable({ [FUNCREF_KEY] = 'mock-funcref:' .. funcrefCount }, funcrefMeta)
+    funcrefTarget[ref] = target
+    return ref
+end
+
+function packValue(v, path)
+    local t = type(v)
+    if t == 'function' then return newFuncref(v) end
+    if t ~= 'table' then return v end
+    local target = funcrefTarget[v]
+    if target then return newFuncref(target) end -- a funcref passed on: same function, new reference
+    if path[v] then error('msgpack: cannot pack a table that contains itself (circular reference)', 0) end
+    local isVector = getmetatable(v) == vecMeta
+    path[v] = true
+    local out = {}
+    for k, val in next, v do out[packValue(k, path)] = packValue(val, path) end
+    path[v] = nil
+    if isVector then setmetatable(out, vecMeta) end
+    return out
+end
+
+local function packArgs(...)
+    local n = select('#', ...)
+    local src, out, path = { ... }, { n = n }, {}
+    for i = 1, n do out[i] = packValue(src[i], path) end
+    return out
+end
+local function unpackArgs(t) return table.unpack(t, 1, t.n) end
+
+funcrefMeta.__index = function() error('Cannot index a funcref', 2) end
+funcrefMeta.__newindex = function() error('Cannot set indexes on a funcref', 2) end
+funcrefMeta.__call = function(self, ...)
+    local target = funcrefTarget[self]
+    return unpackArgs(packArgs(target(unpackArgs(packArgs(...)))))
+end
+
+--- One value as the other side of a FiveM boundary receives it.
+function Mock.pack(v) return packValue(v, {}) end
+--- Calls fn as a resource calls an export or a function reference of another resource.
+function Mock.cross(fn, ...) return unpackArgs(packArgs(fn(unpackArgs(packArgs(...))))) end
+--- fn as a function reference (what another resource receives when fn is passed to it).
+function Mock.funcref(fn) return newFuncref(fn) end
+function Mock.isFuncref(v) return type(v) == 'table' and funcrefTarget[v] ~= nil end
+--- The function behind a funcref (v itself otherwise): for a spec that checks which function a
+--- resource registered (two funcrefs of one function are different tables, as in FiveM).
+function Mock.funcrefTarget(v) return (type(v) == 'table' and funcrefTarget[v]) or v end
+--- The callable check resources use (a function, a funcref or a table with __call).
+function Mock.callable(v)
+    if type(v) == 'function' then return true end
+    if type(v) ~= 'table' then return false end
+    if type(rawget(v, FUNCREF_KEY)) == 'string' then return true end
+    local mt = getmetatable(v)
+    return type(mt) == 'table' and rawget(mt, '__call') ~= nil
+end
+
+-- Server callbacks: pfm-core keeps the callback it was given (a funcref, as it came through the
+-- QBCore object) and calls it with its own cb, which the resource then receives as a funcref.
+function Mock.callCallback(name, src, ...)
+    local fn = Mock.callbacks[name]
+    assert(fn, 'no callback registered for ' .. name)
+    local result
+    Mock.cross(fn, src, function(...) result = table.pack(...) end, ...)
+    if not result then return nil end
+    return table.unpack(result, 1, result.n)
+end
+
+-- TriggerEvent: handlers receive packed copies, as in FiveM (also inside one resource).
+-- Mock.serverEvents keeps what the caller passed.
+function TriggerEvent(name, ...)
+    Mock.serverEvents[#Mock.serverEvents + 1] = { name = name, args = { ... } }
+    local args = packArgs(...)
+    local handler = Mock.eventHandlers[name]
+    if handler then handler(unpackArgs(args)) end
+end
+
+-- The QBCore object a resource gets from GetCoreObject: a fresh table per call (each resource has
+-- its own copy, so a resource that wraps QBCore.Functions.X changes only its own). Functions and
+-- Commands are funcrefs: arguments and results cross the boundary (a player from GetPlayer is a
+-- snapshot whose methods are funcrefs). They look QBCoreMock up when called, so a spec may still
+-- stub QBCoreMock.Functions.X after the resource loaded. Shared and the other data parts are the
+-- live QBCoreMock tables (specs add items and jobs at any time).
+local function lateFuncref(container, name)
+    return newFuncref(function(...)
+        local fn = container[name]
+        if fn == nil then error('QBCore function ' .. tostring(name) .. ' does not exist', 2) end
+        return fn(...)
+    end)
+end
+local function functionsView(container)
+    local view = {}
+    for k, v in pairs(container) do
+        if type(v) == 'function' then view[k] = lateFuncref(container, k) else view[k] = Mock.pack(v) end
+    end
+    -- functions a spec adds to QBCoreMock later are still found
+    return setmetatable(view, { __index = function(_, k)
+        local v = container[k]
+        if type(v) == 'function' then return lateFuncref(container, k) end
+        return v
+    end })
+end
+local FUNCTION_PARTS = { Functions = true, Commands = true }
+function Mock.coreObject(filters)
+    local out = {}
+    local function part(key)
+        local v = QBCoreMock[key]
+        if FUNCTION_PARTS[key] and type(v) == 'table' then return functionsView(v) end
+        return v
+    end
+    if type(filters) == 'table' then
+        for _, key in ipairs(filters) do out[key] = part(key) end
+    else
+        for key in pairs(QBCoreMock) do out[key] = part(key) end
+    end
+    return out
+end
+
 -- ── exports ───────────────────────────────────────────────────────
 Mock.vehicleGrants = {}
 Mock.exportsByResource['pfm-core'] = {
     -- like pfm-core: a filter list returns only those parts (a resource asking for
     -- {'Functions'} has no QBCore.Commands, exactly as on a real server)
     GetCoreObject = function(_, filters)
-        if type(filters) ~= 'table' then return QBCoreMock end
-        local out = {}
-        for _, key in ipairs(filters) do out[key] = QBCoreMock[key] end
-        return out
+        if os.getenv('PF_BND_CORE') == '0' then
+            if type(filters) ~= 'table' then return QBCoreMock end
+            local out = {}
+            for _, key in ipairs(filters) do out[key] = QBCoreMock[key] end
+            return out
+        end
+        return Mock.coreObject(filters)
     end,
     GrantVehicleSpawn = function(_, src, model) Mock.vehicleGrants[#Mock.vehicleGrants + 1] = { src = src, model = model } return true end,
     RegisterJobVehicles = function() return true end,
@@ -371,6 +500,9 @@ Mock.exportsByResource['pfm-core'] = {
 QBCoreMock.Shared.Jobs = {}
 QBCoreMock.Shared.Gangs = {}
 Mock.rawExports = setmetatable({}, { __mode = 'k' })
+-- Hand-written mocks that emulate the boundary themselves (GetCoreObject's view) are called as they are.
+Mock.passThrough = setmetatable({}, { __mode = 'k' })
+Mock.passThrough[Mock.exportsByResource['pfm-core'].GetCoreObject] = true
 exports = setmetatable({}, {
     __call = function(_, name, fn)
         Mock.exportsByResource['__self'] = Mock.exportsByResource['__self'] or {}
@@ -385,8 +517,9 @@ exports = setmetatable({}, {
             if not f then return nil end
             -- exports a resource registers itself (exports('Name', fn)) get no self argument, like FiveM;
             -- the hand-written mocks above take one.
-            if Mock.rawExports[f] then return function(_, ...) return f(...) end end
-            return function(_, ...) return f(_, ...) end
+            if Mock.rawExports[f] then return function(_, ...) return Mock.cross(f, ...) end end
+            if Mock.passThrough[f] or os.getenv('PF_BND_HAND') ~= '1' then return function(_, ...) return f(_, ...) end end
+            return function(_, ...) return Mock.cross(f, _, ...) end
         end })
     end,
 })

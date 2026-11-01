@@ -510,6 +510,8 @@ QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(sourc
     local veh = CreateVehicleServerSetter(hash, vehType, coords.x, coords.y, coords.z, coords.w)
     local netId = NetworkGetNetworkIdFromEntity(veh)
     SetVehicleNumberPlateText(veh, plate)
+    -- pfm-fuel gives the car the fuel stored in this row (the plate set above reaches the server only through the owner's client)
+    if GetResourceState('pfm-fuel') == 'started' then pcall(function() exports['pfm-fuel']:UseStoredFuel(veh, plate) end) end
     local vehProps = {}
     if ownedVehicle.mods then vehProps = json.decode(ownedVehicle.mods) end
     OutsideVehicles[plate] = { netID = netId, entity = veh }
@@ -572,20 +574,37 @@ RegisterNetEvent('qb-garages:server:updateVehicleStats', function(plate, fuel, e
     if not Player then return end
     if type(plate) ~= 'string' then return end
     fuel = clampNumber(fuel, 0, 100, 100)
-    -- The client's level is saved only up to the level pfm-fuel keeps for this car on the server
-    -- (it may be lower: the server lowers it no faster than driving burns). A modded client could
-    -- otherwise park any car with a full tank. No car or no server level: the client's, as before.
+    if fuel ~= fuel then fuel = 100 end   -- NaN passes every comparison (read as full, then cut)
+    fuel = math.floor(fuel)               -- (the column holds whole litres)
+    -- With pfm-fuel keeping levels on the server (fuel sync on), the client's level is saved only
+    -- up to the server's level for this car (it may be lower: the server lowers it no faster than
+    -- driving burns). With no car in the world whose server level was given for this plate (it was
+    -- deleted, the event came for a parked car, or the car showing the plate is another one) the
+    -- client can only lower the stored level: the next spawn starts from it, so a modded client
+    -- could otherwise park any car with a full tank. pfm-fuel stopped or not syncing: the
+    -- client's level, as before.
+    local onlyLower = false
     if GetResourceState('pfm-fuel') == 'started' then
-        local ok, level = pcall(function()
+        local ok, synced, level = pcall(function()
+            if not exports['pfm-fuel']:IsFuelSynced() then return false end
             local veh = PFGarages.FindVehicle(plate)
-            return veh and exports['pfm-fuel']:GetVehicleFuel(veh) or nil
+            return true, veh and exports['pfm-fuel']:GetVehicleFuel(veh, plate) or nil
         end)
-        level = ok and tonumber(level) or nil
-        if level and fuel > math.floor(level) then fuel = math.max(0, math.floor(level)) end
+        level = ok and synced and tonumber(level) or nil
+        if level then
+            fuel = math.min(fuel, math.max(0, math.floor(level)))
+        else
+            -- (pfm-fuel failing counts as syncing: the stored level is the safe side)
+            onlyLower = not ok or synced == true
+        end
     end
     engine = clampNumber(engine, 0, 1000, 1000)
     body = clampNumber(body, 0, 1000, 1000)
-    MySQL.update('UPDATE player_vehicles SET fuel = ?, engine = ?, body = ? WHERE plate = ? AND citizenid = ?', { fuel, engine, body, plate, Player.PlayerData.citizenid })
+    if onlyLower then
+        MySQL.update('UPDATE player_vehicles SET fuel = LEAST(COALESCE(fuel, ?), ?), engine = ?, body = ? WHERE plate = ? AND citizenid = ?', { fuel, fuel, engine, body, plate, Player.PlayerData.citizenid })
+    else
+        MySQL.update('UPDATE player_vehicles SET fuel = ?, engine = ?, body = ? WHERE plate = ? AND citizenid = ?', { fuel, engine, body, plate, Player.PlayerData.citizenid })
+    end
 end)
 
 -- The client reports a car it took out (state 0). Parking (state 1) is set by canDeposit, and the

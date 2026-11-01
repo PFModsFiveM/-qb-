@@ -355,10 +355,11 @@ end
 --- Everything is read from the database, so the answer is right even before this resource has loaded
 --- its houses; a house with several rows counts once, with its newest row (as when the owners are
 --- loaded). Until this resource's migrations ran (PFHouses.dbReady) purchase_price cannot be read, so
---- it returns nil, 'not_ready' and the caller tries again later, instead of answering with listing
---- prices that would bill the wrong amount.
+--- it returns false, 'not_ready' and the caller tries again later, instead of answering with listing
+--- prices that would bill the wrong amount. false (not nil) because the answer crosses the export
+--- boundary as msgpack: a nil first value could drop the reason, false alone still means "not yet".
 exports('GetOwnedHouses', function()
-    if not PFHouses.dbReady then return nil, 'not_ready' end
+    if not PFHouses.dbReady then return false, 'not_ready' end
     local rows = MySQL.query.await('SELECT id, house, citizenid, purchase_price FROM player_houses ORDER BY id', {}) or {}
     local newest, order = {}, {}
     for _, r in ipairs(rows) do

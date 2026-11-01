@@ -1,6 +1,7 @@
 -- pf-jobs Gruppe6: bags taken out of a pickup stash are counted from pfm-inventory's own move event
 -- (fromInventory, toInventory, ... with the mover as source), and only for the player whose pickup
--- that stash is.
+-- that stash is. The client sends that event as a net event, so pf-jobs registers it as one: FiveM
+-- hands a client's event only to resources that did (fired here with Mock.fireNet).
 load_resource('tests/lua/ledger_env.lua')
 QBCore = QBCoreMock
 QBCoreMock.Shared.Items = QBCoreMock.Shared.Items or {}
@@ -64,25 +65,19 @@ describe('Gruppe6 pickup stash', function()
     it('counts bags the guard takes out (the stash id arrives as fromInventory)', function()
         assert_eq(bagsIn(stashId), 3)
         takeBags(stashId, 2)
-        source = GUARD
-        TriggerEvent('qb-inventory:server:SetInventoryData', stashId, 'player', 1, 1, 2, 2)
-        source = nil
+        Mock.fireNet('qb-inventory:server:SetInventoryData', GUARD, stashId, 'player', 1, 1, 2, 2)
         assert_true(notified(GUARD, 'You took 2 bag(s). 1 remaining.'))
     end)
     it('emptying the stash moves the guard to the next stop', function()
         takeBags(stashId, 3)
-        source = GUARD
-        TriggerEvent('qb-inventory:server:SetInventoryData', stashId, 'player', 1, 1, 3, 3)
-        source = nil
+        Mock.fireNet('qb-inventory:server:SetInventoryData', GUARD, stashId, 'player', 1, 1, 3, 3)
         assert_eq(stashes[stashId], nil)
         local next = #Mock.clientEventsNamed('pf-jobs:gruppe6:nextPickup') + #Mock.clientEventsNamed('pf-jobs:gruppe6:goToDeposit')
         assert_eq(next, 1)
     end)
     it('a player without this pickup open is not credited', function()
         takeBags(stashId, 1)
-        source = OTHER
-        TriggerEvent('qb-inventory:server:SetInventoryData', stashId, 'player', 1, 1, 1, 1)
-        source = nil
+        Mock.fireNet('qb-inventory:server:SetInventoryData', OTHER, stashId, 'player', 1, 1, 1, 1)
         assert_false(notified(OTHER, 'You took'))
     end)
 end)

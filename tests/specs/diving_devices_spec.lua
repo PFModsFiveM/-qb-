@@ -10,6 +10,9 @@ Mock.exportsByResource['pf-devices'] = {
     Broadcast = function(_, id, event) broadcasts[#broadcasts + 1] = { id = id, event = event } return true end,
 }
 load_resource('pfm-diving/config.lua')
+-- pfm-diving reads the items once through exports['pfm-core']:GetShared('Items'), a copy (the
+-- metatable above does not cross the export), so its coral items are real entries
+for _, t in ipairs(Config.CoralTypes) do QBCoreMock.Shared.Items[t.item] = { name = t.item, label = 'L:' .. t.item } end
 load_resource('pfm-diving/server/main.lua')
 Mock.eventHandlers['pf-devices:server:ready']()
 

@@ -17,6 +17,9 @@ Mock.exportsByResource['pfm-inventory'] = {
 setmetatable(QBCoreMock.Shared.Items, { __index = function(_, k) return { name = k, label = k } end })
 
 load_resource('pfm-diving/config.lua')
+-- pfm-diving reads the items once through exports['pfm-core']:GetShared('Items'), a copy (the
+-- metatable above does not cross the export), so its coral items are real entries
+for _, t in ipairs(Config.CoralTypes) do QBCoreMock.Shared.Items[t.item] = { name = t.item, label = t.item } end
 load_resource('pfm-diving/server/main.lua')
 
 local D1, D2, COP, COP2 = 1, 2, 3, 4

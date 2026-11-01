@@ -397,6 +397,21 @@ describe('a copy of a signed document', function()
         assert_eq(D.Get(C3, { id = res.id }).document.signatureRecord, nil)
         assert_eq(MySQL.scalar.await('SELECT copied_signatures FROM pf_citizen_documents WHERE id = ?', { res.id }), nil)
     end)
+    it('a signature made on a copy is recorded as made on that copy, not on the original', function()
+        local id = D.Save(A, { title = 'Deed', body = 'Plot 7' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        assert_eq(D.Sign(B, { id = id }).ok, true)
+        local mid = D.Share(B, { id = id, to = '5550003', mode = 'copy' })
+        assert_eq(mid.ok, true, tostring(mid.error))
+        assert_eq(D.Sign(C3, { id = mid.id }).ok, true, 'the owner of the copy signs it')
+        local last = D.Share(C3, { id = mid.id, to = '5550001', mode = 'copy' })
+        assert_eq(last.ok, true, tostring(last.error))
+        local byName = {}
+        for _, s in ipairs(D.Get(A, { id = last.id }).document.signatureRecord.signatures) do byName[s.name] = s end
+        assert_eq(byName['Test Player2'].onCopy, false, 'B signed the original')
+        assert_eq(byName['Test Player3'].onCopy, true, "C3's signature on their copy shown as one on the original")
+        assert_eq(byName['Test Player3'].matches, true)
+    end)
 end)
 
 describe('copies others send', function()
@@ -464,6 +479,80 @@ describe('copies and links only for a delivered mail', function()
         assert_eq(res.delivered, 1)
         assert_eq(res.undelivered[1], 'Test Player3')
         assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0)
+    end)
+    -- oxmysql raises on a SQL error (deadlock, lock wait timeout) instead of returning nil
+    local function raiseOnInsert(fragment, filter)
+        local insert = MySQL.insert
+        MySQL.insert = setmetatable({ await = function(q, params)
+            if type(q) == 'string' and q:find(fragment, 1, true) and (not filter or filter(params)) then
+                MySQL.insert = insert
+                error('SQL error: Lock wait timeout exceeded')
+            end
+            return insert.await(q, params)
+        end }, { __call = function(_, ...) return insert(...) end })
+        return function() MySQL.insert = insert end
+    end
+    it('a mail insert that raises leaves no copy behind; the others still get the mail', function()
+        clearDocs()
+        local id = D.Save(A, { title = 'Quote', body = 'Paint $800' }).id
+        D.Share(A, { id = id, to = '5550002', mode = 'link' })
+        local mails = #box('CID1', 'inbox')
+        local undo = raiseOnInsert('INTO player_mails', toC3)
+        local okCall, res = pcall(M.SendFromPlayer, B, { to = '5550003, 5550001', subject = 'Quote', message = 'x', attachments = { { type = 'document', id = id } } })
+        undo()
+        assert_true(okCall, 'the send aborted: ' .. tostring(res))
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(res.delivered, 1)
+        assert_eq(res.undelivered[1], 'Test Player3')
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0, 'an orphan copy')
+        assert_eq(#box('CID1', 'inbox'), mails + 1, 'the other recipient did not get it')
+        assert_eq(#box('CID2', 'sent') > 0, true)
+        -- the only recipient: not stored, nothing left
+        undo = raiseOnInsert('INTO player_mails', toC3)
+        okCall, res = pcall(M.SendFromPlayer, B, { to = '5550003', subject = 'Quote', message = 'x', attachments = { { type = 'document', id = id } } })
+        undo()
+        assert_true(okCall, tostring(res))
+        assert_eq(res.error, 'not_stored')
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0, 'an orphan copy')
+    end)
+    it('a copy statement that raises takes back the copies already made for that recipient', function()
+        clearDocs()
+        local one = D.Save(A, { title = 'One', body = '1' }).id
+        local two = D.Save(A, { title = 'Two', body = '2' }).id
+        D.Share(A, { id = one, to = '5550002', mode = 'link' })
+        D.Share(A, { id = two, to = '5550002', mode = 'link' })
+        local seen, mails = 0, #box('CID3', 'inbox')
+        local undo = raiseOnInsert('SELECT ?, d.title, d.body, d.id', function() seen = seen + 1 return seen == 2 end)
+        local okCall, res = pcall(M.SendFromPlayer, B, { to = '5550003', subject = 'Both', message = 'x',
+            attachments = { { type = 'document', id = one }, { type = 'document', id = two } } })
+        undo()
+        assert_true(okCall, tostring(res))
+        assert_eq(res.error, 'not_stored')
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0, 'the first copy stayed')
+        assert_eq(#box('CID3', 'inbox'), mails)
+        -- the next send works and makes both copies
+        res = M.SendFromPlayer(B, { to = '5550003', subject = 'Both', message = 'x', attachments = { { type = 'document', id = one }, { type = 'document', id = two } } })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(copies('CID3'), 2)
+    end)
+    it('a share as a copy whose mail raises takes the copy back', function()
+        clearDocs()
+        local id = D.Save(A, { title = 'Menu', body = 'Soup' }).id
+        local undo = raiseOnInsert('INTO player_mails', toC3)
+        local okCall, res = pcall(D.Share, A, { id = id, to = '5550003', mode = 'copy' })
+        undo()
+        assert_true(okCall, tostring(res))
+        assert_eq(res.error, 'not_stored')
+        assert_eq(count("SELECT COUNT(*) FROM pf_citizen_documents WHERE owner_cid = 'CID3'"), 0, 'an orphan copy')
+    end)
+    it("the owner's mail that raises takes back the link it made", function()
+        local id = D.Save(A, { title = 'Plan B', body = 'x' }).id
+        local undo = raiseOnInsert('INTO player_mails', toC3)
+        local okCall, res = pcall(M.SendFromPlayer, A, { to = '5550003', subject = 'Plan', message = 'x', attachments = { { type = 'document', id = id } } })
+        undo()
+        assert_true(okCall, tostring(res))
+        assert_eq(res.error, 'not_stored')
+        assert_eq(count('SELECT COUNT(*) FROM pf_citizen_document_shares WHERE document_id = ? AND citizenid = ?', { id, 'CID3' }), 0)
     end)
     it("the owner's mail that is not stored takes back the link it made", function()
         local id = D.Save(A, { title = 'Plan', body = 'x' }).id

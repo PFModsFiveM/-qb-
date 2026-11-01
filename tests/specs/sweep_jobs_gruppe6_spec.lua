@@ -94,9 +94,8 @@ describe('pf-jobs Gruppe6', function()
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
         assert_eq(stashes[id].items[1].amount, 3)
         stashes[id].items[1].amount = 0
-        source = GUARD
-        TriggerEvent('qb-inventory:server:SetInventoryData', id, 'player', 1, 1, 3, 3)
-        source = nil
+        -- pfm-inventory's client sends the move as a net event (pf-jobs must register it to see it)
+        Mock.fireNet('qb-inventory:server:SetInventoryData', GUARD, id, 'player', 1, 1, 3, 3)
         assert_eq(stashes[id], nil)
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
         assert_eq(stashes[id], nil)
@@ -109,9 +108,8 @@ describe('pf-jobs Gruppe6', function()
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
         stashes[id].items[1].amount = 0
         carried[GUARD] = 3
-        source = GUARD
-        TriggerEvent('qb-inventory:server:SetInventoryData', id, 'player', 1, 1, 3, 3)
-        source = nil
+        -- pfm-inventory's client sends the move as a net event (pf-jobs must register it to see it)
+        Mock.fireNet('qb-inventory:server:SetInventoryData', GUARD, id, 'player', 1, 1, 3, 3)
         Mock.fireNet('pf-jobs:gruppe6:endContract', GUARD)
         -- not at the vault: nothing
         Mock.fireNet('pf-jobs:gruppe6:depositComplete', GUARD)
