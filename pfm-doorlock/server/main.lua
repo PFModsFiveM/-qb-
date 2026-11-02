@@ -159,8 +159,14 @@ local function useDoorGrant(playerId, doorID)
 	return GetGameTimer() <= expiry
 end
 
+-- Lockpick attempts (startPick / finishPick below): [src] = { doorID, at, challengeId, item }
+local pickAttempts = {}
+local lastPickStart = {}  -- [src] = GetGameTimer()
+
 AddEventHandler('playerDropped', function()
 	doorGrants[source] = nil
+	pickAttempts[source] = nil
+	lastPickStart[source] = nil
 end)
 
 local function doorCoords(door)
@@ -180,15 +186,32 @@ local function nearDoor(playerId, door)
 	return #(GetEntityCoords(GetPlayerPed(playerId)) - c) <= reach
 end
 
-local function hasLockpick(Player)
-	return Player.GetItemByName('lockpick') ~= nil or Player.GetItemByName('advancedlockpick') ~= nil
+local function holds(Player, item)
+	return item ~= nil and Player.GetItemByName(item) ~= nil
+end
+
+--- Sets a door's state and tells every client (also schedules the door's auto lock).
+local function setDoorState(playerId, doorID, locked, src, enableSounds, enableAnimation)
+	Config.DoorList[doorID].locked = locked
+	if Config.DoorStates[doorID] == nil then Config.DoorStates[doorID] = locked elseif Config.DoorStates[doorID] ~= locked then Config.DoorStates[doorID] = nil end
+	TriggerClientEvent('qb-doorlock:client:setState', -1, playerId, doorID, locked, src or false, enableSounds, enableAnimation)
+
+	if not Config.DoorList[doorID].autoLock then return end
+	SetTimeout(Config.DoorList[doorID].autoLock, function()
+		if Config.DoorList[doorID].locked then return end
+		Config.DoorList[doorID].locked = true
+		if Config.DoorStates[doorID] == nil then Config.DoorStates[doorID] = locked elseif Config.DoorStates[doorID] ~= locked then Config.DoorStates[doorID] = nil end
+		TriggerClientEvent('qb-doorlock:client:setState', -1, playerId, doorID, true, src or false, enableSounds, enableAnimation)
+	end)
 end
 
 RegisterNetEvent('qb-doorlock:server:updateState', function(doorID, locked, src, usedLockpick, unlockAnyway, enableSounds, enableAnimation, sentSource)
 	local fromClient = tonumber(source) ~= nil and tonumber(source) > 0
 	-- A client acts only as itself, from beside the door. `unlockAnyway` from a client needs a grant from
-	-- a server script, and `usedLockpick` needs a lockpick. (A client could name another player's id as
-	-- sentSource and use their access, or pass unlockAnyway and open any door from anywhere.)
+	-- a server script. `usedLockpick` from a client counts for nothing: a lockpick opens a door only
+	-- through a finished attempt (startPick / finishPick below). (A client could name another player's
+	-- id as sentSource and use their access, pass unlockAnyway and open any door from anywhere, or pass
+	-- usedLockpick and open or lock any pickable bank gate with no minigame.)
 	local playerId = fromClient and tonumber(source) or (sentSource or source)
 	local Player = exports['pfm-core']:GetPlayer(playerId)
 	if not Player then return end
@@ -198,7 +221,7 @@ RegisterNetEvent('qb-doorlock:server:updateState', function(doorID, locked, src,
 		if unlockAnyway then
 			unlockAnyway = locked == false and useDoorGrant(playerId, doorID)
 		end
-		if usedLockpick and not hasLockpick(Player) then usedLockpick = false end
+		usedLockpick = false
 	end
 	if type(doorID) ~= 'number' and type(doorID) ~= 'string' then
 		if Config.Warnings then
@@ -228,17 +251,102 @@ RegisterNetEvent('qb-doorlock:server:updateState', function(doorID, locked, src,
 		return
 	end
 
-	Config.DoorList[doorID].locked = locked
-	if Config.DoorStates[doorID] == nil then Config.DoorStates[doorID] = locked elseif Config.DoorStates[doorID] ~= locked then Config.DoorStates[doorID] = nil end
-	TriggerClientEvent('qb-doorlock:client:setState', -1, playerId, doorID, locked, src or false, enableSounds, enableAnimation)
+	setDoorState(playerId, doorID, locked, src, enableSounds, enableAnimation)
+end)
 
-	if not Config.DoorList[doorID].autoLock then return end
-	SetTimeout(Config.DoorList[doorID].autoLock, function()
-		if Config.DoorList[doorID].locked then return end
-		Config.DoorList[doorID].locked = true
-		if Config.DoorStates[doorID] == nil then Config.DoorStates[doorID] = locked elseif Config.DoorStates[doorID] ~= locked then Config.DoorStates[doorID] = nil end
-		TriggerClientEvent('qb-doorlock:client:setState', -1, playerId, doorID, true, src or false, enableSounds, enableAnimation)
+-- Lockpicking a pickable door. startPick: the player is at a locked pickable door with a lockpick;
+-- the server records the attempt and hands the client a skillbar challenge (pfm-minigames).
+-- finishPick: the door opens only when that challenge passed, in time, with the player still at
+-- the door holding the pick. A failed or abandoned attempt rolls the pick's breakage here.
+local sharedItems
+local function itemInfo(name)
+	sharedItems = sharedItems or exports['pfm-core']:GetShared('Items') or {}
+	return sharedItems[name]
+end
+
+local function pickItem(Player, wantAdvanced)
+	if wantAdvanced and holds(Player, 'advancedlockpick') then return 'advancedlockpick' end
+	if holds(Player, 'lockpick') then return 'lockpick' end
+	if holds(Player, 'advancedlockpick') then return 'advancedlockpick' end
+	return nil
+end
+
+local function cancelChallenge(src, id)
+	pcall(function() exports['pfm-minigames']:Cancel(src, id) end)
+end
+
+--- A failed attempt: the pick may break (Config.LockpickBreakChance), removed on the server.
+local function failPick(src, attempt)
+	cancelChallenge(src, attempt.challengeId)
+	local Player = exports['pfm-core']:GetPlayer(src)
+	if not Player or not holds(Player, attempt.item) then return end
+	local chance = (Config.LockpickBreakChance or {})[attempt.item] or 0
+	if math.random(1, 100) > chance then return end
+	if Player.RemoveItem(attempt.item, 1) then
+		TriggerClientEvent('qb-inventory:client:ItemBox', src, itemInfo(attempt.item), 'remove')
+	end
+end
+
+local function pickMaxMs() return (Config.LockpickMaxSeconds or 60) * 1000 end
+
+RegisterNetEvent('qb-doorlock:server:startPick', function(doorID, wantAdvanced)
+	local src = source
+	if type(doorID) ~= 'number' and type(doorID) ~= 'string' then return end
+	local door = Config.DoorList[doorID]
+	if not door or not (door.pickable or door.lockpick) or not door.locked then return end
+	local Player = exports['pfm-core']:GetPlayer(src)
+	if not Player or not nearDoor(src, door) then return end
+	local meta = Player.PlayerData.metadata or {}
+	if meta.isdead or meta.inlaststand or meta.ishandcuffed then return end
+	local now = GetGameTimer()
+	if lastPickStart[src] and now - lastPickStart[src] < (Config.LockpickCooldownSeconds or 2) * 1000 then return end
+	local item = pickItem(Player, wantAdvanced == true)
+	if not item then return end
+	lastPickStart[src] = now
+
+	-- a new attempt ends the open one as failed (it cannot be restarted to dodge the breakage)
+	if pickAttempts[src] then
+		local old = pickAttempts[src]
+		pickAttempts[src] = nil
+		failPick(src, old)
+	end
+
+	local ok, challenge = pcall(function()
+		return exports['pfm-minigames']:IssueChallenge(src, 'skillbar', {
+			difficulty = item == 'advancedlockpick' and 'easy' or 'medium', tag = 'doorlock:' .. tostring(doorID),
+		})
 	end)
+	if not ok or type(challenge) ~= 'table' or type(challenge.id) ~= 'string' then return end
+
+	local attempt = { doorID = doorID, at = now, challengeId = challenge.id, item = item }
+	pickAttempts[src] = attempt
+	SetTimeout(pickMaxMs() + 1000, function()
+		if pickAttempts[src] ~= attempt then return end
+		pickAttempts[src] = nil
+		failPick(src, attempt)
+	end)
+	TriggerClientEvent('qb-doorlock:client:pickChallenge', src, doorID, challenge)
+end)
+
+RegisterNetEvent('qb-doorlock:server:finishPick', function(doorID)
+	local src = source
+	local attempt = pickAttempts[src]
+	if not attempt or attempt.doorID ~= doorID then return end
+	pickAttempts[src] = nil -- one finish per attempt
+
+	local ok, passed = pcall(function() return exports['pfm-minigames']:Verify(src, attempt.challengeId) end)
+	passed = ok and passed == true
+	local elapsed = GetGameTimer() - attempt.at
+	local door = Config.DoorList[doorID]
+	local Player = exports['pfm-core']:GetPlayer(src)
+	if not door or not Player then return end
+	if not door.locked then return end -- opened meanwhile by someone else: nothing to pick
+	local inTime = elapsed >= (Config.LockpickMinSeconds or 2) * 1000 and elapsed <= pickMaxMs()
+	if passed and inTime and nearDoor(src, door) and holds(Player, attempt.item) then
+		setDoorState(src, doorID, false, false)
+		return
+	end
+	failPick(src, attempt)
 end)
 
 RegisterNetEvent('qb-doorlock:server:saveNewDoor', function(data, doubleDoor)
@@ -379,15 +487,9 @@ RegisterNetEvent('txAdmin:events:scheduledRestart', function(eventData)
 	end
 end)
 
-RegisterNetEvent('qb-doorlock:server:removeLockpick', function(type)
-	local Player = exports['pfm-core']:GetPlayer(source)
-
-	if not Player then return end
-
-	if type == 'advancedlockpick' or type == 'lockpick' then
-		Player.RemoveItem(type, 1)
-	end
-end)
+-- Kept for old clients and does nothing: the pick's breakage is rolled on the server when an
+-- attempt fails (failPick). (A client that never sent this kept its lockpick forever.)
+RegisterNetEvent('qb-doorlock:server:removeLockpick', function() end)
 
 -- Commands
 

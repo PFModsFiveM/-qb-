@@ -445,41 +445,38 @@ RegisterNetEvent('qb-doorlock:client:setState', function(serverId, doorID, state
 	end
 end)
 
+-- Lockpicking runs on the server: it checks the door and the pick, sends the minigame
+-- (qb-doorlock:client:pickChallenge), opens the door and decides whether the pick breaks.
 RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
 	if not closestDoor.data or not next(closestDoor.data) or PlayerData.metadata['isdead'] or PlayerData.metadata['ishandcuffed'] or (not closestDoor.data.pickable and not closestDoor.data.lockpick) or not closestDoor.data.locked then
 		return
 	end
+	TriggerServerEvent('qb-doorlock:server:startPick', closestDoor.id, isAdvanced == true)
+end)
 
-	local difficulty = isAdvanced and 'easy' or 'medium' -- Use 'easy' difficulty for advanced lockpicks, medium for others
-	local success = exports['pfm-minigames']:Skillbar(difficulty)
-	if success then
+RegisterNetEvent('qb-doorlock:client:pickChallenge', function(doorID, challenge)
+	local door = Config.DoorList[doorID]
+	if not door then return end
+	local passed = exports['pfm-minigames']:PlayChallenge(challenge)
+	if passed then
 		QBCore.Functions.Notify(Lang:t('success.lockpick_success'), 'success', 2500)
-		-- Determine which coordinates to face based on door data
-		local coordsToFace = closestDoor.data.doors and closestDoor.data.doors[1].objCoords or closestDoor.data.objCoords
-		TaskTurnPedToFaceCoord(playerPed, coordsToFace.x, coordsToFace.y, coordsToFace.z, 0)
-		-- Wait for the ped to turn towards the door
-		Wait(300)
-		local count = 0
-		while GetIsTaskActive(playerPed, 225) and count < 150 do
-			Wait(10)
-			count = count + 1
+		local coordsToFace = door.doors and door.doors[1].objCoords or door.objCoords
+		if coordsToFace then
+			TaskTurnPedToFaceCoord(playerPed, coordsToFace.x, coordsToFace.y, coordsToFace.z, 0)
+			-- Wait for the ped to turn towards the door
+			Wait(300)
+			local count = 0
+			while GetIsTaskActive(playerPed, 225) and count < 150 do
+				Wait(10)
+				count = count + 1
+			end
 		end
 		Wait(1800)
-		-- Unlock the door
-		TriggerServerEvent('qb-doorlock:server:updateState', closestDoor.id, false, false, true, false)
 	else
 		QBCore.Functions.Notify(Lang:t('error.lockpick_fail'), 'error', 2500)
-		if isAdvanced then
-			local chanceToRemove = math.random(1, 100) <= 17
-			if chanceToRemove then
-				TriggerServerEvent('qb-doorlock:server:removeLockpick', 'advancedlockpick')
-				TriggerEvent('qb-inventory:client:ItemBox', QBCore.Shared.Items['advancedlockpick'], 'remove')
-			end
-		else
-			TriggerServerEvent('qb-doorlock:server:removeLockpick', 'lockpick')
-			TriggerEvent('qb-inventory:client:ItemBox', QBCore.Shared.Items['lockpick'], 'remove')
-		end
 	end
+	-- also after a failure: the server rolls the pick's breakage then
+	TriggerServerEvent('qb-doorlock:server:finishPick', doorID)
 end)
 
 RegisterNetEvent('qb-doorlock:client:addNewDoor', function()

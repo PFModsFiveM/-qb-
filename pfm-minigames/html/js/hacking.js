@@ -21,6 +21,9 @@ let lastBeep = 0;
 let lastUpdateTime = 0;
 let lastBeepTime = 0;
 let gameTable = Array.from({ length: NUM_ROWS }, () => []);
+// Every submit (block, cursor position, ms since the start) is the answer to a server challenge.
+let startTime = 0;
+let submits = [];
 let lastReseed = Array.from({ length: NUM_ROWS }, () => []);
 
 const game = document.getElementById("game");
@@ -71,7 +74,7 @@ const tryFinish = () => {
             fetch(`https://${GetParentResourceName()}/hackSuccess`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({}),
+                body: JSON.stringify({ submits: submits }),
             });
             resetGameState();
         }, 2000);
@@ -126,7 +129,7 @@ const seedTable = (timestamp) => {
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({}),
+                body: JSON.stringify({ submits: submits }),
             });
             resetGameState();
         }, 2000);
@@ -184,15 +187,36 @@ const generateSolutions = (s) => {
     ];
 };
 
-const startGame = (solutionsize, timeout) => {
+// The server's codes and positions (a challenge) instead of random ones.
+const useChallenge = (challenge) => {
+    const b = challenge.blocks;
+    solutionPos = [
+        [Number(b[0].row), Number(b[0].col)],
+        [Number(b[1].row), Number(b[1].col)],
+    ];
+    solutions = [String(b[0].code), String(b[1].code)];
+    userSolPos = [
+        [1, 1],
+        [1, 19 - solutions[0].length],
+    ];
+};
+
+const startGame = (solutionsize, timeout, challenge) => {
     initializeGameTable();
     for (let i = 0; i < NUM_ROWS; i++) {
         for (let j = 0; j < NUM_COLS; j++) {
             lastReseed[i][j] = 0;
         }
     }
-    generateSolutions(solutionsize);
+    if (challenge && Array.isArray(challenge.blocks) && challenge.blocks.length === 2) {
+        useChallenge(challenge);
+        timeout = Number(challenge.seconds);
+    } else {
+        generateSolutions(solutionsize);
+    }
+    submits = [];
     gameStarted = true;
+    startTime = new Date().getTime();
     endTime = new Date().getTime() + timeout * 1000;
     if (thread) {
         cancelAnimationFrame(thread);
@@ -234,7 +258,7 @@ document.addEventListener("keydown", (event) => {
         fetch(`https://${GetParentResourceName()}/hackClosed`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ userCancelled: true }),
+            body: JSON.stringify({ userCancelled: true, submits: submits }),
         });
         resetGameState();
         return;
@@ -275,6 +299,7 @@ document.addEventListener("keydown", (event) => {
     }
 
     if (!solved[0] && key === " ") {
+        submits.push({ b: 1, r: userSolPos[0][0], c: userSolPos[0][1], ms: new Date().getTime() - startTime });
         if (userSolPos[0][0] === solutionPos[0][0] && userSolPos[0][1] === solutionPos[0][1]) {
             solved[0] = true;
             for (let i = 0; i < solutions[0].length; i++) {
@@ -297,6 +322,7 @@ document.addEventListener("keydown", (event) => {
     }
 
     if (!solved[1] && key === "Enter") {
+        submits.push({ b: 2, r: userSolPos[1][0], c: userSolPos[1][1], ms: new Date().getTime() - startTime });
         if (userSolPos[1][0] === solutionPos[1][0] && userSolPos[1][1] === solutionPos[1][1]) {
             solved[1] = true;
             for (let i = 0; i < solutions[1].length; i++) {
@@ -324,7 +350,7 @@ window.addEventListener("message", (event) => {
     if (data.action === "startHack") {
         if (!gameStarted) {
             hackingContainer.style.display = "flex";
-            startGame(data.solutionsize, data.timeout);
+            startGame(data.solutionsize, data.timeout, data.challenge);
         }
     }
 });

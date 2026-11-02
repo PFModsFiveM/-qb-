@@ -1,11 +1,13 @@
--- pfm-vehiclekeys: keys to and locks of another player's own car need its keys, its driver's seat or
--- (to unlock) a lockpick; keys are handed to people nearby; server grants work. pfm-fuel: the
--- player-loaded hook is server-only.
+-- pfm-vehiclekeys: keys to and locks of another player's own car need its keys (or a finished
+-- lockpick / hotwire attempt: fix14_minigames_vehiclekeys_attempt_spec); keys are handed to people
+-- nearby; server grants work. pfm-fuel: the player-loaded hook is server-only.
 load_resource('tests/lua/fivem_mocks.lua')
 
 local owners = {}   -- player_vehicles: [plate] = citizenid
 MySQL.scalar = setmetatable({ await = function(_, p) return owners[p[1]] end }, { __call = function() end })
 function GetEntityType() return 2 end
+function IsPedAPlayer(ped) return Mock.players[ped] ~= nil end
+local NPC = 900 -- a ped that is no player
 local locked = {}
 function SetVehicleDoorsLocked(veh, state) locked[#locked + 1] = { veh = veh, state = state } end
 local items = {}    -- [src] = { name = true }
@@ -40,28 +42,33 @@ end
 local function hasKeys(src) return Mock.players[src].PlayerData.metadata.vehicleKeys.MYCAR123 == true end
 
 describe("another player's car", function()
-    it('standing next to it gives no keys; sitting in the driver seat does', function()
+    it('neither standing next to it nor sitting at its wheel gives keys (batch 14)', function()
         Mock.fireNet('qb-vehiclekeys:server:AcquireVehicleKeys', THIEF, CAR)
         assert_false(hasKeys(THIEF))
         Mock.vehicleOf[THIEF] = CAR
         Mock.gameTimer = Mock.gameTimer + 100000
         Mock.fireNet('qb-vehiclekeys:server:AcquireVehicleKeys', THIEF, CAR)
-        assert_true(hasKeys(THIEF))
+        assert_false(hasKeys(THIEF))
     end)
-    it('an NPC car nearby still gives keys (stolen from a driver, carjacked)', function()
+    it('an NPC car gives keys from its wheel or while an NPC still drives it, not from beside it', function()
         Mock.plates[CAR] = 'NPC00001'
         Mock.fireNet('qb-vehiclekeys:server:AcquireVehicleKeys', THIEF, CAR)
+        assert_false(Mock.players[THIEF].PlayerData.metadata.vehicleKeys.NPC00001 == true)
+        Mock.vehicleOf[NPC] = CAR -- carjacked, or a dead driver
+        Mock.gameTimer = Mock.gameTimer + 100000
+        Mock.fireNet('qb-vehiclekeys:server:AcquireVehicleKeys', THIEF, CAR)
         assert_true(Mock.players[THIEF].PlayerData.metadata.vehicleKeys.NPC00001 == true)
+        Mock.vehicleOf[NPC] = nil
     end)
-    it('cannot be unlocked without keys or a lockpick, nor locked without keys', function()
+    it('cannot be unlocked without keys, lockpick held or not, nor locked without keys', function()
         Mock.fireNet('qb-vehiclekeys:server:setVehLockState', THIEF, CAR, 1)
         Mock.fireNet('qb-vehiclekeys:server:setVehLockState', THIEF, CAR, 2)
         assert_eq(#locked, 0)
         items[THIEF] = { lockpick = true }
         Mock.fireNet('qb-vehiclekeys:server:setVehLockState', THIEF, CAR, 1)
-        assert_eq(#locked, 1)
+        assert_eq(#locked, 0)
         Mock.fireNet('qb-vehiclekeys:server:setVehLockState', OWNER, CAR, 2) -- the owner's own car
-        assert_eq(#locked, 2)
+        assert_eq(#locked, 1)
     end)
 end)
 

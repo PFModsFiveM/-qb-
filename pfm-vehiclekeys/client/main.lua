@@ -257,6 +257,9 @@ RegisterNetEvent('qb-weapons:client:DrawWeapon', function()
     robKeyLoop()
 end)
 
+-- Lockpicking and hotwiring are attempts the server runs (server/main.lua): it checks the car and
+-- the pick, sends the minigame or the hotwire time (qb-vehiclekeys:client:pickStarted), and decides
+-- the outcome, the pick's breakage and the police alert.
 RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
     local ped = PlayerPedId()
     local pos = GetEntityCoords(ped)
@@ -267,36 +270,28 @@ RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
     if #(pos - GetEntityCoords(vehicle)) > 2.5 then return end
     if GetVehicleDoorLockStatus(vehicle) <= 0 then return end
 
-    local difficulty = isAdvanced and 'easy' or 'medium' -- Easy for advanced lockpick, medium by default
-    local success = exports['pfm-minigames']:Skillbar(difficulty)
+    TriggerServerEvent('qb-vehiclekeys:server:startPick', NetworkGetNetworkIdFromEntity(vehicle), 'lockpick', isAdvanced == true)
+end)
 
-    local chance = math.random()
-    TriggerServerEvent('hud:server:GainStress', math.random(1, 4))
-    if success then
-        lastPickedVehicle = vehicle
-
-        if GetPedInVehicleSeat(vehicle, -1) == ped then
-            TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', NetworkGetNetworkIdFromEntity(vehicle))
-        else
-            QBCore.Functions.Notify(Lang:t('notify.vlockpick'), 'success')
-            TriggerServerEvent('qb-vehiclekeys:server:setVehLockState', NetworkGetNetworkIdFromEntity(vehicle), 1)
-        end
-    else
-        AttemptPoliceAlert('steal')
-    end
-
-    local threshold = isAdvanced and Config.RemoveLockpickAdvanced or Config.RemoveLockpickNormal
-    local pickType = isAdvanced and 'advancedlockpick' or 'lockpick'
-
-    if chance <= threshold then
-        TriggerServerEvent('qb-vehiclekeys:server:breakLockpick', pickType)
+RegisterNetEvent('qb-vehiclekeys:client:pickStarted', function(netId, kind, data)
+    if type(data) ~= 'table' then return end
+    local vehicle = NetToVeh(netId)
+    if kind == 'lockpick' then
+        local passed = exports['pfm-minigames']:PlayChallenge(data.challenge)
+        TriggerServerEvent('hud:server:GainStress', math.random(1, 4))
+        -- keeps the loop below from locking the car again as we get in
+        if passed then lastPickedVehicle = vehicle end
+        TriggerServerEvent('qb-vehiclekeys:server:finishPick', netId)
+    elseif kind == 'hotwire' then
+        HotwireProgress(vehicle, netId, tonumber(data.duration) or Config.minHotwireTime)
     end
 end)
 -- Backwards Compatibility ONLY -- Remove at some point --
 RegisterNetEvent('vehiclekeys:client:SetOwner', function(plate)
     for _, vehicle in ipairs(GetGamePool('CVehicle')) do
         if QBCore.Functions.GetPlate(vehicle) == plate then
-            TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', NetworkGetNetworkIdFromEntity(vehicle))
+            -- the plate lets the server wait until it sees a plate this client has just set
+            TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', NetworkGetNetworkIdFromEntity(vehicle), plate)
             return
         end
     end
@@ -600,8 +595,17 @@ function IsBlacklistedWeapon()
     return false
 end
 
+local hotwireAskedAt = 0
+
+-- Asks the server to start a hotwire; it answers with the time it takes (pickStarted).
 function Hotwire(vehicle)
-    local hotwireTime = math.random(Config.minHotwireTime, Config.maxHotwireTime)
+    if IsHotwiring or GetGameTimer() - hotwireAskedAt < 1000 then return end
+    hotwireAskedAt = GetGameTimer()
+    TriggerServerEvent('qb-vehiclekeys:server:startPick', NetworkGetNetworkIdFromEntity(vehicle), 'hotwire')
+end
+
+function HotwireProgress(vehicle, netId, hotwireTime)
+    hotwireTime = math.max(1000, math.min(120000, math.floor(hotwireTime)))
     local ped = PlayerPedId()
     IsHotwiring = true
 
@@ -619,21 +623,14 @@ function Hotwire(vehicle)
     }, {}, {}, function() -- Done
         StopAnimTask(ped, 'anim@amb@clubhouse@tutorial@bkr_tut_ig3@', 'machinic_loop_mechandplayer', 1.0)
         TriggerServerEvent('hud:server:GainStress', math.random(1, 4))
-        if (math.random() <= Config.HotwireChance) then
-            TriggerServerEvent('qb-vehiclekeys:server:AcquireVehicleKeys', NetworkGetNetworkIdFromEntity(vehicle))
-        else
-            QBCore.Functions.Notify(Lang:t('notify.fvlockpick'), 'error')
-        end
-        Wait(Config.TimeBetweenHotwires)
-        IsHotwiring = false
+        -- the server rolls the hotwire chance and gives the keys
+        TriggerServerEvent('qb-vehiclekeys:server:finishPick', netId)
+        SetTimeout(Config.TimeBetweenHotwires, function() IsHotwiring = false end)
     end, function() -- Cancel
         StopAnimTask(ped, 'anim@amb@clubhouse@tutorial@bkr_tut_ig3@', 'machinic_loop_mechandplayer', 1.0)
+        TriggerServerEvent('qb-vehiclekeys:server:cancelPick')
         IsHotwiring = false
     end)
-    SetTimeout(10000, function()
-        AttemptPoliceAlert('steal')
-    end)
-    IsHotwiring = false
 end
 
 function CarjackVehicle(target)

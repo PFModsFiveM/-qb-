@@ -24,6 +24,10 @@ let solveDeg = Math.random() * (maxRot - minRot + 1) + minRot,
     gamePaused = false,
     cylRotationInterval,
     pinLastDamaged;
+// For a server challenge: the pin angle of the push that opened the lock, when, and pins broken.
+let pushAngle = 0,
+    startedAt = 0,
+    pinsBroken = 0;
 
 const clamp = (val, min, max) => Math.min(Math.max(val, min), max);
 const convertRanges = (value, oldMin, oldMax, newMin, newMax) => ((value - oldMin) * (newMax - newMin)) / (oldMax - oldMin) + newMin;
@@ -46,17 +50,19 @@ const closeLockpick = () => {
 };
 
 const unlock = () => {
+    const answer = { success: true, a: pushAngle, ms: Date.now() - startedAt, broken: pinsBroken };
     closeLockpick();
     fetch(`https://${GetParentResourceName()}/lockpickFinish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ success: true }),
+        body: JSON.stringify(answer),
     });
 };
 
 const pushCyl = () => {
     cancelAnimationFrame(cylRotationInterval);
     userPushingCyl = true;
+    pushAngle = pinRot;
 
     let distFromSolve = Math.abs(pinRot - solveDeg) - solvePadding;
     distFromSolve = clamp(distFromSolve, 0, maxDistFromSolve);
@@ -157,11 +163,12 @@ const reset = () => {
 };
 
 const outOfPins = () => {
+    const answer = { success: false, ms: Date.now() - startedAt, broken: pinsBroken };
     closeLockpick();
     fetch(`https://${GetParentResourceName()}/lockpickFinish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ success: false }),
+        body: JSON.stringify(answer),
     });
 };
 
@@ -170,6 +177,7 @@ const breakPin = () => {
     cancelAnimationFrame(cylRotationInterval);
 
     numPins--;
+    pinsBroken++;
 
     const pinTop = pin.querySelector(".top");
     const pinBott = pin.querySelector(".bott");
@@ -222,8 +230,13 @@ const keyActionMap = {
     s: pushCyl,
     d: pushCyl,
     escape: () => {
+        const broken = pinsBroken;
         closeLockpick();
-        fetch(`https://${GetParentResourceName()}/lockpickExit`, { method: "POST" }).catch(console.error);
+        fetch(`https://${GetParentResourceName()}/lockpickExit`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ broken: broken }),
+        }).catch(console.error);
     },
 };
 
@@ -246,6 +259,15 @@ window.addEventListener("message", (event) => {
     if (eventData.action === "startLockpick") {
         lockpickContainer.style.display = "block";
         numPins = eventData.pins;
+        // a server challenge fixes the angle (closeLockpick picks a random one for the next game)
+        const challenge = eventData.challenge;
+        if (challenge && typeof challenge.solve === "number") {
+            solveDeg = challenge.solve;
+            numPins = Number(challenge.pins) || numPins;
+        }
+        pinsBroken = 0;
+        pushAngle = 0;
+        startedAt = Date.now();
         gameOver = false;
         gamePaused = false;
         reset();

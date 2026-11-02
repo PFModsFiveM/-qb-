@@ -22,6 +22,13 @@ Config.RemoteTriggerMinDistance = 5.0                      -- This is the minimu
 
 Config.Consumables = { ['ticket'] = 1, ['paperclip'] = 1 } -- The items will get removed once used on a door that has the item on it
 
+-- Lockpicking a pickable door: the server starts the attempt, the player plays a pfm-minigames
+-- challenge, and the server opens the door and rolls the pick's breakage.
+Config.LockpickMinSeconds = 2                              -- an attempt cannot finish faster than this
+Config.LockpickMaxSeconds = 60                             -- an attempt open longer than this fails (and may break the pick)
+Config.LockpickCooldownSeconds = 2                         -- between two lockpick attempts of one player
+Config.LockpickBreakChance = { lockpick = 100, advancedlockpick = 17 } -- % chance the pick breaks when an attempt fails
+
 --[[ -- Configuration Options
 Config.DoorList['configname-identifier'] = {
 	fixText = false, -- Adjusts guess of center of door

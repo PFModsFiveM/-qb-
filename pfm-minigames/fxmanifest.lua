@@ -9,6 +9,9 @@ client_scripts {
     'client/*.lua'
 }
 
+-- challenges the server issues and checks (API note at the top of the file)
+server_script 'server/challenge.lua'
+
 ui_page 'html/index.html'
 
 files {

@@ -1,5 +1,5 @@
 -- pfm-doorlock: a client acts only as itself, from beside the door; `unlockAnyway` needs a grant from a
--- server script and `usedLockpick` a lockpick.
+-- server script, and `usedLockpick` from a client counts for nothing (fix14_minigames_doorlock_pick_spec).
 load_resource('tests/lua/fivem_mocks.lua')
 local perms = {}
 QBCoreMock.Functions.HasPermission = function(src, perm) return perms[src] == perm end
@@ -60,12 +60,12 @@ describe('updateState from a client', function()
         Mock.fireNet('qb-doorlock:server:updateState', COP, 'mrpd-armory', false, false, false, false)
         assert_false(Config.DoorList['mrpd-armory'].locked, 'cop at the door')
     end)
-    it('a lockpick unlock needs a lockpick', function()
+    it('a lockpick unlock sent with updateState opens nothing, lockpick or not (batch 14: only a finished pick attempt does)', function()
         Mock.fireNet('qb-doorlock:server:updateState', THIEF, 'backdoor', false, false, true, false)
         assert_true(Config.DoorList['backdoor'].locked)
         Mock.players[THIEF].PlayerData.items[1] = { name = 'lockpick', slot = 1, amount = 1 }
         Mock.fireNet('qb-doorlock:server:updateState', THIEF, 'backdoor', false, false, true, false)
-        assert_false(Config.DoorList['backdoor'].locked)
+        assert_true(Config.DoorList['backdoor'].locked)
     end)
     it('server scripts keep full control', function()
         source = ''

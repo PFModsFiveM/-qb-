@@ -44,6 +44,10 @@ let gStart;
 let gEnd;
 let keyToPress;
 let animationFrame;
+// A server challenge (server/challenge.lua) fixes the rounds; the presses go back as the answer.
+let challenge = null;
+let roundElapsed = 0; // ms the indicator has run this round (degrees are derived from it)
+let presses = [];
 
 // Util
 
@@ -61,17 +65,41 @@ const radiansToDegrees = (radians) => {
 
 // Main Functions
 
-const startSkillbar = (difficulty, validKeys) => {
-    canvas.style.display = "block";
-    config.validKeys = validKeys.split("");
-    currentDifficulty = difficulty;
-    const settings = difficultySettings[currentDifficulty];
-    needed = settings.streaksRequired;
-    newDegrees = 360;
-    keyToPress = config.validKeys[getRandomInteger(0, config.validKeys.length - 1)];
-    gStart = getRandomInteger(20, 40) / 10;
-    gEnd = gStart + settings.greenZoneSize / 10;
+const speedOf = () => (challenge ? Number(challenge.speed) : difficultySettings[currentDifficulty].speed);
+
+// Zone and key for the round about to start: the server's in a challenge, random otherwise.
+const setupRound = () => {
+    if (challenge) {
+        const round = challenge.rounds[streak];
+        keyToPress = String(round.key);
+        gStart = Number(round.start);
+        gEnd = gStart + Number(round.size);
+    } else {
+        const settings = difficultySettings[currentDifficulty];
+        keyToPress = config.validKeys[getRandomInteger(0, config.validKeys.length - 1)];
+        gStart = getRandomInteger(20, 40) / 10;
+        gEnd = gStart + settings.greenZoneSize / 10;
+    }
+    lastTime = 0;
+    roundElapsed = 0;
     degrees = 0;
+    newDegrees = 360;
+};
+
+const startSkillbar = (difficulty, validKeys, puzzle) => {
+    canvas.style.display = "block";
+    challenge = puzzle && Array.isArray(puzzle.rounds) && puzzle.rounds.length ? puzzle : null;
+    presses = [];
+    streak = 0;
+    if (challenge) {
+        config.validKeys = String(challenge.keys || "").split("");
+        needed = challenge.rounds.length;
+    } else {
+        config.validKeys = String(validKeys).toLowerCase().split("");
+        currentDifficulty = difficultySettings[difficulty] ? difficulty : "easy";
+        needed = difficultySettings[currentDifficulty].streaksRequired;
+    }
+    setupRound();
     animateSkillbar();
 };
 
@@ -81,11 +109,8 @@ const animateSkillbar = (timestamp) => {
             lastTime = timestamp;
         }
 
-        const deltaTime = timestamp - lastTime;
-        const speedPerSecond = difficultySettings[currentDifficulty].speed;
-        const increment = (deltaTime / 1000) * speedPerSecond * 10;
-
-        degrees += increment;
+        roundElapsed += timestamp - lastTime;
+        degrees = (roundElapsed / 1000) * speedOf() * 10;
 
         if (degrees >= newDegrees) {
             handleResult(false);
@@ -131,14 +156,7 @@ const renderSkillbar = () => {
 
 const reanimateSkillbar = () => {
     if (animationFrame) cancelAnimationFrame(animationFrame);
-    const settings = difficultySettings[currentDifficulty];
-    gStart = getRandomInteger(20, 40) / 10;
-    gEnd = gStart + settings.greenZoneSize / 10;
-    needed = settings.streaksRequired;
-    lastTime = 0;
-    degrees = 0;
-    newDegrees = 360;
-    keyToPress = config.validKeys[getRandomInteger(0, config.validKeys.length - 1)];
+    setupRound();
     animateSkillbar();
 };
 
@@ -164,6 +182,7 @@ const resetSkillbar = () => {
     streak = 0;
     needed = 1;
     lastTime = 0;
+    challenge = null;
 };
 
 const endGame = (status) => {
@@ -173,14 +192,16 @@ const endGame = (status) => {
         headers: {
             "Content-Type": "application/json; charset=UTF-8",
         },
-        body: JSON.stringify({ success: status }),
+        body: JSON.stringify({ success: status, presses: presses }),
     });
     resetSkillbar();
 };
 
 const handleKeyDown = (ev) => {
-    const keyPressed = ev.key;
+    const keyPressed = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
     if (config.validKeys.includes(keyPressed)) {
+        // what the server replays: the key and how long the indicator had run this round
+        presses.push({ k: keyPressed, ms: roundElapsed });
         const d_start = radiansToDegrees(gStart);
         const d_end = radiansToDegrees(gEnd);
 
@@ -200,9 +221,9 @@ const handleKeyDown = (ev) => {
 const handleWindowMessage = (event) => {
     if (event.data.action === "openSkillbar") {
         const difficulty = event.data.difficulty;
-        const validKeys = event.data.validKeys;
+        const validKeys = event.data.validKeys || "1234";
         document.addEventListener("keydown", handleKeyDown);
-        startSkillbar(difficulty, validKeys);
+        startSkillbar(difficulty, validKeys, event.data.challenge);
     }
 };
 
