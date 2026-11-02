@@ -1,5 +1,9 @@
 -- Event Handler
 
+-- Duty points registered by resources (RegisterDutyPoints below), and each player's last duty toggle
+local DutyPoints = {}     -- [resource] = { [key] = { job, type, points = { vector3 }, radius } }
+local lastDutyToggle = {} -- [src] = GetGameTimer()
+
 AddEventHandler('chatMessage', function(_, _, message)
     if string.sub(message, 1, 1) == '/' then
         CancelEvent()
@@ -9,6 +13,7 @@ end)
 
 AddEventHandler('playerDropped', function(reason)
     local src = source
+    lastDutyToggle[src] = nil
     if not QBCore.Players[src] then return end
     local player = QBCore.Players[src]
     TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Dropped', 'red', '**' .. GetPlayerName(src) .. '** (' .. player.PlayerData.license .. ') left..' .. '\n **Reason:** ' .. reason)
@@ -26,6 +31,7 @@ AddEventHandler('onResourceStop', function(resName)
             QBCore.UsableItems[i] = nil
         end
     end
+    DutyPoints[resName] = nil -- a stopped resource's duty points go with it
 end)
 
 -- Player Connecting
@@ -176,14 +182,107 @@ RegisterNetEvent('QBCore:UpdatePlayer', function()
     Player.Functions.Save()
 end)
 
+-- Duty points. Going on duty through QBCore:ToggleDuty needs the player's server position at a
+-- duty point a resource registered for their job (by name) or job type, e.g. pfm-policejob for
+-- every 'leo' job. Going off duty works anywhere. A job no resource registered points for cannot
+-- clock in through this event (it keeps its defaultDuty, or a duty handler of its own on the
+-- server, as pfm-newsjob has). Any client could fire the event from anywhere, which put an AFK
+-- officer at home on duty: paid, counted as an available cop, given on-duty access.
+local DUTY_SLACK = 2.0              -- metres on top of a point's radius (position sync lag)
+local DUTY_COOLDOWN_MS = 3000       -- between two duty toggles of one player
+local DUTY_MAX_POINTS = 64
+
+local function dutyVector(p)
+    if type(p) ~= 'table' and type(p) ~= 'vector3' and type(p) ~= 'vector4' then return nil end
+    local x, y, z = tonumber(p.x), tonumber(p.y), tonumber(p.z)
+    if not x or not y or not z or x ~= x or y ~= y or z ~= z then return nil end
+    if math.abs(x) > 1e5 or math.abs(y) > 1e5 or math.abs(z) > 1e5 then return nil end
+    return vector3(x, y, z)
+end
+
+local function dutyName(v)
+    return type(v) == 'string' and v ~= '' and #v <= 50 and v or nil
+end
+
+--- Registers the duty points of the calling resource for one job (spec.job, a job name) or one job
+--- type (spec.type, e.g. 'leo' or 'ems'): spec = { job | type, points = { vector3, ... }, radius = 3.0 }.
+--- A second call for the same job or type replaces it. The points go when the resource stops.
+--- @return boolean ok, string|number count or error
+local function RegisterDutyPoints(spec)
+    local resource = GetInvokingResource() or GetCurrentResourceName()
+    if type(spec) ~= 'table' then return false, 'bad_request' end
+    local job, jobType = dutyName(spec.job), dutyName(spec.type)
+    if (job == nil) == (jobType == nil) then return false, 'job_or_type' end
+    if type(spec.points) ~= 'table' then return false, 'no_points' end
+    local points = {}
+    for _, p in ipairs(spec.points) do
+        local v = dutyVector(p)
+        if not v then return false, 'bad_point' end
+        points[#points + 1] = v
+        if #points > DUTY_MAX_POINTS then return false, 'too_many_points' end
+    end
+    if #points == 0 then return false, 'no_points' end
+    local radius = tonumber(spec.radius) or 3.0
+    if radius ~= radius or radius < 0.5 then radius = 0.5 elseif radius > 25.0 then radius = 25.0 end
+    DutyPoints[resource] = DutyPoints[resource] or {}
+    DutyPoints[resource][job and ('job:' .. job) or ('type:' .. jobType)] = { job = job, type = jobType, points = points, radius = radius }
+    return true, #points
+end
+exports('RegisterDutyPoints', RegisterDutyPoints)
+
+--- Removes the calling resource's duty points (all of them, or those of one job or type).
+exports('ClearDutyPoints', function(spec)
+    local resource = GetInvokingResource() or GetCurrentResourceName()
+    if type(spec) ~= 'table' then DutyPoints[resource] = nil return true end
+    local own = DutyPoints[resource]
+    if not own then return true end
+    if dutyName(spec.job) then own['job:' .. spec.job] = nil end
+    if dutyName(spec.type) then own['type:' .. spec.type] = nil end
+    return true
+end)
+
+--- Whether the player stands at a duty point registered for their job; the second value is
+--- whether their job has any point at all.
+local function AtDutyPoint(src, job)
+    if type(job) ~= 'table' then return false, false end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    local any = false
+    for _, sets in pairs(DutyPoints) do
+        for _, set in pairs(sets) do
+            if (set.job and set.job == job.name) or (set.type and set.type == job.type) then
+                any = true
+                for _, p in ipairs(set.points) do
+                    if #(pos - p) <= set.radius + DUTY_SLACK then return true, true end
+                end
+            end
+        end
+    end
+    return false, any
+end
+exports('IsAtDutyPoint', function(src)
+    local Player = QBCore.Functions.GetPlayer(tonumber(src))
+    if not Player then return false end
+    return (AtDutyPoint(Player.PlayerData.source, Player.PlayerData.job))
+end)
+
 RegisterNetEvent('QBCore:ToggleDuty', function()
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if not Player then return end
+    local now = GetGameTimer()
+    if lastDutyToggle[src] and now - lastDutyToggle[src] < DUTY_COOLDOWN_MS then return end
+    lastDutyToggle[src] = now
     if Player.PlayerData.job.onduty then
         Player.Functions.SetJobDuty(false)
         TriggerClientEvent('QBCore:Notify', src, Lang:t('info.off_duty'))
     else
+        local here, hasPoints = AtDutyPoint(src, Player.PlayerData.job)
+        if not here then
+            TriggerClientEvent('QBCore:Notify', src, hasPoints and 'Go to a duty point of your job to clock in' or 'Your job cannot clock in here', 'error')
+            -- a client that flipped its own duty flag before asking is put back
+            TriggerClientEvent('QBCore:Client:SetDuty', src, false)
+            return
+        end
         Player.Functions.SetJobDuty(true)
         TriggerClientEvent('QBCore:Notify', src, Lang:t('info.on_duty'))
     end

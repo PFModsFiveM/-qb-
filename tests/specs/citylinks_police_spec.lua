@@ -12,7 +12,12 @@ Mock.exportsByResource['pfm-inventory'] = {
     OpenInventory = function() end, OpenInventoryById = function() end,
     AddItem = function() return true end, RemoveItem = function() return true end,
 }
-function GetResourceState(name) return (name == 'pf-services' or name == 'pfm-inventory') and 'started' or 'missing' end
+-- pfm-prison jails on the server now (its own spec covers it); here it accepts every jailing
+Jailed = {}
+Mock.exportsByResource['pfm-prison'] = {
+    JailPlayer = function(_, src, minutes) Jailed[#Jailed + 1] = { src = src, minutes = minutes } return true end,
+}
+function GetResourceState(name) return (name == 'pf-services' or name == 'pfm-inventory' or name == 'pfm-prison') and 'started' or 'missing' end
 local timers = {}
 function SetTimeout(ms, fn) timers[#timers + 1] = fn end
 Commands = {}

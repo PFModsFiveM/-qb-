@@ -26,12 +26,7 @@ RegisterNetEvent('police:client:SetTracker', function(bool)
     end
 end)
 
-RegisterNetEvent('police:client:SendTrackerLocation', function(requestId)
-    local ped = PlayerPedId()
-    local coords = GetEntityCoords(ped)
-
-    TriggerServerEvent('police:server:SendTrackerLocation', coords, requestId)
-end)
+-- The anklet position is read on the server (/ankletlocation); this client is not asked for it.
 
 RegisterNetEvent('police:client:TrackerMessage', function(msg, coords)
     PlaySound(-1, 'Lose_1st', 'GTAO_FM_Events_Soundset', 0, 0, 1)

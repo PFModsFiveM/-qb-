@@ -75,12 +75,11 @@ $(document).on('click', '#accept-background', function(e){
     if (hasCustomBackground === false) {
         QB.Phone.Notifications.Add("fas fa-paint-brush", "Settings", QB.Phone.Settings.Backgrounds[QB.Phone.Settings.Background].label+" is set!")
         QB.Phone.Animations.TopSlideUp(".settings-"+QB.Phone.Settings.OpenedTab+"-tab", 200, -100);
-        $(".phone-background").css({"background-image":"url('/html/img/backgrounds/"+QB.Phone.Settings.Background+".png')"})
     } else {
         QB.Phone.Notifications.Add("fas fa-paint-brush", "Settings", "Personal background set!")
         QB.Phone.Animations.TopSlideUp(".settings-"+QB.Phone.Settings.OpenedTab+"-tab", 200, -100);
-        $(".phone-background").css({"background-image":"url('"+QB.Phone.Settings.Background+"')"});
     }
+    QB.Phone.Functions.ShowBackground();
 
     $.post('https://pfm-phone/SetBackground', JSON.stringify({
         background: QB.Phone.Settings.Background,
@@ -94,19 +93,22 @@ QB.Phone.Functions.LoadMetaData = function(MetaData) {
         QB.Phone.Settings.Background = "default-qbcore";
     }
 
-    var hasCustomBackground = QB.Phone.Functions.IsBackgroundCustom();
+    QB.Phone.Functions.ShowBackground();
+    QB.Phone.Functions.ShowProfilePicture(MetaData.profilepicture);
+}
 
-    if (!hasCustomBackground) {
-        $(".phone-background").css({"background-image":"url('/html/img/backgrounds/"+QB.Phone.Settings.Background+".png')"})
-    } else {
-        $(".phone-background").css({"background-image":"url('"+QB.Phone.Settings.Background+"')"});
-    }
+// A built-in background is a file name (letters, digits, _ and -); a custom one an https link.
+QB.Phone.Functions.ShowBackground = function() {
+    var bg = String(QB.Phone.Settings.Background || "default-qbcore");
+    var css = /^[\w\-]+$/.test(bg) && !QB.Phone.Functions.IsBackgroundCustom()
+        ? 'url("/html/img/backgrounds/' + bg + '.png")'
+        : QB.Phone.CssUrl(bg, "/html/img/backgrounds/default-qbcore.png");
+    $(".phone-background").css({"background-image": css});
+}
 
-    if (MetaData.profilepicture == "default") {
-        $("[data-settingstab='profilepicture']").find('.settings-tab-icon').html('<img src="./img/default.png">');
-    } else {
-        $("[data-settingstab='profilepicture']").find('.settings-tab-icon').html('<img src="'+MetaData.profilepicture+'">');
-    }
+QB.Phone.Functions.ShowProfilePicture = function(picture) {
+    var src = picture == "default" ? "./img/default.png" : QB.Phone.SafeUrl(picture);
+    $("[data-settingstab='profilepicture']").find('.settings-tab-icon').html("").append($('<img>').attr('src', src));
 }
 
 $(document).on('click', '#cancel-background', function(e){
@@ -173,13 +175,11 @@ $(document).on('click', '#accept-profilepicture', function(e){
     var ProfilePicture = QB.Phone.Data.MetaData.profilepicture;
     if (ProfilePicture === "default") {
         QB.Phone.Notifications.Add("fas fa-paint-brush", "Settings", "Standard avatar set!")
-        QB.Phone.Animations.TopSlideUp(".settings-"+QB.Phone.Settings.OpenedTab+"-tab", 200, -100);
-        $("[data-settingstab='profilepicture']").find('.settings-tab-icon').html('<img src="./img/default.png">');
     } else {
         QB.Phone.Notifications.Add("fas fa-paint-brush", "Settings", "Personal avatar set!")
-        QB.Phone.Animations.TopSlideUp(".settings-"+QB.Phone.Settings.OpenedTab+"-tab", 200, -100);
-        $("[data-settingstab='profilepicture']").find('.settings-tab-icon').html('<img src="'+ProfilePicture+'">');
     }
+    QB.Phone.Animations.TopSlideUp(".settings-"+QB.Phone.Settings.OpenedTab+"-tab", 200, -100);
+    QB.Phone.Functions.ShowProfilePicture(ProfilePicture);
     $.post('https://pfm-phone/UpdateProfilePicture', JSON.stringify({
         profilepicture: ProfilePicture,
     }));

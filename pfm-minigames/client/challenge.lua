@@ -8,6 +8,7 @@ PFMinigames.Runners = PFMinigames.Runners or {}
 
 local VERDICT_WAIT_MS = 5000
 local verdicts = {} -- [id] = promise
+local playing = false -- one challenge at a time: the games share the NUI
 
 RegisterNetEvent('pfm-minigames:client:verdict', function(id, passed, faults)
     local p = type(id) == 'string' and verdicts[id]
@@ -23,9 +24,12 @@ local function PlayChallenge(challenge)
         return false, 0
     end
     local runner = PFMinigames.Runners[challenge.kind]
-    if not runner then return false, 0 end
+    if not runner or playing then return false, 0 end
 
-    local answer = runner(challenge.puzzle) or {}
+    playing = true
+    local ok, answer = pcall(runner, challenge.puzzle)
+    playing = false
+    answer = ok and type(answer) == 'table' and answer or {}
     local p = promise.new()
     verdicts[challenge.id] = p
     TriggerServerEvent('pfm-minigames:server:answer', challenge.id, answer)

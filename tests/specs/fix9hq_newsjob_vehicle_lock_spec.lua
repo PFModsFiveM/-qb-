@@ -15,6 +15,8 @@ Mock.exportsByResource['pfm-inventory'] = {
     CreateInventory = function(_, id) inventories[id] = true end,
     AddItem = function(_, id, name) items[#items + 1] = { id = id, name = name } return true end,
     RemoveInventory = function(_, id) removedInv[#removedInv + 1] = id; inventories[id] = nil end,
+    GetItemCount = function() return 0 end, -- the reporter carries no gear (fix14_streetjobs_newsgear covers the rest)
+    GetInventory = function() return nil end,
 }
 Mock.exportsByResource['pfm-vehiclekeys'] = { HasKeys = function() return true end }
 

@@ -1,9 +1,43 @@
 Config = {}
 Config.UseTarget = GetConvar('UseTarget', 'false') == 'true' -- Use qb-target interactions (don't change this, go to your server.cfg and add `setr UseTarget true` to use this and just that from true to false or the other way around)
 Config.MaxJailTime = 1440 -- Hard server-side cap (months/minutes) any jail sentence is clamped to
-Config.JailResourceAllowlist = { -- Server resources allowed to set jail time directly via prison:server:SetJailStatus
+Config.JailResourceAllowlist = { -- Server resources allowed to jail and release players (exports JailPlayer / ReleasePlayer)
     ['pfm-policejob'] = true,
     ['pfm-adminmenu'] = true,
+}
+
+-- The sentence, the release, escapes and the gates are decided on the server.
+Config.Prison = {
+    InsideRadius = 200.0,     -- metres from Locations.middle that count as inside the prison
+    SampleSeconds = 2,        -- how often the server looks at where each inmate is
+    GraceSeconds = 20,        -- after being taken to a cell (or loading in) outside samples are ignored this long
+    MaxSpeed = 30.0,          -- m/s an inmate can plausibly move between two looks; more is a teleport
+    BreachWindow = 600,       -- seconds a breached (hacked) gate lets inmates out
+    GateReach = 12.0,         -- metres from a breached gate that count as going through it
+    ExitWindow = 8,           -- the last look inside the walls must be this recent when an inmate is seen outside
+    SendBackSeconds = 10,     -- an inmate outside without a breach is taken back at most this often
+    JobMinSeconds = 8,        -- a prison job cannot be finished sooner than this after it was given
+    JobReach = 3.5,           -- metres from the job spot the inmate must stand when finishing it
+    PhoneChance = 1,          -- % chance per finished job of finding a phone (once per sentence)
+}
+
+-- Prison break gates: hacked at `coords` with an electronickit (needs a gatecrack, used up);
+-- `gatekey` is the pfm-doorlock door the server opens.
+Config.Gates = {
+    { gatekey = 13, coords = vector3(1845.99, 2604.7, 45.58) },
+    { gatekey = 14, coords = vector3(1819.47, 2604.67, 45.56) },
+    { gatekey = 15, coords = vector3(1804.74, 2616.311, 45.61) },
+}
+Config.GateHack = {
+    Reach = 2.5,              -- metres from the gate's hack point (server position)
+    MinSeconds = 5,           -- a hack cannot finish sooner (the connect bar alone takes 5 s)
+    MaxSeconds = 60,          -- an unfinished hack is void after this
+    StartCooldown = 30,       -- seconds between two hack starts of one inmate
+    LockdownSeconds = 600,    -- a failed hack locks every gate down this long (one lockdown and alert at a time)
+    AlarmSeconds = 300,       -- the alarm rings this long; the gates lock again when it stops
+    OpenSeconds = 300,        -- a hacked gate locks again after this long in any case
+    AlertChance = 50,         -- % chance an opened gate alerts the police at once
+    Size = 5, Seconds = 30,   -- the hacking puzzle (pfm-minigames)
 }
 
 Config.Jobs = {

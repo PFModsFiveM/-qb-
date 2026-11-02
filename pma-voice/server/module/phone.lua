@@ -71,6 +71,20 @@ end
 
 exports('setPlayerCall', setPlayerCall)
 
+-- voice_serverCallsOnly (default 1): call channels are set only by server resources through the
+-- setPlayerCall export (pfm-phone does it when a call is answered, with a random id it keeps to the
+-- two people in the call). A client may still leave its call (channel 0). Without this any client
+-- could join any call channel by number and listen in. Set it to 0 only for a phone resource that
+-- still joins calls from the client.
+local function clientMayJoin(callChannel)
+	if GetConvarInt('voice_serverCallsOnly', 1) ~= 1 then return true end
+	return tonumber(callChannel) == 0
+end
+
 RegisterNetEvent('pma-voice:setPlayerCall', function(callChannel)
-	setPlayerCall(source, callChannel)
+	local src = source
+	if not clientMayJoin(callChannel) then
+		return logger.warn('%s tried to join call channel %s from the client (voice_serverCallsOnly is on)', src, tostring(callChannel))
+	end
+	setPlayerCall(src, callChannel)
 end)

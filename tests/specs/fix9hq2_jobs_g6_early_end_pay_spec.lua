@@ -52,6 +52,7 @@ local function collect(src, stops)
     local taken = 0
     for n, loc in ipairs(data.pickupSequence) do
         if stops and n > stops then break end
+        Mock.coords[src] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', src, loc, n)
         for _ = 1, data.locationBags[n] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', src, loc, n) end
         taken = taken + data.locationBags[n]

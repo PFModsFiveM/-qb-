@@ -44,8 +44,9 @@ Mock.exportsByResource['pf-government'] = {
         local p = Gov.perms[src]
         return p ~= nil and (p[perm] == true or p.all == true)
     end,
-    IssueFineImmediate = function(_, target, amount)
-        Gov.fines[#Gov.fines + 1] = { target = target, amount = amount }
+    -- pf-computer fines through IssueFineAs (pf-government's own rules for the official src)
+    IssueFineAs = function(_, src, data)
+        Gov.fines[#Gov.fines + 1] = { src = src, target = data.targetCitizenId, amount = data.amount, dueDate = data.dueDate }
         return true, { billId = #Gov.fines }
     end,
     GetSalesTaxBreakdown = function(_, subtotal)

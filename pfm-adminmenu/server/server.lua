@@ -450,13 +450,17 @@ end, 'admin')
 
 QBCore.Commands.Add('reportr', Lang:t('commands.reply_to_report'), { { name = 'id', help = 'Player' }, { name = 'message', help = 'Message to respond with' } }, false, function(source, args)
     local src = source
+    -- second guard behind the command's 'admin' permission (the old check compared the boolean
+    -- from IsPlayerAceAllowed with 1, so it always returned and no admin could ever reply)
+    if not IsAdmin(src) then return end
+    if type(args) ~= 'table' then return end
     local playerId = tonumber(args[1])
     table.remove(args, 1)
     local msg = table.concat(args, ' ')
     local OtherPlayer = exports['pfm-core']:GetPlayer(playerId)
     if msg == '' then return end
     if not OtherPlayer then return TriggerClientEvent('QBCore:Notify', src, 'Player is not online', 'error') end
-    if not QBCore.Functions.HasPermission(src, 'admin') or IsPlayerAceAllowed(src, 'command') ~= 1 then return end
+    msg = msg:gsub('%c', ' '):sub(1, 500)
     TriggerClientEvent('chat:addMessage', playerId, {
         color = { 255, 0, 0 },
         multiline = true,
@@ -468,7 +472,7 @@ QBCore.Commands.Add('reportr', Lang:t('commands.reply_to_report'), { { name = 'i
         args = { 'Report Response (' .. playerId .. ')', msg }
     })
     TriggerClientEvent('QBCore:Notify', src, 'Reply Sent')
-    TriggerEvent('qb-log:server:CreateLog', 'report', 'Report Reply', 'red', '**' .. GetPlayerName(src) .. '** replied on: **' .. OtherPlayer.PlayerData.name .. ' **(ID: ' .. OtherPlayer.PlayerData.source .. ') **Message:** ' .. msg, false)
+    TriggerEvent('qb-log:server:CreateLog', 'report', 'Report Reply', 'red', '**' .. tostring(GetPlayerName(src)) .. '** replied on: **' .. tostring(OtherPlayer.PlayerData.name or GetPlayerName(playerId)) .. ' **(ID: ' .. tostring(OtherPlayer.PlayerData.source) .. ') **Message:** ' .. msg, false)
 end, 'admin')
 
 QBCore.Commands.Add('setmodel', Lang:t('commands.change_ped_model'), { { name = 'model', help = 'Name of the model' }, { name = 'id', help = 'Id of the Player (empty for yourself)' } }, false, function(source, args)

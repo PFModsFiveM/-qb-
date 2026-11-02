@@ -57,6 +57,7 @@ local function collectAll(src)
     local starts = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')
     local data = starts[#starts].args[1]
     for n, loc in ipairs(data.pickupSequence) do
+        Mock.coords[src] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', src, loc, n)
         for _ = 1, data.locationBags[n] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', src, loc, n) end
     end

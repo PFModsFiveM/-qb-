@@ -65,20 +65,50 @@ local function MaxCharacters(license)
     return Config.DefaultNumberOfCharacters
 end
 
+-- The rules for a character's identity, at creation and for the government's corrections
+-- (pf-government civilian:updateIdentity, through the ValidateIdentityField export), so a value that
+-- could not be chosen at creation cannot be given later either. Names and nationality: trimmed, not
+-- empty, at most IDENTITY_MAX bytes (UTF-8 letters count twice), no control characters and no
+-- markup characters (these names are shown in every MDT, phone and government screen). Birthdate:
+-- a real date written YYYY-MM-DD (what the creation form's date field sends), from 1900.
+-- 64 for nationality: the country list's longest name is 52 bytes (48 dropped it at creation).
+local IDENTITY_MAX = { firstname = 32, lastname = 32, nationality = 64 }
+
+local function ValidateIdentityField(field, v)
+    if type(v) ~= 'string' then return nil, 'invalid_' .. tostring(field) end
+    v = v:gsub('^%s+', ''):gsub('%s+$', '')
+    if v == '' or v:find('%c') or v:find('[<>"`\\{}%[%]|]') then return nil, 'invalid_' .. field end
+    if field == 'birthdate' then
+        local y, m, d = v:match('^(%d%d%d%d)%-(%d%d)%-(%d%d)$')
+        y, m, d = tonumber(y), tonumber(m), tonumber(d)
+        if not y or y < 1900 or m < 1 or m > 12 or d < 1 then return nil, 'invalid_birthdate' end
+        local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
+        if d > ({ 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 })[m] then return nil, 'invalid_birthdate' end
+        return v
+    end
+    local max = IDENTITY_MAX[field]
+    if not max then return nil, 'invalid_field' end
+    if #v > max then return nil, 'invalid_' .. field end
+    return v
+end
+
+exports('ValidateIdentityField', function(field, value)
+    return ValidateIdentityField(field, value)
+end)
+
 -- Only the fields the creation form fills in; phone, account and the rest are made by pfm-core.
 -- (A client could send someone else's bank account or phone number, or any other field.)
 local function CleanCharinfo(data)
-    local function text(v, max)
-        if type(v) ~= 'string' then return nil end
-        v = v:gsub('%c', ''):gsub('^%s+', ''):gsub('%s+$', '')
-        if v == '' or #v > max then return nil end
-        return v
+    local nationality
+    if data.nationality ~= nil then
+        nationality = ValidateIdentityField('nationality', data.nationality)
+        if not nationality then return nil end
     end
     local charinfo = {
-        firstname = text(data.firstname, 32),
-        lastname = text(data.lastname, 32),
-        birthdate = text(data.birthdate, 16),
-        nationality = text(data.nationality, 48),
+        firstname = ValidateIdentityField('firstname', data.firstname),
+        lastname = ValidateIdentityField('lastname', data.lastname),
+        birthdate = ValidateIdentityField('birthdate', data.birthdate),
+        nationality = nationality,
         gender = tonumber(data.gender) == 1 and 1 or 0,
     }
     if not charinfo.firstname or not charinfo.lastname or not charinfo.birthdate then return nil end

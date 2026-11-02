@@ -97,7 +97,7 @@ function SetupRaces(Races) {
                 }
             }
             var Racers = GetAmountOfRacers(race.RaceData.Racers);
-            var element = '<div class="racing-race" id="raceid-'+i+'"> <span class="race-name"><i class="fas fa-flag-checkered"></i> '+race.RaceData.RaceName+'</span> <span class="race-track">'+Locked+'</span> <div class="race-infomation"> <div class="race-infomation-tab" id="race-information-laps">'+LapLabel+'</div> <div class="race-infomation-tab" id="race-information-distance">'+race.RaceData.Distance+' m</div> <div class="race-infomation-tab" id="race-information-player"><i class="fas fa-user"></i> '+Racers+'</div> </div> '+Buttons+' </div> </div>';
+            var element = '<div class="racing-race" id="raceid-'+i+'"> <span class="race-name"><i class="fas fa-flag-checkered"></i> '+QB.Phone.Esc(race.RaceData.RaceName)+'</span> <span class="race-track">'+Locked+'</span> <div class="race-infomation"> <div class="race-infomation-tab" id="race-information-laps">'+LapLabel+'</div> <div class="race-infomation-tab" id="race-information-distance">'+QB.Phone.Esc(race.RaceData.Distance)+' m</div> <div class="race-infomation-tab" id="race-information-player"><i class="fas fa-user"></i> '+Racers+'</div> </div> '+Buttons+' </div> </div>';
             $(".racing-races").append(element);
             $("#raceid-"+i).data('RaceData', race);
             if (!race.RaceData.Started) {
@@ -208,14 +208,14 @@ $(document).on('click', '.dropdown .dropdown-menu li', function(e) {
         }
         var CreatorTag = TrackData.CreatorData.charinfo.firstname.charAt(0).toUpperCase() + ". " + TrackData.CreatorData.charinfo.lastname;
 
-        $(".racing-setup-information-distance").html('Distance: '+TrackData.Distance+' m');
-        $(".racing-setup-information-creator").html('Creator: ' + CreatorTag);
+        $(".racing-setup-information-distance").text('Distance: '+TrackData.Distance+' m');
+        $(".racing-setup-information-creator").text('Creator: ' + CreatorTag);
         if (TrackData.Records.Holder !== undefined) {
             if (TrackData.Records.Holder[1].length > 8) {
                 TrackData.Records.Holder[1] = TrackData.Records.Holder[1].substring(0, 8) + "..";
             }
             var Holder = TrackData.Records.Holder[0].charAt(0).toUpperCase() + ". " + TrackData.Records.Holder[1];
-            $(".racing-setup-information-wr").html('WR: ' + secondsTimeSpanToHMS(TrackData.Records.Time) + ' ('+Holder+')');
+            $(".racing-setup-information-wr").text('WR: ' + secondsTimeSpanToHMS(TrackData.Records.Time) + ' ('+Holder+')');
         } else {
             $(".racing-setup-information-wr").html('WR: N/A');
         }
@@ -241,7 +241,7 @@ $(document).on('click', '#setup-race', function(e){
             $(".dropdown-menu").html("");
             $.each(Races, function(i, race){
                 if (!race.Started && !race.Waiting) {
-                    var elem = '<li id="'+race.RaceId+'">'+race.RaceName+'</li>';
+                    var elem = $('<li></li>').attr('id', String(race.RaceId)).text(race.RaceName === undefined || race.RaceName === null ? '' : race.RaceName);
                     $(".dropdown-menu").append(elem);
                 }
             });
@@ -387,7 +387,7 @@ $(document).on('click', '.racing-leaderboard-item', function(e){
 
     var Data = $(this).data('LeaderboardData');
 
-    $(".racing-leaderboard-details-block-trackname").html('<i class="fas fa-flag-checkered"></i> '+Data.RaceName);
+    $(".racing-leaderboard-details-block-trackname").html('<i class="fas fa-flag-checkered"></i> '+QB.Phone.Esc(Data.RaceName));
     $(".racing-leaderboard-details-block-list").html("");
     $.each(Data.LastLeaderboard, function(i, leaderboard){
         var lastname = leaderboard.Holder[1]
@@ -401,7 +401,7 @@ $(document).on('click', '.racing-leaderboard-item', function(e){
         } else {
             place = "DNF"
         }
-        var elem = '<div class="row"> <div class="name">' + ((leaderboard.Holder[0]).charAt(0)).toUpperCase() + '. ' + lastname + '</div><div class="time">'+bestroundtime+'</div><div class="score">'+ place +'</div> </div>';
+        var elem = '<div class="row"> <div class="name">' + QB.Phone.Esc(String(leaderboard.Holder[0] || '').charAt(0).toUpperCase()) + '. ' + QB.Phone.Esc(lastname) + '</div><div class="time">'+QB.Phone.Esc(bestroundtime)+'</div><div class="score">'+ QB.Phone.Esc(place) +'</div> </div>';
         $(".racing-leaderboard-details-block-list").append(elem);
     });
     $(".racing-leaderboard-details").fadeIn(200);
@@ -432,7 +432,7 @@ $(document).on('click', '#leaderboards-race', function(e){
             $(".racing-leaderboards").html("");
             $.each(Races, function(i, race){
                 if (race.LastLeaderboard.length > 0) {
-                    var elem = '<div class="racing-leaderboard-item" id="leaderboard-item-'+i+'"> <span class="racing-leaderboard-item-name"><i class="fas fa-flag-checkered"></i> '+race.RaceName+'</span> <span class="racing-leaderboard-item-info">Click for more details</span> </div>'
+                    var elem = '<div class="racing-leaderboard-item" id="leaderboard-item-'+i+'"> <span class="racing-leaderboard-item-name"><i class="fas fa-flag-checkered"></i> '+QB.Phone.Esc(race.RaceName)+'</span> <span class="racing-leaderboard-item-info">Click for more details</span> </div>'
                     $(".racing-leaderboards").append(elem);
                     $("#leaderboard-item-"+i).data('LeaderboardData', race);
                 }

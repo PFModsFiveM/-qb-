@@ -70,11 +70,9 @@ end)
 -- Objects
 
 QBCore.Commands.Add('spikestrip', Lang:t('commands.place_spike'), {}, false, function(source)
-    local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
-    if Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
-        TriggerClientEvent('police:client:SpawnSpikeStrip', src)
-    end
+    -- placed by the server at the officer's own position (server/objects.lua)
+    local ok, err = PolicePlaceSpike(source)
+    if not ok and err then TriggerClientEvent('QBCore:Notify', source, err, 'error') end
 end)
 
 QBCore.Commands.Add('pobject', Lang:t('commands.place_object'), { { name = 'type', help = Lang:t('info.poobject_object') } }, true, function(source, args)
@@ -140,9 +138,15 @@ QBCore.Commands.Add('unjail', Lang:t('commands.unjail_player'), { { name = 'id',
         local targetId = tonumber(args[1])
         local Target = targetId and exports['pfm-core']:GetPlayer(targetId)
         if not Target then return end
-        -- release server-side first so the prison resource accepts the client's status update
-        Target.Functions.SetMetaData('injail', 0)
-        TriggerClientEvent('prison:client:UnjailPerson', targetId)
+        -- pfm-prison releases on the server: the time, the stored items and the client's exit
+        if GetResourceState('pfm-prison') ~= 'started' then
+            TriggerClientEvent('QBCore:Notify', src, 'The prison is not available right now', 'error')
+            return
+        end
+        local ok, released, err = pcall(function() return exports['pfm-prison']:ReleasePlayer(targetId, 'unjail') end)
+        if not ok or not released then
+            TriggerClientEvent('QBCore:Notify', src, ok and err == 'not_jailed' and 'They are not in jail' or 'The prison could not release them', 'error')
+        end
     else
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.on_duty_police_only'), 'error')
     end
@@ -169,9 +173,10 @@ QBCore.Commands.Add('sc', Lang:t('commands.softcuff'), {}, false, function(sourc
 end)
 
 QBCore.Commands.Add('fine', Lang:t('commands.fine'), { { name = 'id', help = Lang:t('info.player_id') }, { name = 'amount', help = Lang:t('info.amount') } }, false, function(source, args)
+    args = type(args) == 'table' and args or {}
     local biller = exports['pfm-core']:GetPlayer(source)
     local billed = exports['pfm-core']:GetPlayer(tonumber(args[1]))
-    local amount = math.floor(tonumber(args and args[2]) or 0)
+    local amount = math.floor(tonumber(args[2]) or 0)
 
     if not biller or biller.PlayerData.job.type ~= 'leo' or not biller.PlayerData.job.onduty then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('error.on_duty_police_only'), 'error')
@@ -194,37 +199,30 @@ QBCore.Commands.Add('fine', Lang:t('commands.fine'), { { name = 'id', help = Lan
         return
     end
 
-    -- Bank first, then cash, through the ledger; the fine then goes to the department.
-    -- (RemoveMoney + AddMoney were two separate steps that a crash could split.)
-    local key = ('pfm-policejob:fine:%s:%s'):format(billed.PlayerData.citizenid, PFPayout.NewId())
-    local paidFrom, res = PFPayout.Charge(billed, { 'bank', 'cash' }, amount, { key = key, kind = 'fine', reason = 'Police fine', quiet = true })
-    if paidFrom then
-        PFPayout.PaySociety(biller.PlayerData.job.name, amount, { key = key .. ':society', reason = 'Fine' })
+    -- The fine is recorded first, then charged (bank, then cash) straight to the department in one
+    -- ledger step; a charge the bank has not settled, or one that could not reach the bank, is
+    -- finished by the sweep from the record (server/fines.lua).
+    local outcome, info = PFPoliceFines.Issue(biller, billed, amount)
+    if outcome == 'paid' then
         TriggerClientEvent('QBCore:Notify', source, Lang:t('info.fine_issued'), 'success')
         TriggerClientEvent('QBCore:Notify', billed.PlayerData.source, Lang:t('info.received_fine'))
-        return
-    end
-    -- The bank has not settled the charge (the money may have been taken): an invoice on top of it
-    -- could make them pay twice, so none is sent. The ledger's recovery settles the charge.
-    if type(res) == 'table' and res.unclear then
-        TriggerClientEvent('QBCore:Notify', source, 'The bank is still processing this fine. No invoice was sent; check again later.', 'error')
-        return
-    end
-    -- Could not pay: the fine becomes a phone invoice, created by pfm-phone itself (it gives the
-    -- invoice its own ledger token, so paying it is keyed to this invoice and never to a reused id).
-    local ok, id = pcall(function()
-        return exports['pfm-phone']:CreateInvoice({
-            citizenid = billed.PlayerData.citizenid, amount = amount, society = biller.PlayerData.job.name,
-            sender = biller.PlayerData.charinfo.firstname, sendercitizenid = biller.PlayerData.citizenid, reason = 'Police fine',
-        })
-    end)
-    if not ok or not id then
+    elseif outcome == 'unclear' or outcome == 'pending' then
+        -- the money may have been taken: an invoice on top of it could make them pay twice
+        TriggerClientEvent('QBCore:Notify', source, 'The bank is still processing this fine. No invoice was sent; it settles by itself.', 'error')
+    elseif outcome == 'bank_down' then
+        TriggerClientEvent('QBCore:Notify', source, 'The bank is not responding. The fine is recorded and will be charged when it is back.', 'error')
+    elseif outcome == 'invoiced' then
+        -- they could not pay: pfm-phone made the invoice (with its own ledger token)
+        TriggerClientEvent('qb-phone:client:AcceptorDenyInvoice', billed.PlayerData.source, info, biller.PlayerData.charinfo.firstname, biller.PlayerData.job.name, biller.PlayerData.citizenid, amount, GetCurrentResourceName())
+        TriggerClientEvent('qb-phone:RefreshPhone', billed.PlayerData.source)
+        TriggerClientEvent('QBCore:Notify', source, 'They could not pay: the fine was sent to their phone as an invoice', 'primary')
+    elseif outcome == 'retry' then
+        TriggerClientEvent('QBCore:Notify', source, 'They could not pay and the fine could not be sent as an invoice yet. It will be charged again later.', 'error')
+    elseif outcome == 'db_error' then
+        TriggerClientEvent('QBCore:Notify', source, 'The fine could not be recorded. Nothing was charged.', 'error')
+    else
         TriggerClientEvent('QBCore:Notify', source, 'The fine could not be sent as an invoice', 'error')
-        return
     end
-    TriggerClientEvent('qb-phone:client:AcceptorDenyInvoice', billed.PlayerData.source, id, biller.PlayerData.charinfo.firstname, biller.PlayerData.job.name, biller.PlayerData.citizenid, amount, GetCurrentResourceName())
-    TriggerClientEvent('qb-phone:RefreshPhone', billed.PlayerData.source)
-    TriggerClientEvent('QBCore:Notify', source, 'They could not pay: the fine was sent to their phone as an invoice', 'primary')
 end)
 
 -- Evidence
@@ -281,11 +279,19 @@ QBCore.Commands.Add('ankletlocation', Lang:t('commands.ankletlocation'), { { nam
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
-        local citizenid = args[1]
+        local citizenid = type(args) == 'table' and args[1]
+        if type(citizenid) ~= 'string' or citizenid == '' or #citizenid > 50 then return end
         local Target = QBCore.Functions.GetPlayerByCitizenId(citizenid)
         if not Target then return end
         if Target.PlayerData.metadata['tracker'] then
-            TriggerClientEvent('police:client:SendTrackerLocation', Target.PlayerData.source, src)
+            -- the anklet's position is where the server sees the player (their client used to be
+            -- asked, and could answer with any position)
+            local coords = GetEntityCoords(GetPlayerPed(Target.PlayerData.source))
+            local ci = Target.PlayerData.charinfo or {}
+            local msg = Lang:t('info.target_location', { firstname = ci.firstname, lastname = ci.lastname })
+            local at = { x = coords.x, y = coords.y, z = coords.z }
+            TriggerClientEvent('police:client:TrackerMessage', src, msg, at)
+            TriggerClientEvent('qb-phone:client:addPoliceAlert', src, { title = Lang:t('info.anklet_location'), coords = at, description = msg })
         else
             TriggerClientEvent('QBCore:Notify', src, Lang:t('error.no_anklet'), 'error')
         end

@@ -137,7 +137,7 @@ BeforeEach = function()
     Mock.clock = Mock.clock + 100
     calls, inspections, licenses = {}, {}, {}
     rows, slots = {}, {}
-    bills = { [7] = { id = 7, status = 'unpaid' }, [8] = { id = 8, status = 'paid' } }
+    bills = { [7] = { id = 7, status = 'unpaid', bill_type = 'fine', amount_paid = 0 }, [8] = { id = 8, status = 'paid', bill_type = 'tax', amount_paid = 50 } }
     DB.handlers = {}
     on('FROM pf_gov_businesses WHERE business_id = ?', function(p)
         if p[1] == BIZ.business_id then return BIZ end
@@ -145,6 +145,7 @@ BeforeEach = function()
     end)
     on('FROM pf_gov_businesses WHERE owner_id = ?', function() return { BIZ } end)
     on('SELECT id, status FROM pf_gov_bills WHERE id = ?', function(p) return bills[tonumber(p[1])] end)
+    on('SELECT id, bill_type, target_type, target_id, bill_ref, status, amount, amount_paid FROM pf_gov_bills WHERE id = ?', function(p) return bills[tonumber(p[1])] end)
     on('INSERT INTO pf_gov_premises_slots', function() DB.nextId = DB.nextId + 1 slots[DB.nextId] = true return DB.nextId end)
     on('SELECT 1 FROM pf_gov_premises_slots WHERE id = ?', function(p) return slots[tonumber(p[1])] and 1 or nil end)
     on('INSERT INTO pf_gov_business_requests', function(p)
@@ -245,15 +246,22 @@ describe('Fines', function()
         assert_eq(data.targetId, 'store:corner')
         assert_eq(data.billType, 'fine')
     end)
-    it('waives only open bills, with a reason, through bill:waive', function()
-        assert_eq(GovApps.Fines.waive(CLERK, { billId = 8, reason = 'x' }).error, 'not_open')
+    it('waives only open bills (or a paid fine, refunded), with a reason, through bill:waive', function()
+        local function waived()
+            local n = 0
+            for _, q in ipairs(DB.log) do if q:find("SET status = 'waived'", 1, true) then n = n + 1 end end
+            return n
+        end
+        assert_eq(GovApps.Fines.waive(CLERK, { billId = 8, reason = 'x' }).error, 'not_open', 'a paid tax bill stays paid')
         assert_eq(GovApps.Fines.waive(CLERK, { billId = 7 }).error, 'reason_required')
         assert_eq(GovApps.Fines.waive(UTIL, { billId = 7, reason = 'x' }).error, 'no_permission')
-        assert_eq(called('bill:waive'), 0)
+        assert_eq(waived(), 0)
+        local before = called('bill:waive')
         assert_true(GovApps.Fines.waive(CLERK, { billId = 7, reason = 'Issued in error' }).ok)
         local n, data = called('bill:waive')
-        assert_eq(n, 1)
+        assert_eq(n, before + 1)
         assert_eq(data.billId, 7)
+        assert_eq(waived(), 1)
     end)
 end)
 

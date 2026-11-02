@@ -72,18 +72,24 @@ QB.Phone.Functions.SetupMails = function(Mails) {
     }
     var MessageTime = Hourssssss + ":" + Minutessss;
 
-    $("#mail-header-mail").html(QB.Phone.Data.PlayerData.charinfo.firstname+"."+QB.Phone.Data.PlayerData.charinfo.lastname+"@qbcore.com");
-    $("#mail-header-lastsync").html("Last synchronized "+MessageTime);
+    $("#mail-header-mail").text(QB.Phone.Data.PlayerData.charinfo.firstname+"."+QB.Phone.Data.PlayerData.charinfo.lastname+"@qbcore.com");
+    $("#mail-header-lastsync").text("Last synchronized "+MessageTime);
     if (Mails !== null && Mails !== undefined) {
         if (Mails.length > 0) {
             $(".mail-list").html("");
+            // mails can come from other players (pf-citizen): sender as text, the body with basic
+            // formatting only (SafeHtml)
             $.each(Mails, function(i, mail){
                 var date = new Date(mail.date);
                 var DateString = date.getDate()+" "+MonthFormatting[date.getMonth()]+" "+date.getFullYear()+" "+date.getHours()+":"+date.getMinutes();
-                var element = '<div class="mail" id="mail-'+mail.mailid+'"><span class="mail-sender" style="font-weight: bold;">'+mail.sender+'</span> <div class="mail-text"><p>'+mail.message+'</p></div> <div class="mail-time">'+DateString+'</div></div>';
+                var element = $('<div class="mail"><span class="mail-sender" style="font-weight: bold;"></span> <div class="mail-text"><p></p></div> <div class="mail-time"></div></div>');
+                element.attr('id', 'mail-' + i);
+                element.find('.mail-sender').text(mail.sender === undefined || mail.sender === null ? '' : mail.sender);
+                element.find('.mail-text p').html(QB.Phone.SafeHtml(mail.message));
+                element.find('.mail-time').text(DateString);
 
                 $(".mail-list").append(element);
-                $("#mail-"+mail.mailid).data('MailData', mail);
+                element.data('MailData', mail);
             });
         } else {
             $(".mail-list").html('<p class="nomails">You don\'t have any mails..</p>');
@@ -97,9 +103,9 @@ var MonthFormatting = ["January", "February", "March", "April", "May", "June", "
 QB.Phone.Functions.SetupMail = function(MailData) {
     var date = new Date(MailData.date);
     var DateString = date.getDate()+" "+MonthFormatting[date.getMonth()]+" "+date.getFullYear()+" "+date.getHours()+":"+date.getMinutes();
-    $(".mail-subject").html("<p><span style='font-weight: bold;'>"+MailData.sender+"</span><br>"+MailData.subject+"</p>");
-    $(".mail-date").html("<p>"+DateString+"</p>");
-    $(".mail-content").html("<p>"+MailData.message+"</p>");
+    $(".mail-subject").html("<p><span style='font-weight: bold;'>"+QB.Phone.Esc(MailData.sender)+"</span><br>"+QB.Phone.Esc(MailData.subject)+"</p>");
+    $(".mail-date").html("<p>"+QB.Phone.Esc(DateString)+"</p>");
+    $(".mail-content").html("<p>"+QB.Phone.SafeHtml(MailData.message)+"</p>");
 
     var AcceptElem = '<div class="opened-mail-footer-item" id="accept-mail"><i class="fas fa-check-circle mail-icon"></i></div>';
     var RemoveElem = '<div class="opened-mail-footer-item" id="remove-mail"><i class="fas fa-trash-alt mail-icon"></i></div>';
@@ -185,27 +191,25 @@ $(document).on('click', '#new-advert-submit', function(e){
 });
 
 QB.Phone.Functions.RefreshAdverts = function(Adverts) {
-    $("#advert-header-name").html("@"+QB.Phone.Data.PlayerData.charinfo.firstname+""+QB.Phone.Data.PlayerData.charinfo.lastname+" | "+QB.Phone.Data.PlayerData.charinfo.phone);
-    if (Adverts.length > 0 || Adverts.length == undefined) {
+    $("#advert-header-name").text("@"+QB.Phone.Data.PlayerData.charinfo.firstname+""+QB.Phone.Data.PlayerData.charinfo.lastname+" | "+QB.Phone.Data.PlayerData.charinfo.phone);
+    if (Adverts && (Adverts.length > 0 || Adverts.length == undefined)) {
         $(".advert-list").html("");
+        // adverts go to every phone: the poster's name, number, text and picture as text/checked link
         $.each(Adverts, function(i, advert){
-            var clean = DOMPurify.sanitize(advert.message , {
-                ALLOWED_TAGS: [],
-                ALLOWED_ATTR: []
-            });
-
-            if (clean == '') { clean = 'I\'m a silly goose :/' }
-
-            if (advert.url) {
-                var element = `<div class="advert"><span class="advert-sender">${advert.name} | ${advert.number}</span><p>${clean}</p></br><img class="advimage" src=`+advert.url +` style=" border-radius:4px; width: 95%; position:relative; z-index: 1; right:1px;height: auto; bottom:1vh;"></br><span><div class="adv-icon"></div> </span></div>`;
-            } else {
-                var element = `<div class="advert"><span class="advert-sender">${advert.name} | ${advert.number}</span><p>${clean}</p></div>`;
+            var element = $('<div class="advert"><span class="advert-sender"></span><p></p></div>');
+            element.find('.advert-sender').text(String(advert.name || '') + ' | ' + String(advert.number || ''));
+            element.find('p').text(advert.message === undefined || advert.message === null ? '' : advert.message);
+            var url = advert.url ? QB.Phone.SafeUrl(advert.url, null) : null;
+            if (url) {
+                element.append('</br>');
+                element.append($('<img class="advimage" style=" border-radius:4px; width: 95%; position:relative; z-index: 1; right:1px;height: auto; bottom:1vh;">').attr('src', url));
+                element.append('</br><span><div class="adv-icon"></div> </span>');
             }
 
             $(".advert-list").append(element);
 
             if (advert.number === QB.Phone.Data.PlayerData.charinfo.phone){
-                $(".advert").append('<i class="fas fa-trash"style="font-size: 1rem; right:0;" id="adv-delete"></i>')
+                element.append('<i class="fas fa-trash"style="font-size: 1rem; right:0;" id="adv-delete"></i>')
             }
         });
     } else {

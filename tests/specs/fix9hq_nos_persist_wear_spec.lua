@@ -92,6 +92,13 @@ BeforeEach = function()
     for _, src in ipairs({ ME, OTHER }) do Mock.fireEvent('playerDropped', src) end
 end
 
+-- `src` boosts in `veh` for `seconds`: the server drains the bottle every second (server/nos.lua)
+local DRAIN = Config.NOS.levels[1].drainPerSec
+local function boostFor(src, veh, seconds)
+    Mock.fireNet('pf_mech:nos:boost', src, veh, true)
+    for _ = 1, seconds do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
+end
+
 -- the car is gone (destroyed / cleaned up / restart) and the same plate is spawned again
 local function loseAndRespawn()
     existing[CAR] = nil
@@ -107,9 +114,9 @@ describe('NOS is saved when it changes', function()
         seat(ME, CAR, true)
         Mock.fireNet('pf_mech:server:restoreVehicleState', ME, CAR)
         assert_true(st(CAR).nos and st(CAR).nos.has, 'the saved bottle is on the car')
-        Mock.fireNet('pf_mech:nos:updateLevel', ME, CAR, 30)
-        assert_eq(rows.diag[PLATE].nos_level, 30, 'the falling level is saved')
-        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
+        boostFor(ME, CAR, 6)
+        assert_eq(rows.diag[PLATE].nos_level, 100 - 6 * DRAIN, 'the falling level is saved')
+        boostFor(ME, CAR, 3)                                        -- used up
         assert_eq(st(CAR).nos.has, false)
         assert_eq(rows.diag[PLATE].nos_has, 0, 'the empty bottle is saved at once')
         local nos = loseAndRespawn()
@@ -120,14 +127,16 @@ describe('NOS is saved when it changes', function()
         rows.diag[PLATE] = { nos_has = 1, nos_level = 100, nos_color = '#FF0000' }
         seat(ME, CAR, true)
         Mock.fireNet('pf_mech:server:restoreVehicleState', ME, CAR)
-        Mock.fireNet('pf_mech:nos:updateLevel', ME, CAR, 42)
+        boostFor(ME, CAR, 5)
+        Mock.fireNet('pf_mech:nos:boost', ME, CAR, false)          -- the driver lets go
         local writes = diagWrites
-        Mock.fireNet('pf_mech:nos:updateLevel', ME, CAR, 41.5)      -- same step of 10: not written again
-        Mock.fireNet('pf_mech:nos:updateLevel', ME, CAR, 90)        -- up: ignored, not written
+        Mock.clock = Mock.clock + 3
+        PFMech.NosDrainTick()                                       -- not boosting: nothing drains or is written
         assert_eq(diagWrites, writes)
+        assert_eq(st(CAR).nos.level, 100 - 5 * DRAIN)
         local nos = loseAndRespawn()
         assert_true(nos and nos.has)
-        assert_eq(nos.level, 42)
+        assert_eq(nos.level, 100 - 5 * DRAIN)
     end)
 
     it('fitting a bottle is saved, with the owner, and a removed empty bottle too', function()
@@ -140,12 +149,21 @@ describe('NOS is saved when it changes', function()
         assert_eq(rows.diag[PLATE].nos_has, 1)
         assert_eq(rows.diag[PLATE].nos_level, Config.NOS.capacity)
         assert_eq(rows.diag[PLATE].citizenid, 'CID1')
-        Mock.fireNet('pf_mech:nos:updateLevel', ME, CAR, 0)
+        boostFor(ME, CAR, 9)                                        -- used up
         assert_eq(rows.diag[PLATE].nos_level, 0)
+        assert_eq(rows.diag[PLATE].nos_has, 0)
+        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
+        assert_eq(Mock.players[ME].inv.emptynos, 1)
+        -- a saved car still carrying an empty bottle (from before the server drain): taken off
+        st(CAR).nos = { has = true, level = 0 }
+        Mock.players[ME].inv.nos = 1
+        Mock.useables.nos(ME, { name = 'nos' })
+        Mock.clock = Mock.clock + 4
+        Mock.fireNet('pf_mech:nos:consumeBottle', ME)                -- (an old client: takes the bottle only)
         Mock.fireNet('pf_mech:nos:removeEmpty', ME, CAR)
         assert_eq(st(CAR).nos, nil)
         assert_eq(rows.diag[PLATE].nos_has, 0)
-        assert_eq(Mock.players[ME].inv.emptynos, 1)
+        assert_eq(Mock.players[ME].inv.emptynos, 2)
     end)
 
     it('a copy of the plate or a car nobody owns writes nothing', function()
@@ -154,8 +172,8 @@ describe('NOS is saved when it changes', function()
         Mock.fireNet('pf_mech:server:restoreVehicleState', ME, CAR)    -- CAR carries the plate
         seat(OTHER, COPY, true)
         Entity(COPY).state.nos = { has = true, level = 50 }
-        Mock.fireNet('pf_mech:nos:updateLevel', OTHER, COPY, 5)
-        Mock.fireNet('pf_mech:nos:giveEmpty', OTHER, COPY)
+        boostFor(OTHER, COPY, 5)                                     -- the copy is used up
+        assert_eq(st(COPY).nos.has, false)
         assert_eq(rows.diag[PLATE].nos_has, 1)
         assert_eq(rows.diag[PLATE].nos_level, 60)
 
@@ -163,7 +181,7 @@ describe('NOS is saved when it changes', function()
         rows.diag[PLATE] = nil
         Mock.fireEvent('entityRemoved', nil, CAR)
         Entity(CAR).state.nos = { has = true, level = 50 }
-        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
+        boostFor(ME, CAR, 5)
         assert_eq(rows.diag[PLATE], nil, 'not a player car: no row')
     end)
 end)

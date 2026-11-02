@@ -175,24 +175,35 @@ Config = {
         },
     },
 
-    -- Delivery Config
-    UseMarkedBills = false,     -- true for marked bills, false for cash
+    -- Delivery Config (server/deliveries.lua: the server picks product, amount and drop)
+    UseMarkedBills = false,     -- true for marked bills, false for cash (paid through the bank ledger)
     DeliveryRepGain = 1,        -- amount of rep gained per delivery
-    DeliveryRepLoss = 1,        -- amount of rep lost if delivery wrong or late
-    PoliceDeliveryModifier = 2, -- amount to multiply active cop count by
+    DeliveryRepLoss = 1,        -- amount of rep lost if delivery wrong or late (per brick when a run expires)
+    -- On-time pay grows with the police on duty: x(1 + PerCopBonus per officer), at most MaxPoliceMultiplier.
+    -- (It used to be cops x 2 with no cap: 10 officers paid 20x.)
+    PerCopBonus = 0.1,
+    MaxPoliceMultiplier = 1.5,
     WrongAmountFee = 2,         -- divide the payout by this value for wrong delivery amount
     OverdueDeliveryFee = 4,     -- divide the payout by this value for overdue delivery
+    MaxDeliveryAmount = 3,      -- a run is 1 to this many bricks
+    DeliveryExpireMinutes = 120, -- a run not handed over by then fails: bricks taken back, the rest owed
+    DeliveryCooldown = 300,     -- seconds between the end of a run and the next one
+    FailedDeliveryCooldown = 1800, -- seconds after a run that failed
+    MaxDeliveriesPerDay = 10,   -- runs per character per day
 
+    -- debt: what the dealer asks, in cash, for each brick of a run that is not brought back
     DeliveryItems = {
         [1] = {
             ['item'] = 'weed_brick',
             ['minrep'] = 0,
-            ['payout'] = 600
+            ['payout'] = 600,
+            ['debt'] = 5000,
         },
         [2] = {
             ['item'] = 'coke_brick',
             ['minrep'] = 0,
-            ['payout'] = 700
+            ['payout'] = 700,
+            ['debt'] = 5000,
         },
     },
 

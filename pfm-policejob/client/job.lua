@@ -151,24 +151,29 @@ local function doCarDamage(currentVehicle, veh)
     end
 end
 
+-- The server releases the car: it leaves the impound once, is spawned there with its plate, and
+-- starts with its stored fuel (pfm-fuel). This client applies the stored mods and damage.
 function TakeOutImpound(vehicle)
     local coords = Config.Locations['impound'][currentGarage]
-    if coords then
-        QBCore.Functions.TriggerCallback('QBCore:Server:SpawnVehicle', function(netId)
-            local veh = NetToVeh(netId)
-            QBCore.Functions.SetVehicleProperties(veh, json.decode(vehicle.mods))
-            SetVehicleNumberPlateText(veh, vehicle.plate)
-            SetVehicleDirtLevel(veh, 0.0)
-            SetEntityHeading(veh, coords.w)
-            exports[Config.FuelResource]:SetFuel(veh, vehicle.fuel)
-            doCarDamage(veh, vehicle)
-            TriggerServerEvent('police:server:TakeOutImpound', vehicle.plate, currentGarage)
-            closeMenuFull()
-            TaskWarpPedIntoVehicle(PlayerPedId(), veh, -1)
-            TriggerEvent('vehiclekeys:client:SetOwner', QBCore.Functions.GetPlate(veh))
-            SetVehicleEngineOn(veh, true, true, true)
-        end, vehicle.vehicle, coords, true)
-    end
+    if not coords or type(vehicle) ~= 'table' then return end
+    QBCore.Functions.TriggerCallback('police:server:ReleaseImpound', function(netId, info)
+        if not netId or type(info) ~= 'table' then
+            QBCore.Functions.Notify('This vehicle cannot be released', 'error')
+            return
+        end
+        local tries = 0
+        while not NetworkDoesNetworkIdExist(netId) and tries < 50 do Wait(100) tries += 1 end
+        local veh = NetToVeh(netId)
+        if veh == 0 or not DoesEntityExist(veh) then return end
+        local mods = type(info.mods) == 'string' and json.decode(info.mods) or nil
+        if mods then QBCore.Functions.SetVehicleProperties(veh, mods) end
+        SetVehicleDirtLevel(veh, 0.0)
+        doCarDamage(veh, { body = info.body or 1000.0, engine = info.engine or 1000.0 })
+        closeMenuFull()
+        TaskWarpPedIntoVehicle(PlayerPedId(), veh, -1)
+        TriggerEvent('vehiclekeys:client:SetOwner', QBCore.Functions.GetPlate(veh))
+        SetVehicleEngineOn(veh, true, true, true)
+    end, vehicle.plate, currentGarage)
 end
 
 function TakeOutVehicle(vehicleInfo)

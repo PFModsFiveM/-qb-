@@ -1,5 +1,6 @@
 -- pf-mechanicjob preview (server/preview.lua, server/preview_receipt.lua): preview changes reach only a
--- car the sender is at; receipts are rate-limited with bounded text.
+-- car an on-duty mechanic opened a preview session for (driving it), cosmetic parts only; receipts
+-- are rate-limited with bounded text. (fix14_mechanic_preview_spec.lua has the session in detail.)
 load_resource('tests/lua/fivem_mocks.lua')
 QBCore = QBCoreMock
 QBCoreMock.Shared.Items.preview_receipt = { name = 'preview_receipt', label = 'Receipt' }
@@ -18,6 +19,8 @@ BeforeEach = function()
     Mock.players, Mock.coords = {}, {}
     given = {}
     local p = Mock.newPlayer(SRC)
+    p.PlayerData.job = { name = 'mechanic', onduty = true }
+    Mock.vehicleOf = { [SRC] = NEAR_CAR }
     p.Functions.AddItem = function(name, n, slot, info) given[#given + 1] = info; return true end
     Mock.coords[SRC], Mock.coords[NEAR_CAR] = vector3(0.0, 0.0, 0.0), vector3(3.0, 0.0, 0.0)
     Mock.coords[FAR_CAR] = vector3(800.0, 0.0, 0.0)
@@ -25,12 +28,16 @@ BeforeEach = function()
 end
 
 describe('preview', function()
-    it("can't restyle a car the sender isn't at", function()
-        Mock.fireNet('pf_mech:preview:syncMod', SRC, FAR_CAR, 11, 3)
+    it("can't restyle a car without a session for it, or a performance part at all", function()
+        Mock.fireNet('pf_mech:preview:syncMod', SRC, FAR_CAR, 0, 3)
         Mock.fireNet('pf_mech:preview:syncPaint', SRC, FAR_CAR, 'primary', 12)
         Mock.fireNet('pf_mech:preview:restore', SRC, FAR_CAR, { mods = {} })
+        Mock.fireNet('pf_mech:preview:syncMod', SRC, NEAR_CAR, 0, 3)          -- no session yet
         assert_eq(#Mock.clientEvents, 0)
-        Mock.fireNet('pf_mech:preview:syncMod', SRC, NEAR_CAR, 11, 3)
+        Mock.fireNet('pf_mech:preview:begin', SRC, NEAR_CAR, { mods = { [0] = -1 } })
+        Mock.fireNet('pf_mech:preview:syncMod', SRC, NEAR_CAR, 11, 3)         -- engine: never
+        assert_eq(#Mock.clientEventsNamed('pf_mech:preview:applyModClient'), 0)
+        Mock.fireNet('pf_mech:preview:syncMod', SRC, NEAR_CAR, 0, 3)
         assert_eq(#Mock.clientEventsNamed('pf_mech:preview:applyModClient'), 1)
     end)
     it('receipts: one every few seconds, text bounded', function()

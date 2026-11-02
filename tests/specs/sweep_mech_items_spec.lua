@@ -14,6 +14,30 @@ local vehicles = {}
 function GetAllVehicles() return vehicles end
 local existing = {}
 function DoesEntityExist(e) return existing[e] == true end
+function GetIsVehicleEngineRunning() return false end
+
+-- pf_mech_fitted_parts, the only table these handlers use: [plate .. '|' .. slot] = item
+local fitted = {}
+local baseScalar, baseQuery, baseUpdate = MySQL.scalar, MySQL.query, MySQL.update
+MySQL.scalar = { await = function(q, p)
+    if q:find('FROM pf_mech_fitted_parts', 1, true) then return fitted[p[1] .. '|' .. p[2]] end
+    return baseScalar.await(q, p)
+end }
+MySQL.query = { await = function(q, p)
+    if q:find('INTO pf_mech_fitted_parts', 1, true) then
+        if not (q:find('INSERT IGNORE', 1, true) and fitted[p[1] .. '|' .. p[2]]) then fitted[p[1] .. '|' .. p[2]] = p[3] end
+        return {}
+    end
+    return baseQuery.await(q, p)
+end }
+MySQL.update = { await = function(q, p)
+    if q:find('DELETE FROM pf_mech_fitted_parts', 1, true) then
+        local key = p[1] .. '|' .. p[2]
+        if fitted[key] == p[3] then fitted[key] = nil return 1 end
+        return 0
+    end
+    return baseUpdate.await(q, p)
+end }
 
 local function withInventory(p, items)
     p.inv = items or {}
@@ -42,9 +66,11 @@ Config.AdvancedSystems.Enabled = true
 Config.AdvancedSystems.ChopShop.Enabled = true
 QBCoreMock.Shared.Items.emptynos = { name = 'emptynos', label = 'Empty NOS' }
 QBCoreMock.Shared.Items.nos = { name = 'nos', label = 'NOS' }
+load_resource('[pfscripts]/pf-mechanicjob/shared/performance_parts.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/main.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/nos.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/advanced_systems.lua')
+PFMech.SchemaReady = true
 
 local MECH, CIV = 1, 2
 local CAR, FAR_CAR = 500, 501
@@ -57,7 +83,8 @@ BeforeEach = function()
     Mock.reset()
     Mock.players, Mock.coords, Mock.vehicleOf, Mock.plates, Mock.deleted = {}, {}, {}, {}, {}
     states = {}
-    withInventory(Mock.newPlayer(MECH, 'CIDM')).PlayerData.job = { name = 'mechanic', onduty = true, grade = { level = 0 } }
+    withInventory(Mock.newPlayer(MECH, 'CIDM'), { toolbox = 1 }).PlayerData.job = { name = 'mechanic', onduty = true, grade = { level = 0 } }
+    fitted = {}
     withInventory(Mock.newPlayer(CIV, 'CIDC')).PlayerData.job = { name = 'unemployed' }
     vehicles = { CAR, FAR_CAR }
     existing = { [CAR] = true, [FAR_CAR] = true }
@@ -95,10 +122,10 @@ describe('performance part returns', function()
         Mock.players[MECH].inv.engine3 = 1
         Mock.fireNet('pf_mech:server:applyPerformanceUpgrade', MECH, { item = 'engine3', vehicle = CAR, modType = 11, modIndex = 2 })
         assert_eq(count(MECH, 'engine3'), 0)
-        Mock.fireNet('pf-mechanicjob:server:returnUpgradeItem', MECH, 'engine3', FAR_CAR)  -- other car, far away
+        Mock.fireNet('pf-mechanicjob:server:returnUpgradeItem', MECH, 'engine', FAR_CAR)  -- other car, far away
         assert_eq(count(MECH, 'engine3'), 0)
-        Mock.fireNet('pf-mechanicjob:server:returnUpgradeItem', MECH, 'engine3', CAR)
-        Mock.fireNet('pf-mechanicjob:server:returnUpgradeItem', MECH, 'engine3', CAR)
+        Mock.fireNet('pf-mechanicjob:server:returnUpgradeItem', MECH, 'engine', CAR)
+        Mock.fireNet('pf-mechanicjob:server:returnUpgradeItem', MECH, 'engine', CAR)
         assert_eq(count(MECH, 'engine3'), 1)
     end)
     it('upgrades and mods only reach a car the player is at', function()
@@ -127,15 +154,17 @@ describe('NOS', function()
         assert_eq(count(CIV, 'nos'), 0)
         assert_eq(count(CIV, 'emptynos'), 1)
     end)
-    it('the level only goes down, and only from someone in the car', function()
-        Entity(CAR).state.nos = { has = true, level = 40 }
-        Mock.fireNet('pf_mech:nos:updateLevel', CIV, CAR, 100)        -- not in the car
+    it('the level falls on the server while the driver boosts; nobody else moves it', function()
+        Entity(CAR).state.nos = { has = true, level = 40, levelSel = 1 }
+        Mock.fireNet('pf_mech:nos:boost', CIV, CAR, true)             -- not in the car
+        Mock.clock = Mock.clock + 1
+        PFMech.NosDrainTick()
         assert_eq(Entity(CAR).state.nos.level, 40)
         Mock.vehicleOf[CIV] = CAR
-        Mock.fireNet('pf_mech:nos:updateLevel', CIV, CAR, 100)        -- refill attempt
-        assert_eq(Entity(CAR).state.nos.level, 40)
-        Mock.fireNet('pf_mech:nos:updateLevel', CIV, CAR, 25)
-        assert_eq(Entity(CAR).state.nos.level, 25)
+        Mock.fireNet('pf_mech:nos:boost', CIV, CAR, true)
+        Mock.clock = Mock.clock + 1
+        PFMech.NosDrainTick()
+        assert_eq(Entity(CAR).state.nos.level, 40 - Config.NOS.levels[1].drainPerSec)
     end)
     it('wear reports cannot repair a car or reach someone else\'s', function()
         Entity(CAR).state.partDamage = { engine_part = 60, oil = 50 }

@@ -71,6 +71,11 @@ Config.Locations = {
     }
 }
 
+-- The van's trunk carries this gear, issued per reporter (player metadata 'newsgear'): a piece the
+-- reporter has been issued, or carries, is not put in again. Storing the van, going off duty or
+-- leaving the job hands it back. A piece not handed back can be issued again after this many hours.
+Config.GearResetHours = 24
+
 Config.VehicleItems = {
     [1] = {
         name = 'newscam',

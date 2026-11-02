@@ -47,10 +47,16 @@ Config.AdvancedSystems.PitBays.Enabled = true
 Config.AdvancedSystems.PitBays.ServiceSpeedMultiplier = 0.75
 QBCoreMock.Shared.Items.emptynos = { name = 'emptynos', label = 'Empty NOS' }
 QBCoreMock.Shared.Items.nos = { name = 'nos', label = 'NOS' }
+load_resource('[pfscripts]/pf-mechanicjob/shared/performance_parts.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/main.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/nos.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/advanced_systems.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/admin_customs.lua')
+PFMech.SchemaReady = true
+-- pf_mech_fitted_parts (the performance part handlers): nothing fitted yet, every write lands
+local baseScalar, baseQuery = MySQL.scalar, MySQL.query
+MySQL.scalar = { await = function(q, p) if q:find('pf_mech_fitted_parts', 1, true) then return nil end return baseScalar.await(q, p) end }
+MySQL.query = { await = function(q, p) if q:find('pf_mech_fitted_parts', 1, true) then return {} end return baseQuery.await(q, p) end }
 
 local ME, OTHER, ADMIN = 1, 2, 3
 local CAR, OTHER_CAR = 500, 501
@@ -70,6 +76,7 @@ BeforeEach = function()
     vehicles = { CAR, OTHER_CAR }
     existing = { [CAR] = true, [OTHER_CAR] = true }
     withInventory(Mock.newPlayer(ME)).PlayerData.job = { name = 'mechanic', onduty = true, grade = { level = 0 } }
+    Mock.players[ME].inv.toolbox = 1
     withInventory(Mock.newPlayer(OTHER))
     withInventory(Mock.newPlayer(ADMIN))
     Mock.aces[ADMIN] = { ['pf.mechanic.admincustoms'] = true }
@@ -148,15 +155,19 @@ describe('NOS while driving', function()
         assert_eq(st(CAR).nos.levelSel, kept, '16th in 5 s ignored')
     end)
 
-    it('the driver reports the bottle empty: the server clears the car; outsiders cannot', function()
-        st(CAR).nos = { has = true, level = 30, color = '#FF0000' }
+    it('a bottle with gas left is never emptied on request; the server drain empties it', function()
+        st(CAR).nos = { has = true, level = 30, color = '#FF0000', levelSel = 1 }
         Mock.fireNet('pf_mech:nos:giveEmpty', OTHER, CAR)
-        assert_eq(st(CAR).nos.has, true)
         seat(ME, CAR)
         Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
+        assert_eq(st(CAR).nos.has, true, 'the driver cannot empty it either')
+        assert_eq(st(CAR).nos.level, 30)
+        Mock.fireNet('pf_mech:nos:boost', ME, CAR, true)
+        for _ = 1, 5 do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
         assert_eq(st(CAR).nos.has, false)
         assert_eq(st(CAR).nos.level, 0)
         assert_eq(st(CAR).nos.color, '#FF0000')
+        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
         assert_eq(count(ME, 'emptynos'), 0, 'no empty without a bottle the server took')
     end)
 
@@ -445,7 +456,7 @@ describe('NOS client (client/nos.lua)', function()
         assert_eq(#writes, 0)
     end)
 
-    it('boost level and drain stay on this client and are reported, never written', function()
+    it('boost level and boosting are reported (the server drains), never written', function()
         reset({ has = true, level = 100, levelSel = 1 })
         justPressed[UP] = true
         run(2)
@@ -454,12 +465,16 @@ describe('NOS client (client/nos.lua)', function()
         assert_eq(sel[1].args[1], CAR + 1000)
         assert_eq(sel[1].args[2], 2)
         assert_eq(notes[#notes], 'NOS Level 2', 'shown at once, before the server answers')
-        pressed[BOOST] = true
-        run(200)                                       -- a few seconds of boost
-        local lv = sent('pf_mech:nos:updateLevel')
-        assert_true(#lv >= 1, 'level reported while boosting')
-        local reported = lv[#lv].args[2]
-        assert_true(reported < 100 and reported > 0, 'reported level fell: ' .. tostring(reported))
+        -- a few seconds of boost, then the key is let go (one run of the loop: its state is kept)
+        local stopAt = frame + 200
+        pressed = setmetatable({}, { __index = function(_, k) if k == BOOST then return frame < stopAt end end })
+        run(260)
+        local all = sent('pf_mech:nos:boost')
+        assert_eq(#all, 2, 'the start and the stop are reported once each')
+        assert_eq(all[1].args[1], CAR + 1000)
+        assert_eq(all[1].args[2], true)
+        assert_eq(all[2].args[2], false)
+        assert_eq(#sent('pf_mech:nos:updateLevel'), 0, 'no level reports: the level is the server\'s')
         assert_eq(#writes, 0, 'no state bag written')
     end)
 

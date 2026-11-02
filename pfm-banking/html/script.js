@@ -404,7 +404,27 @@ const bankingApp = Vue.createApp({
                 }
             });
         },
+        // The server marks on each member row what this viewer may change (canEdit, canRemove,
+        // canSet.<right>); the screen offers only that. The server checks every change again.
+        permLocked(member, key) {
+            return member.canEdit === false || !!(member.canSet && member.canSet[key] === false);
+        },
+        isMe(member) {
+            return !!member && member.citizenid === this.accountsData.myCitizenid;
+        },
+        leaveSelected() {
+            const acc = this.selectedAccount;
+            if (!acc || acc.isOwner || !this.accountsData.myCitizenid) return;
+            this.post("removeMember", { accountId: acc.id, citizenid: this.accountsData.myCitizenid }).then((res) => {
+                this.addNotification(res.data.message, res.data.success ? "success" : "error");
+                if (res.data.success) {
+                    this.selectedAccRef = "personal";
+                    this.refreshAccounts();
+                }
+            });
+        },
         togglePerm(member, key) {
+            if (this.permLocked(member, key)) return;
             const newVal = member[key] == 1 ? 0 : 1;
             member[key] = newVal;
             const acc = this.selectedAccount;

@@ -32,6 +32,7 @@ server_scripts {
 	'@oxmysql/lib/MySQL.lua',
 	'@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
 	'server/main.lua',
+	'server/fines.lua', -- /fine records and their sweep
 	'server/commands.lua',
 	'server/interactions.lua',
 	'server/evidence.lua',

@@ -1,48 +1,48 @@
---[[ Server challenges (API note for resources that build on this)
+--[[ Server challenges: API note (pfm-minigames)
 
-A challenge is a minigame the server generates, the client plays and the server checks. Use one
-whenever a minigame result unlocks something (a door, a car, loot, a hack): the client's own
+A challenge is a minigame the server generates, the client plays and the server judges. Use one
+whenever a minigame result unlocks something (a door, a car, loot, a hack): a client's own
 true/false proves nothing.
 
-Server side, from any resource:
+Server, from your resource:
   local ch, why = exports['pfm-minigames']:IssueChallenge(src, kind, opts)
-      kind  'skillbar' | 'keys' (alias 'keyminigame') | 'hacking' | 'lockpick'
-      opts  skillbar  { difficulty = 'easy'|'medium'|'hard', keys = '1234' }
-            keys      { amount = 10 }                 (3..30 arrows)
-            hacking   { size = 5, seconds = 30 }      (block size 2..10, 5..120 s)
-            lockpick  { pins = 5 }                    (1..10 tries)
-            any kind  { maxFaults = n }  passed also needs faults <= n (keys default 0)
-                      { ttl = ms }       time allowed to answer (default: what the puzzle needs + 20 s)
-                      { tag = 'res:thing' } free text for logs
-      -> ch = { id = 'string', kind = kind, puzzle = {...}, expiresIn = ms }: send it to that
-         player's client unchanged. nil, reason when the player or kind is invalid.
+    kind  'skillbar' | 'keys' (alias 'keyminigame') | 'hacking' | 'lockpick'
+    opts  skillbar  { difficulty = 'easy'|'medium'|'hard', keys = '1234' }
+          keys      { amount = 10 }               3..30 arrows
+          hacking   { size = 5, seconds = 30 }    block size 2..10, 5..120 s
+          lockpick  { pins = 5 }                  1..10 tries
+          any kind  { maxFaults = n }  passing also needs faults <= n (keys: default 0)
+                    { ttl = ms }       time to answer (default: what the puzzle needs + 20 s)
+                    { tag = 'res:thing' } up to 64 chars, handed back in the answered event
+    -> ch = { id, kind, puzzle, expiresIn = ms }: send it unchanged to that player's client.
+       nil, 'invalid_player' | 'unknown_kind' otherwise.
   local passed, faults, reason = exports['pfm-minigames']:Verify(src, id)
-      The verdict, given once: the challenge is gone afterwards ('unknown' on a second call).
-      Not answered yet: false, 0, 'pending' (also used up). Other reasons: 'expired',
-      'wrong_player', 'wrong_resource' (only the resource that issued it may verify it), and the
-      check's own reasons ('miss', 'too_fast', 'quit', ...). Faults are wrong keys, misses, wrong
-      submits or broken pins, depending on the kind.
-  exports['pfm-minigames']:Cancel(src, id)   drops a challenge nobody will finish.
+    The verdict, given once (the challenge is gone afterwards: 'unknown'). Only the resource that
+    issued it may verify it ('wrong_resource'). Verified before any answer: false, 0, 'pending'
+    (also used up). Other reasons: 'expired', 'wrong_player', and the check's own ('miss',
+    'too_fast', 'quit', 'faults', ...). faults = wrong keys, misses, wrong submits or broken pins.
+  exports['pfm-minigames']:Cancel(src, id)   drops one of your challenges nobody will finish.
+  AddEventHandler('pfm-minigames:server:answered', function(info) end)
+    info = { id, src, kind, passed, faults, reason, tag, owner } once an answer is judged, for a
+    resource that acts without a finish event of its own: it still calls Verify to use it up.
 
-Client side (the player's own client):
+Client (that player's):
   local passed, faults = exports['pfm-minigames']:PlayChallenge(ch)
-      Plays it, sends the answer (net event 'pfm-minigames:server:answer', one answer per id) and
-      returns the server's verdict once it arrives (false after 5 s without one). Only then tell
-      your server resource that the player finished: the answer is already checked when your
-      finish event arrives.
+    Plays it, sends the answer (net event 'pfm-minigames:server:answer', one per id) and returns
+    the server's verdict (false after 5 s without one). Net events from one client arrive in
+    order, so a finish event sent after this returns finds the answer already judged.
 
-Typical flow: server start event (position, items, cooldown, records an attempt) -> IssueChallenge
--> send ch to the client -> PlayChallenge -> client finish event -> Verify -> act. Roll item
-breakage and rewards on the server, also when the client never sends its finish (time the attempt
-out). Examples: pfm-doorlock (startPick/finishPick) and pfm-vehiclekeys.
+Typical flow (pfm-doorlock startPick/finishPick, pfm-vehiclekeys): server start event (position,
+items, cooldown; records the attempt) -> IssueChallenge -> ch to the client -> PlayChallenge ->
+client finish event -> Verify -> act. Roll item breakage and rewards on the server, also when no
+finish ever comes (time the attempt out).
 
-What the check covers: the answer must fit the puzzle (keys, zones, positions, angle), and fit
-server time: an answer claiming more play time than has passed since the challenge was issued, or
-faster than the puzzle can be played, fails; so does one after the challenge expired.
-Limit: the puzzle travels to the client, so a modified client can still solve it automatically;
-the timing checks hold it to human speed.
-The old client exports (Skillbar, KeyMinigame, Hacking, Lockpick, ...) still work for callers that
-have not moved yet, but their result is only the client's word.
+The check: the answer must fit the puzzle (keys, zones, positions, angle) and server time (no more
+play time than has passed since the challenge was issued, none faster than the puzzle can be
+played, nothing after it expired). Limit: the puzzle reaches the client, so a modified client can
+still solve it automatically; the timing checks hold it to human speed. The old client exports
+(Skillbar, KeyMinigame, Hacking, Lockpick, ...) still work, but their result is only the client's
+word.
 ]]
 
 local MAX_OPEN_PER_PLAYER = 6
@@ -339,6 +339,8 @@ end
 local function Cancel(src, id)
     local ch = type(id) == 'string' and Challenges[id] or nil
     if not ch or ch.src ~= tonumber(src) then return false end
+    local caller = GetInvokingResource()
+    if ch.owner and caller and ch.owner ~= caller then return false end -- not another resource's
     Challenges[id] = nil
     return true
 end
@@ -374,6 +376,11 @@ RegisterNetEvent('pfm-minigames:server:answer', function(id, answer)
     ch.result = result
     ch.expiresAt = t + VERDICT_TTL
     TriggerClientEvent('pfm-minigames:client:verdict', src, id, result.passed, result.faults)
+    -- server-local only (no client can raise it): lets the issuer act without a finish event
+    TriggerEvent('pfm-minigames:server:answered', {
+        id = id, src = src, kind = ch.kind, passed = result.passed, faults = result.faults,
+        reason = result.reason, tag = ch.tag, owner = ch.owner,
+    })
 end)
 
 AddEventHandler('playerDropped', function()

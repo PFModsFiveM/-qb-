@@ -130,6 +130,13 @@ BeforeEach = function()
     st(CAR).partDamage.brakes = 12
 end
 
+-- the driver boosts for `seconds`: the server drains the bottle every second (server/nos.lua)
+local DRAIN = Config.NOS.levels[1].drainPerSec
+local function boostFor(seconds)
+    Mock.fireNet('pf_mech:nos:boost', OWNER, CAR, true)
+    for _ = 1, seconds do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
+end
+
 -- the car is lost before any other save and the plate spawns again
 local function respawnNos()
     existing[CAR] = nil
@@ -154,7 +161,7 @@ describe('the 30 s driving save', function()
         local wear = heldWear()
         assert_true(wear ~= nil, 'the driving save is waiting on the database')
         holdWrites = false
-        Mock.fireNet('pf_mech:nos:giveEmpty', OWNER, CAR)                 -- the driver used it up
+        boostFor(5)                                                       -- the driver used it up
         assert_eq(saved().nos_has, 0)
         release(wear)                                                     -- the older save lands last
         assert_eq(coroutine.status(sync), 'dead')
@@ -169,12 +176,12 @@ describe('the 30 s driving save', function()
         local wearSync = async('pf_mech:sync:cacheVehicleState', OWNER, { plate = PLATE, netId = CAR, props = props })
         local wear = heldWear()
         holdWrites = false
-        Mock.fireNet('pf_mech:nos:updateLevel', OWNER, CAR, 15)
-        assert_eq(saved().nos_level, 15)
+        boostFor(4)                                                       -- 60 - 4 x 12
+        assert_eq(saved().nos_level, 60 - 4 * DRAIN)
         release(wear)
         assert_eq(coroutine.status(wearSync), 'dead')
-        assert_eq(saved().nos_level, 15)
-        assert_eq(respawnNos().level, 15)
+        assert_eq(saved().nos_level, 60 - 4 * DRAIN)
+        assert_eq(respawnNos().level, 60 - 4 * DRAIN)
     end)
 end)
 
@@ -194,7 +201,7 @@ describe('the garage store', function()
         local wear = heldWear()
         assert_true(wear ~= nil, 'the store is waiting on the database')
         holdWrites = false
-        Mock.fireNet('pf_mech:nos:giveEmpty', OWNER, CAR)
+        boostFor(5)
         assert_eq(saved().nos_has, 0)
         release(wear)
         assert_eq(coroutine.status(store), 'dead')
@@ -204,13 +211,19 @@ describe('the garage store', function()
     end)
 
     it('while a NOS save is in flight, the newest state is written last', function()
+        Mock.fireNet('pf_mech:nos:boost', OWNER, CAR, true)
         holdWrites = true
-        local level = async('pf_mech:nos:updateLevel', OWNER, CAR, 35)    -- writes level 35, held
+        local level = coroutine.create(function()                       -- 2 s of drain: writes 36, held
+            Mock.clock = Mock.clock + 2
+            PFMech.NosDrainTick()
+        end)
+        assert(coroutine.resume(level))
         local first = heldNos()
         assert_true(first ~= nil)
         holdWrites = false
-        Mock.fireNet('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)   -- queues 35 again
-        Mock.fireNet('pf_mech:nos:giveEmpty', OWNER, CAR)                -- queues the empty bottle
+        Mock.fireNet('qb-garages:server:updateVehicleStats', OWNER, PLATE, 100, 900, 1000)   -- queues 36 again
+        Mock.clock = Mock.clock + 5
+        PFMech.NosDrainTick()                                            -- queues the empty bottle
         assert_eq(saved().nos_level, 60, 'nothing written past the one in flight')
         release(first)
         assert_eq(coroutine.status(level), 'dead')

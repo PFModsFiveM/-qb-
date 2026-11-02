@@ -4,11 +4,8 @@ local QBPhone = {}
 local AppAlerts = {}
 local MentionedTweets = {}
 local Hashtags = {}
-local Calls = {}
 local Adverts = {}
 local GeneratedPlates = {}
-local WebHook = ''
-local FivemerrApiToken = ''
 local TWData = {}
 
 -- Functions
@@ -89,10 +86,46 @@ local function FindPlayerRowByPhone(number)
     return nil
 end
 
+--- True when `host` is one of Config.ImageHosts or a subdomain of one.
+local function AllowedImageHost(host)
+    for _, allowed in ipairs(Config.ImageHosts or {}) do
+        allowed = tostring(allowed):lower()
+        if host == allowed or (#host > #allowed and host:sub(-#allowed - 1) == '.' .. allowed) then return true end
+    end
+    return false
+end
+
+--- A picture link the phone may show, or nil: https, on an allowed host, at most 512 characters and
+--- without quotes, spaces, brackets, parentheses or backslashes, so it cannot leave an HTML attribute
+--- or a CSS url() even where a page forgets to escape it.
+local function SafeImageUrl(url)
+    if type(url) ~= 'string' or #url > 512 then return nil end
+    if url:find('[%c%s"\'<>()\\`{}]') then return nil end
+    local host = url:match('^https://([%w%.%-]+)[/?#]') or url:match('^https://([%w%.%-]+)$')
+    if not host or not AllowedImageHost(host:lower()) then return nil end
+    return url
+end
+PFPhoneSafeImageUrl = SafeImageUrl
+
+--- Does this player carry a phone? (The Functions table of a pfm-core player, called through pcall:
+--- a method from another resource is a function reference.)
+local function HasPhoneItem(Player)
+    local fns = Player and Player.Functions
+    if type(fns) ~= 'table' or fns.GetItemByName == nil then return false end
+    local ok, item = pcall(function() return fns.GetItemByName('phone') end)
+    return ok and item ~= nil
+end
+
+--- A stored profile picture as the phone may show it (rows saved before the check may hold anything).
+local function CleanProfilePicture(picture)
+    if picture == 'default' then return 'default' end
+    return SafeImageUrl(picture) or 'default'
+end
+
 local function ProfilePicture(row)
     local ok, meta = pcall(json.decode, row and row.metadata or '')
     local picture = ok and type(meta) == 'table' and type(meta.phone) == 'table' and meta.phone.profilepicture
-    return picture or 'default'
+    return CleanProfilePicture(picture)
 end
 
 local function EncodedSize(value)
@@ -315,6 +348,349 @@ local function notifyBillingSociety(society, name, amount, paid)
         end
     end
 end
+
+-- ── calls ────────────────────────────────────────────────────────────
+-- The server owns every call: who called whom, whether it rings or was answered, and its voice
+-- channel, a random id the server picks and hands to pma-voice itself (pma-voice's
+-- voice_serverCallsOnly keeps clients from joining a call channel on their own). Only the person
+-- called can answer a ringing call, and only the two people in a call can end it. The clients used
+-- to send the call id (worked out from both phone numbers), the number to answer or hang up and
+-- their own "in a call" flag, so anyone could hang up anyone's call, make a ringing phone answer by
+-- itself and listen in, or join any call's voice channel.
+-- ActiveCalls[id] = { id, caller, target (sources), callerNumber, targetNumber, anonymous,
+--                     state = 'ringing' | 'ongoing' }; CallOf[source] = id
+local ActiveCalls = {}
+local CallOf = {}
+-- a call nobody answers is ended a little after both phones stopped ringing
+local CALL_RING_MS = ((tonumber(Config.CallRepeats) or 10) + 2) * (tonumber(Config.RepeatTimeout) or 2000)
+
+PFPhoneCalls = PFPhoneCalls or {}
+function PFPhoneCalls.Get(id) return ActiveCalls[id] end
+function PFPhoneCalls.Of(src) return CallOf[src] end
+
+local function NewCallId()
+    for _ = 1, 50 do
+        local id = math.random(100000, 2147483646)
+        if not ActiveCalls[id] then return id end
+    end
+end
+
+--- Puts the player in the voice channel of a call (0: out of any call), through pma-voice's server export.
+local function SetVoiceCall(src, channel)
+    if GetResourceState('pma-voice') ~= 'started' then return false end
+    local ok, err = pcall(function() exports['pma-voice']:setPlayerCall(src, channel) end)
+    if not ok then print(('^1[pfm-phone]^7 pma-voice setPlayerCall(%s, %s) failed: %s'):format(tostring(src), tostring(channel), tostring(err))) end
+    return ok
+end
+
+--- The call `src` is in, when callId is that call or not given (a stale id from an older call is
+--- ignored, so it cannot end a newer one).
+local function CallFor(src, callId)
+    local id = CallOf[src]
+    local call = id and ActiveCalls[id]
+    if not call then return nil end
+    local wanted = type(callId) == 'number' and math.tointeger(callId) or nil
+    if type(callId) == 'number' and wanted ~= id then return nil end
+    return call
+end
+
+--- Ends a call for both people. endedBy: the source that ended it (it is not sent its own hang-up);
+--- gone: that source has left the server (nothing is sent to it).
+local function EndCall(id, endedBy, gone)
+    local call = ActiveCalls[id]
+    if not call then return false end
+    ActiveCalls[id] = nil
+    local answered = call.state == 'ongoing'
+    for _, src in ipairs({ call.caller, call.target }) do
+        if CallOf[src] == id then CallOf[src] = nil end
+        if not (gone and src == endedBy) then
+            if answered then SetVoiceCall(src, 0) end
+            if src ~= endedBy then TriggerClientEvent('qb-phone:client:CancelCall', src) end
+        end
+    end
+    -- the recent-call lists, from the server's record (clients used to report these for any number)
+    local at = os.date('%H:%M', os.time())
+    if not (gone and endedBy == call.caller) then
+        TriggerClientEvent('qb-phone:client:AddRecentCall', call.caller, { number = call.targetNumber, anonymous = false }, at, 'outgoing')
+    end
+    if not (gone and endedBy == call.target) then
+        TriggerClientEvent('qb-phone:client:AddRecentCall', call.target,
+            { number = (not call.anonymous) and call.callerNumber or nil, anonymous = call.anonymous }, at, answered and 'incoming' or 'missed')
+    end
+    return true
+end
+PFPhoneCalls.End = EndCall
+
+--- Starts a call from `src` to the holder of `number`. Returns the call id, or nil and a reason.
+local function StartCall(src, number, anonymous)
+    local Caller = exports['pfm-core']:GetPlayer(src)
+    if not Caller or not IsPhoneNumber(number) then return nil, 'invalid' end
+    number = tostring(number)
+    local callerNumber = tostring(Caller.PlayerData.charinfo and Caller.PlayerData.charinfo.phone or '')
+    if CallOf[src] then return nil, 'in_call' end
+    if not HasPhoneItem(Caller) then return nil, 'no_phone' end
+    if number == callerNumber then return nil, 'self' end
+    local Target = QBCore.Functions.GetPlayerByPhone(number)
+    local tgt = Target and tonumber(Target.PlayerData.source)
+    if not tgt or tgt == src or not HasPhoneItem(Target) then return nil, 'unavailable' end
+    if CallOf[tgt] then return nil, 'busy' end
+    local id = NewCallId()
+    if not id then return nil, 'unavailable' end
+    anonymous = anonymous == true
+    ActiveCalls[id] = { id = id, caller = src, target = tgt, callerNumber = callerNumber, targetNumber = number, anonymous = anonymous, state = 'ringing' }
+    CallOf[src], CallOf[tgt] = id, id
+    TriggerClientEvent('qb-phone:client:CallStarted', src, id)
+    -- an anonymous caller's number never reaches the phone being called
+    TriggerClientEvent('qb-phone:client:GetCalled', tgt, (not anonymous) and callerNumber or nil, id, anonymous)
+    SetTimeout(CALL_RING_MS, function()
+        local call = ActiveCalls[id]
+        if call and call.state == 'ringing' then EndCall(id, nil) end
+    end)
+    return id
+end
+PFPhoneCalls.Start = StartCall
+
+--- The person called answers: both are put in the call's voice channel by the server.
+local function AnswerCall(src, callId)
+    local call = CallFor(src, callId)
+    if not call or call.target ~= src or call.state ~= 'ringing' then return false end
+    if not HasPhoneItem(exports['pfm-core']:GetPlayer(src)) then return false end
+    call.state = 'ongoing'
+    SetVoiceCall(call.caller, call.id)
+    SetVoiceCall(call.target, call.id)
+    TriggerClientEvent('qb-phone:client:AnswerCall', call.caller)
+    return true
+end
+PFPhoneCalls.Answer = AnswerCall
+
+local function EndCallOf(src, gone)
+    local id = CallOf[src]
+    if id then EndCall(id, src, gone) end
+end
+
+AddEventHandler('playerDropped', function()
+    EndCallOf(tonumber(source), true)
+end)
+
+-- a logout (character switch) ends the call too: the next character must not be in it
+AddEventHandler('QBCore:Server:OnPlayerUnload', function(src)
+    src = tonumber(src)
+    if src then EndCallOf(src, false) end
+end)
+
+-- ── chats ────────────────────────────────────────────────────────────
+-- Each person's copy of a chat is a row of phone_messages: a list of days { date = 'D-M-YYYY' (month
+-- from 0, as the phone writes it), messages = { { sender, type, message, time, data } } }. Every
+-- message is built here (sender, time, location and text from the server) and appended to both
+-- rows. The client used to send the whole chat, which overwrote both people's rows: a sender could
+-- rewrite or delete the other person's messages, add messages in their name, and put HTML into
+-- fields the phone showed unescaped (a message that moved the reader's money when opened).
+local CHAT_TYPES = { message = true, location = true, picture = true }
+local MAX_CHAT_DAYS = 30
+local MAX_CHAT_MESSAGES = 200
+local MAX_CHAT_BYTES = 60000 -- phone_messages.messages is a TEXT column (64 KB)
+local ChatLocks = {} -- ['<number>|<number>'] = true while a message between the two is written
+
+local function ChatDateKey()
+    local d = os.date('*t', os.time())
+    return ('%d-%d-%d'):format(d.day, d.month - 1, d.year)
+end
+
+--- A stored message as the phone may show it, or nil (rows written before this check may hold anything).
+local function CleanChatMessage(m)
+    if type(m) ~= 'table' or not CHAT_TYPES[m.type] then return nil end
+    local sender = m.sender
+    if type(sender) ~= 'string' or #sender > 50 or not sender:match('^[%w]+$') then return nil end
+    local time = type(m.time) == 'string' and m.time:match('^%d%d?:%d%d$') and m.time or ''
+    local data = type(m.data) == 'table' and m.data or {}
+    local out = { sender = sender, type = m.type, time = time, data = {} }
+    if m.type == 'message' then
+        out.message = SanitizeText(m.message, 1000)
+        if not out.message then return nil end
+    elseif m.type == 'location' then
+        local x, y = tonumber(data.x), tonumber(data.y)
+        if not x or not y or x ~= x or y ~= y or math.abs(x) > 100000 or math.abs(y) > 100000 then return nil end
+        out.message, out.data = 'Shared Location', { x = Round(x, 2), y = Round(y, 2) }
+    else
+        local url = SafeImageUrl(data.url)
+        if not url then return nil end
+        out.message, out.data = 'Photo', { url = url }
+    end
+    return out
+end
+
+local function CleanChat(days)
+    local out = {}
+    if type(days) ~= 'table' then return out end
+    for _, day in ipairs(days) do
+        if type(day) == 'table' and type(day.date) == 'string' and day.date:match('^%d%d?%-%d%d?%-%d%d%d%d$') and type(day.messages) == 'table' then
+            local msgs = {}
+            for _, m in ipairs(day.messages) do
+                local clean = CleanChatMessage(m)
+                if clean then msgs[#msgs + 1] = clean end
+            end
+            if #msgs > 0 then out[#out + 1] = { date = day.date, messages = msgs } end
+        end
+    end
+    return out
+end
+PFPhoneCleanChat = CleanChat
+
+--- Drops the oldest messages until the chat fits (days, messages, bytes). Returns the JSON to store.
+local function CapChat(days)
+    while #days > MAX_CHAT_DAYS do table.remove(days, 1) end
+    local function dropOldest(n)
+        while n > 0 and #days > 0 do
+            table.remove(days[1].messages, 1)
+            if #days[1].messages == 0 then table.remove(days, 1) end
+            n = n - 1
+        end
+    end
+    local total = 0
+    for _, d in ipairs(days) do total = total + #d.messages end
+    if total > MAX_CHAT_MESSAGES then dropOldest(total - MAX_CHAT_MESSAGES) end
+    local encoded = json.encode(days)
+    while #encoded > MAX_CHAT_BYTES and #days > 0 do
+        dropOldest(math.ceil((#encoded - MAX_CHAT_BYTES) / 300) + 1)
+        encoded = json.encode(days)
+    end
+    return encoded
+end
+
+local function AppendChatMessage(days, dateKey, msg)
+    for i = #days, 1, -1 do
+        if days[i].date == dateKey then
+            days[i].messages[#days[i].messages + 1] = msg
+            return
+        end
+    end
+    days[#days + 1] = { date = dateKey, messages = { msg } }
+end
+
+--- One person's copy of a chat: its row id (nil: none yet) and its cleaned days. The newest row wins
+--- when an older version of the phone left two.
+local function ReadChat(cid, number)
+    local rows = MySQL.query.await('SELECT id, messages FROM phone_messages WHERE citizenid = ? AND number = ? ORDER BY id DESC LIMIT 1', { cid, number })
+    local row = type(rows) == 'table' and rows[1] or nil
+    if not row then return nil, {} end
+    local ok, decoded = pcall(json.decode, row.messages or '')
+    return row.id, CleanChat(ok and decoded or nil)
+end
+
+local function WriteChat(rowId, cid, number, encoded)
+    if rowId then
+        MySQL.update.await('UPDATE phone_messages SET messages = ? WHERE id = ?', { encoded, rowId })
+    else
+        MySQL.insert.await('INSERT INTO phone_messages (citizenid, number, messages) VALUES (?, ?, ?)', { cid, number, encoded })
+    end
+end
+
+--- The message the server stores for a chat payload { type, message, url }, or nil.
+local function BuildChatMessage(src, Sender, payload)
+    if type(payload) ~= 'table' or not CHAT_TYPES[payload.type] then return nil end
+    local msg = { sender = Sender.PlayerData.citizenid, type = payload.type, time = os.date('%H:%M', os.time()), data = {} }
+    if payload.type == 'message' then
+        msg.message = SanitizeText(payload.message, Config.MaxContentLength or 280)
+        if not msg.message then return nil end
+    elseif payload.type == 'location' then
+        -- where the sender stands, from the server
+        local c = GetEntityCoords(GetPlayerPed(src))
+        msg.message, msg.data = 'Shared Location', { x = Round(c.x, 2), y = Round(c.y, 2) }
+    else
+        local url = SafeImageUrl(payload.url)
+        if not url then return nil, 'bad_picture' end
+        msg.message, msg.data = 'Photo', { url = url }
+    end
+    return msg
+end
+
+local function PhoneNotify(src, text)
+    TriggerClientEvent('qb-phone:client:CustomNotification', src, 'Whatsapp', text, 'fab fa-whatsapp', '#25D366', 2500)
+end
+
+--- Appends one message to both copies of the chat between `src` and `number` and sends it to both
+--- phones. Returns true, or false and a reason.
+local function SendChatMessage(src, number, payload)
+    local Sender = exports['pfm-core']:GetPlayer(src)
+    if not Sender or not IsPhoneNumber(number) then return false, 'invalid' end
+    number = tostring(number)
+    local cid = Sender.PlayerData.citizenid
+    local myNumber = tostring(Sender.PlayerData.charinfo and Sender.PlayerData.charinfo.phone or '')
+    if myNumber == '' or number == myNumber then return false, 'invalid' end
+    if not HasPhoneItem(Sender) then return false, 'no_phone' end
+    local msg, why = BuildChatMessage(src, Sender, payload)
+    if not msg then return false, why or 'invalid' end
+    -- one write per pair at a time, taken before the first database wait: both rows are read,
+    -- appended to and written back, and a second message meanwhile would overwrite the first
+    local lockKey = number < myNumber and (number .. '|' .. myNumber) or (myNumber .. '|' .. number)
+    local locked = false
+    for _ = 1, 100 do
+        if not ChatLocks[lockKey] then
+            ChatLocks[lockKey] = true
+            locked = true
+            break
+        end
+        Wait(20)
+    end
+    if not locked then return false, 'busy' end
+    local ok, sent, err = pcall(function()
+        local Target = QBCore.Functions.GetPlayerByPhone(number)
+        local targetCid = Target and Target.PlayerData.citizenid
+        if not targetCid then
+            local row = FindPlayerRowByPhone(number)
+            targetCid = row and row.citizenid
+        end
+        if type(targetCid) ~= 'string' or targetCid == cid then return false, 'no_number' end
+        local dateKey = ChatDateKey()
+        local myRow, myDays = ReadChat(cid, number)
+        local theirRow, theirDays = ReadChat(targetCid, myNumber)
+        AppendChatMessage(myDays, dateKey, msg)
+        AppendChatMessage(theirDays, dateKey, msg)
+        WriteChat(myRow, cid, number, CapChat(myDays))
+        WriteChat(theirRow, targetCid, myNumber, CapChat(theirDays))
+        TriggerClientEvent('qb-phone:client:ChatMessage', src, number, dateKey, msg, true)
+        -- the receiver's online phone, found again after the database waits (they may have left)
+        local Now = QBCore.Functions.GetPlayerByCitizenId(targetCid)
+        if Now and tostring(Now.PlayerData.charinfo and Now.PlayerData.charinfo.phone or '') == number then
+            TriggerClientEvent('qb-phone:client:ChatMessage', Now.PlayerData.source, myNumber, dateKey, msg, false)
+        end
+        return true
+    end)
+    ChatLocks[lockKey] = nil
+    if not ok then
+        print(('^1[pfm-phone]^7 sending a chat message failed: %s'):format(tostring(sent)))
+        return false, 'server_error'
+    end
+    return sent, err
+end
+PFPhoneChats = { Send = SendChatMessage, Clean = CleanChat }
+
+-- ── phone settings ───────────────────────────────────────────────────
+--- The phone settings a client may store (metadata.phone): a built-in background name or a picture
+--- link, and 'default' or a picture link as the avatar. A field the client sends that is not valid
+--- keeps its stored value. (The whole client table used to be stored and the avatar was shown to
+--- other players inside an unescaped style attribute.)
+local function CleanPhoneMeta(MData, current)
+    current = type(current) == 'table' and current or {}
+    -- rejected: the player asked for a new value that is not allowed (an old stored value the
+    -- phone sends back with every save is kept quietly, as its cleaned form)
+    local out, rejected = {}, false
+    local bg = MData.background
+    if bg ~= nil then
+        if type(bg) == 'string' and ((#bg <= 64 and bg:match('^[%w_%-]+$')) or SafeImageUrl(bg)) then out.background = bg
+        elseif bg ~= current.background then rejected = true end
+    end
+    local pic = MData.profilepicture
+    if pic ~= nil then
+        if pic == 'default' or SafeImageUrl(pic) then out.profilepicture = pic
+        elseif pic ~= current.profilepicture then rejected = true end
+    end
+    if out.background == nil and type(current.background) == 'string' and ((#current.background <= 64 and current.background:match('^[%w_%-]+$')) or SafeImageUrl(current.background)) then
+        out.background = current.background
+    end
+    if out.profilepicture == nil and current.profilepicture ~= nil then out.profilepicture = CleanProfilePicture(current.profilepicture) end
+    return out, rejected
+end
 -- Callbacks
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetInvoices', function(source, cb)
@@ -348,22 +724,14 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetInvoices', function(source, 
     cb({})
 end)
 
+-- CanCall, IsOnline for the number the phone wants to call, from the server's own call table (see
+-- the calls section below; it used to read an "in a call" flag each client set for itself).
 QBCore.Functions.CreateCallback('qb-phone:server:GetCallState', function(_, cb, ContactData)
-    if type(ContactData) ~= 'table' then return cb(false, false) end
-    local Target = QBCore.Functions.GetPlayerByPhone(ContactData.number)
-    if Target ~= nil then
-        if Calls[Target.PlayerData.citizenid] ~= nil then
-            if Calls[Target.PlayerData.citizenid].inCall then
-                cb(false, true)
-            else
-                cb(true, true)
-            end
-        else
-            cb(true, true)
-        end
-    else
-        cb(false, false)
-    end
+    if type(ContactData) ~= 'table' or not IsPhoneNumber(ContactData.number) then return cb(false, false) end
+    local Target = QBCore.Functions.GetPlayerByPhone(tostring(ContactData.number))
+    if not Target or not HasPhoneItem(Target) then return cb(false, false) end
+    if CallOf[Target.PlayerData.source] then return cb(false, true) end
+    cb(true, true)
 end)
 
 QBCore.Functions.CreateCallback('qb-phone:server:GetPhoneData', function(source, cb)
@@ -400,10 +768,19 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetPhoneData', function(source,
             PhoneData.Garage = garageresult
         end
 
-        local messages = MySQL.query.await('SELECT * FROM phone_messages WHERE citizenid = ?', { Player.PlayerData.citizenid })
-        if messages ~= nil and next(messages) ~= nil then
-            PhoneData.Chats = messages
+        -- chats are cleaned as they are read (rows written before the server built every message may
+        -- hold forged senders or HTML); one chat per number, the newest row when there are two
+        local messages = MySQL.query.await('SELECT id, number, messages FROM phone_messages WHERE citizenid = ? ORDER BY id', { Player.PlayerData.citizenid })
+        local byNumber, order = {}, {}
+        for _, row in ipairs(type(messages) == 'table' and messages or {}) do
+            if IsPhoneNumber(row.number) then
+                local number = tostring(row.number)
+                local ok, decoded = pcall(json.decode, row.messages or '')
+                if not byNumber[number] then order[#order + 1] = number end
+                byNumber[number] = { number = number, messages = json.encode(CleanChat(ok and decoded or nil)) }
+            end
         end
+        for _, number in ipairs(order) do PhoneData.Chats[#PhoneData.Chats + 1] = byNumber[number] end
 
         if AppAlerts[Player.PlayerData.citizenid] ~= nil then
             PhoneData.Applications = AppAlerts[Player.PlayerData.citizenid]
@@ -698,6 +1075,8 @@ local function Reopen(invoice)
 end
 
 --- The payer's source (when online) and name, for the events and mails of a settled invoice.
+--- (A deleted character's 'paying' invoice is kept by pfm-core and settled by the sweep: paying the
+--- business does not need the payer. Its mails then name 'a former resident'.)
 local function PayerOf(cid, Ply)
     Ply = Ply or exports['pfm-core']:GetPlayerByCitizenId(cid)
     local info = Ply and Ply.PlayerData.charinfo
@@ -706,7 +1085,15 @@ local function PayerOf(cid, Ply)
         local okDecode, decoded = pcall(json.decode, ok and raw or '')
         info = okDecode and type(decoded) == 'table' and decoded or {}
     end
-    return { src = Ply and Ply.PlayerData.source or nil, name = ('%s %s'):format(info.firstname or '', info.lastname or '') }
+    local name = ('%s %s'):format(tostring(info.firstname or ''), tostring(info.lastname or '')):match('^%s*(.-)%s*$')
+    return { src = Ply and Ply.PlayerData.source or nil, name = name ~= '' and name or 'a former resident' }
+end
+
+--- False only when the database answers that the character no longer exists.
+local function CharacterExists(cid)
+    local ok, n = pcall(MySQL.scalar.await, 'SELECT COUNT(*) FROM players WHERE citizenid = ?', { cid })
+    if not ok or n == nil then return true end
+    return (tonumber(n) or 1) > 0
 end
 
 --- Stores a new invoice with its own ledger token. Every invoice pfm-phone creates goes through here.
@@ -1043,6 +1430,11 @@ local function SweepOne(id, cid)
         if not invoice or invoice.pay_state ~= 'paying' then return 'gone' end
         local payer = PayerOf(cid)
         local res, waitErr, waitKey = FinishPaying(invoice, payer)
+        if res == 'open' and not payer.src and not CharacterExists(cid) then
+            -- no attempt took money and the payer was deleted meanwhile: nobody can pay it any more
+            pcall(MySQL.update.await, 'DELETE FROM phone_invoices WHERE id = ? AND citizenid = ? AND pay_state IS NULL', { id, cid })
+            return 'open'
+        end
         if res == 'open' and payer.src then TriggerClientEvent('qb-phone:RefreshPhone', payer.src) end
         return res, waitErr, waitKey
     end)
@@ -1348,38 +1740,144 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetCurrentLawyers', function(_,
     cb(Lawyers)
 end)
 
-QBCore.Functions.CreateCallback('qb-phone:server:GetWebhook', function(_, cb)
-    if WebHook ~= '' then
-        cb(WebHook)
-    else
-        print('Set your webhook to ensure that your camera will work!!!!!! Set this on line 9 of the server sided script!!!!!')
-        cb(nil)
-    end
-end)
+-- ── camera uploads ───────────────────────────────────────────────────
+-- The phone's camera is uploaded by the server: screenshot-basic takes the picture from the player's
+-- screen, the server sends it to the upload target and gives the phone only the picture's link (and
+-- puts it in the gallery). The target comes from server-only convars (config.lua): a Discord
+-- webhook (pfm_phone_webhook) or Fivemerr (Config.Fivemerr, pfm_phone_fivemerr_token). The phone
+-- used to fetch the webhook URL from the server and upload itself, so every client could read it and
+-- post as the webhook, or delete its messages, outside the game.
+local FIVEMERR_DEFAULT_URL = 'https://api.fivemerr.com/v1/media/images'
+local B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+local B64Index = {}
+for i = 1, #B64 do B64Index[B64:sub(i, i)] = i - 1 end
 
-QBCore.Functions.CreateCallback('qb-phone:server:UploadToFivemerr', function(source, cb)
-    local src = source
-
-    if Config.Fivemerr == true and FivemerrApiToken == '' then
-        print('^1--- Fivemerr is enabled but no API token has been specified. ---^7')
-        return cb(nil)
-    end
-
-    exports['screenshot-basic']:requestClientScreenshot(src, {
-        encoding = 'png'
-    }, function(err, data)
-        if err then return cb(nil) end
-        PerformHttpRequest(WebHook, function(status, response)
-            if status ~= 200 then
-                print('^1--- ERROR UPLOADING IMAGE: ' .. status .. ' ---^7')
-                cb(nil)
+local function Base64Decode(text)
+    text = text:gsub('[^%w%+/=]', '')
+    local out, bits, nbits = {}, 0, 0
+    for i = 1, #text do
+        local ch = text:sub(i, i)
+        if ch == '=' then break end
+        local v = B64Index[ch]
+        if v then
+            bits = (bits << 6) | v
+            nbits = nbits + 6
+            if nbits >= 8 then
+                nbits = nbits - 8
+                out[#out + 1] = string.char((bits >> nbits) & 0xFF)
             end
+        end
+    end
+    return table.concat(out)
+end
 
-            cb(response)
-        end, 'POST', json.encode({ data = data }), {
-            ['Authorization'] = FivemerrApiToken,
-            ['Content-Type'] = 'application/json'
-        })
+--- The bytes and type of a data: URI from screenshot-basic, or nil.
+local function DataUriBytes(uri)
+    if type(uri) ~= 'string' then return nil end
+    local mime, b64 = uri:match('^data:(image/[%w%+%-%.]+);base64,(.+)$')
+    if not mime then return nil end
+    return Base64Decode(b64), mime
+end
+
+local function Webhook()
+    local url = GetConvar('pfm_phone_webhook', '')
+    if type(url) ~= 'string' or not url:match('^https://') then return nil end
+    -- Discord answers with the message (and its attachment links) only with wait=true
+    if not url:find('[?&]wait=') then url = url .. (url:find('?', 1, true) and '&' or '?') .. 'wait=true' end
+    return url
+end
+
+--- Uploads the screenshot to the Discord webhook. done(url or nil).
+local function UploadToWebhook(url, dataUri, done)
+    local bytes, mime = DataUriBytes(dataUri)
+    if not bytes or bytes == '' then return done(nil) end
+    local ext = mime == 'image/png' and 'png' or (mime == 'image/webp' and 'webp' or 'jpg')
+    local boundary = ('----pfmphone%08x%08x'):format(math.random(0, 0x7fffffff), math.random(0, 0x7fffffff))
+    local body = table.concat({
+        '--', boundary, '\r\n',
+        'Content-Disposition: form-data; name="files[0]"; filename="photo.', ext, '"\r\n',
+        'Content-Type: ', mime, '\r\n\r\n',
+        bytes, '\r\n',
+        '--', boundary, '--\r\n',
+    })
+    PerformHttpRequest(url, function(status, response)
+        status = tonumber(status) or 0
+        if status < 200 or status > 299 then
+            print(('^1[pfm-phone]^7 photo upload failed (HTTP %d)'):format(status))
+            return done(nil)
+        end
+        local ok, data = pcall(json.decode, response or '')
+        local att = ok and type(data) == 'table' and type(data.attachments) == 'table' and data.attachments[1] or nil
+        done(type(att) == 'table' and (att.proxy_url or att.url) or nil)
+    end, 'POST', body, { ['Content-Type'] = 'multipart/form-data; boundary=' .. boundary })
+end
+
+--- Uploads the screenshot to Fivemerr. done(url or nil).
+local function UploadToFivemerr(token, dataUri, done)
+    PerformHttpRequest(GetConvar('pfm_phone_fivemerr_url', FIVEMERR_DEFAULT_URL), function(status, response)
+        status = tonumber(status) or 0
+        if status < 200 or status > 299 then
+            print(('^1[pfm-phone]^7 Fivemerr upload failed (HTTP %d)'):format(status))
+            return done(nil)
+        end
+        local ok, data = pcall(json.decode, response or '')
+        done(ok and type(data) == 'table' and data.url or nil)
+    end, 'POST', json.encode({ data = dataUri }), { ['Authorization'] = token, ['Content-Type'] = 'application/json' })
+end
+
+local warnedNoTarget = false
+--- encoding, upload(dataUri, done) for the configured target, or nil.
+local function UploadTarget()
+    if Config.Fivemerr == true then
+        local token = GetConvar('pfm_phone_fivemerr_token', '')
+        if token == '' then return nil, 'Config.Fivemerr is on but the convar pfm_phone_fivemerr_token is not set' end
+        return 'png', function(data, done) UploadToFivemerr(token, data, done) end
+    end
+    local url = Webhook()
+    if not url then return nil, 'set the server-only convar pfm_phone_webhook (`set`, not `setr`) to a Discord webhook URL' end
+    return 'jpg', function(data, done) UploadToWebhook(url, data, done) end
+end
+
+--- Takes a photo from the player's screen and uploads it. Calls reply(url or nil) exactly once.
+local function UploadPhoto(src, reply)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or not HasPhoneItem(Player) then return reply(nil) end
+    if IsRateLimited(src, 'photo') then return reply(nil, 'too_fast') end
+    local encoding, upload = UploadTarget()
+    if not encoding then
+        if not warnedNoTarget then
+            warnedNoTarget = true
+            print(('^3[pfm-phone]^7 the camera cannot upload: %s'):format(tostring(upload)))
+        end
+        return reply(nil, 'not_setup')
+    end
+    if GetResourceState('screenshot-basic') ~= 'started' then return reply(nil, 'not_setup') end
+    local cid = Player.PlayerData.citizenid
+    local ok, err = pcall(function()
+        exports['screenshot-basic']:requestClientScreenshot(src, { encoding = encoding, quality = 0.85 }, function(shotErr, data)
+            if shotErr or type(data) ~= 'string' then return reply(nil) end
+            upload(data, function(url)
+                url = SafeImageUrl(url)
+                if not url then return reply(nil) end
+                MySQL.insert.await('INSERT INTO phone_gallery (`citizenid`, `image`) VALUES (?, ?)', { cid, url })
+                local images = MySQL.query.await('SELECT * FROM phone_gallery WHERE citizenid = ? ORDER BY `date` DESC', { cid })
+                TriggerClientEvent('qb-phone:refreshImages', src, images)
+                reply(url)
+            end)
+        end)
+    end)
+    if not ok then
+        print(('^1[pfm-phone]^7 photo upload failed: %s'):format(tostring(err)))
+        reply(nil)
+    end
+end
+
+QBCore.Functions.CreateCallback('qb-phone:server:UploadPhoto', function(source, cb)
+    local answered = false
+    UploadPhoto(source, function(url, why)
+        if answered then return end
+        answered = true
+        cb(url, why)
     end)
 end)
 
@@ -1392,7 +1890,14 @@ RegisterNetEvent('qb-phone:server:AddAdvert', function(msg, url)
     if IsRateLimited(src, 'advert') then return end
     msg = SanitizeText(msg)
     if not msg then return end
-    url = url ~= nil and SanitizeText(tostring(url), 255) or nil
+    -- the picture goes to every phone: only an allowed https link (it was put into the page
+    -- unquoted, so a link with spaces ran script on every phone that showed the adverts)
+    if url ~= nil and url ~= '' then
+        url = SafeImageUrl(url)
+        if not url then TriggerClientEvent('QBCore:Notify', src, 'That picture link is not allowed', 'error') end
+    else
+        url = nil
+    end
     local CitizenId = Player.PlayerData.citizenid
     if Adverts[CitizenId] ~= nil then
         Adverts[CitizenId].message = msg
@@ -1416,18 +1921,6 @@ RegisterNetEvent('qb-phone:server:DeleteAdvert', function()
     local citizenid = Player.PlayerData.citizenid
     Adverts[citizenid] = nil
     TriggerClientEvent('qb-phone:client:UpdateAdvertsDel', -1, Adverts)
-end)
-
-RegisterNetEvent('qb-phone:server:SetCallState', function(bool)
-    local src = source
-    local Ply = exports['pfm-core']:GetPlayer(src)
-    if not Ply then return end
-    if Calls[Ply.PlayerData.citizenid] ~= nil then
-        Calls[Ply.PlayerData.citizenid].inCall = bool
-    else
-        Calls[Ply.PlayerData.citizenid] = {}
-        Calls[Ply.PlayerData.citizenid].inCall = bool
-    end
 end)
 
 RegisterNetEvent('qb-phone:server:RemoveMail', function(MailId)
@@ -1483,11 +1976,14 @@ end)
 --- A tweet as everyone else sees it, built by the server: the author is the sender, the text and links
 --- are cleaned. (Tweets, mentions and hashtag posts used to be relayed as the client sent them, so a
 --- client could post in someone else's name.) Returns nil for an empty message.
+--- (The time is the server's, and the avatar is the author's stored one: both came from the client.
+--- The image link must be an allowed picture link; anything else is dropped.)
 local function BuildTweet(Player, data)
     if type(data) ~= 'table' then return nil end
     local message = SanitizeText(tostring(data.message or ''))
     if not message then return nil end
-    local time = type(data.time) == 'string' and SanitizeText(data.time, 64) or os.date('%Y-%m-%d %H:%M:%S')
+    local time = os.date('%Y-%m-%d %H:%M:%S', os.time())
+    local meta = Player.PlayerData.metadata and Player.PlayerData.metadata.phone
     return {
         citizenid = Player.PlayerData.citizenid,
         firstName = Player.PlayerData.charinfo.firstname,
@@ -1495,8 +1991,8 @@ local function BuildTweet(Player, data)
         message = message,
         time = time,
         date = time,
-        url = (SanitizeText(tostring(data.url or ''), 255) or ''):gsub('[%<>\"()\' $]', ''),
-        picture = (SanitizeText(tostring(data.picture or ''), 255) or 'default'):gsub('[%<>\"()\' $]', ''),
+        url = SafeImageUrl(data.url) or '',
+        picture = CleanProfilePicture(type(meta) == 'table' and meta.profilepicture or nil),
         tweetId = type(data.tweetId) == 'string' and data.tweetId:match('^TWEET%-%d+$') and data.tweetId or nil,
     }
 end
@@ -1528,14 +2024,14 @@ RegisterNetEvent('qb-phone:server:MentionedPlayer', function(firstName, lastName
     end
 end)
 
-RegisterNetEvent('qb-phone:server:CallContact', function(TargetData, CallId, AnonymousCall)
+-- A call to TargetData.number (the second argument, the old client-chosen call id, is ignored: the
+-- server picks it). A call that cannot start ends the caller's ringing at once.
+RegisterNetEvent('qb-phone:server:CallContact', function(TargetData, _, AnonymousCall)
     local src = source
-    local Ply = exports['pfm-core']:GetPlayer(src)
-    if not Ply or type(TargetData) ~= 'table' then return end
-    local Target = QBCore.Functions.GetPlayerByPhone(TargetData.number)
-    if Target ~= nil then
-        TriggerClientEvent('qb-phone:client:GetCalled', Target.PlayerData.source, Ply.PlayerData.charinfo.phone, CallId, AnonymousCall)
-    end
+    if type(TargetData) ~= 'table' then return end
+    if IsRateLimited(src, 'call') then return TriggerClientEvent('qb-phone:client:CancelCall', src) end
+    local id = StartCall(src, TargetData.number, AnonymousCall == true)
+    if not id then TriggerClientEvent('qb-phone:client:CancelCall', src) end
 end)
 
 -- (qb-phone:server:BillingEmail removed: the server sends these mails itself, see notifyBillingSociety)
@@ -1562,7 +2058,13 @@ end)
 RegisterNetEvent('qb-phone:server:SetPhoneAlerts', function(app, alerts)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    -- only the phone's own apps (any string used to become a key of a table kept for the session)
     if not Player or type(app) ~= 'string' then return end
+    if not ((Config.PhoneApplications and Config.PhoneApplications[app]) or (Config.StoreApps and Config.StoreApps[app])) then return end
+    if alerts ~= nil then
+        alerts = math.tointeger(tonumber(alerts))
+        if not alerts or alerts < 0 or alerts > 999 then return end
+    end
     QBPhone.SetPhoneAlerts(Player.PlayerData.citizenid, app, alerts)
 end)
 
@@ -1669,101 +2171,35 @@ RegisterNetEvent('qb-phone:server:AddNewContact', function(name, number, iban)
     MySQL.insert('INSERT INTO player_contacts (citizenid, name, number, iban) VALUES (?, ?, ?, ?)', { Player.PlayerData.citizenid, name, number, iban })
 end)
 
-RegisterNetEvent('qb-phone:server:UpdateMessages', function(ChatMessages, ChatNumber, _)
+-- One chat message: { type = 'message' | 'location' | 'picture', message, url }. The server builds
+-- the message itself and appends it to both people's copies of the chat (see the chats section).
+RegisterNetEvent('qb-phone:server:SendMessage', function(number, payload)
     local src = source
-    local SenderData = exports['pfm-core']:GetPlayer(src)
-    if not SenderData then return end
     if IsRateLimited(src, 'message') then return end
-    if type(ChatMessages) ~= 'table' then return end
-    if type(ChatNumber) ~= 'string' and type(ChatNumber) ~= 'number' then return end
-    ChatNumber = tostring(ChatNumber)
-    if ChatNumber == SenderData.PlayerData.charinfo.phone then return end
-    -- the whole chat is stored for both people: keep it a sane size
-    if EncodedSize(ChatMessages) > 60000 then return end
-    -- sanitize every message body in the payload
-    for _, day in pairs(ChatMessages) do
-        if type(day) == 'table' and type(day.messages) == 'table' then
-            for _, m in pairs(day.messages) do
-                if type(m) == 'table' and type(m.message) == 'string' then
-                    m.message = SanitizeText(m.message) or ''
-                end
-            end
-        end
-    end
-    -- the holder of exactly that number (LIKE '%<number>%' wrote into the chats of whichever player's
-    -- data happened to contain those digits)
-    local row = FindPlayerRowByPhone(ChatNumber)
-    local Player = { row }
-    if Player[1] ~= nil then
-        local TargetData = QBCore.Functions.GetPlayerByCitizenId(Player[1].citizenid)
-        if TargetData ~= nil then
-            local Chat = MySQL.query.await('SELECT * FROM phone_messages WHERE citizenid = ? AND number = ?', { SenderData.PlayerData.citizenid, ChatNumber })
-            if Chat[1] ~= nil then
-                -- Update for target
-                MySQL.update('UPDATE phone_messages SET messages = ? WHERE citizenid = ? AND number = ?', { json.encode(ChatMessages), TargetData.PlayerData.citizenid, SenderData.PlayerData.charinfo.phone })
-                -- Update for sender
-                MySQL.update('UPDATE phone_messages SET messages = ? WHERE citizenid = ? AND number = ?', { json.encode(ChatMessages), SenderData.PlayerData.citizenid, TargetData.PlayerData.charinfo.phone })
-                -- Send notification & Update messages for target
-                TriggerClientEvent('qb-phone:client:UpdateMessages', TargetData.PlayerData.source, ChatMessages, SenderData.PlayerData.charinfo.phone, false)
-            else
-                -- Insert for target
-                MySQL.insert('INSERT INTO phone_messages (citizenid, number, messages) VALUES (?, ?, ?)', { TargetData.PlayerData.citizenid, SenderData.PlayerData.charinfo.phone, json.encode(ChatMessages) })
-                -- Insert for sender
-                MySQL.insert('INSERT INTO phone_messages (citizenid, number, messages) VALUES (?, ?, ?)', { SenderData.PlayerData.citizenid, TargetData.PlayerData.charinfo.phone, json.encode(ChatMessages) })
-                -- Send notification & Update messages for target
-                TriggerClientEvent('qb-phone:client:UpdateMessages', TargetData.PlayerData.source, ChatMessages, SenderData.PlayerData.charinfo.phone, true)
-            end
-        else
-            local Chat = MySQL.query.await('SELECT * FROM phone_messages WHERE citizenid = ? AND number = ?', { SenderData.PlayerData.citizenid, ChatNumber })
-            if Chat[1] ~= nil then
-                -- Update for target
-                MySQL.update('UPDATE phone_messages SET messages = ? WHERE citizenid = ? AND number = ?', { json.encode(ChatMessages), Player[1].citizenid, SenderData.PlayerData.charinfo.phone })
-                -- Update for sender
-                Player[1].charinfo = json.decode(Player[1].charinfo)
-                MySQL.update('UPDATE phone_messages SET messages = ? WHERE citizenid = ? AND number = ?', { json.encode(ChatMessages), SenderData.PlayerData.citizenid, Player[1].charinfo.phone })
-            else
-                -- Insert for target
-                MySQL.insert('INSERT INTO phone_messages (citizenid, number, messages) VALUES (?, ?, ?)', { Player[1].citizenid, SenderData.PlayerData.charinfo.phone, json.encode(ChatMessages) })
-                -- Insert for sender
-                Player[1].charinfo = json.decode(Player[1].charinfo)
-                MySQL.insert('INSERT INTO phone_messages (citizenid, number, messages) VALUES (?, ?, ?)', { SenderData.PlayerData.citizenid, Player[1].charinfo.phone, json.encode(ChatMessages) })
-            end
-        end
-    end
+    if type(number) ~= 'string' and type(number) ~= 'number' then return end
+    local ok, why = SendChatMessage(src, number, payload)
+    if ok then return end
+    if why == 'no_number' then PhoneNotify(src, 'This number does not exist')
+    elseif why == 'bad_picture' then PhoneNotify(src, 'That picture cannot be sent')
+    elseif why == 'busy' or why == 'server_error' then PhoneNotify(src, 'The message was not sent, try again') end
 end)
 
-RegisterNetEvent('qb-phone:server:AddRecentCall', function(callType, data)
+-- (qb-phone:server:UpdateMessages removed: it stored the whole chat the client sent, for both people.
+-- qb-phone:server:AddRecentCall removed: the server adds the recent calls when a call ends.)
+
+-- Hang up (or deny) the sender's own call; callId is the id the server gave the phone.
+RegisterNetEvent('qb-phone:server:CancelCall', function(callId)
     local src = source
-    local Ply = exports['pfm-core']:GetPlayer(src)
-    -- (the first argument used to be named `type`, so type(data) below raised an error on every call)
-    if not Ply or type(data) ~= 'table' or type(callType) ~= 'string' then return end
-    local Hour = os.date('%H')
-    local Minute = os.date('%M')
-    local label = Hour .. ':' .. Minute
-    TriggerClientEvent('qb-phone:client:AddRecentCall', src, data, label, callType)
-    local Trgt = QBCore.Functions.GetPlayerByPhone(data.number)
-    if Trgt ~= nil then
-        TriggerClientEvent('qb-phone:client:AddRecentCall', Trgt.PlayerData.source, {
-            name = Ply.PlayerData.charinfo.firstname .. ' ' .. Ply.PlayerData.charinfo.lastname,
-            number = Ply.PlayerData.charinfo.phone,
-            anonymous = data.anonymous
-        }, label, 'outgoing')
-    end
+    local call = CallFor(src, callId)
+    if call then EndCall(call.id, src) end
 end)
 
-RegisterNetEvent('qb-phone:server:CancelCall', function(ContactData)
-    if type(ContactData) ~= 'table' or type(ContactData.TargetData) ~= 'table' then return end
-    local Ply = QBCore.Functions.GetPlayerByPhone(ContactData.TargetData.number)
-    if Ply ~= nil then
-        TriggerClientEvent('qb-phone:client:CancelCall', Ply.PlayerData.source)
-    end
-end)
-
-RegisterNetEvent('qb-phone:server:AnswerCall', function(CallData)
-    if type(CallData) ~= 'table' or type(CallData.TargetData) ~= 'table' then return end
-    local Ply = QBCore.Functions.GetPlayerByPhone(CallData.TargetData.number)
-    if Ply ~= nil then
-        TriggerClientEvent('qb-phone:client:AnswerCall', Ply.PlayerData.source)
+-- Answer the call ringing on the sender's own phone.
+RegisterNetEvent('qb-phone:server:AnswerCall', function(callId)
+    local src = source
+    if not AnswerCall(src, callId) then
+        -- nothing (any more) to answer: the phone that thinks it answered goes back to idle
+        if not CallOf[src] then TriggerClientEvent('qb-phone:client:CancelCall', src) end
     end
 end)
 
@@ -1771,13 +2207,10 @@ RegisterNetEvent('qb-phone:server:SaveMetaData', function(MData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or type(MData) ~= 'table' then return end
-    if #json.encode(MData) > 20000 then return end
-    local result = MySQL.query.await('SELECT * FROM players WHERE citizenid = ?', { Player.PlayerData.citizenid })
-    local MetaData = json.decode(result[1].metadata)
-    MetaData.phone = MData
-    MySQL.update('UPDATE players SET metadata = ? WHERE citizenid = ?',
-        { json.encode(MetaData), Player.PlayerData.citizenid })
-    Player.SetMetaData('phone', MData)
+    local clean, rejected = CleanPhoneMeta(MData, Player.PlayerData.metadata and Player.PlayerData.metadata.phone)
+    -- through pfm-core only (a direct UPDATE of players.metadata raced with its own save)
+    Player.Functions.SetMetaData('phone', clean)
+    if rejected then TriggerClientEvent('QBCore:Notify', src, 'That picture link is not allowed', 'error') end
 end)
 
 RegisterNetEvent('qb-phone:server:GiveContactDetails', function(PlayerId)
@@ -1841,7 +2274,8 @@ RegisterNetEvent('qb-phone:server:addImageToGallery', function(image)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if IsRateLimited(src, 'gallery') then return end
-    image = SanitizeText(tostring(image or ''), 512)
+    -- the camera's uploads are added by the server itself; this only takes an allowed picture link
+    image = SafeImageUrl(image)
     if not image then return end
     MySQL.insert('INSERT INTO phone_gallery (`citizenid`, `image`) VALUES (?, ?)', { Player.PlayerData.citizenid, image })
 end)

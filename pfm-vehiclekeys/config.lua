@@ -25,11 +25,11 @@ Config.UseKeyfob = false -- you can set this true if you dont need ui
 Config.RemoveLockpickNormal = 0.5 -- Chance to remove lockpick on fail
 Config.RemoveLockpickAdvanced = 0.2 -- Chance to remove advanced lockpick on fail
 Config.LockpickDistance = 3.0 -- Max distance (m) from the vehicle to start and finish a lockpick
-Config.LockpickMinTime = 2000 -- An attempt cannot finish faster than this (ms)
+Config.LockpickMinTime = 1500 -- An attempt cannot finish faster than this (ms; the minigame has its own timing checks)
 Config.LockpickMaxTime = 60000 -- A lockpick attempt open longer than this fails (ms)
 Config.PickStartCooldown = 2000 -- Between two lockpick / hotwire starts of one player (ms)
 Config.PersistStolenKeys = false -- Keys taken by lockpick or hotwire to another player's car: false = until restart only
-Config.PoliceTakeKeys = true -- On-duty police (job type leo) at the wheel of a player's car get its keys (impound releases)
+Config.PoliceTakeKeys = true -- On-duty police (job type leo) at the wheel of a player's car get its keys until restart (impound releases)
 -- Carjack Settings
 Config.CarJackEnable = true -- True allows for the ability to car jack peds.
 Config.CarjackingTime = 7500 -- How long it takes to carjack

@@ -22,7 +22,7 @@ $(document).on('click', '.myhouses-house', function(e){
     var HouseData = $(this).data('HouseData');
     CurrentHouseData = HouseData;
     $(".myhouses-options-container").fadeIn(150);
-    $(".myhouses-options-header").html(HouseData.label);
+    $(".myhouses-options-header").text(HouseData.label === undefined || HouseData.label === null ? "" : HouseData.label);
 });
 
 $(document).on('click', '#myhouse-option-close', function(e){
@@ -44,7 +44,7 @@ function SetupPlayerHouses(Houses) {
             if (house.garage.length > 0) {
                 HouseDetails = '<i class="fas fa-key"></i>&nbsp;&nbsp;' + TotalKeyholders + '&nbsp&nbsp&nbsp&nbsp<i class="fas fa-warehouse"></i>&nbsp;&nbsp;&nbsp;<i class="fas fa-check"></i>';
             }
-            var elem = '<div class="myhouses-house" id="house-' + id + '"><div class="myhouse-house-icon"><i class="fas fa-home"></i></div> <div class="myhouse-house-titel">' + house.label + ' | Tier ' + house.tier + '</div> <div class="myhouse-house-details">' + HouseDetails + '</div> </div>';
+            var elem = '<div class="myhouses-house" id="house-' + id + '"><div class="myhouse-house-icon"><i class="fas fa-home"></i></div> <div class="myhouse-house-titel">' + QB.Phone.Esc(house.label) + ' | Tier ' + QB.Phone.Esc(house.tier) + '</div> <div class="myhouse-house-details">' + HouseDetails + '</div> </div>';
             $(".house-app-myhouses-container").append(elem);
             $("#house-" + id).data('HouseData', house)
         });
@@ -72,9 +72,9 @@ $(document).on('click', '#myhouse-option-keys', function(e){
             if (keyholder !== null && keyholder !== undefined) {
                 var elem;
                 if (keyholder.citizenid !== QB.Phone.Data.PlayerData.citizenid) {
-                    elem = '<div class="house-key" id="holder-'+i+'"><span class="house-key-holder">' + keyholder.charinfo.firstname + ' ' + keyholder.charinfo.lastname + '</span> <div class="house-key-delete"><i class="fas fa-trash"></i></div> </div>';
+                    elem = '<div class="house-key" id="holder-'+i+'"><span class="house-key-holder">' + QB.Phone.Esc(keyholder.charinfo.firstname) + ' ' + QB.Phone.Esc(keyholder.charinfo.lastname) + '</span> <div class="house-key-delete"><i class="fas fa-trash"></i></div> </div>';
                 } else {
-                    elem = '<div class="house-key" id="holder-'+i+'"><span class="house-key-holder">(Me) ' + keyholder.charinfo.firstname + ' ' + keyholder.charinfo.lastname + '</span></div>';
+                    elem = '<div class="house-key" id="holder-'+i+'"><span class="house-key-holder">(Me) ' + QB.Phone.Esc(keyholder.charinfo.firstname) + ' ' + QB.Phone.Esc(keyholder.charinfo.lastname) + '</span></div>';
                 } 
                 $(".keys-container").append(elem);
                 $('#holder-' + i).data('KeyholderData', keyholder);

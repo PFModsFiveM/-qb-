@@ -89,10 +89,27 @@ local function ApplyImpound(plate, opts)
     opts = opts or {}
     plate = TrimPlate(plate)
     if IsVehicleOwned(plate) then
+        -- fuel: the server's level; else (fuelCap) the client's value only lowers the stored one;
+        -- with neither (an order from the tow job) the stored fuel stays as it is
+        local fuel = Clamp(opts.fuel, 0, 100)
+        local cap = Clamp(opts.fuelCap, 0, 100)
+        local fuelSql, fuelArgs = 'fuel = fuel', {}
+        if fuel then
+            fuelSql, fuelArgs = 'fuel = ?', { fuel }
+        elseif cap then
+            fuelSql, fuelArgs = 'fuel = LEAST(COALESCE(fuel, ?), ?)', { cap, cap }
+        end
+        local params
         if not opts.fullImpound then
-            MySQL.query('UPDATE player_vehicles SET state = ?, depotprice = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 0, opts.price or 0, opts.body, opts.engine, opts.fuel, plate })
+            params = { 0, tonumber(opts.price) or 0, Clamp(opts.body, 0, 1000), Clamp(opts.engine, -4000, 1000) }
+            for _, v in ipairs(fuelArgs) do params[#params + 1] = v end
+            params[#params + 1] = plate
+            MySQL.query('UPDATE player_vehicles SET state = ?, depotprice = ?, body = ?, engine = ?, ' .. fuelSql .. ' WHERE plate = ?', params)
         else
-            MySQL.query('UPDATE player_vehicles SET state = ?, body = ?, engine = ?, fuel = ? WHERE plate = ?', { 2, opts.body, opts.engine, opts.fuel, plate })
+            params = { 2, Clamp(opts.body, 0, 1000), Clamp(opts.engine, -4000, 1000) }
+            for _, v in ipairs(fuelArgs) do params[#params + 1] = v end
+            params[#params + 1] = plate
+            MySQL.query('UPDATE player_vehicles SET state = ?, body = ?, engine = ?, ' .. fuelSql .. ' WHERE plate = ?', params)
         end
     end
     local veh = FindVehicleByPlate(plate)
@@ -149,6 +166,30 @@ local function CloseOpenImpoundOrder(plate)
     end)
 end
 
+-- The fuel stored with an impounded car is the level the server keeps for it (pfm-fuel), not what
+-- the officer's client reports. Without a level for that car the client's value can only lower the
+-- stored one (fuelCap); with fuel sync off, the client's level is all there is.
+local function ServerFuel(veh, plate)
+    if not veh or GetResourceState('pfm-fuel') ~= 'started' then return nil, false end
+    local ok, synced = pcall(function() return exports['pfm-fuel']:IsFuelSynced() end)
+    if not ok or synced ~= true then return nil, false end
+    local okLevel, level = pcall(function() return exports['pfm-fuel']:GetVehicleFuel(veh, TrimPlate(plate)) end)
+    level = okLevel and tonumber(level) or nil
+    if level and level == level then return math.max(0, math.min(100, level)), true end
+    return nil, true
+end
+
+-- Body and engine health as the server sees the car, when the natives are there.
+local function ServerHealth(veh, body, engine)
+    if veh and GetVehicleBodyHealth and GetVehicleEngineHealth then
+        local okB, b = pcall(GetVehicleBodyHealth, veh)
+        local okE, e = pcall(GetVehicleEngineHealth, veh)
+        if okB and tonumber(b) then body = Clamp(b, 0, 1000) end
+        if okE and tonumber(e) then engine = Clamp(e, -4000, 1000) end
+    end
+    return body, engine
+end
+
 RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, body, engine, fuel)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -159,7 +200,12 @@ RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, bo
     price = math.min(math.floor(price), Config.MaxFine or 50000)
     body, engine, fuel = Clamp(body, 0, 1000), Clamp(engine, -4000, 1000), Clamp(fuel, 0, 100)
     if not IsPlateNearby(src, plate) then return end
-    local opts = { fullImpound = fullImpound == true, price = price, body = body, engine = engine, fuel = fuel, officer = Player.PlayerData.citizenid }
+    local car = FindVehicleByPlate(plate)
+    body, engine = ServerHealth(car, body, engine)
+    local level, synced = ServerFuel(car, plate)
+    local fuelCap
+    if level then fuel = level elseif synced then fuel, fuelCap = nil, fuel end
+    local opts = { fullImpound = fullImpound == true, price = price, body = body, engine = engine, fuel = fuel, fuelCap = fuelCap, officer = Player.PlayerData.citizenid }
 
     -- a tow driver on duty brings the car in; the city pays the tow through pf-services
     local cfg = Config.ImpoundTow or {}
@@ -199,17 +245,48 @@ RegisterNetEvent('police:server:Impound', function(plate, fullImpound, price, bo
     end
 end)
 
-RegisterNetEvent('police:server:TakeOutImpound', function(plate, garage)
+-- Releasing a seized car from the police impound: the server takes the row out of the impound once
+-- (state 2 -> 0), spawns the car itself with its plate and names its row to pfm-fuel, so it starts
+-- with the fuel stored for it. The officer's client used to spawn it, set its plate and give it any
+-- fuel it liked. The client then applies the stored mods and damage.
+local sharedVehicles
+local releasing = {} -- [plate] = true while a release of it is in progress
+
+QBCore.Functions.CreateCallback('police:server:ReleaseImpound', function(source, cb, plate, garage)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player or Player.PlayerData.job.type ~= 'leo' or not Player.PlayerData.job.onduty then return end
-    if type(plate) ~= 'string' or not Config.Locations['impound'][garage] then return end
-    local playerPed = GetPlayerPed(src)
-    local playerCoords = GetEntityCoords(playerPed)
-    local targetCoords = Config.Locations['impound'][garage]
-    if #(playerCoords - targetCoords) > 10.0 then return DropPlayer(src, 'Attempted exploit abuse') end
-    MySQL.update('UPDATE player_vehicles SET state = ? WHERE plate = ? AND state = ?', { 0, plate, 2 })
+    if not Player or not IsOnDutyLeo(Player) then return cb(nil) end
+    garage = math.tointeger(tonumber(garage))
+    local lot = garage and Config.Locations['impound'][garage]
+    if type(plate) ~= 'string' or #plate > 16 or not lot then return cb(nil) end
+    plate = TrimPlate(plate)
+    if plate == '' then return cb(nil) end
+    if #(GetEntityCoords(GetPlayerPed(src)) - vector3(lot.x, lot.y, lot.z)) > 10.0 then return cb(nil) end
+    if releasing[plate] then return cb(nil) end
+    releasing[plate] = true
+    local ok, row = pcall(MySQL.single.await, 'SELECT vehicle, mods, body, engine, fuel FROM player_vehicles WHERE plate = ? AND state = ? LIMIT 1', { plate, 2 })
+    if not ok or not row then releasing[plate] = nil return cb(nil) end
+    -- one release per seizure: the row leaves the impound before anything spawns
+    local okU, changed = pcall(MySQL.update.await, 'UPDATE player_vehicles SET state = ? WHERE plate = ? AND state = ?', { 0, plate, 2 })
+    changed = okU and (type(changed) == 'table' and tonumber(changed.affectedRows) or tonumber(changed)) or 0
+    if changed ~= 1 then releasing[plate] = nil return cb(nil) end
+    sharedVehicles = sharedVehicles or exports['pfm-core']:GetShared('Vehicles') or {}
+    local model = row.vehicle
+    local hash = type(model) == 'number' and model or (type(model) == 'string' and GetHashKey(model)) or nil
+    local vehType = (type(model) == 'string' and sharedVehicles[model] and sharedVehicles[model].type) or 'automobile'
+    local veh = hash and CreateVehicleServerSetter(hash, vehType, lot.x, lot.y, lot.z, lot.w or 0.0)
+    if not veh or veh == 0 then
+        MySQL.update('UPDATE player_vehicles SET state = ? WHERE plate = ? AND state = ?', { 2, plate, 0 })
+        releasing[plate] = nil
+        return cb(nil)
+    end
+    SetVehicleNumberPlateText(veh, plate)
+    -- pfm-fuel gives the car the fuel stored in this row (the plate set above reaches the server
+    -- only through a client)
+    if GetResourceState('pfm-fuel') == 'started' then pcall(function() exports['pfm-fuel']:UseStoredFuel(veh, plate) end) end
+    releasing[plate] = nil
     TriggerClientEvent('QBCore:Notify', src, Lang:t('success.impound_vehicle_removed'), 'success')
+    cb(NetworkGetNetworkIdFromEntity(veh), { plate = plate, mods = row.mods, body = tonumber(row.body), engine = tonumber(row.engine) })
 end)
 
 RegisterNetEvent('police:server:FlaggedPlateTriggered', function(coords, plate)

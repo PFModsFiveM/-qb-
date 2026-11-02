@@ -56,6 +56,8 @@ local function startContract(src)
     return starts[#starts].args[1]
 end
 local function paid() return LedgerEnv.paid('pf-jobs:gruppe6:') end
+-- puts src at a stop of the contract (pickups are only served there)
+local function atStop(src, data, loc) Mock.coords[src] = data.locationPool[loc] end
 
 BeforeEach = function()
     Mock.reset()
@@ -91,6 +93,7 @@ describe('pf-jobs Gruppe6', function()
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc + 1000, 1)
         assert_eq(stashes[('pf_gruppe6_pickup_%s_%s'):format(loc + 1000, 1)], nil)
         local id = ('pf_gruppe6_pickup_%s_%s'):format(loc, 1)
+        atStop(GUARD, data, loc)
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
         assert_eq(stashes[id].items[1].amount, 3)
         stashes[id].items[1].amount = 0
@@ -105,6 +108,7 @@ describe('pf-jobs Gruppe6', function()
         local data = startContract(GUARD)
         local loc = data.pickupSequence[1]
         local id = ('pf_gruppe6_pickup_%s_%s'):format(loc, 1)
+        atStop(GUARD, data, loc)
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
         stashes[id].items[1].amount = 0
         carried[GUARD] = 3

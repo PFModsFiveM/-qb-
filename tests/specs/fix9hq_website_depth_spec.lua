@@ -46,7 +46,7 @@ local function buyDomain()
     domainCount = domainCount + 1
     local domain = 'site' .. domainCount .. '.ls'
     started['pfm-banking'] = true
-    Mock.exportsByResource['pfm-banking'] = { Transfer = function() return { ok = true } end }
+    Mock.exportsByResource['pfm-banking'] = { Transfer = function() return { ok = true } end, GetTransaction = function() return nil end }
     local res = call(OWNER, 'browser:domain:buy', { domain = domain })
     started['pfm-banking'] = false
     Mock.exportsByResource['pfm-banking'] = nil

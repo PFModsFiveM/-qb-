@@ -1,6 +1,9 @@
 Config = {}
 Config.UseTarget = GetConvar('UseTarget', 'false') == 'true'
-Config.MaxSpikes = 5
+Config.MaxSpikes = 5          -- spike strips one officer can have out at a time
+Config.MaxSpikesTotal = 30    -- spike strips out on the whole server
+Config.SpikeLifetime = 600    -- seconds before the server takes a spike strip up by itself
+Config.DutyRadius = 2.5       -- metres around a duty point in which an officer can clock in (server-checked)
 Config.HandCuffItem = 'handcuffs'
 Config.LicenseRank = 2
 Config.ArmoryWhitelist = {}
@@ -183,7 +186,11 @@ Config.Gameplay = {
         Window = 3000,             -- ms the suspect has to mash
         PressesNeeded = 10,        -- E presses needed to break free
         OfficerCooldown = 4000,    -- ms before the same officer can retry
+        Chance = 0.5,              -- chance that enough presses in time break free (rolled by the server)
+        Immunity = 25000,          -- ms after breaking free in which the next attempt cannot be resisted
     },
+    CivilianCuffMinutes = 10,      -- cuffs put on by anyone but an on-duty officer come off after this
+    RelogCuffMinutes = 30,         -- police cuffs come back after a relog within this time
     Tackle = {
         Enabled = true,
         Cooldown = 15000,          -- ms between tackles per officer
@@ -200,6 +207,10 @@ Config.Gameplay = {
         BlipSeconds = 60,          -- how long the backup blip flashes
     },
 }
+
+-- Alerts any client can send to the police (robberies, car thefts...): at most Max per Window
+-- seconds per player, and the same text again within the window is dropped
+Config.AlertRate = { Window = 30, Max = 2 }
 
 -- Highest fine or bill an officer can issue with /fine or the bill menu
 Config.MaxFine = 50000

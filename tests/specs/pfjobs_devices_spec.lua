@@ -294,6 +294,7 @@ describe('pf-jobs device apps: gruppe 6', function()
         rpc(GUARD, 'gruppe6', 'acceptContract', { index = 0 })
         local data = eventsTo('pf-jobs:gruppe6:startContract', GUARD)[1].args[1]
         local loc = data.pickupSequence[1]
+        Mock.coords[GUARD] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
         for _ = 1, data.locationBags[1] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', GUARD, loc, 1) end
         assert_true(carried > 0, 'bags collected')

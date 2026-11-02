@@ -5,8 +5,8 @@
 --     copy changed nothing, and pfm-core's next save wrote the old licences back);
 --     They start from the live licences, not the players row (saved only now and then), so a
 --     licence granted since the last save is not taken back;
---   * a fine that may go below zero is not reported paid when pfm-core refuses the balance, and is
---     worked out from the live balance, not the copy's;
+--   * a fine never moves money outside the bank ledger: the old "negative bank" branch (SetMoney)
+--     and the billing hooks are gone, and with no ledger nothing is charged (batch 14);
 --   * a suspension that ran out is lifted on the live player too when the profile is opened;
 --   * the duty/status toggle answers with what was just set (the copy holds the old values).
 load_resource('tests/lua/fivem_mocks.lua')
@@ -51,12 +51,22 @@ Mock.exportsByResource['oxmysql'] = {
     scalar = function(_, sql, params, cb) if Mock.callable(cb) then cb(0) end return 0 end,
 }
 
+-- server/sentencing.lua reads through MySQL.*.await (oxmysql's library)
+local function lib(kind)
+    local function f(sql, params) local r = answer(sql, params or {}) if kind == 'single' then return r[1] end return r end
+    return setmetatable({ await = f }, { __call = function(_, sql, params, cb) local r = f(sql, params) if cb then cb(r) end return r end })
+end
+MySQL = { query = lib('query'), single = lib('single'), insert = lib('insert'), update = lib('update'), scalar = lib('scalar') }
+
 function GetCurrentResourceName() return 'pf-policemdt-DEV' end
 Config = nil
 load_resource('[pfscripts]/pf-policemdt-DEV/shared/framework.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/config.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/access.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/main.lua')
+load_resource('[pfscripts]/pf-policemdt-DEV/server/sentencing.lua')
+Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
+assert(PFMdtSentencing.Start(), 'sentencing start')
 
 local OFFICER, CITIZEN, STRANGER = 1, 2, 3
 
@@ -156,37 +166,39 @@ describe('licences of an online citizen', function()
     end)
 end)
 
-describe('a fine allowed below zero', function()
-    it('is declined when pfm-core refuses the negative balance, not reported paid', function()
-        Config.Sentencing.AllowNegativeBank = true
-        local res = Mock.callCallback('pf_mdt:createSentence', OFFICER,
+describe('a fine and the bank', function()
+    local moneyCalls
+    local function watchMoney()
+        moneyCalls = 0
+        local c = Mock.players[CITIZEN]
+        for _, fn in ipairs({ 'SetMoney', 'RemoveMoney', 'AddMoney' }) do
+            local real = c.Functions[fn]
+            c.Functions[fn] = function(...) moneyCalls = moneyCalls + 1 return real(...) end
+        end
+    end
+    local function fine()
+        return Mock.callCallback('pf_mdt:createSentence', OFFICER,
             { citizenId = 'CID2', citizenName = 'Test Player2', title = 'Speeding', sentenceType = 'fine', charges = { 'F1' } })
+    end
+    it('AllowNegativeBank no longer moves money with SetMoney: without the ledger nothing is charged', function()
+        Config.Sentencing.AllowNegativeBank = true
+        watchMoney()
+        local res = fine()
         assert_eq(res.success, false)
+        assert_eq(res.error, 'Bank unavailable: nothing was charged')
+        assert_eq(moneyCalls, 0, 'no direct money call')
         assert_eq(Mock.players[CITIZEN].PlayerData.money.bank, 100, 'nothing moved')
     end)
-    it('is worked out from the live balance, not the copy taken before the billing attempt', function()
-        Config.Sentencing.AllowNegativeBank = true
-        Config.Billing = 'custom-billing'
-        Mock.players[CITIZEN].PlayerData.money.bank = 800
-        local sendFine = PFMdt.Billing.SendFine
-        PFMdt.Billing.SendFine = function()
-            Mock.players[CITIZEN].PlayerData.money.bank = 1800 -- a deposit lands meanwhile
-            return false                                       -- the billing provider declines
-        end
-        local ok, res = pcall(Mock.callCallback, 'pf_mdt:createSentence', OFFICER,
-            { citizenId = 'CID2', citizenName = 'Test Player2', title = 'Speeding', sentenceType = 'fine', charges = { 'F1' } })
-        PFMdt.Billing.SendFine = sendFine
-        assert_true(ok, tostring(res))
-        assert_eq(res.success, true, tostring(res.error))
-        assert_eq(Mock.players[CITIZEN].PlayerData.money.bank, 1300, 'the deposit is kept, the fine taken')
-    end)
-    it('within the balance it is charged', function()
-        Config.Sentencing.AllowNegativeBank = true
-        Mock.players[CITIZEN].PlayerData.money.bank = 800
-        local res = Mock.callCallback('pf_mdt:createSentence', OFFICER,
-            { citizenId = 'CID2', citizenName = 'Test Player2', title = 'Speeding', sentenceType = 'fine', charges = { 'F1' } })
-        assert_eq(res.success, true, tostring(res.error))
-        assert_eq(Mock.players[CITIZEN].PlayerData.money.bank, 300)
+    it('the billing hooks cannot take a fine outside the ledger', function()
+        Config.Billing = 'qb-billing'
+        local ok, why = PFMdt.Billing.SendFine(CITIZEN, 500, 'x', 'police')
+        assert_eq(ok, false)
+        assert_eq(why, 'use_ledger')
+        assert_eq(select(1, PFMdt.Society.AddMoney('police', 500)), false)
+        watchMoney()
+        assert_eq(fine().success, false)
+        assert_eq(moneyCalls, 0)
+        assert_eq(Mock.players[CITIZEN].PlayerData.money.bank, 100)
     end)
 end)
 

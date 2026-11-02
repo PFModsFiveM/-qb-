@@ -2,8 +2,9 @@ function setUpGalleryData(Images){
     $(".gallery-images").html("");
     if (Images != null) {
         $.each(Images, function(i, image){
-            var Element = '<div class="gallery-image"><img src="'+image.image+'" alt="'+image.citizenid+'" class="tumbnail"></div>';
-            
+            var Element = $('<div class="gallery-image"><img class="tumbnail"></div>');
+            Element.find('img').attr('src', QB.Phone.SafeUrl(image.image)).attr('alt', String(image.citizenid || ''));
+
             $(".gallery-images").append(Element);
             $("#image-"+i).data('ImageData', image);
         });

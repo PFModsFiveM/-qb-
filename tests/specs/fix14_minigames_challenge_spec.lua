@@ -144,6 +144,32 @@ describe('answers', function()
         Mock.invokingResource = 'pfm-doorlock'
         assert_true(Verify(P1, ch.id))
     end)
+    it("another resource cannot cancel a challenge it did not issue", function()
+        Mock.invokingResource = 'pfm-doorlock'
+        local ch = Issue(P1, 'skillbar', {})
+        Mock.invokingResource = 'some-other-resource'
+        assert_false(Cancel(P1, ch.id))
+        Mock.invokingResource = 'pfm-doorlock'
+        assert_true(Cancel(P1, ch.id))
+    end)
+    it('a judged answer raises the server-local answered event with the tag', function()
+        local seen = {}
+        Mock.eventHandlers['pfm-minigames:server:answered'] = function(info) seen[#seen + 1] = info end
+        Mock.invokingResource = 'pfm-bankrobbery'
+        local ch = Issue(P1, 'skillbar', { tag = 'bank:fleeca1' })
+        local a, total = skillbarAnswer(ch.puzzle)
+        later(total + 300)
+        answer(P1, ch, a)
+        answer(P1, ch, a) -- a second answer is ignored
+        Mock.eventHandlers['pfm-minigames:server:answered'] = nil
+        assert_eq(#seen, 1)
+        assert_eq(seen[1].id, ch.id)
+        assert_eq(seen[1].src, P1)
+        assert_eq(seen[1].tag, 'bank:fleeca1')
+        assert_eq(seen[1].owner, 'pfm-bankrobbery')
+        assert_true(seen[1].passed)
+        assert_true(Verify(P1, ch.id), 'still verified by its issuer')
+    end)
     it('cancel, unknown kinds and players, the per-player cap and a dropped player', function()
         local ch = Issue(P1, 'skillbar', {})
         assert_true(Cancel(P1, ch.id))

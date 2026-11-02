@@ -211,7 +211,8 @@
                         h('div.pfb-actions',
                             btn('Statement', () => openStatement(a.ref)),
                             a.perms.withdraw || a.perms.deposit ? btn('Move money', () => openTransfer(a.perms.withdraw ? a.ref : 'personal')) : null,
-                            a.perms.manage ? btn('Members', () => openMembers(a)) : null)));
+                            a.perms.manage ? btn('Members', () => openMembers(a)) : null,
+                            a.isOwner ? null : btn('Leave', () => leaveAccount(a), 'ghost'))));
                 });
 
                 if (d.societies && d.societies.length) {
@@ -493,21 +494,32 @@
                 });
             }
 
+            // The server sends, per member row, what this viewer may change (edit, remove, grant.<right>);
+            // only those controls are offered. A flag the server left out does not hide anything: the
+            // server checks every change again either way.
+            const allowed = (v) => v !== false;
             function openMembers(account) {
                 const a = (state.data.accounts || []).find((x) => x.ref === account.ref) || account;
                 const rows = h('div.pf-list');
                 (a.members || []).forEach((m) => {
+                    const canEdit = !m.owner && allowed(m.edit);
+                    const grant = m.grant || {};
                     const boxes = {};
                     const box = (key, label) => {
-                        boxes[key] = h('input', { type: 'checkbox', checked: m[key] ? true : null, disabled: m.owner ? true : null });
+                        const locked = !canEdit || !allowed(grant[key]);
+                        boxes[key] = h('input', { type: 'checkbox', checked: m[key] ? true : null, disabled: locked ? true : null,
+                            title: locked && canEdit ? 'Only the owner, or a manager who holds this right, can change it' : null });
                         return h('label.pfb-check', boxes[key], label);
                     };
+                    const who = m.owner ? 'Owner' : (m.self ? 'You · ' + m.citizenid : m.citizenid);
                     rows.appendChild(h('div.pf-list-item',
-                        h('div', h('div.pf-strong', m.name || m.citizenid), h('div.pf-small.pf-muted', m.owner ? 'Owner' : m.citizenid)),
+                        h('div', h('div.pf-strong', m.name || m.citizenid), h('div.pf-small.pf-muted', who)),
                         h('div.pfb-actions', box('deposit', 'Deposit'), box('withdraw', 'Withdraw'), box('cards', 'Cards'), box('manage', 'Manage'),
-                            m.owner ? null : btn('Save', () => memberAction('updateMember', { account: a.ref, citizenid: m.citizenid, perms: {
-                                can_deposit: boxes.deposit.checked, can_withdraw: boxes.withdraw.checked, can_cards: boxes.cards.checked, can_manage: boxes.manage.checked } })),
-                            m.owner ? null : btn('Remove', () => memberAction('removeMember', { account: a.ref, citizenid: m.citizenid }), 'danger'))));
+                            canEdit ? btn('Save', () => memberAction('updateMember', { account: a.ref, citizenid: m.citizenid, perms: {
+                                can_deposit: boxes.deposit.checked, can_withdraw: boxes.withdraw.checked, can_cards: boxes.cards.checked, can_manage: boxes.manage.checked } })) : null,
+                            !m.owner && allowed(m.remove)
+                                ? btn(m.self ? 'Leave' : 'Remove', () => (m.self ? leaveAccount(a) : memberAction('removeMember', { account: a.ref, citizenid: m.citizenid })), 'danger')
+                                : null)));
                 });
                 const cidIn = h('input.pf-input', { placeholder: 'Citizen ID', maxlength: 20 });
                 const labelIn = h('input.pf-input', { value: a.label, maxlength: 30 });
@@ -516,6 +528,14 @@
                     rows,
                     h('div.pf-row', cidIn, btn('Add member', () => memberAction('addMember', { account: a.ref, citizenid: cidIn.value.trim(), perms: { can_deposit: true } }))),
                     h('div.pf-row', labelIn, btn('Rename', () => memberAction('renameAccount', { account: a.ref, label: labelIn.value.trim() })))));
+            }
+            // Leaving an account the player does not own (the server takes the identity from the session;
+            // the citizen id only says "myself").
+            async function leaveAccount(a) {
+                const me = state.data && state.data.me;
+                if (!me || !me.citizenid || a.isOwner) return;
+                if (!(await confirmBox(`Leave ${a.label}? Your cards on it are cancelled and only a manager can add you again.`))) return;
+                await memberAction('removeMember', { account: a.ref, citizenid: me.citizenid });
             }
             async function memberAction(method, payload) {
                 if (state.busy) return;

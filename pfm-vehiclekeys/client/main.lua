@@ -260,7 +260,9 @@ end)
 -- Lockpicking and hotwiring are attempts the server runs (server/main.lua): it checks the car and
 -- the pick, sends the minigame or the hotwire time (qb-vehiclekeys:client:pickStarted), and decides
 -- the outcome, the pick's breakage and the police alert.
+local isPicking = false
 RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
+    if isPicking then return end
     local ped = PlayerPedId()
     local pos = GetEntityCoords(ped)
     local vehicle = QBCore.Functions.GetClosestVehicle()
@@ -277,11 +279,14 @@ RegisterNetEvent('qb-vehiclekeys:client:pickStarted', function(netId, kind, data
     if type(data) ~= 'table' then return end
     local vehicle = NetToVeh(netId)
     if kind == 'lockpick' then
-        local passed = exports['pfm-minigames']:PlayChallenge(data.challenge)
+        if isPicking then return end
+        isPicking = true
+        local ok, passed = pcall(function() return exports['pfm-minigames']:PlayChallenge(data.challenge) end)
         TriggerServerEvent('hud:server:GainStress', math.random(1, 4))
-        -- keeps the loop below from locking the car again as we get in
-        if passed then lastPickedVehicle = vehicle end
+        -- keeps the loop above from locking the car again as we get in
+        if ok and passed then lastPickedVehicle = vehicle end
         TriggerServerEvent('qb-vehiclekeys:server:finishPick', netId)
+        isPicking = false
     elseif kind == 'hotwire' then
         HotwireProgress(vehicle, netId, tonumber(data.duration) or Config.minHotwireTime)
     end

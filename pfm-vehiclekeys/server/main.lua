@@ -147,6 +147,17 @@ local function DistanceTo(src, vehicle)
     return #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(vehicle))
 end
 
+--- A vehicle this player's own client created by script (a job or garage spawn that does not seat
+--- them, e.g. pf-trucking with WarpDriverOnSpawn off). Server natives, so the client cannot claim
+--- it; ambient traffic is excluded (population type 7 = created by a script).
+local POPTYPE_MISSION = 7
+local function SpawnedBy(src, vehicle)
+    local ok, first = pcall(NetworkGetFirstEntityOwner, vehicle)
+    if not ok or tonumber(first) ~= tonumber(src) then return false end
+    local okType, popType = pcall(GetEntityPopulationType, vehicle)
+    return okType and popType == POPTYPE_MISSION
+end
+
 -----------------------
 ---- Server Events ----
 -----------------------
@@ -194,13 +205,15 @@ end)
 
 -- Keys a client asks for itself (vehiclekeys:client:SetOwner from spawning scripts, an NPC car
 -- jacked or taken from a dead driver, job-shared cars). Given for:
---   * the player's own car (player_vehicles), or a fleet car signed out to them;
+--   * the player's own car (player_vehicles), or a pf-jobgarages fleet car signed out to them
+--     (until restart: the car stays its owner's);
 --   * a job vehicle their job shares (Config.SharedKeys);
---   * a car without an owner (job, rental, NPC car) from its driver's seat, or while an NPC still
---     sits at its wheel (carjacked, dead driver).
+--   * a car without an owner (job, rental, NPC car) from its driver's seat, while an NPC still
+--     sits at its wheel (carjacked, dead driver), or one their own client spawned by script.
 -- Never for another player's car (only a finished lockpick or hotwire below, or keys handed over),
--- except on-duty police at its wheel (Config.PoliceTakeKeys: impound releases). (Standing next to
--- any car gave its keys, and a plate string gave keys from any seat of a car with that plate.)
+-- except on-duty police at its wheel (Config.PoliceTakeKeys: impound releases; until restart).
+-- (Standing next to any car gave its keys, and a plate string gave keys from any seat of a car
+-- with that plate.)
 RegisterNetEvent('qb-vehiclekeys:server:AcquireVehicleKeys', function(vehicleNetId, expectedPlate)
     local src = source
 
@@ -213,8 +226,12 @@ RegisterNetEvent('qb-vehiclekeys:server:AcquireVehicleKeys', function(vehicleNet
         local plate = Trim(vehicleNetId)
         if not plate or plate == '' or #plate > 16 then return end
         local owner = PlateOwner(plate)
-        if owner == cid or FleetCarSignedOutTo(cid, plate) then
+        if owner == cid then
             GiveKeys(src, plate)
+            return
+        end
+        if FleetCarSignedOutTo(cid, plate) then
+            GiveKeys(src, plate, false)
             return
         end
         if owner then return end -- someone else's car
@@ -230,31 +247,50 @@ RegisterNetEvent('qb-vehiclekeys:server:AcquireVehicleKeys', function(vehicleNet
         return
     end
 
+    -- the plate the client names, when it is the player's own car or fleet car: given at once, as
+    -- the plate string path above would (no need to wait for the car or its plate to sync)
+    local want = type(expectedPlate) == 'string' and #expectedPlate <= 16 and Trim(expectedPlate) or nil
+    if want and want ~= '' then
+        if PlateOwner(want) == cid then
+            GiveKeys(src, want)
+            return
+        end
+        if FleetCarSignedOutTo(cid, want) then
+            GiveKeys(src, want, false)
+            return
+        end
+    end
+
     local vehicle = VehicleFromNet(vehicleNetId)
     -- a car the client has just spawned may not have reached the server yet
     if not vehicle and not WaitFor(function() vehicle = VehicleFromNet(vehicleNetId) return vehicle ~= nil end, SEAT_SYNC_MS) then return end
     -- the client may have just set the plate: wait for the server to see it (the server's own
-    -- reading is what counts; the client's text only says what to wait for)
-    if type(expectedPlate) == 'string' and #expectedPlate <= 16 then
-        local want = Trim(expectedPlate)
+    -- reading is what counts for anything but the player's own car; the client's text only says
+    -- what to wait for)
+    if want and want ~= '' then
         WaitFor(function() return Trim(GetVehicleNumberPlateText(vehicle)) == want end, SEAT_SYNC_MS)
     end
     local plate = Trim(GetVehicleNumberPlateText(vehicle))
     if not plate or plate == '' then return end
 
     local owner = PlateOwner(plate)
-    if owner == cid or FleetCarSignedOutTo(cid, plate) then
+    if owner == cid then
         GiveKeys(src, plate)
+        return
+    end
+    if FleetCarSignedOutTo(cid, plate) then
+        GiveKeys(src, plate, false)
         return
     end
     if DistanceTo(src, vehicle) > 7.5 then return end
     if owner then
         if Config.PoliceTakeKeys and IsOnDutyPolice(src) and WaitFor(function() return IsDriver(src, vehicle) end, SEAT_SYNC_MS) then
-            GiveKeys(src, plate)
+            GiveKeys(src, plate, false)
         end
         return
     end
-    if JobSharesKeys(src, vehicle) or NpcDriver(vehicle) or WaitFor(function() return IsDriver(src, vehicle) end, SEAT_SYNC_MS) then
+    if JobSharesKeys(src, vehicle) or NpcDriver(vehicle) or SpawnedBy(src, vehicle)
+        or WaitFor(function() return IsDriver(src, vehicle) end, SEAT_SYNC_MS) then
         GiveKeys(src, plate)
     end
 end)
@@ -277,8 +313,10 @@ RegisterNetEvent('qb-vehiclekeys:server:breakLockpick', function() end)
 local function MayChangeLocksWithoutKeys(src, vehicle, plate, state)
     local cid = CitizenId(src)
     local owner = PlateOwner(plate)
-    if owner then return owner == cid end
-    if JobSharesKeys(src, vehicle) or FleetCarSignedOutTo(cid, plate) then return true end
+    if owner and owner == cid then return true end
+    if FleetCarSignedOutTo(cid, plate) then return true end -- a manager's car lent to this employee
+    if owner then return false end
+    if JobSharesKeys(src, vehicle) then return true end
     if IsNoLockVehicle(vehicle) then return state == 1 end
     if KeysHeldByOthers(cid, plate) then return false end
     local driver = GetPedInVehicleSeat(vehicle, -1)
@@ -332,6 +370,7 @@ end
 
 --- A police alert at the thief's position (chance and cooldown from config), sent from the server.
 local function PoliceAlert(src, kind)
+    if not exports['pfm-core']:GetPlayer(src) then return end -- left meanwhile (timed alerts)
     local now = GetGameTimer()
     if lastAlert[src] and now - lastAlert[src] < (Config.AlertCooldown or 10000) then return end
     lastAlert[src] = now
@@ -457,7 +496,7 @@ RegisterNetEvent('qb-vehiclekeys:server:finishPick', function(vehNetId)
     if attempt.kind == 'lockpick' then
         local ok, passed = pcall(function() return exports['pfm-minigames']:Verify(src, attempt.challengeId) end)
         passed = ok and passed == true
-        local inTime = elapsed >= (Config.LockpickMinTime or 2000) and elapsed <= LockpickMaxMs()
+        local inTime = elapsed >= (Config.LockpickMinTime or 1500) and elapsed <= LockpickMaxMs()
         if passed and inTime and same and DistanceTo(src, vehicle) <= (Config.LockpickDistance or 3.0) + 1.0 and Holds(src, attempt.item) then
             if IsDriver(src, vehicle) then
                 GiveStolenKeys(src, plate)

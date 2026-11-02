@@ -26,9 +26,9 @@ local function IsTargetDead(playerId)
     return retval
 end
 
-local function HandCuffAnimation()
+local function HandCuffAnimation(cuffing)
     local ped = PlayerPedId()
-    if isHandcuffed == true then
+    if cuffing then
         TriggerServerEvent('InteractSound_SV:PlayOnSource', 'Cuff', 0.2)
     else
         TriggerServerEvent('InteractSound_SV:PlayOnSource', 'Uncuff', 0.2)
@@ -37,16 +37,17 @@ local function HandCuffAnimation()
     loadAnimDict('mp_arrest_paired')
     Wait(100)
     TaskPlayAnim(ped, 'mp_arrest_paired', 'cop_p2_back_right', 3.0, 3.0, -1, 48, 0, 0, 0, 0)
-    TriggerServerEvent('InteractSound_SV:PlayOnSource', 'Cuff', 0.2)
     Wait(3500)
     TaskPlayAnim(ped, 'mp_arrest_paired', 'exit', 3.0, 3.0, -1, 48, 0, 0, 0, 0)
 end
 
 local function GetCuffedAnimation(playerId)
     local ped = PlayerPedId()
-    local cuffer = GetPlayerPed(GetPlayerFromServerId(playerId))
-    local heading = GetEntityHeading(cuffer)
     TriggerServerEvent('InteractSound_SV:PlayOnSource', 'Cuff', 0.2)
+    local player = playerId and playerId > 0 and GetPlayerFromServerId(playerId) or -1
+    local cuffer = player ~= -1 and GetPlayerPed(player) or 0
+    if cuffer == 0 or not DoesEntityExist(cuffer) then return end -- cuffed again after a relog: no partner
+    local heading = GetEntityHeading(cuffer)
     loadAnimDict('mp_arrest_paired')
     SetEntityCoords(ped, GetOffsetFromEntityInWorldCoords(cuffer, 0.0, 0.45, 0.0))
 
@@ -57,8 +58,8 @@ local function GetCuffedAnimation(playerId)
 end
 
 -- Events
-RegisterNetEvent('police:client:CuffAnimation', function()
-    HandCuffAnimation()
+RegisterNetEvent('police:client:CuffAnimation', function(cuffing)
+    HandCuffAnimation(cuffing == true)
 end)
 
 RegisterNetEvent('police:client:SetOutVehicle', function()
@@ -354,30 +355,26 @@ RegisterNetEvent('police:client:GetKidnappedDragger', function()
     end)
 end)
 
-RegisterNetEvent('police:client:GetCuffed', function(playerId, isSoftcuff)
+-- The server sets the cuff state (it owns it); this client only shows it and never reports it.
+RegisterNetEvent('police:client:SetCuffed', function(cuffed, isSoftcuff, playerId)
     local ped = PlayerPedId()
-    if not isHandcuffed then
+    if cuffed then
+        local wasCuffed = isHandcuffed
         isHandcuffed = true
-        TriggerServerEvent('police:server:SetHandcuffStatus', true)
+        cuffType = isSoftcuff and 49 or 16
+        if wasCuffed then return end
         ClearPedTasksImmediately(ped)
         if GetSelectedPedWeapon(ped) ~= `WEAPON_UNARMED` then
             SetCurrentPedWeapon(ped, `WEAPON_UNARMED`, true)
         end
-        if not isSoftcuff then
-            cuffType = 16
-            GetCuffedAnimation(playerId)
-            QBCore.Functions.Notify(Lang:t('info.cuff'), 'primary')
-        else
-            cuffType = 49
-            GetCuffedAnimation(playerId)
-            QBCore.Functions.Notify(Lang:t('info.cuffed_walk'), 'primary')
-        end
+        GetCuffedAnimation(tonumber(playerId))
+        QBCore.Functions.Notify(isSoftcuff and Lang:t('info.cuffed_walk') or Lang:t('info.cuff'), 'primary')
     else
+        if not isHandcuffed then return end
         isHandcuffed = false
         isEscorted = false
         TriggerEvent('hospital:client:isEscorted', isEscorted)
         DetachEntity(ped, true, false)
-        TriggerServerEvent('police:server:SetHandcuffStatus', false)
         ClearPedTasksImmediately(ped)
         TriggerServerEvent('InteractSound_SV:PlayOnSource', 'Uncuff', 0.2)
         QBCore.Functions.Notify(Lang:t('success.uncuffed'), 'success')

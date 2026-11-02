@@ -210,30 +210,43 @@ RegisterNetEvent('police:client:spawnObject', function(objectId, type, player)
     }
 end)
 
+-- Spike strips are placed and listed by the server (server/objects.lua).
 RegisterNetEvent('police:client:SpawnSpikeStrip', function()
-    if #SpawnedSpikes + 1 < Config.MaxSpikes then
-        if PlayerJob.type == 'leo' and PlayerJob.onduty then
-            local spawnCoords = GetOffsetFromEntityInWorldCoords(PlayerPedId(), 0.0, 2.0, 0.0)
-            local spike = CreateObject(spikemodel, spawnCoords.x, spawnCoords.y, spawnCoords.z, 1, 1, 1)
-            local netid = NetworkGetNetworkIdFromEntity(spike)
-            SetNetworkIdExistsOnAllMachines(netid, true)
-            SetNetworkIdCanMigrate(netid, false)
-            SetEntityHeading(spike, GetEntityHeading(PlayerPedId()))
-            PlaceObjectOnGroundProperly(spike)
-            SpawnedSpikes[#SpawnedSpikes + 1] = {
-                coords = vector3(spawnCoords.x, spawnCoords.y, spawnCoords.z),
-                netid = netid,
-                object = spike,
-            }
-            TriggerServerEvent('police:server:SyncSpikes', SpawnedSpikes)
-        end
-    else
-        QBCore.Functions.Notify(Lang:t('error.no_spikestripe'), 'error')
+    if PlayerJob.type == 'leo' and PlayerJob.onduty then
+        TriggerServerEvent('police:server:PlaceSpike')
     end
 end)
 
-RegisterNetEvent('police:client:SyncSpikes', function(table)
-    SpawnedSpikes = table
+-- The officer who placed a strip sets it flat on the ground (the server placed it at their feet).
+RegisterNetEvent('police:client:SpikePlaced', function(netid)
+    local tries = 0
+    while not NetworkDoesNetworkIdExist(netid) and tries < 20 do Wait(100) tries += 1 end
+    if not NetworkDoesNetworkIdExist(netid) then return end
+    local spike = NetToObj(netid)
+    if spike ~= 0 and DoesEntityExist(spike) then PlaceObjectOnGroundProperly(spike) end
+end)
+
+RegisterNetEvent('police:client:SyncSpikes', function(list)
+    local clean = {}
+    if type(list) == 'table' then
+        for _, s in ipairs(list) do
+            if type(s) == 'table' and tonumber(s.id) and s.coords and tonumber(s.coords.x) and tonumber(s.coords.y) and tonumber(s.coords.z) then
+                clean[#clean + 1] = { id = tonumber(s.id), netid = s.netid, coords = vector3(s.coords.x, s.coords.y, s.coords.z) }
+            end
+        end
+    end
+    SpawnedSpikes = clean
+    ClosestSpike = nil
+end)
+
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    TriggerServerEvent('police:server:RequestSpikes')
+end)
+
+AddEventHandler('onResourceStart', function(resourceName)
+    if resourceName == GetCurrentResourceName() and LocalPlayer.state.isLoggedIn then
+        TriggerServerEvent('police:server:RequestSpikes')
+    end
 end)
 
 -- Threads
@@ -281,15 +294,9 @@ CreateThread(function()
                     if PlayerJob.type == 'leo' and PlayerJob.onduty then
                         DrawText3D(pos.x, pos.y, pos.z, Lang:t('info.delete_spike'))
                         if IsControlJustPressed(0, 38) then
-                            local spike = NetToEnt(SpawnedSpikes[ClosestSpike].netid)
-                            NetworkRegisterEntityAsNetworked(spike)
-                            NetworkRequestControlOfEntity(spike)
-                            SetEntityAsMissionEntity(spike)
-                            Wait(500)
-                            DeleteEntity(spike)
-                            SpawnedSpikes[ClosestSpike] = nil
+                            -- the server checks the officer is beside it and takes it up
+                            TriggerServerEvent('police:server:RemoveSpike', SpawnedSpikes[ClosestSpike].id)
                             ClosestSpike = nil
-                            TriggerServerEvent('police:server:SyncSpikes', SpawnedSpikes)
                         end
                     end
                 end

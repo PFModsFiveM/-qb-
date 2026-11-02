@@ -16,10 +16,20 @@ Config.ContentIntervals = {      -- Minimum interval (ms) per player between sub
     message = 750,
     contact = 1000,
     gallery = 2000,
+    call = 2000,
+    photo = 10000,   -- one camera upload per player every 10 s
 }
 
+-- Picture links the phone accepts (chat photos, tweets, adverts, avatars, backgrounds): https only, on
+-- one of these hosts or a subdomain of one. Add the host your uploads land on if it is not listed.
+-- (A link to any host would let a player log the IP of everyone whose phone shows the picture.)
+Config.ImageHosts = { 'discordapp.net', 'discordapp.com', 'discord.com', 'fivemerr.com', 'fivemanage.com', 'imgur.com' }
+
+-- Camera uploads run on the server; the upload target is read from server-only convars, so it never
+-- reaches a client. Use `set`, never `setr` (a replicated convar can be read by every client):
+--   set pfm_phone_webhook "https://discord.com/api/webhooks/..."   (Discord webhook uploads)
+--   set pfm_phone_fivemerr_token "..."                              (with Config.Fivemerr = true)
 -- Set this to true if you wish to use Fivemerr (https://fivemerr.com/) for media uploads.
--- Ensure to add your API key to server/main.lua
 Config.Fivemerr = false
 
 Config.PhoneApplications = {

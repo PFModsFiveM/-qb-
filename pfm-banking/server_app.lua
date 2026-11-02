@@ -242,10 +242,15 @@ function App.Overview(src)
         if entry.perms.manage and type(a.members) == 'table' then
             entry.members = {}
             for _, m in ipairs(a.members) do
+                -- edit / remove / grant: what this viewer may change on the row (server_accounts.lua
+                -- memberRules); the app shows only those controls and the callbacks check them again
+                local set = type(m.canSet) == 'table' and m.canSet or {}
                 entry.members[#entry.members + 1] = {
-                    citizenid = m.citizenid, name = m.name, owner = m.citizenid == a.owner,
+                    citizenid = m.citizenid, name = m.name, owner = m.citizenid == a.owner, self = m.citizenid == cid,
                     withdraw = tonumber(m.can_withdraw) == 1, deposit = tonumber(m.can_deposit) == 1,
                     cards = tonumber(m.can_cards) == 1, manage = tonumber(m.can_manage) == 1,
+                    edit = m.canEdit == true, remove = m.canRemove == true,
+                    grant = { withdraw = set.can_withdraw == true, deposit = set.can_deposit == true, cards = set.can_cards == true, manage = set.can_manage == true },
                 }
             end
         end

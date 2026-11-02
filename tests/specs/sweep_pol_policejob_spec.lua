@@ -19,6 +19,12 @@ Mock.exportsByResource['pfm-inventory'] = {
     RemoveItem = function() return true end,
 }
 QBCoreMock.Shared.Weapons[GetHashKey('weapon_pistol')] = { name = 'weapon_pistol', ammotype = 'AMMO_PISTOL' }
+-- pfm-prison jails on the server (its own spec covers it); here it records what it was asked
+local jailed = {}
+Mock.exportsByResource['pfm-prison'] = {
+    JailPlayer = function(_, src, minutes) jailed[#jailed + 1] = { src = src, minutes = minutes } return true end,
+}
+function GetResourceState(name) return name == 'pfm-prison' and 'started' or 'missing' end
 
 Config = nil
 load_resource('pfm-policejob/config.lua')
@@ -41,7 +47,7 @@ end
 BeforeEach = function()
     Mock.reset()
     Mock.players, Mock.coords, Mock.plates, Mock.dropped = {}, {}, {}, {}
-    vehicles, opened, added = {}, {}, {}
+    vehicles, opened, added, jailed = {}, {}, {}, {}
     local cop = Mock.newPlayer(COP)
     cop.PlayerData.job = { name = 'police', type = 'leo', onduty = true, grade = { level = 2 } }
     cop.GetItemByName = function() return nil end
@@ -89,7 +95,13 @@ describe('impound', function()
     end)
     it('taking a car out of the impound only touches impounded rows', function()
         Mock.coords[COP] = Config.Locations['impound'][1]
-        Mock.fireNet('police:server:TakeOutImpound', COP, 'ABC123', 1)
+        local single, update = MySQL.single, MySQL.update
+        MySQL.single = setmetatable({ await = function() return { vehicle = 'adder', mods = '{}' } end }, { __call = function() end })
+        MySQL.update = setmetatable({ await = function(q, p) Mock.dbCalls[#Mock.dbCalls + 1] = { kind = 'update', query = q, params = p } return 1 end }, { __call = function() end })
+        function CreateVehicleServerSetter() return 700 end
+        function SetVehicleNumberPlateText() end
+        Mock.callCallback('police:server:ReleaseImpound', COP, 'ABC123', 1)
+        MySQL.single, MySQL.update = single, update
         local u = updates('UPDATE player_vehicles')
         assert_eq(#u, 1)
         assert_true(u[1].query:find('state = ?', 1, true) ~= nil and u[1].params[3] == 2)
@@ -148,7 +160,8 @@ end)
 describe('jail and status', function()
     it('jail time is capped', function()
         Mock.fireNet('police:server:JailPlayer', COP, CIV, 1e9)
-        assert_eq(Mock.players[CIV].PlayerData.metadata.injail, Config.MaxJailTime)
+        assert_eq(#jailed, 1)
+        assert_eq(jailed[1].minutes, Config.MaxJailTime)
     end)
     it('only officers can read status, and bad ids do not crash', function()
         local list = Mock.callCallback('police:GetPlayerStatus', CIV, COP)

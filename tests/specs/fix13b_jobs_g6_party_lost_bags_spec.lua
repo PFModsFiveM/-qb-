@@ -90,6 +90,7 @@ local function collect(src, stops)
     local taken = 0
     for n, loc in ipairs(data.pickupSequence) do
         if stops and n > stops then break end
+        Mock.coords[src] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', src, loc, n)
         for _ = 1, data.locationBags[n] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', src, loc, n) end
         taken = taken + data.locationBags[n]
@@ -245,6 +246,7 @@ describe('Gruppe 6: an early end whose bags were lost', function()
         Mock.fireNet('pf-jobs:gruppe6:spawnVehicle', LEAD)
         local data = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')[1].args[1]
         local loc = data.pickupSequence[1]
+        Mock.coords[LEAD] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', LEAD, loc, 1)
         for _ = 1, data.locationBags[1] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', LEAD, loc, 1) end
         local n = carried[LEAD]
@@ -263,6 +265,7 @@ describe('Gruppe 6: an early end whose bags were lost', function()
         local data = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')[1].args[1]
         assert_eq(#data.plate, 6, 'a G6 plate is shorter than the 8 characters the game shows')
         local loc = data.pickupSequence[1]
+        Mock.coords[LEAD] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', LEAD, loc, 1)
         for _ = 1, data.locationBags[1] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', LEAD, loc, 1) end
         local n = carried[LEAD]
@@ -321,6 +324,7 @@ describe('Gruppe 6: an early end whose bags were lost', function()
         accept(LEAD)
         local data = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')[1].args[1]
         local loc = data.pickupSequence[1]
+        Mock.coords[M2] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', M2, loc, 1)
         for _ = 1, data.locationBags[1] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', M2, loc, 1) end
         assert_true(carried[M2] > 0 and carried[LEAD] == 0, 'the member carries them')
@@ -336,6 +340,7 @@ end)
 describe('Gruppe 6 shared-stash mode: ending while bags are being counted', function()
     local function takeFromStash(src, data, n)
         local loc = data.pickupSequence[1]
+        Mock.coords[src] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', src, loc, 1)
         local id = ('pf_gruppe6_pickup_%s_%s'):format(loc, 1)
         local stash = invs[id]

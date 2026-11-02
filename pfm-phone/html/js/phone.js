@@ -62,19 +62,25 @@ QB.Phone.Functions.SetupRecentCalls = function(recentcalls) {
 
     recentcalls = recentcalls.reverse();
 
+    var esc = QB.Phone.Esc;
     $.each(recentcalls, function(i, recentCall){
-        var FirstLetter = (recentCall.name).charAt(0);
+        var name = String(recentCall.name === undefined || recentCall.name === null ? (recentCall.number || '') : recentCall.name);
+        var FirstLetter = name.charAt(0);
         var TypeIcon = 'fas fa-phone-slash';
         var IconStyle = "color: #e74c3c;";
         if (recentCall.type === "outgoing") {
             TypeIcon = 'fas fa-phone-volume';
-            var IconStyle = "color: #2ecc71; font-size: 1.4vh;";
+            IconStyle = "color: #2ecc71; font-size: 1.4vh;";
+        } else if (recentCall.type === "incoming") {
+            TypeIcon = 'fas fa-phone-alt';
+            IconStyle = "color: #3498db; font-size: 1.4vh;";
         }
         if (recentCall.anonymous) {
             FirstLetter = "A";
             recentCall.name = "Anonymous";
+            name = "Anonymous";
         }
-        var elem = '<div class="phone-recent-call" id="recent-'+i+'"><div class="phone-recent-call-image">'+FirstLetter+'</div> <div class="phone-recent-call-name">'+recentCall.name+'</div> <div class="phone-recent-call-type"><i class="'+TypeIcon+'" style="'+IconStyle+'"></i></div> <div class="phone-recent-call-time">'+recentCall.time+'</div> </div>'
+        var elem = '<div class="phone-recent-call" id="recent-'+i+'"><div class="phone-recent-call-image">'+esc(FirstLetter)+'</div> <div class="phone-recent-call-name">'+esc(name)+'</div> <div class="phone-recent-call-type"><i class="'+TypeIcon+'" style="'+IconStyle+'"></i></div> <div class="phone-recent-call-time">'+esc(recentCall.time)+'</div> </div>'
 
         $(".phone-recent-calls").append(elem);
         $("#recent-"+i).data('recentData', recentCall);
@@ -86,6 +92,10 @@ $(document).on('click', '.phone-recent-call', function(e){
 
     var RecendId = $(this).attr('id');
     var RecentData = $("#"+RecendId).data('recentData');
+    if (!RecentData || !RecentData.number) {
+        QB.Phone.Notifications.Add("fas fa-phone", "Phone", "This number is hidden");
+        return;
+    }
 
     cData = {
         number: RecentData.number,
@@ -106,7 +116,7 @@ $(document).on('click', '.phone-recent-call', function(e){
                         $(".phone-call-outgoing").css({"display":"block"});
                         $(".phone-call-incoming").css({"display":"none"});
                         $(".phone-call-ongoing").css({"display":"none"});
-                        $(".phone-call-outgoing-caller").html(cData.name);
+                        $(".phone-call-outgoing-caller").text(cData.name === undefined || cData.name === null ? '' : cData.name);
                         QB.Phone.Functions.HeaderTextColor("white", 400);
                         QB.Phone.Animations.TopSlideUp('.phone-application-container', 400, -160);
                         setTimeout(function(){
@@ -155,7 +165,7 @@ $(document).on('click', ".phone-keypad-key-call", function(e){
                         $(".phone-call-outgoing").css({"display":"block"});
                         $(".phone-call-incoming").css({"display":"none"});
                         $(".phone-call-ongoing").css({"display":"none"});
-                        $(".phone-call-outgoing-caller").html(cData.name);
+                        $(".phone-call-outgoing-caller").text(cData.name === undefined || cData.name === null ? '' : cData.name);
                         QB.Phone.Functions.HeaderTextColor("white", 400);
                         QB.Phone.Animations.TopSlideUp('.phone-application-container', 400, -160);
                         setTimeout(function(){
@@ -203,15 +213,11 @@ QB.Phone.Functions.LoadContacts = function(myContacts) {
 
     if (myContacts !== null) {
         $.each(myContacts, function(i, contact){
-            contact.name = DOMPurify.sanitize(contact.name , {
-                ALLOWED_TAGS: [],
-                ALLOWED_ATTR: []
-            });
-            if (contact.name == '') contact.name = 'Hmm, I shouldn\'t be able to do this...'
-            var ContactElement = '<div class="phone-contact" data-contactid="'+i+'"><div class="phone-contact-firstletter" style="background-color: #e74c3c;">'+((contact.name).charAt(0)).toUpperCase()+'</div><div class="phone-contact-name">'+contact.name+'</div><div class="phone-contact-actions"><i class="fas fa-sort-down"></i></div><div class="phone-contact-action-buttons"> <i class="fas fa-phone-volume" id="phone-start-call"></i> <i class="fab fa-whatsapp" id="new-chat-phone" style="font-size: 2.5vh;"></i> <i class="fas fa-user-edit" id="edit-contact"></i> </div></div>'
-            if (contact.status) {
-                ContactElement = '<div class="phone-contact" data-contactid="'+i+'"><div class="phone-contact-firstletter" style="background-color: #2ecc71;">'+((contact.name).charAt(0)).toUpperCase()+'</div><div class="phone-contact-name">'+contact.name+'</div><div class="phone-contact-actions"><i class="fas fa-sort-down"></i></div><div class="phone-contact-action-buttons"> <i class="fas fa-phone-volume" id="phone-start-call"></i> <i class="fab fa-whatsapp" id="new-chat-phone" style="font-size: 2.5vh;"></i> <i class="fas fa-user-edit" id="edit-contact"></i> </div></div>'
-            }
+            contact.name = String(contact.name === undefined || contact.name === null ? '' : contact.name);
+            var esc = QB.Phone.Esc;
+            var color = contact.status ? '#2ecc71' : '#e74c3c';
+            var ContactElement = '<div class="phone-contact" data-contactid="'+esc(i)+'"><div class="phone-contact-firstletter" style="background-color: '+color+';">'+esc(contact.name.charAt(0).toUpperCase())+'</div><div class="phone-contact-name">'+esc(contact.name)+'</div><div class="phone-contact-actions"><i class="fas fa-sort-down"></i></div><div class="phone-contact-action-buttons"> <i class="fas fa-phone-volume" id="phone-start-call"></i> <i class="fab fa-whatsapp" id="new-chat-phone" style="font-size: 2.5vh;"></i> <i class="fas fa-user-edit" id="edit-contact"></i> </div></div>'
+
             TotalContacts = TotalContacts + 1
             $(ContactsObject).append(ContactElement);
             $("[data-contactid='"+i+"']").data('contactData', contact);
@@ -496,7 +502,7 @@ SetupCall = function(cData) {
                         $(".phone-call-outgoing").css({"display":"block"});
                         $(".phone-call-incoming").css({"display":"none"});
                         $(".phone-call-ongoing").css({"display":"none"});
-                        $(".phone-call-outgoing-caller").html(cData.name);
+                        $(".phone-call-outgoing-caller").text(cData.name === undefined || cData.name === null ? '' : cData.name);
                         QB.Phone.Functions.HeaderTextColor("white", 400);
                         QB.Phone.Animations.TopSlideUp('.phone-application-container', 400, -160);
                         setTimeout(function(){
@@ -562,12 +568,12 @@ IncomingCallAlert = function(CallData, Canceled, AnonymousCall) {
             QB.Phone.Animations.TopSlideUp('.phone-application-container', 400, -160);
             QB.Phone.Animations.TopSlideUp('.'+QB.Phone.Data.currentApplication+"-app", 400, -160);
             setTimeout(function(){
-                var Label = "You have an incoming call from "+CallData.name
+                var Label = "You have an incoming call from "+(CallData.name || '')
                 if (AnonymousCall) {
                     Label = "You're being called by a anonymous person"
                 }
-                $(".call-notifications-title").html("Incoming Call");
-                $(".call-notifications-content").html(Label);
+                $(".call-notifications-title").text("Incoming Call");
+                $(".call-notifications-content").text(Label);
                 $(".call-notifications").css({"display":"block"});
                 $(".call-notifications").animate({
                     right: 5+"vh"
@@ -575,7 +581,7 @@ IncomingCallAlert = function(CallData, Canceled, AnonymousCall) {
                 $(".phone-call-outgoing").css({"display":"none"});
                 $(".phone-call-incoming").css({"display":"block"});
                 $(".phone-call-ongoing").css({"display":"none"});
-                $(".phone-call-incoming-caller").html(CallData.name);
+                $(".phone-call-incoming-caller").text(CallData.name || '');
                 $(".phone-app").css({"display":"none"});
                 QB.Phone.Functions.HeaderTextColor("white", 400);
                 $("."+QB.Phone.Data.currentApplication+"-app").css({"display":"none"});
@@ -673,10 +679,10 @@ QB.Phone.Functions.SetupCurrentCall = function(cData) {
         } else if (cData.CallType == "outgoing") {
             $(".phone-currentcall-title").html("Outgoing call");
         } else if (cData.CallType == "ongoing") {
-            $(".phone-currentcall-title").html("In call ("+cData.CallTime+")");
+            $(".phone-currentcall-title").text("In call ("+cData.CallTime+")");
         }
 
-        $(".phone-currentcall-contact").html(cData.TargetData.name);
+        $(".phone-currentcall-contact").text((cData.TargetData && cData.TargetData.name) || '');
     } else {
         $(".phone-currentcall-container").css({"display":"none"});
     }
@@ -698,7 +704,7 @@ $(document).on('click', '.phone-currentcall-container', function(e){
         $(".phone-call-outgoing").css({"display":"none"});
         $(".phone-call-ongoing").css({"display":"block"});
     }
-    $(".phone-call-ongoing-caller").html(CallData.name);
+    $(".phone-call-ongoing-caller").text(CallData.name || '');
 
     QB.Phone.Functions.HeaderTextColor("white", 500);
     QB.Phone.Animations.TopSlideDown('.phone-application-container', 500, 0);
@@ -718,7 +724,7 @@ QB.Phone.Functions.AnswerCall = function(CallData) {
     $(".phone-call-incoming").css({"display":"none"});
     $(".phone-call-outgoing").css({"display":"none"});
     $(".phone-call-ongoing").css({"display":"block"});
-    $(".phone-call-ongoing-caller").html(CallData.TargetData.name);
+    $(".phone-call-ongoing-caller").text((CallData.TargetData && CallData.TargetData.name) || '');
 
     QB.Phone.Functions.Close();
 }
@@ -730,7 +736,9 @@ QB.Phone.Functions.SetupSuggestedContacts = function(Suggested) {
         $(".amount-of-suggested-contacts").html(AmountOfSuggestions + " contacts");
         Suggested = Suggested.reverse();
         $.each(Suggested, function(index, suggest){
-            var elem = '<div class="suggested-contact" id="suggest-'+index+'"> <i class="fas fa-exclamation-circle"></i> <span class="suggested-name">'+suggest.name[0]+' '+suggest.name[1]+' &middot; <span class="suggested-number">'+suggest.number+'</span></span> </div>';
+            var esc = QB.Phone.Esc;
+            var names = suggest.name || [];
+            var elem = '<div class="suggested-contact" id="suggest-'+index+'"> <i class="fas fa-exclamation-circle"></i> <span class="suggested-name">'+esc(names[0])+' '+esc(names[1])+' &middot; <span class="suggested-number">'+esc(suggest.number)+'</span></span> </div>';
             $(".suggested-contacts").append(elem);
             $("#suggest-"+index).data('SuggestionData', suggest);
         });

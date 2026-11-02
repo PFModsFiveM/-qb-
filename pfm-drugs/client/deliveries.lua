@@ -101,93 +101,38 @@ local function KnockDealerDoor()
     end
 end
 
-local function RandomDeliveryItemOnRep()
-    local myRep = QBCore.Functions.GetPlayerData().metadata['rep']['dealer'] or 0
-    local availableItems = {}
-    for k, _ in pairs(Config.DeliveryItems) do
-        if Config.DeliveryItems[k]['minrep'] <= myRep then
-            availableItems[#availableItems + 1] = k
-        end
-    end
-    return availableItems[math.random(1, #availableItems)]
+-- The dealer (the server) picks the product, the amount and the drop; the client only asks and
+-- shows the result. A run still open (after a reconnect or a restart) comes back as pending, with
+-- its drop sent again.
+local function deliveryMail(delivery)
+    TriggerServerEvent('qb-phone:server:sendNewMail', {
+        sender = Config.Dealers[delivery.dealer] and Config.Dealers[delivery.dealer]['name'] or delivery.dealer,
+        subject = 'Delivery Location',
+        message = Lang:t('info.delivery_info_email', { itemAmount = delivery.amount, itemLabel = delivery.itemLabel }),
+        button = {
+            enabled = true,
+            buttonEvent = 'qb-drugs:client:setLocation',
+            buttonData = delivery
+        }
+    })
 end
 
 local function RequestDelivery()
-    if not waitingDelivery then
-        GetClosestDealer()
-
-        local amount = math.random(1, 3)
-        local item = RandomDeliveryItemOnRep()
-
-        QBCore.Functions.Notify(Lang:t('info.delivery_search'), 'success')
-        if Config.NearbyDeliveries == true then
-            local playerPed = PlayerPedId()
-            local playerCoords = GetEntityCoords(playerPed)
-            local nearbyLocations = {}
-            -- Filter out the nearby locations
-            for _, location in ipairs(Config.DeliveryLocations) do
-                local distance = #(playerCoords - location.coords)
-                if distance <= Config.DeliveryWithin then
-                    nearbyLocations[#nearbyLocations + 1] = location
-                end
-            end
-
-            -- Select a random location from the nearby locations
-            if #nearbyLocations > 0 then
-                local selectedLocation = nearbyLocations[math.random(1, #nearbyLocations)]
-                waitingDelivery = {
-                    ['coords'] = selectedLocation.coords,
-                    ['locationLabel'] = selectedLocation.label,
-                    ['amount'] = amount,
-                    ['dealer'] = currentDealer,
-                    ['itemData'] = Config.DeliveryItems[item],
-                    ['item'] = item
-                }
-                if Config.Debug == true then
-                    print(selectedLocation.coords)
-                    print(selectedLocation.label)
-                end
-            else
-                QBCore.Functions.Notify(Lang:t('error.delivery_fail'), 'error')
-                if Config.Debug == true then
-                    print('No suitable delivery location found within 2000 units.')
-                end
-                return
-            end
-        else
-            local location = math.random(1, #Config.DeliveryLocations)
-
-            waitingDelivery = {
-                ['coords'] = Config.DeliveryLocations[location]['coords'],
-                ['locationLabel'] = Config.DeliveryLocations[location]['label'],
-                ['amount'] = amount,
-                ['dealer'] = currentDealer,
-                ['itemData'] = Config.DeliveryItems[item],
-                ['item'] = item
-            }
-            if Config.Debug == true then
-                print(Config.DeliveryLocations[location]['coords'])
-                print(Config.DeliveryLocations[location]['label'])
-            end
-        end
-
-        QBCore.Functions.Notify(Lang:t('info.sending_delivery_email'), 'success')
-        TriggerServerEvent('qb-drugs:server:giveDeliveryItems', waitingDelivery)
-        SetTimeout(2000, function()
-            TriggerServerEvent('qb-phone:server:sendNewMail', {
-                sender = Config.Dealers[currentDealer]['name'],
-                subject = 'Delivery Location',
-                message = Lang:t('info.delivery_info_email', { itemAmount = amount, itemLabel = sharedItems[waitingDelivery['itemData']['item']]['label'] }),
-                button = {
-                    enabled = true,
-                    buttonEvent = 'qb-drugs:client:setLocation',
-                    buttonData = waitingDelivery
-                }
-            })
-        end)
-    else
+    if waitingDelivery then
         QBCore.Functions.Notify(Lang:t('error.pending_delivery'), 'error')
+        return
     end
+    GetClosestDealer()
+    if not currentDealer then return end
+    QBCore.Functions.Notify(Lang:t('info.delivery_search'), 'success')
+    QBCore.Functions.TriggerCallback('qb-drugs:server:requestDelivery', function(res)
+        if type(res) ~= 'table' or type(res.delivery) ~= 'table' then return end -- the server told why
+        local delivery = res.delivery
+        waitingDelivery = delivery
+        if Config.Debug == true then print(delivery.coords.x, delivery.coords.y, delivery.locationLabel) end
+        if res.ok then QBCore.Functions.Notify(Lang:t('info.sending_delivery_email'), 'success') end
+        SetTimeout(2000, function() deliveryMail(delivery) end)
+    end, currentDealer)
 end
 
 local function DeliveryTimer()
@@ -207,30 +152,28 @@ local function PoliceCall()
     end
 end
 
+-- The hand-over: the server checks the drop, the time and the bricks, and decides on time or late.
 local function DeliverStuff()
-    if deliveryTimeout > 0 then
-        Wait(500)
-        TaskStartScenarioInPlace(PlayerPedId(), 'PROP_HUMAN_BUM_BIN', 0, true)
-        PoliceCall()
-        QBCore.Functions.Progressbar('work_dropbox', Lang:t('info.delivering_products'), 3500, false, true, {
-            disableMovement = true,
-            disableCarMovement = true,
-            disableMouse = false,
-            disableCombat = true,
-        }, {}, {}, {}, function() -- Done
-            TriggerServerEvent('qb-drugs:server:successDelivery', activeDelivery, true)
-            activeDelivery = nil
-            if Config.UseTarget then
-                exports['pfm-target']:RemoveZone('drugDeliveryZone')
-            else
-                drugDeliveryZone:destroy()
-            end
-        end, function() -- Cancel
-            ClearPedTasks(PlayerPedId())
-        end)
-    else
-        TriggerServerEvent('qb-drugs:server:successDelivery', activeDelivery, false)
-    end
+    Wait(500)
+    TaskStartScenarioInPlace(PlayerPedId(), 'PROP_HUMAN_BUM_BIN', 0, true)
+    PoliceCall()
+    QBCore.Functions.Progressbar('work_dropbox', Lang:t('info.delivering_products'), 3500, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true,
+    }, {}, {}, {}, function() -- Done
+        TriggerServerEvent('qb-drugs:server:successDelivery')
+        activeDelivery = nil
+        waitingDelivery = nil
+        if Config.UseTarget then
+            exports['pfm-target']:RemoveZone('drugDeliveryZone')
+        else
+            drugDeliveryZone:destroy()
+        end
+    end, function() -- Cancel
+        ClearPedTasks(PlayerPedId())
+    end)
     deliveryTimeout = 0
 end
 
@@ -433,7 +376,7 @@ RegisterNetEvent('qb-drugs:client:setLocation', function(locationData)
         drugDeliveryZone:onPlayerInOut(function(isPointInside)
             if isPointInside then
                 local inDeliveryZone = true
-                exports['pfm-core']:DrawText(Lang:t('info.deliver_items_button', { itemAmount = activeDelivery['amount'], itemLabel = sharedItems[activeDelivery['itemData']['item']]['label'] }), 'left')
+                exports['pfm-core']:DrawText(Lang:t('info.deliver_items_button', { itemAmount = activeDelivery['amount'], itemLabel = activeDelivery['itemLabel'] }), 'left')
                 CreateThread(function()
                     while inDeliveryZone do
                         if IsControlJustPressed(0, 38) then

@@ -108,11 +108,23 @@ end)
 
 -- Events
 
+-- Duty points (pfm-core registry): going on duty through QBCore:ToggleDuty needs an officer of any
+-- 'leo' job at one of the station duty desks (server position); going off duty works anywhere.
+-- pfm-core's registry starts empty after a restart of pfm-core, so the points are sent again then.
+local function RegisterPoliceDutyPoints()
+    pcall(function()
+        exports['pfm-core']:RegisterDutyPoints({ type = 'leo', points = Config.Locations['duty'], radius = Config.DutyRadius or 2.5 })
+    end)
+end
+RegisterPoliceDutyPoints()
+
 AddEventHandler('onResourceStart', function(resourceName)
     if resourceName == GetCurrentResourceName() then
         CreateThread(function()
             MySQL.query("DELETE FROM inventories WHERE identifier = 'policetrash'")
         end)
+    elseif resourceName == 'pfm-core' then
+        RegisterPoliceDutyPoints()
     end
 end)
 
@@ -162,20 +174,91 @@ RegisterNetEvent('qb-policejob:server:evidence', function(currentEvidence)
     })
 end)
 
-RegisterNetEvent('police:server:policeAlert', function(text)
-    local src = source
-    if type(text) ~= 'string' or #text < 1 then return end
-    text = text:sub(1, 256)
-    local ped = GetPlayerPed(src)
-    local coords = GetEntityCoords(ped)
+-- Police alerts. Any client may report something to the police (store robberies, car thefts, drug
+-- sales report through this), so each player is held to Config.AlertRate: at most Max alerts per
+-- Window seconds, and the same text again within the window is dropped. A client used to be able to
+-- loop fake "officer down" alerts to every officer. Server scripts call the export instead.
+local alertTimes = {} -- [src] = { os.time(), ... } of the alerts let through in the window
+local alertTexts = {} -- [src] = { [text] = os.time() }
+
+local function cleanAlertText(text)
+    if type(text) ~= 'string' then return nil end
+    text = text:gsub('%c', ' '):sub(1, 256)
+    if text:match('^%s*$') then return nil end
+    return text
+end
+
+local function SendPoliceAlert(coords, text, title)
     local players = QBCore.Functions.GetQBPlayers()
     for _, v in pairs(players) do
         if v and v.PlayerData.job.type == 'leo' and v.PlayerData.job.onduty then
-            local alertData = { title = Lang:t('info.new_call'), coords = { x = coords.x, y = coords.y, z = coords.z }, description = text }
+            local alertData = { title = title or Lang:t('info.new_call'), coords = { x = coords.x, y = coords.y, z = coords.z }, description = text }
             TriggerClientEvent('qb-phone:client:addPoliceAlert', v.PlayerData.source, alertData)
             TriggerClientEvent('police:client:policeAlert', v.PlayerData.source, coords, text)
         end
     end
+end
+
+local function AlertAllowed(src, text)
+    local rate = Config.AlertRate or {}
+    local window, max = tonumber(rate.Window) or 30, tonumber(rate.Max) or 2
+    local now = os.time()
+    local times = {}
+    for _, t in ipairs(alertTimes[src] or {}) do
+        if now - t < window then times[#times + 1] = t end
+    end
+    local texts = alertTexts[src] or {}
+    for t, at in pairs(texts) do
+        if now - at >= window then texts[t] = nil end
+    end
+    alertTimes[src], alertTexts[src] = times, texts
+    if #times >= max or texts[text] then return false end
+    times[#times + 1] = now
+    texts[text] = now
+    return true
+end
+
+--- exports['pfm-policejob']:PoliceAlert(coords, text, title) for server scripts: an alert at a
+--- position the caller decided, to every on-duty officer (no rate limit).
+exports('PoliceAlert', function(coords, text, title)
+    text = cleanAlertText(text)
+    if not text or (type(coords) ~= 'table' and type(coords) ~= 'vector3' and type(coords) ~= 'vector4') then return false end
+    local x, y, z = tonumber(coords.x), tonumber(coords.y), tonumber(coords.z)
+    if not x or not y or not z then return false end
+    SendPoliceAlert(vector3(x, y, z), text, type(title) == 'string' and title:sub(1, 64) or nil)
+    return true
+end)
+
+RegisterNetEvent('police:server:policeAlert', function(text)
+    local src = source
+    text = cleanAlertText(text)
+    if not text then return end
+    local numericSrc = tonumber(src)
+    -- a server script that TriggerEvents this keeps its own player as source: held to the same limit
+    if numericSrc and numericSrc > 0 and not AlertAllowed(numericSrc, text) then return end
+    local coords = GetEntityCoords(GetPlayerPed(src))
+    SendPoliceAlert(coords, text)
+end)
+
+-- An officer who is down presses the emergency button: the text is built here from their own
+-- name and callsign (any client could send "officer down" with any text before), once a minute.
+local officerDownAt = {}
+RegisterNetEvent('police:server:OfficerDown', function()
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or Player.PlayerData.job.type ~= 'leo' or not Player.PlayerData.job.onduty then return end
+    local meta = Player.PlayerData.metadata
+    if not (meta['isdead'] or meta['inlaststand']) then return end
+    local now = os.time()
+    if officerDownAt[src] and now - officerDownAt[src] < 60 then return end
+    officerDownAt[src] = now
+    local text = Lang:t('info.officer_down', { lastname = (Player.PlayerData.charinfo or {}).lastname or '', callsign = meta['callsign'] or '' })
+    SendPoliceAlert(GetEntityCoords(GetPlayerPed(src)), text)
+end)
+
+AddEventHandler('playerDropped', function()
+    local src = source
+    alertTimes[src], alertTexts[src], officerDownAt[src] = nil, nil, nil
 end)
 
 RegisterNetEvent('police:server:UpdateCurrentCops', function()
@@ -192,13 +275,8 @@ RegisterNetEvent('police:server:UpdateCurrentCops', function()
     updatingCops = false
 end)
 
-RegisterNetEvent('police:server:SetHandcuffStatus', function(isHandcuffed)
-    local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
-    if Player then
-        Player.SetMetaData('ishandcuffed', isHandcuffed)
-    end
-end)
+-- police:server:SetHandcuffStatus is gone: the cuff state is set by the server only
+-- (server/interactions.lua, PoliceSetCuffed).
 
 RegisterNetEvent('police:server:showFingerprint', function(playerId)
     local src = source
@@ -246,24 +324,8 @@ RegisterNetEvent('police:server:SetTracker', function(targetId)
     end
 end)
 
-RegisterNetEvent('police:server:SendTrackerLocation', function(coords, requestId)
-    local Target = exports['pfm-core']:GetPlayer(source)
-    if not Target or not Target.PlayerData.metadata['tracker'] then return end
-    local Requester = exports['pfm-core']:GetPlayer(requestId)
-    if not Requester or Requester.PlayerData.job.type ~= 'leo' or not Requester.PlayerData.job.onduty then return end
-    local msg = Lang:t('info.target_location', { firstname = Target.PlayerData.charinfo.firstname, lastname = Target.PlayerData.charinfo.lastname })
-    local alertData = {
-        title = Lang:t('info.anklet_location'),
-        coords = {
-            x = coords.x,
-            y = coords.y,
-            z = coords.z
-        },
-        description = msg
-    }
-    TriggerClientEvent('police:client:TrackerMessage', requestId, msg, coords)
-    TriggerClientEvent('qb-phone:client:addPoliceAlert', requestId, alertData)
-end)
+-- The anklet position is read by the server (/ankletlocation in server/commands.lua); the tracked
+-- player's client is no longer asked for it.
 
 -- Threads
 

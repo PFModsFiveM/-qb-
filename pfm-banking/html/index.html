@@ -289,6 +289,12 @@
                                         <button class="btn danger wide" @click="deleteSelected">Close account (balance must be $0)</button>
                                     </template>
                                 </div>
+
+                                <div v-if="selectedAccount && !selectedAccount.isOwner" class="panel acct-pop">
+                                    <div class="panel-title">Your membership</div>
+                                    <div class="empty">Leaving cancels your cards on this account. Only a manager can add you again.</div>
+                                    <button class="btn ghost wide" @click="leaveSelected">Leave account</button>
+                                </div>
                             </div>
 
                             <div class="acct-detail-col">
@@ -300,13 +306,13 @@
                                             <span class="member-perm">Dep</span><span class="member-perm">Wdr</span><span class="member-perm">Card</span><span class="member-perm">Mgr</span><span class="member-perm"></span>
                                         </div>
                                         <div v-for="m in selectedAccount.members" :key="m.citizenid" class="member-row" :class="{owner: m.citizenid === selectedAccount.owner}">
-                                            <span class="member-name">{{ m.name || m.citizenid }}<em v-if="m.citizenid === selectedAccount.owner">owner</em></span>
+                                            <span class="member-name">{{ m.name || m.citizenid }}<em v-if="m.citizenid === selectedAccount.owner">owner</em><em v-else-if="isMe(m)">you</em></span>
                                             <template v-if="m.citizenid !== selectedAccount.owner">
-                                                <span class="member-perm"><input type="checkbox" :checked="m.can_deposit == 1" @change="togglePerm(m, 'can_deposit')" /></span>
-                                                <span class="member-perm"><input type="checkbox" :checked="m.can_withdraw == 1" @change="togglePerm(m, 'can_withdraw')" /></span>
-                                                <span class="member-perm"><input type="checkbox" :checked="m.can_cards == 1" @change="togglePerm(m, 'can_cards')" /></span>
-                                                <span class="member-perm"><input type="checkbox" :checked="m.can_manage == 1" @change="togglePerm(m, 'can_manage')" /></span>
-                                                <span class="member-perm"><button class="member-remove" @click="removeMemberRow(m)" title="Remove member"><span class="material-icons-round">close</span></button></span>
+                                                <span class="member-perm"><input type="checkbox" :checked="m.can_deposit == 1" :disabled="permLocked(m, 'can_deposit')" @change="togglePerm(m, 'can_deposit')" /></span>
+                                                <span class="member-perm"><input type="checkbox" :checked="m.can_withdraw == 1" :disabled="permLocked(m, 'can_withdraw')" @change="togglePerm(m, 'can_withdraw')" /></span>
+                                                <span class="member-perm"><input type="checkbox" :checked="m.can_cards == 1" :disabled="permLocked(m, 'can_cards')" @change="togglePerm(m, 'can_cards')" /></span>
+                                                <span class="member-perm"><input type="checkbox" :checked="m.can_manage == 1" :disabled="permLocked(m, 'can_manage')" @change="togglePerm(m, 'can_manage')" /></span>
+                                                <span class="member-perm"><button v-if="m.canRemove !== false && !isMe(m)" class="member-remove" @click="removeMemberRow(m)" title="Remove member"><span class="material-icons-round">close</span></button></span>
                                             </template>
                                             <template v-else><span class="member-perm all" style="grid-column: span 5">full access</span></template>
                                         </div>
@@ -384,8 +390,10 @@
                                 <div class="stage-actions">
                                     <button class="btn small ghost" @click="cardRevealed = !cardRevealed"><span class="material-icons-round btn-ico">{{ cardRevealed ? 'visibility_off' : 'visibility' }}</span>{{ cardRevealed ? 'Hide' : 'Reveal' }}</button>
                                     <button class="btn small ghost" @click="copyText(currentWalletCard.card.number)"><span class="material-icons-round btn-ico">content_copy</span>Copy</button>
-                                    <button class="btn small ghost" @click="toggleLockCard(currentWalletCard.card)"><span class="material-icons-round btn-ico">{{ currentWalletCard.card.locked == 1 ? 'lock_open' : 'lock' }}</span>{{ currentWalletCard.card.locked == 1 ? 'Unlock' : 'Lock' }}</button>
-                                    <button class="btn small danger" @click="cancelWalletCard(currentWalletCard.card)"><span class="material-icons-round btn-ico">block</span>Cancel</button>
+                                    <template v-if="currentWalletCard.card.canManage !== false">
+                                        <button class="btn small ghost" @click="toggleLockCard(currentWalletCard.card)"><span class="material-icons-round btn-ico">{{ currentWalletCard.card.locked == 1 ? 'lock_open' : 'lock' }}</span>{{ currentWalletCard.card.locked == 1 ? 'Unlock' : 'Lock' }}</button>
+                                        <button class="btn small danger" @click="cancelWalletCard(currentWalletCard.card)"><span class="material-icons-round btn-ico">block</span>Cancel</button>
+                                    </template>
                                 </div>
                             </template>
                             <div v-else class="empty">No cards yet — issue one above</div>

@@ -7,13 +7,13 @@ SetupAppstore = function(data) {
     $.each(data.StoreApps, function(i, app){
         if (data.PhoneData.InstalledApps[i] == null || data.PhoneData.InstalledApps[i] == undefined) {
             if(app.blockedjobs != QB.Phone.Data.PlayerJob.name){
-                var elem = '<div class="storeapp" id="app-'+i+'" data-app="'+i+'"><div class="storeapp-icon"><i class="'+app.icon+'"></i></div><div class="storeapp-title">'+app.title+'</div> <div class="storeapp-creator">'+app.creator+'</div><div class="storeapp-download"><i class="fas fa-download"></i></div></div>'
+                var elem = '<div class="storeapp" id="app-'+i+'" data-app="'+i+'"><div class="storeapp-icon"><i class="'+app.icon+'"></i></div><div class="storeapp-title">'+QB.Phone.Esc(app.title)+'</div> <div class="storeapp-creator">'+QB.Phone.Esc(app.creator)+'</div><div class="storeapp-download"><i class="fas fa-download"></i></div></div>'
                 $(".store-apps").append(elem);
                 app.app = i;
                 $("#app-"+i).data('AppData', app);
             }
         } else {
-            var elem = '<div class="storeapp" id="app-'+i+'" data-app="'+i+'"><div class="storeapp-icon"><i class="'+app.icon+'"></i></div><div class="storeapp-title">'+app.title+'<span style="font-size: 1vh;"> - Geïnstalleerd</span></div> <div class="storeapp-creator">'+app.creator+'</div><div class="storeapp-remove"><i class="fas fa-trash"></i></div></div>'
+            var elem = '<div class="storeapp" id="app-'+i+'" data-app="'+i+'"><div class="storeapp-icon"><i class="'+app.icon+'"></i></div><div class="storeapp-title">'+QB.Phone.Esc(app.title)+'<span style="font-size: 1vh;"> - Geïnstalleerd</span></div> <div class="storeapp-creator">'+QB.Phone.Esc(app.creator)+'</div><div class="storeapp-remove"><i class="fas fa-trash"></i></div></div>'
             $(".store-apps").append(elem);
             app.app = i;
             $("#app-"+i).data('AppData', app);

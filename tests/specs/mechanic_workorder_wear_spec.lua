@@ -36,6 +36,7 @@ LedgerEnv.load('pf-mechanicjob', {
     '[pfscripts]/pf-mechanicjob/shared/debug.lua',
 })
 Config.Debug = false
+load_resource('[pfscripts]/pf-mechanicjob/shared/performance_parts.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/main.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/work_orders.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/advanced_systems.lua')

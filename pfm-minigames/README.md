@@ -3,6 +3,22 @@
 I didn't make these, I'm just converting them from here because I was bored so credit to whoever this is https://www.codingnepalweb.com/best-javascript-games-for-beginners
 I plan on doing the rest
 
+## Server challenges (use these when a result unlocks anything)
+The exports below run on the client and return only the client's word. When a minigame result
+opens a door, unlocks a car or pays out, let the server issue and judge it instead:
+```lua
+-- server
+local ch = exports['pfm-minigames']:IssueChallenge(src, 'skillbar', { difficulty = 'medium' })
+TriggerClientEvent('my-resource:client:play', src, ch)
+-- client
+local passed = exports['pfm-minigames']:PlayChallenge(ch)
+TriggerServerEvent('my-resource:server:finish')
+-- server, in the finish handler
+local passed, faults = exports['pfm-minigames']:Verify(src, ch.id)
+```
+Kinds: `skillbar`, `keys`, `hacking`, `lockpick`. The full API note is at the top of
+`server/challenge.lua`; pfm-doorlock and pfm-vehiclekeys use it for lockpicking.
+
 ## Quiz
 ```lua
   local success = exports['pfm-minigames']:Quiz({

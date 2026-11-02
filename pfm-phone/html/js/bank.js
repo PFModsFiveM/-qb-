@@ -111,7 +111,7 @@ $(document).on('click', '#accept-transfer', function(e){
 
                     $(".bank-app-account-balance").html("&#36; " + (data.NewBalance).toFixed(0));
                     $(".bank-app-account-balance").data('balance', (data.NewBalance).toFixed(0));
-                    QB.Phone.Notifications.Add("fas fa-university", "QBank", "You have transfered &#36; "+amount+"!", "#badc58", 1500);
+                    QB.Phone.Notifications.Add("fas fa-university", "QBank", "You have transfered $ "+amount+"!", "#badc58", 1500);
                 } else {
                     QB.Phone.Notifications.Add("fas fa-university", "QBank", "You don't have enough balance!", "#badc58", 1500);
                 }
@@ -159,7 +159,7 @@ $(document).on('click', '.pay-invoice', function(event){
                         $("#"+InvoiceId).remove();
                     }, 100);
                 });
-                QB.Phone.Notifications.Add("fas fa-university", "QBank", "You have paid &#36;"+InvoiceData.amount+"!", "#badc58", 1500);
+                QB.Phone.Notifications.Add("fas fa-university", "QBank", "You have paid $"+InvoiceData.amount+"!", "#badc58", 1500);
                 var amountData = $(".bank-app-account-balance").data('balance');
                 var NewAmount = (amountData - InvoiceData.amount).toFixed();
                 $("#bank-transfer-amount").val(NewAmount);
@@ -234,7 +234,7 @@ QB.Phone.Functions.LoadContactsWithNumber = function(myContacts) {
         $.each(myContacts, function(i, contact){
             var RandomNumber = Math.floor(Math.random() * 6);
             var ContactColor = QB.Phone.ContactColors[RandomNumber];
-            var ContactElement = '<div class="bank-app-my-contact" data-bankcontactid="'+i+'"> <div class="bank-app-my-contact-firstletter">'+((contact.name).charAt(0)).toUpperCase()+'</div> <div class="bank-app-my-contact-name">'+contact.name+'</div> </div>'
+            var ContactElement = '<div class="bank-app-my-contact" data-bankcontactid="'+InvoiceText(i)+'"> <div class="bank-app-my-contact-firstletter">'+InvoiceText(String(contact.name || '').charAt(0).toUpperCase())+'</div> <div class="bank-app-my-contact-name">'+InvoiceText(contact.name)+'</div> </div>'
             TotalContacts = TotalContacts + 1
             $(ContactsObject).append(ContactElement);
             $("[data-bankcontactid='"+i+"']").data('contactData', contact);

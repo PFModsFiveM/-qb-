@@ -86,6 +86,7 @@ local function runContract(beforeDeposit)
     local starts = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')
     local data = starts[#starts].args[1]
     for n, loc in ipairs(data.pickupSequence) do
+        Mock.coords[LEAD] = data.locationPool[loc] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', LEAD, loc, n)
         for _ = 1, data.locationBags[n] do Mock.fireNet('pf-jobs:gruppe6:takePickupBag', LEAD, loc, n) end
     end
@@ -353,11 +354,13 @@ describe('armoured truck robbery', function()
         assert_eq(pushes[#pushes].app, 'gruppe6')
         assert_eq(#PFJobsG6.ActiveHolds(), 1)
         -- the held pickup gives no bags until the hold ends
+        Mock.coords[LEAD] = data.locationPool[data.pickupSequence[1]] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', LEAD, data.pickupSequence[1], 1)
         Mock.fireNet('pf-jobs:gruppe6:takePickupBag', LEAD, data.pickupSequence[1], 1)
         assert_eq(carried[LEAD], 0)
         Mock.clock = Mock.clock + G6.RobberyAlert.HoldMinutes * 60 + 1
         assert_eq(#PFJobsG6.ActiveHolds(), 0)
+        Mock.coords[LEAD] = data.locationPool[data.pickupSequence[1]] -- pickups are served only at the stop
         Mock.fireNet('pf-jobs:gruppe6:openPickupStash', LEAD, data.pickupSequence[1], 1)
         Mock.fireNet('pf-jobs:gruppe6:takePickupBag', LEAD, data.pickupSequence[1], 1)
         assert_eq(carried[LEAD], 1)

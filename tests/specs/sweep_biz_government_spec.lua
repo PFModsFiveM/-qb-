@@ -14,6 +14,7 @@ Mock.exportsByResource['pfm-inventory'] = {
 LedgerEnv.load('pf-government', {
     '[pfscripts]/pf-government/config.lua',
     '[pfscripts]/pf-government/server/core.lua',
+    '[pfscripts]/pf-government/server/schema.lua',
     '[pfscripts]/pf-government/server/bills.lua',
     '[pfscripts]/pf-government/server/licenses.lua',
     '[pfscripts]/pf-government/server/staff.lua',
@@ -31,6 +32,7 @@ local treasury, audits = {}, {}
 function DepositToTreasury(amount, src, description) treasury[#treasury + 1] = amount return true end
 function LogAudit(action) audits[#audits + 1] = action end
 function DebugPrint() end
+GovSchema.Ensure = function() return true end
 
 -- government tables on the fake database
 local G = {}
@@ -45,6 +47,7 @@ local function resetTables()
         { id = 2, owner_type = 'citizen', owner_id = 'OTHER', license_type = 'firearms_license' },
     }
     G.loans, G.staffInserts, G.metadataWrites, G.jobWrites = {}, 0, {}, {}
+    G.payments = {}
 end
 local function filtered(list, query, params)
     local out, i = {}, 1
@@ -59,6 +62,44 @@ local function filtered(list, query, params)
 end
 FakeDB.extraPatterns = {
     { 'SELECT * FROM pf_gov_bills WHERE id = ?', function(p) local b = G.bills[tonumber(p[1])] return b and { b } or {} end },
+    { 'SELECT amount, amount_paid, status FROM pf_gov_bills WHERE id = ?', function(p) local b = G.bills[tonumber(p[1])] return b and { b } or {} end },
+    -- the charges that pay bills (pf_gov_bill_payments, schema v4)
+    { 'INSERT INTO pf_gov_bill_payments', function(p)
+        G.payments[p[1]] = { pay_key = p[1], ledger_key = p[2], bill_id = p[3], citizenid = p[4], amount = p[5], state = 'pending' }
+        return 1
+    end },
+    { 'SELECT * FROM pf_gov_bill_payments WHERE pay_key = ?', function(p) local r = G.payments[p[1]] return r and { r } or {} end },
+    { 'SELECT * FROM pf_gov_bill_payments WHERE bill_id = ?', function(p)
+        local out = {}
+        for _, r in pairs(G.payments) do
+            if tonumber(r.bill_id) == tonumber(p[1]) and (r.state == 'pending' or (r.state == 'applied' and r.refunded == nil)) then out[#out + 1] = r end
+        end
+        return out
+    end },
+    { "UPDATE pf_gov_bill_payments SET state = 'failed'", function(p)
+        local r = G.payments[p[1]]
+        if r and r.state == 'pending' then r.state = 'failed' return 1 end
+        return 0
+    end },
+    { "UPDATE pf_gov_bill_payments SET state = 'applied', applied = 0", function(p)
+        local r = G.payments[p[1]]
+        if r and r.state == 'pending' then r.state, r.applied, r.refunded = 'applied', 0, nil return 1 end
+        return 0
+    end },
+    { 'UPDATE pf_gov_bill_payments SET refunded = ?', function(p)
+        local r = G.payments[p[2]]
+        if r and r.refunded == nil then r.refunded = p[1] return 1 end
+        return 0
+    end },
+    { 'UPDATE pf_gov_bills b JOIN pf_gov_bill_payments p', function(p)
+        -- payKey, new amount paid, new status, applied, applied, bill id, total read, paid read
+        local r, b = G.payments[p[1]], G.bills[tonumber(p[6])]
+        if not r or r.state ~= 'pending' or not b or math.abs(b.amount - p[7]) >= 0.005 or math.abs(b.amount_paid - p[8]) >= 0.005 then return 0 end
+        b.amount_paid, b.status = p[2], p[3]
+        r.state, r.applied = 'applied', p[4]
+        r.refunded = (r.amount - p[5] < 0.005) and 0 or nil
+        return 2
+    end },
     { 'SELECT * FROM pf_gov_bills WHERE 1=1', function(p) return filtered(G.bills, FakeDB.log[#FakeDB.log], p) end },
     { 'UPDATE pf_gov_bills SET amount_paid = ?, status = ?', function(p)
         local b = G.bills[tonumber(p[3])]

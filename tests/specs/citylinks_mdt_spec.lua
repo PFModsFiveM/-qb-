@@ -32,12 +32,32 @@ Mock.exportsByResource['oxmysql'] = {
     scalar = function(_, sql, params, cb) if Mock.callable(cb) then cb(0) end return 0 end,
 }
 
+-- server/sentencing.lua reads and writes through MySQL.*.await: a small in-memory jail and sentence store
+local jails, sentences = {}, {}
+local function lib(kind)
+    local function f(sql, p)
+        p = p or {}
+        if sql:find('FROM pf_mdt_charges', 1, true) then return CHARGES end
+        if sql:find('SELECT * FROM pf_mdt_active_jails WHERE citizenid', 1, true) then return jails[p[1]] end
+        if sql:find('INSERT INTO pf_mdt_active_jails', 1, true) then jails[p[1]] = { id = #sentences + 100, citizenid = p[1], remaining_seconds = p[3], items = p[7] } return jails[p[1]].id end
+        if sql:find('INSERT INTO pf_mdt_sentences', 1, true) then sentences[#sentences + 1] = p return #sentences end
+        if kind == 'query' then return {} end
+        if kind == 'single' then return nil end
+        return 1
+    end
+    return setmetatable({ await = f }, { __call = function(_, sql, p, cb) local r = f(sql, p) if cb then cb(r) end return r end })
+end
+MySQL = { query = lib('query'), single = lib('single'), insert = lib('insert'), update = lib('update'), scalar = lib('scalar') }
+Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
+
 function GetCurrentResourceName() return 'pf-policemdt-DEV' end
 Config = nil
 load_resource('[pfscripts]/pf-policemdt-DEV/shared/framework.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/config.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/access.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/main.lua')
+load_resource('[pfscripts]/pf-policemdt-DEV/server/sentencing.lua')
+assert(PFMdtSentencing.Start(), 'sentencing start')
 
 -- A modified client answers the server's inventory snapshot request with items it never had.
 local realTrigger = TriggerClientEvent
@@ -58,10 +78,12 @@ os.time = function(t) if t then return realTime(t) end return now end
 BeforeEach = function()
     Mock.reset()
     Mock.players, Emits = {}, {}
+    jails, sentences = {}, {}
     now = realTime()
     Mock.newPlayer(OFFICER, 'OFFCID').PlayerData.job = { name = 'police', onduty = true, grade = { level = 4 } }
     local p = Mock.newPlayer(PRISONER, 'CID2')
     p.PlayerData.charinfo = { firstname = 'Rob', lastname = 'Banks' }
+    p.PlayerData.metadata.ishandcuffed = true -- in custody, next to the officer
     p.PlayerData.items = {}
     p.Functions.ClearInventory = function() p.PlayerData.items = {} end
     p.Functions.RemoveItem = function() return true end

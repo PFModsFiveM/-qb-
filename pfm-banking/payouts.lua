@@ -91,6 +91,22 @@ local function clearRefusal(res)
     return false
 end
 
+--- Whether a Pay / Transfer / Charge result failed for certain, with no money moved now or later:
+--- the bank or ledger was not running, the ledger refused before writing, the transfer is 'failed'
+--- (not 'interrupted_unverified'), or it was reversed ('compensated'). Only then may a caller undo
+--- its side of the deal (hand goods back, free a lock, try a new key). Anything else (pending,
+--- debited, in_progress, internal_error, ledger_write_failed, res.unclear) may still complete
+--- through the ledger's recovery: keep the goods taken and retry or settle under the same key.
+--- On such a retry, bank_unavailable / ledger_unavailable describe that call only, not the key that
+--- came back unclear before: keep waiting then.
+function P.IsClearFailure(res)
+    if type(res) ~= 'table' or res.ok then return false end
+    if res.unclear then return false end
+    if res.error == 'bank_unavailable' or res.error == 'ledger_unavailable' then return true end
+    if res.state == 'compensated' then return true end
+    return clearRefusal(res)
+end
+
 --- Takes money from a player into system:<resource> (deposits, fees). Tries each account in order,
 --- e.g. { 'cash', 'bank' }. opts: key (required; each account gets key .. ':' .. account), reason, kind,
 --- to, metadata, quiet.

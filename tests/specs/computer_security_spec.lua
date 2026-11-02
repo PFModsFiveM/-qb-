@@ -82,7 +82,7 @@ end
 -- domains are bought through the ledger (stores_trucking_ledger_spec checks the price); here the bank says yes
 local function buyDomain(src, domain)
     started['pfm-banking'] = true
-    Mock.exportsByResource['pfm-banking'] = { Transfer = function() return { ok = true } end }
+    Mock.exportsByResource['pfm-banking'] = { Transfer = function() return { ok = true } end, GetTransaction = function() return nil end }
     local res = call(src, 'browser:domain:buy', { domain = domain })
     started['pfm-banking'] = false
     Mock.exportsByResource['pfm-banking'] = nil

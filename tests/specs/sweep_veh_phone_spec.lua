@@ -33,6 +33,7 @@ local function player(src, phone)
     local p = Mock.newPlayer(src)
     p.PlayerData.charinfo.phone = phone
     p.PlayerData.metadata.phonedata = { InstalledApps = {} }
+    p.Functions.GetItemByName = function(name) return name == 'phone' and { name = 'phone' } or nil end
     Mock.coords[src] = vector3(0, 0, 0)
     return p
 end
@@ -146,36 +147,43 @@ describe('twitter', function()
 end)
 
 describe('messages', function()
+    -- (batch 14: the client sends one message, qb-phone:server:SendMessage; the server builds it and
+    -- appends it to both copies. The whole-chat UpdateMessages is gone.)
     it('a chat is written for the holder of exactly that number', function()
-        Mock.fireNet('qb-phone:server:UpdateMessages', CIV, { { messages = { { message = 'hi' } } } }, '5550003', false)
+        Mock.players[OTHER] = nil -- offline: found in the database by the exact number
+        Mock.fireNet('qb-phone:server:SendMessage', CIV, '5550003', { type = 'message', message = 'hi' })
         local q = callsMatching('FROM players WHERE charinfo LIKE')
         assert_eq(#q, 1)
         assert_eq(q[1].params[1], '%"phone":"5550003"%')
     end)
     it('an ambiguous or partial number writes nothing', function()
+        Mock.players[OTHER] = nil
         Responder = function(_, query)
             if query:find('FROM players WHERE charinfo LIKE', 1, true) then
                 return { { citizenid = 'A', charinfo = '{"phone":"1"}' }, { citizenid = 'B', charinfo = '{"phone":"1"}' } }
             end
             return {}
         end
-        Mock.fireNet('qb-phone:server:UpdateMessages', CIV, { { messages = { { message = 'hi' } } } }, '1', false)
+        Mock.fireNet('qb-phone:server:SendMessage', CIV, '1', { type = 'message', message = 'hi' })
         assert_eq(#callsMatching('phone_messages'), 0)
     end)
-    it('an oversized chat is refused', function()
-        local big = { { messages = {} } }
-        for i = 1, 400 do big[1].messages[i] = { message = string.rep('x', 200) } end
-        Mock.fireNet('qb-phone:server:UpdateMessages', CIV, big, '5550003', false)
-        assert_eq(#calls, 0)
+    it('the old whole-chat event is gone', function()
+        assert_eq(Mock.netHandlers['qb-phone:server:UpdateMessages'], nil)
     end)
 end)
 
 describe('calls, contacts and apps', function()
-    it('a missed call is recorded for both people', function()
-        Mock.fireNet('qb-phone:server:AddRecentCall', CIV, 'missed', { number = '5550003', name = 'x' })
+    it('a missed call is recorded for both people, by the server when the call ends', function()
+        assert_eq(Mock.netHandlers['qb-phone:server:AddRecentCall'], nil)
+        Mock.fireNet('qb-phone:server:CallContact', CIV, { number = '5550003' }, nil, false)
+        Mock.fireNet('qb-phone:server:CancelCall', CIV)
         local ev = Mock.clientEventsNamed('qb-phone:client:AddRecentCall')
         assert_eq(#ev, 2)
-        assert_eq(ev[1].args[3], 'missed')
+        assert_eq(ev[1].target, CIV)
+        assert_eq(ev[1].args[3], 'outgoing')
+        assert_eq(ev[2].target, OTHER)
+        assert_eq(ev[2].args[3], 'missed')
+        assert_eq(ev[2].args[1].number, '5550002')
     end)
     it('contact details only go to someone close by', function()
         Mock.fireNet('qb-phone:server:GiveContactDetails', CIV, FAR)

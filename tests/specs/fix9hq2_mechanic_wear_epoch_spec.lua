@@ -66,6 +66,7 @@ Config.AdvancedSystems.Enabled = true
 Config.AdvancedSystems.Alignment.Enabled = true
 Config.AdvancedSystems.PitBays.Enabled = true
 Config.AdvancedSystems.PitBays.ServiceSpeedMultiplier = 0.75
+load_resource('[pfscripts]/pf-mechanicjob/shared/performance_parts.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/main.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/repair.lua')
 load_resource('[pfscripts]/pf-mechanicjob/server/consumables.lua')

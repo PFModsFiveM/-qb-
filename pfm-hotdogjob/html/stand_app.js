@@ -20,6 +20,15 @@
                 body.appendChild(h('div.pf-grid',
                     stat('Hot dogs sold', String(d.sold)), stat('Earned this shift', money(d.earned)),
                     stat('Sale streak', String(d.streak)), stat('Reputation', `${d.reputation} / ${d.maxReputation}`)));
+                const st = d.stock || {};
+                if (d.standOut) {
+                    body.appendChild(h('div.pf-card',
+                        h('div.pf-small.pf-muted', `Ready to sell (level ${Number(d.level) || 1})`),
+                        h('div.pf-row',
+                            h('span.pf-badge.ok', `Perfect ${Number(st.exotic) || 0}`),
+                            h('span.pf-badge.accent', `Rare ${Number(st.rare) || 0}`),
+                            h('span.pf-badge', `Common ${Number(st.common) || 0}`))));
+                }
                 const pct = Math.max(0, Math.min(100, (d.reputation / Math.max(1, d.maxReputation)) * 100));
                 body.appendChild(h('div.pf-card', h('div.pf-small.pf-muted', 'Reputation raises your prices and the quality customers expect'),
                     h('div', { style: { height: '8px', background: 'var(--pf-bg-3)', borderRadius: '6px', marginTop: '8px' } },

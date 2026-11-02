@@ -80,11 +80,11 @@ function RefreshCryptoTransactions(data) {
     if (data.CryptoTransactions.length > 0) {
         data.CryptoTransactions = (data.CryptoTransactions).reverse();
         $.each(data.CryptoTransactions, function(i, transaction){
-            var Title = "<span style='color: green; font-weight: bolder;'>"+transaction.TransactionTitle+"</span>"
+            var Title = "<span style='color: green; font-weight: bolder;'>"+QB.Phone.Esc(transaction.TransactionTitle)+"</span>"
             if (transaction.TransactionTitle == "Sold" || transaction.TransactionTitle == "Transferred") {
-                Title = "<span style='color: red; font-weight: bolder;'>"+transaction.TransactionTitle+"</span>"
+                Title = "<span style='color: red; font-weight: bolder;'>"+QB.Phone.Esc(transaction.TransactionTitle)+"</span>"
             }
-            var Element = '<div class="cryptotab-transactions-block"> <i class="fas fa-exchange-alt"></i> <span class="cryptotab-transactions-block-title">'+Title+'</span> <span class="cryptotab-transactions-block-happening">'+transaction.TransactionMessage+'</span></div>';
+            var Element = '<div class="cryptotab-transactions-block"> <i class="fas fa-exchange-alt"></i> <span class="cryptotab-transactions-block-title">'+Title+'</span> <span class="cryptotab-transactions-block-happening">'+QB.Phone.Esc(transaction.TransactionMessage)+'</span></div>';
 
             $(".cryptotab-transactions-list").append(Element);
         });
@@ -161,7 +161,7 @@ $(document).on('click', '#buy-crypto', function(e){
                     UpdateCryptoData(CryptoData)
                     CloseCryptoPage()
                     QB.Phone.Data.PlayerData.money.bank = parseInt(QB.Phone.Data.PlayerData.money.bank) - parseInt(Price);
-                    QB.Phone.Notifications.Add("fas fa-university", "QBank", "&#36; "+Price+",- has been withdrawn from your balance!", "#badc58", 2500);
+                    QB.Phone.Notifications.Add("fas fa-university", "QBank", "$ "+Price+",- has been withdrawn from your balance!", "#badc58", 2500);
                 } else {
                     QB.Phone.Notifications.Add("fas fa-chart-pie", "Crypto", "You don't have enough money..", "#badc58", 1500);
                 }
@@ -192,7 +192,7 @@ $(document).on('click', '#sell-crypto', function(e){
                     UpdateCryptoData(CryptoData)
                     CloseCryptoPage()
                     QB.Phone.Data.PlayerData.money.bank = parseInt(QB.Phone.Data.PlayerData.money.bank) + parseInt(Price);
-                    QB.Phone.Notifications.Add("fas fa-university", "QBank", "&#36; "+Price+",- has been added to your balance!", "#badc58", 2500);
+                    QB.Phone.Notifications.Add("fas fa-university", "QBank", "$ "+Price+",- has been added to your balance!", "#badc58", 2500);
                 } else {
                     QB.Phone.Notifications.Add("fas fa-chart-pie", "Crypto", "You don't have enough Qbits..", "#badc58", 1500);
                 }

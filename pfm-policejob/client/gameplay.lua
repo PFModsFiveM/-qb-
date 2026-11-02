@@ -3,7 +3,8 @@
 local resisting = false
 
 -- ══ Cuff resistance (suspect side) ═══════════════════════════════
-RegisterNetEvent('police:client:ResistCuff', function(_, window, pressesNeeded)
+-- The answer carries the attempt's nonce; the server checks the timing and rolls the outcome.
+RegisterNetEvent('police:client:ResistCuff', function(_, window, pressesNeeded, nonce)
     if resisting then return end
     local ped = PlayerPedId()
 
@@ -13,7 +14,7 @@ RegisterNetEvent('police:client:ResistCuff', function(_, window, pressesNeeded)
         or IsPedRagdoll(ped)
         or IsPedInAnyVehicle(ped, false)
     if surrendered then
-        TriggerServerEvent('police:server:ResistResult', false)
+        TriggerServerEvent('police:server:ResistResult', nonce, false)
         return
     end
 
@@ -32,14 +33,15 @@ RegisterNetEvent('police:client:ResistCuff', function(_, window, pressesNeeded)
         end
         exports['pfm-core']:HideText()
         resisting = false
-        local success = presses >= pressesNeeded
-        if success then
-            -- shake loose
-            local myPed = PlayerPedId()
-            SetPedToRagdoll(myPed, 750, 750, 0, false, false, false)
-        end
-        TriggerServerEvent('police:server:ResistResult', success)
+        TriggerServerEvent('police:server:ResistResult', nonce, presses >= pressesNeeded)
     end)
+end)
+
+-- The server's verdict: shake loose when the suspect broke free.
+RegisterNetEvent('police:client:ResistOutcome', function(broke)
+    if broke then
+        SetPedToRagdoll(PlayerPedId(), 750, 750, 0, false, false, false)
+    end
 end)
 
 -- ══ Tackle ═══════════════════════════════════════════════════════

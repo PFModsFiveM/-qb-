@@ -49,7 +49,7 @@ local stashId
 BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
-    Mock.players, stashes = {}, {}
+    Mock.players, Mock.coords, stashes = {}, {}, {}
     loadGruppe6()
     Mock.newPlayer(GUARD).PlayerData.job = { name = 'gruppe6', onduty = true }
     Mock.newPlayer(OTHER)
@@ -57,6 +57,7 @@ BeforeEach = function()
     Mock.fireNet('pf-jobs:gruppe6:acceptContract', GUARD, { contractId = 0 })
     local start = Mock.clientEventsNamed('pf-jobs:gruppe6:startContract')
     local loc = start[#start].args[1].pickupSequence[1]
+    Mock.coords[GUARD] = start[#start].args[1].locationPool[loc] -- the guard stands at the stop
     Mock.fireNet('pf-jobs:gruppe6:openPickupStash', GUARD, loc, 1)
     stashId = ('pf_gruppe6_pickup_%s_%s'):format(loc, 1)
 end

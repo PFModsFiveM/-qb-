@@ -272,41 +272,28 @@ local function TakeHotdogStand()
     AnimLoop()
 end
 
-local function FinishMinigame(faults)
-    local Quality = 'common'
-    if faults == 0 then
-        Quality = 'exotic'
-    elseif faults == 1 then
-        Quality = 'rare'
-    end
-    if Config.Stock[Quality].Current + 1 <= Config.Stock[Quality].Max[Config.MyLevel] then
-        TriggerServerEvent('qb-hotdogjob:server:UpdateReputation', Quality)
-        if Config.MyLevel == 1 then
-            QBCore.Functions.Notify(Lang:t('success.made_hotdog', { value = Config.Stock[Quality].Label }), 'success')
-            Config.Stock[Quality].Current = Config.Stock[Quality].Current + 1
-        else
-            local Luck = math.random(1, 2)
-            local LuckyNumber = math.random(1, 2)
-            local LuckyAmount = math.random(1, Config.MyLevel)
-            if Luck == LuckyNumber then
-                QBCore.Functions.Notify(Lang:t('success.made_luck_hotdog', { value = LuckyAmount, value2 = Config.Stock[Quality].Label }), 'success')
-                Config.Stock[Quality].Current = Config.Stock[Quality].Current + LuckyAmount
-            else
-                QBCore.Functions.Notify(Lang:t('success.made_hotdog', { value = Config.Stock[Quality].Label }), 'success')
-                Config.Stock[Quality].Current = Config.Stock[Quality].Current + 1
-            end
-        end
-    else
-        QBCore.Functions.Notify(Lang:t('error.no_more', { value = Config.Stock[Quality].Label }), 'error')
-    end
-    PreparingFood = false
-end
-
+-- A cook is a challenge the server issues and judges (pfm-minigames): the server counts the
+-- faults, decides the quality and keeps the stock; this client only plays it.
 local function StartHotdogMinigame()
-    PrepareAnim()
-    local result = exports['pfm-minigames']:KeyMinigame(10)
-    if result.quit then return end
-    FinishMinigame(result.faults)
+    if PreparingFood then return end
+    PreparingFood = true
+    QBCore.Functions.TriggerCallback('qb-hotdogjob:server:startCook', function(challenge, why)
+        if type(challenge) ~= 'table' then
+            PreparingFood = false
+            if why == 'too_far' then
+                QBCore.Functions.Notify(Lang:t('error.too_far'), 'error')
+            elseif why ~= 'busy' then
+                QBCore.Functions.Notify('The grill is not ready right now.', 'error')
+            end
+            return
+        end
+        CreateThread(function()
+            PrepareAnim()
+            exports['pfm-minigames']:PlayChallenge(challenge)
+            TriggerServerEvent('qb-hotdogjob:server:finishCook', challenge.id)
+            PreparingFood = false
+        end)
+    end)
 end
 
 local function HotdogLoop()
@@ -400,6 +387,21 @@ local function HotdogLoop()
     end)
 end
 
+-- The server only lets a player cook and sell next to the stand it registered (by network id).
+local function RegisterStand()
+    local stand = StandObject
+    CreateThread(function()
+        for _ = 1, 50 do
+            if not stand or not DoesEntityExist(stand) then return end
+            if NetworkGetEntityIsNetworked(stand) then
+                TriggerServerEvent('qb-hotdogjob:server:standPlaced', NetworkGetNetworkIdFromEntity(stand))
+                return
+            end
+            Wait(100)
+        end
+    end)
+end
+
 local function StartWorking()
     QBCore.Functions.TriggerCallback('qb-hotdogjob:server:HasMoney', function(HasMoney)
         if HasMoney then
@@ -411,6 +413,7 @@ local function StartWorking()
                 PlaceObjectOnGroundProperly(StandObject)
                 SetEntityHeading(StandObject, SpawnCoords.w - 90)
                 FreezeEntityPosition(StandObject, true)
+                RegisterStand()
                 exports['pfm-target']:AddTargetEntity(StandObject, {
                     options = {
                         {
@@ -472,6 +475,7 @@ local function StartWorking()
                 PlaceObjectOnGroundProperly(StandObject)
                 SetEntityHeading(StandObject, SpawnCoords.w - 90)
                 FreezeEntityPosition(StandObject, true)
+                RegisterStand()
                 HotdogLoop()
                 UpdateUI()
                 CheckLoop()
@@ -515,6 +519,28 @@ local function StopWorking()
     end
 end
 
+-- Lets the customer go and remembers them (the server also refuses a customer it served recently).
+local function ReleaseCustomer(ped, stopSelling)
+    FreezeEntityPosition(ped, false)
+    SetPedKeepTask(ped, false)
+    SetEntityAsNoLongerNeeded(ped)
+    ClearPedTasksImmediately(ped)
+    SellingData.RecentPeds[#SellingData.RecentPeds + 1] = ped
+    SellingData.HasTarget = false
+    SellingData.Hotdog = nil
+    if stopSelling then
+        SellingData.Enabled = false
+        SellingData.Target = nil
+    end
+end
+
+-- What this customer buys is the server's offer (quality, amount and price); the client shows it.
+local function AskOffer(ped)
+    local p = promise.new()
+    QBCore.Functions.TriggerCallback('qb-hotdogjob:server:offer', function(offer) p:resolve(offer or false) end, NetworkGetNetworkIdFromEntity(ped))
+    return Citizen.Await(p)
+end
+
 local function SellToPed(ped)
     SellingData.HasTarget = true
 
@@ -527,29 +553,14 @@ local function SellToPed(ped)
         end
     end
 
+    if GetAvailableHotdog() == nil then
+        ReleaseCustomer(ped, true)
+        QBCore.Functions.Notify(Lang:t('error.no_dogs'), 'error')
+        return
+    end
+
     SetEntityAsNoLongerNeeded(ped)
     ClearPedTasks(ped)
-
-    local SellingPrice
-    local HotdogsForSale
-
-    SellingData.Hotdog = GetAvailableHotdog()
-
-    if SellingData.Hotdog ~= nil then
-        if Config.Stock[SellingData.Hotdog].Current > 1 then
-            if Config.Stock[SellingData.Hotdog].Current >= 3 then
-                HotdogsForSale = math.random(1, 3)
-            else
-                HotdogsForSale = math.random(1, Config.Stock[SellingData.Hotdog].Current)
-            end
-        elseif Config.Stock[SellingData.Hotdog].Current == 1 then
-            HotdogsForSale = 1
-        end
-
-        if SellingData.Hotdog ~= nil then
-            SellingPrice = math.random(Config.Stock[SellingData.Hotdog].Price[Config.MyLevel].min, Config.Stock[SellingData.Hotdog].Price[Config.MyLevel].max)
-        end
-    end
 
     local coords = GetOffsetFromEntityInWorldCoords(StandObject, OffsetData.x, OffsetData.y, OffsetData.z)
     local pedCoords = GetEntityCoords(ped)
@@ -566,17 +577,9 @@ local function SellToPed(ped)
         TaskGoStraightToCoord(ped, coords, 1.2, -1, 0.0, 0.0)
         pedDist = #(coords - pedCoords)
         if PlayerDist > 10.0 then
-            SellingData.HasTarget = false
-            SetPedKeepTask(ped, false)
-            SetEntityAsNoLongerNeeded(ped)
-            ClearPedTasksImmediately(ped)
-            SellingData.RecentPeds[#SellingData.RecentPeds + 1] = ped
-            SellingData.Enabled = false
-            SellingData.Target = nil
-            SellingData.HasTarget = false
-            SellingData.Hotdog = nil
+            ReleaseCustomer(ped, true)
             QBCore.Functions.Notify(Lang:t('error.too_far'), 'error')
-            break
+            return
         end
         Wait(100)
     end
@@ -589,6 +592,28 @@ local function SellToPed(ped)
     TaskStartScenarioInPlace(ped, 'WORLD_HUMAN_STAND_IMPATIENT_UPRIGHT', 0, false)
     SellingData.Target = ped
 
+    local offer = AskOffer(ped)
+    if type(offer) ~= 'table' or offer.empty then
+        ReleaseCustomer(ped, type(offer) == 'table' and offer.empty)
+        if type(offer) == 'table' and offer.empty then QBCore.Functions.Notify(Lang:t('error.no_dogs'), 'error') end
+        return
+    end
+    SellingData.Hotdog = offer.quality
+    local netId = NetworkGetNetworkIdFromEntity(ped)
+
+    local function accept(entity)
+        QBCore.Functions.Notify(Lang:t('success.sold_hotdogs', { value = offer.amount, value2 = offer.total }), 'success')
+        TriggerServerEvent('qb-hotdogjob:server:Sell', netId)
+        LoadAnim('mp_common')
+        TaskPlayAnim(PlayerPedId(), 'mp_common', 'givetake1_b', 8.0, 8.0, 1100, 48, 0.0, 0, 0, 0)
+        ReleaseCustomer(entity, false)
+    end
+    local function decline(entity)
+        QBCore.Functions.Notify(Lang:t('error.cust_refused'), 'error')
+        TriggerServerEvent('qb-hotdogjob:server:decline')
+        ReleaseCustomer(entity, false)
+    end
+
     while pedDist < OffsetData.Distance and SellingData.HasTarget do
         local playercoords = GetEntityCoords(PlayerPedId())
         coords = GetOffsetFromEntityInWorldCoords(StandObject, OffsetData.x, OffsetData.y, OffsetData.z)
@@ -596,161 +621,65 @@ local function SellToPed(ped)
         pedCoords = GetEntityCoords(ped)
         pedDist = #(coords - pedCoords)
 
-        if PlayerDist < 4 then
-            if SellingData.Hotdog ~= nil then
-                if HotdogsForSale == 0 and SellingPrice == 0 then
-                    if Config.Stock[SellingData.Hotdog].Current > 1 then
-                        if Config.Stock[SellingData.Hotdog].Current >= 3 then
-                            HotdogsForSale = math.random(1, 3)
-                        else
-                            HotdogsForSale = math.random(1, Config.Stock[SellingData.Hotdog].Current)
-                        end
-                    elseif Config.Stock[SellingData.Hotdog].Current == 1 then
-                        HotdogsForSale = 1
-                    end
-
-                    if SellingData.Hotdog ~= nil then
-                        SellingPrice = math.random(Config.Stock[SellingData.Hotdog].Price.min, Config.Stock[SellingData.Hotdog].Price.max)
-                    end
-                end
-
-                if Config.UseTarget then
-                    if not zoneMade then
-                        zoneMade = true
-                        exports['pfm-target']:AddEntityZone('sellingDogPed', ped, {
-                            name = 'sellingDogPed',
-                            debugPoly = false,
-                        }, {
-                            options = {
-                                {
-                                    icon = 'fas fa-hand-holding-dollar',
-                                    label = Lang:t('info.sell_dogs_target', { value = HotdogsForSale, value2 = (HotdogsForSale * SellingPrice) }),
-                                    action = function(entity)
-                                        QBCore.Functions.Notify(Lang:t('success.sold_hotdogs', { value = HotdogsForSale, value2 = (HotdogsForSale * SellingPrice) }), 'success')
-                                        TriggerServerEvent('qb-hotdogjob:server:Sell', pedCoords, HotdogsForSale, SellingPrice)
-                                        SellingData.HasTarget = false
-                                        LoadAnim('mp_common')
-                                        TaskPlayAnim(PlayerPedId(), 'mp_common', 'givetake1_b', 8.0, 8.0, 1100, 48, 0.0, 0, 0, 0)
-                                        FreezeEntityPosition(entity, false)
-                                        SetPedKeepTask(entity, false)
-                                        SetEntityAsNoLongerNeeded(entity)
-                                        ClearPedTasksImmediately(entity)
-                                        SellingData.RecentPeds[#SellingData.RecentPeds + 1] = entity
-                                        Config.Stock[SellingData.Hotdog].Current = Config.Stock[SellingData.Hotdog].Current - HotdogsForSale
-                                        SellingData.Hotdog = nil
-                                        exports['pfm-target']:RemoveZone('sellingDogPed')
-                                        zoneMade = false
-                                    end,
-                                },
-                                {
-                                    icon = 'fas fa-x',
-                                    label = 'Decline offer',
-                                    action = function(entity)
-                                        QBCore.Functions.Notify(Lang:t('error.cust_refused'), 'error')
-                                        SellingData.HasTarget = false
-                                        FreezeEntityPosition(entity, false)
-                                        SetPedKeepTask(entity, false)
-                                        SetEntityAsNoLongerNeeded(entity)
-                                        ClearPedTasksImmediately(entity)
-                                        SellingData.RecentPeds[#SellingData.RecentPeds + 1] = entity
-                                        SellingData.Hotdog = nil
-                                        exports['pfm-target']:RemoveZone('sellingDogPed')
-                                        zoneMade = false
-                                    end,
-                                },
-                            },
-                            distance = 1.5,
-                        })
-                    end
-                else
-                    DrawText3Ds(pedCoords.x, pedCoords.y, pedCoords.z, Lang:t('info.sell_dogs', { value = HotdogsForSale, value2 = (HotdogsForSale * SellingPrice) }))
-                    if IsControlJustPressed(0, 161) or IsDisabledControlJustPressed(0, 161) then
-                        QBCore.Functions.Notify(Lang:t('success.sold_hotdogs', { value = HotdogsForSale, value2 = (HotdogsForSale * SellingPrice) }), 'success')
-                        TriggerServerEvent('qb-hotdogjob:server:Sell', pedCoords, HotdogsForSale, SellingPrice)
-                        SellingData.HasTarget = false
-                        local Myped = PlayerPedId()
-
-                        local Selling = true
-                        local HotdogObject = nil
-                        local AnimPlayed = false
-
-                        while Selling do
-                            if not IsEntityPlayingAnim(Myped, 'mp_common', 'givetake1_b', 3) then
-                                LoadAnim('mp_common')
-                                if not AnimPlayed then
-                                    TaskPlayAnim(Myped, 'mp_common', 'givetake1_b', 8.0, 8.0, 1100, 48, 0.0, 0, 0, 0)
-                                    AnimPlayed = true
-                                end
-                                if HotdogObject == nil then
-                                    HotdogObject = CreateObject(`prop_cs_hotdog_01`, 0, 0, 0, true, true, true)
-                                end
-                                AttachEntityToEntity(HotdogObject, Myped, GetPedBoneIndex(Myped, 57005), 0.12, 0.0, -0.05, 220.0, 120.0, 0.0, true, true, false, true, 1, true)
-                                SetTimeout(1250, function()
-                                    Selling = false
-                                end)
-                            end
-
-                            Wait(0)
-                        end
-
-                        if HotdogObject ~= nil then
-                            DetachEntity(HotdogObject, 1, 1)
-                            DeleteEntity(HotdogObject)
-                        end
-
-                        FreezeEntityPosition(ped, false)
-                        SetPedKeepTask(ped, false)
-                        SetEntityAsNoLongerNeeded(ped)
-                        ClearPedTasksImmediately(ped)
-                        SellingData.RecentPeds[#SellingData.RecentPeds + 1] = ped
-                        Config.Stock[SellingData.Hotdog].Current = Config.Stock[SellingData.Hotdog].Current - HotdogsForSale
-                        SellingData.Hotdog = nil
-                        break
-                    end
-
-                    if IsControlJustPressed(0, 162) or IsDisabledControlJustPressed(0, 162) then
-                        QBCore.Functions.Notify(Lang:t('error.cust_refused'), 'error')
-                        SellingData.HasTarget = false
-
-                        FreezeEntityPosition(ped, false)
-                        SetPedKeepTask(ped, false)
-                        SetEntityAsNoLongerNeeded(ped)
-                        ClearPedTasksImmediately(ped)
-                        SellingData.RecentPeds[#SellingData.RecentPeds + 1] = ped
-                        SellingData.Hotdog = nil
-                        break
-                    end
-                end
-            else
-                SellingData.HasTarget = false
-                FreezeEntityPosition(ped, false)
-                SetPedKeepTask(ped, false)
-                SetEntityAsNoLongerNeeded(ped)
-                ClearPedTasksImmediately(ped)
-                SellingData.RecentPeds[#SellingData.RecentPeds + 1] = ped
-                SellingData.Enabled = false
-                SellingData.Target = nil
-                SellingData.HasTarget = false
-                SellingData.Hotdog = nil
-                QBCore.Functions.Notify(Lang:t('error.no_dogs'), 'error')
-                break
-            end
-        else
-            SellingData.HasTarget = false
-            FreezeEntityPosition(ped, false)
-            SetPedKeepTask(ped, false)
-            SetEntityAsNoLongerNeeded(ped)
-            ClearPedTasksImmediately(ped)
-            SellingData.RecentPeds[#SellingData.RecentPeds + 1] = ped
-            SellingData.Enabled = false
-            SellingData.Target = nil
-            SellingData.HasTarget = false
-            SellingData.Hotdog = nil
+        if PlayerDist >= 4 then
+            ReleaseCustomer(ped, true)
             QBCore.Functions.Notify(Lang:t('error.too_far'), 'error')
             break
         end
 
+        if Config.UseTarget then
+            if not zoneMade then
+                zoneMade = true
+                exports['pfm-target']:AddEntityZone('sellingDogPed', ped, {
+                    name = 'sellingDogPed',
+                    debugPoly = false,
+                }, {
+                    options = {
+                        {
+                            icon = 'fas fa-hand-holding-dollar',
+                            label = Lang:t('info.sell_dogs_target', { value = offer.amount, value2 = offer.total }),
+                            action = function(entity)
+                                accept(entity)
+                                exports['pfm-target']:RemoveZone('sellingDogPed')
+                                zoneMade = false
+                            end,
+                        },
+                        {
+                            icon = 'fas fa-x',
+                            label = 'Decline offer',
+                            action = function(entity)
+                                decline(entity)
+                                exports['pfm-target']:RemoveZone('sellingDogPed')
+                                zoneMade = false
+                            end,
+                        },
+                    },
+                    distance = 1.5,
+                })
+            end
+        else
+            DrawText3Ds(pedCoords.x, pedCoords.y, pedCoords.z, Lang:t('info.sell_dogs', { value = offer.amount, value2 = offer.total }))
+            if IsControlJustPressed(0, 161) or IsDisabledControlJustPressed(0, 161) then
+                local Myped = PlayerPedId()
+                local HotdogObject = CreateObject(`prop_cs_hotdog_01`, 0, 0, 0, true, true, true)
+                AttachEntityToEntity(HotdogObject, Myped, GetPedBoneIndex(Myped, 57005), 0.12, 0.0, -0.05, 220.0, 120.0, 0.0, true, true, false, true, 1, true)
+                accept(ped)
+                Wait(1250)
+                DetachEntity(HotdogObject, 1, 1)
+                DeleteEntity(HotdogObject)
+                break
+            end
+            if IsControlJustPressed(0, 162) or IsDisabledControlJustPressed(0, 162) then
+                decline(ped)
+                break
+            end
+        end
+
         Wait(3)
+    end
+    if zoneMade and not SellingData.HasTarget then
+        exports['pfm-target']:RemoveZone('sellingDogPed')
+        zoneMade = false
     end
 end
 
@@ -812,6 +741,12 @@ RegisterNetEvent('QBCore:Client:OnPlayerUpdated', function(key, val)
         PlayerData.job = JobInfo
         UpdateBlip()
     end
+end)
+
+-- the stand's stock is the server's (cooked and sold there); the UI shows it
+RegisterNetEvent('qb-hotdogjob:client:UpdateStock', function(stock)
+    if type(stock) ~= 'table' then return end
+    for quality, v in pairs(Config.Stock) do v.Current = math.max(0, math.floor(tonumber(stock[quality]) or 0)) end
 end)
 
 RegisterNetEvent('qb-hotdogjob:client:UpdateReputation', function(JobRep)

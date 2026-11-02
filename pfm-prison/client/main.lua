@@ -167,25 +167,43 @@ end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
 	inJail = false
+	jailTime = 0
 	currentJob = nil
 	RemoveBlip(currentBlip)
 end)
 
-RegisterNetEvent('prison:client:Enter', function(time)
+local function ClearPrisonBlips()
+	RemoveBlip(currentBlip)
+	RemoveBlip(CellsBlip)
+	CellsBlip = nil
+	RemoveBlip(TimeBlip)
+	TimeBlip = nil
+	RemoveBlip(ShopBlip)
+	ShopBlip = nil
+end
+
+-- Taken to a cell. Sent by the server (jailed, brought back), or raised on this client after a load
+-- or a respawn in the prison infirmary. It only shows the sentence: the server keeps the time.
+local EnterAllowed = { ['pfm-prison'] = true, ['pfm-policejob'] = true, ['pf-ambulancejob'] = true, ['qb-policejob'] = true, ['qb-ambulancejob'] = true }
+RegisterNetEvent('prison:client:Enter', function(time, job, location, returned)
 	local invokingResource = GetInvokingResource()
-	if invokingResource and invokingResource ~= 'qb-policejob' and invokingResource ~= 'qb-ambulancejob' and invokingResource ~= GetCurrentResourceName() then
-		-- Use QBCore.Debug here for a quick and easy way to print to the console to grab your attention with this message
-		TriggerServerEvent('QBCore:DebugSomething', { ('Player with source %s tried to execute prison:client:Enter manually or from another resource which is not authorized to call this, invokedResource: %s'):format(GetPlayerServerId(PlayerId()), invokingResource) })
+	if invokingResource and not EnterAllowed[invokingResource] and invokingResource ~= GetCurrentResourceName() then
 		return
 	end
+	time = tonumber(time) or 0
+	if time <= 0 then return end
+	local firstEntry = not inJail
 
-	QBCore.Functions.Notify(Lang:t('error.injail', { Time = time }), 'error')
-
-	TriggerEvent('chat:addMessage', {
-		color = { 3, 132, 252 },
-		multiline = true,
-		args = { 'SYSTEM', Lang:t('info.seized_property') }
-	})
+	if not returned then
+		QBCore.Functions.Notify(Lang:t('error.injail', { Time = time }), 'error')
+		if firstEntry then
+			TriggerEvent('chat:addMessage', {
+				color = { 3, 132, 252 },
+				multiline = true,
+				args = { 'SYSTEM', Lang:t('info.seized_property') }
+			})
+		end
+	end
 	DoScreenFadeOut(500)
 	while not IsScreenFadedOut() do
 		Wait(10)
@@ -197,107 +215,85 @@ RegisterNetEvent('prison:client:Enter', function(time)
 
 	inJail = true
 	jailTime = time
-	local tempJobs = {}
-	local i = 1
-	for k in pairs(Config.Locations.jobs) do
-		tempJobs[i] = k
-		i += 1
+	if job and Config.Locations.jobs[job] and tonumber(location) then
+		currentJob, currentLocation = job, tonumber(location)
 	end
-	currentJob = tempJobs[math.random(1, #tempJobs)]
-	CreateJobBlip(true)
-	ApplyClothes()
-	TriggerServerEvent('prison:server:SetJailStatus', jailTime)
-	TriggerServerEvent('prison:server:SaveJailItems', jailTime)
-	TriggerServerEvent('InteractSound_SV:PlayOnSource', 'jail', 0.5)
+	if currentJob and Config.Locations.jobs[currentJob] then
+		CreateJobBlip(true)
+	else
+		TriggerServerEvent('prison:server:RequestState')
+	end
+	if firstEntry then
+		ApplyClothes()
+		TriggerServerEvent('InteractSound_SV:PlayOnSource', 'jail', 0.5)
+	end
 	CreateCellsBlip()
 	Wait(2000)
 	DoScreenFadeIn(1000)
-	QBCore.Functions.Notify(Lang:t('error.do_some_work', { currentjob = Config.Jobs[currentJob] }), 'error')
+	if firstEntry and currentJob then
+		QBCore.Functions.Notify(Lang:t('error.do_some_work', { currentjob = Config.Jobs[currentJob] }), 'error')
+	end
 end)
 
+-- The server's job spot and time left.
+RegisterNetEvent('prison:client:SetJob', function(job, location, left)
+	if job and Config.Locations.jobs[job] and tonumber(location) then
+		currentJob, currentLocation = job, tonumber(location)
+		if inJail then CreateJobBlip(true) end
+	end
+	if tonumber(left) then jailTime = tonumber(left) end
+end)
+
+RegisterNetEvent('prison:client:UpdateTime', function(left)
+	if tonumber(left) then jailTime = tonumber(left) end
+end)
+
+-- The desk: the time left is the server's; a served sentence is released by the server.
 RegisterNetEvent('prison:client:Leave', function()
 	if jailTime > 0 then
 		QBCore.Functions.Notify(Lang:t('info.timeleft', { JAILTIME = jailTime }))
-	else
-		jailTime = 0
-		TriggerServerEvent('prison:server:SetJailStatus', 0)
-		TriggerServerEvent('prison:server:GiveJailItems')
-		TriggerEvent('chat:addMessage', {
-			color = { 3, 132, 252 },
-			multiline = true,
-			args = { 'SYSTEM', Lang:t('info.received_property') }
-		})
-		inJail = false
-		RemoveBlip(currentBlip)
-		RemoveBlip(CellsBlip)
-		CellsBlip = nil
-		RemoveBlip(TimeBlip)
-		TimeBlip = nil
-		RemoveBlip(ShopBlip)
-		ShopBlip = nil
-		QBCore.Functions.Notify(Lang:t('success.free_'))
-		DoScreenFadeOut(500)
-		while not IsScreenFadedOut() do
-			Wait(10)
-		end
-		TriggerServerEvent('qb-clothes:loadPlayerSkin')
-		SetEntityCoords(PlayerPedId(), Config.Locations['outside'].x, Config.Locations['outside'].y, Config.Locations['outside'].z, false, false, false, false)
-		SetEntityHeading(PlayerPedId(), Config.Locations['outside'].w)
-		Wait(500)
-		DoScreenFadeIn(1000)
 	end
+	TriggerServerEvent('prison:server:RequestState')
 end)
 
-RegisterNetEvent('prison:client:UnjailPerson', function()
-	if jailTime > 0 then
-		TriggerServerEvent('prison:server:SetJailStatus', 0)
-		TriggerServerEvent('prison:server:GiveJailItems')
-		TriggerEvent('chat:addMessage', {
-			color = { 3, 132, 252 },
-			multiline = true,
-			args = { 'SYSTEM', Lang:t('info.received_property') }
-		})
-		inJail = false
-		RemoveBlip(currentBlip)
-		RemoveBlip(CellsBlip)
-		CellsBlip = nil
-		RemoveBlip(TimeBlip)
-		TimeBlip = nil
-		RemoveBlip(ShopBlip)
-		ShopBlip = nil
-		QBCore.Functions.Notify(Lang:t('success.free_'))
-		DoScreenFadeOut(500)
-		while not IsScreenFadedOut() do
-			Wait(10)
-		end
-		TriggerServerEvent('qb-clothes:loadPlayerSkin')
-		SetEntityCoords(PlayerPedId(), Config.Locations['outside'].x, Config.Locations['outside'].y, Config.Locations['outside'].z, false, false, false, false)
-		SetEntityHeading(PlayerPedId(), Config.Locations['outside'].w)
-		Wait(500)
-		DoScreenFadeIn(1000)
+-- Released by the server (time served, unjailed): the belongings are back; out of the gate.
+RegisterNetEvent('prison:client:Released', function()
+	local wasInJail = inJail
+	jailTime = 0
+	inJail = false
+	currentJob = nil
+	ClearPrisonBlips()
+	TriggerEvent('chat:addMessage', {
+		color = { 3, 132, 252 },
+		multiline = true,
+		args = { 'SYSTEM', Lang:t('info.received_property') }
+	})
+	QBCore.Functions.Notify(Lang:t('success.free_'))
+	if not wasInJail then return end
+	DoScreenFadeOut(500)
+	while not IsScreenFadedOut() do
+		Wait(10)
 	end
+	TriggerServerEvent('qb-clothes:loadPlayerSkin')
+	SetEntityCoords(PlayerPedId(), Config.Locations['outside'].x, Config.Locations['outside'].y, Config.Locations['outside'].z, false, false, false, false)
+	SetEntityHeading(PlayerPedId(), Config.Locations['outside'].w)
+	Wait(500)
+	DoScreenFadeIn(1000)
+end)
+
+-- The server saw a real escape (through a hacked gate): the sentence ended, the belongings are lost.
+RegisterNetEvent('prison:client:Escaped', function()
+	inJail = false
+	jailTime = 0
+	currentJob = nil
+	ClearPrisonBlips()
+	QBCore.Functions.Notify(Lang:t('error.escaped'), 'error')
 end)
 
 -- Threads
 
 CreateThread(function()
 	TriggerEvent('prison:client:JailAlarm', false)
-	while true do
-		local sleep = 1000
-		if jailTime > 0 and inJail then
-			Wait(1000 * 60)
-			sleep = 0
-			if jailTime > 0 and inJail then
-				jailTime -= 1
-				if jailTime <= 0 then
-					jailTime = 0
-					QBCore.Functions.Notify(Lang:t('success.timesup'), 'success', 10000)
-				end
-				TriggerServerEvent('prison:server:SetJailStatus', jailTime)
-			end
-		end
-		Wait(sleep)
-	end
 end)
 
 CreateThread(function()

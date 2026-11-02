@@ -37,6 +37,50 @@ local function validCustomer(src, customerNetId)
     return dist <= (Config.MaxCustomerDistance or 10.0)
 end
 
+-- Corner sales whose pay the bank had not settled: [citizenid] = { { key, price, item, amount } }.
+-- The drugs stay sold and the pay is asked again under the same key until the ledger settles it;
+-- only a clear failure hands the drugs back (an unclear one may still be paid by the ledger's recovery).
+local PendingSales = {}
+local SALE_RETRY_MS, SALE_RETRIES = 30000, 20
+
+local function payCornerSale(src, sale, retry)
+    local ok, res = PFPayout.Pay(src, 'cash', sale.price, { key = sale.key, reason = 'qb-drugs:server:sellCornerDrugs', kind = 'sale', quiet = true })
+    if ok then return 'paid' end
+    -- on a retry a bank that does not answer says nothing about the key that came back unclear
+    if retry and (res.error == 'bank_unavailable' or res.error == 'ledger_unavailable') then return 'pending' end
+    if PFPayout.IsClearFailure(res) then return 'failed' end
+    return 'pending'
+end
+
+-- Asks again for every waiting sale of src's character; a failed one gives the drugs back.
+local function settleCornerSales(src)
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return end
+    local cid = Player.PlayerData.citizenid
+    local list = PendingSales[cid]
+    if not list then return end
+    local keep = {}
+    for _, sale in ipairs(list) do
+        local res = payCornerSale(src, sale, true)
+        if res == 'failed' then
+            exports['pfm-inventory']:AddItem(src, sale.item, sale.amount, false, false, 'qb-drugs:corner-refund')
+            TriggerClientEvent('QBCore:Notify', src, 'A buyer\'s payment did not go through. You got the product back.', 'error')
+        elseif res == 'pending' then
+            keep[#keep + 1] = sale
+        end
+    end
+    PendingSales[cid] = #keep > 0 and keep or nil
+end
+
+local function retryCornerSales(src, cid, left)
+    SetTimeout(SALE_RETRY_MS, function()
+        local P = exports['pfm-core']:GetPlayer(src)
+        if not P or P.PlayerData.citizenid ~= cid or not PendingSales[cid] then return end
+        settleCornerSales(src)
+        if PendingSales[cid] and left > 1 then retryCornerSales(src, cid, left - 1) end
+    end)
+end
+
 local function getAvailableDrugs(source)
     local AvailableDrugs = {}
     local Player = exports['pfm-core']:GetPlayer(source)
@@ -83,6 +127,7 @@ RegisterNetEvent('qb-drugs:server:sellCornerDrugs', function(drugType, amount, p
     if not availableDrugs or not Player then return end
     -- the whole sale flow (approach + progressbar) takes well over 5s client-side
     if onCooldown(src, 'cornerSell', 5000) then return end
+    settleCornerSales(src)
     local entry = availableDrugs[tonumber(drugType) or 0]
     if not entry then return end
     local item = entry.item
@@ -99,15 +144,26 @@ RegisterNetEvent('qb-drugs:server:sellCornerDrugs', function(drugType, amount, p
     local hasItem = Player.GetItemByName(item)
     if hasItem and hasItem.amount >= amount then
         if not exports['pfm-inventory']:RemoveItem(src, item, amount, false, 'qb-drugs:server:sellCornerDrugs') then return end
-        -- paid through the bank ledger; if the bank is down the drugs are handed back
-        local key = ('pfm-drugs:corner:%s:%s'):format(Player.PlayerData.citizenid, PFPayout.NewId())
-        if not PFPayout.Pay(Player, 'cash', price, { key = key, reason = 'qb-drugs:server:sellCornerDrugs', kind = 'sale' }) then
+        -- paid through the bank ledger: a clear failure (the bank down, a refusal) hands the drugs
+        -- back; an unclear one keeps the sale and asks again under the same key
+        local cid = Player.PlayerData.citizenid
+        local sale = { key = ('pfm-drugs:corner:%s:%s'):format(cid, PFPayout.NewId()), price = price, item = item, amount = amount }
+        local res = payCornerSale(src, sale)
+        if res == 'failed' then
             exports['pfm-inventory']:AddItem(src, item, amount, false, false, 'qb-drugs:corner-refund')
+            TriggerClientEvent('QBCore:Notify', src, 'The buyer\'s money did not come through. You kept the product.', 'error')
             return
         end
         local netId = tonumber(customerNetId)
         if netId then servedCustomers[netId] = os.time() end
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('success.offer_accepted'), 'success')
+        if res == 'pending' then
+            PendingSales[cid] = PendingSales[cid] or {}
+            table.insert(PendingSales[cid], sale)
+            retryCornerSales(src, cid, SALE_RETRIES)
+            TriggerClientEvent('QBCore:Notify', src, 'The buyer\'s payment is still being settled.', 'primary')
+        else
+            TriggerClientEvent('QBCore:Notify', src, Lang:t('success.offer_accepted'), 'success')
+        end
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[item], 'remove')
         TriggerClientEvent('qb-drugs:client:refreshAvailableDrugs', src, getAvailableDrugs(src))
         -- optional server-side police alert; can't be skipped by a modified client

@@ -26,6 +26,30 @@ QB.Phone.Data = {
 
 QB.Phone.Data.MaxSlots = 16;
 
+// Names, chats, mails, tweets and adverts come from other players: they go into the page as text.
+// Esc for text inside HTML built as a string, SafeUrl for a picture link in src/url(), SafeHtml for
+// mail bodies (scripts send <br>/<strong>; nothing else survives).
+QB.Phone.Esc = function(value) {
+    if (value === null || value === undefined) return "";
+    return String(value).replace(/[&<>"'`=\/]/g, function(c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;", "=": "&#61;", "/": "&#47;" }[c];
+    });
+};
+QB.Phone.SafeUrl = function(value, fallback) {
+    var url = (value === null || value === undefined) ? "" : String(value);
+    if (/^https:\/\/[^\s"'<>()\\`{}]+$/.test(url) && url.length <= 512) return url;
+    if (/^\.\/img\/[\w\-\/]+\.png$/.test(url)) return url;
+    return fallback === undefined ? "./img/default.png" : fallback;
+};
+QB.Phone.CssUrl = function(value, fallback) {
+    return 'url("' + QB.Phone.SafeUrl(value, fallback) + '")';
+};
+QB.Phone.SafeHtml = function(value) {
+    var text = (value === null || value === undefined) ? "" : String(value);
+    if (typeof DOMPurify === "undefined") return QB.Phone.Esc(text).replace(/\n/g, "<br>");
+    return DOMPurify.sanitize(text.replace(/\n/g, "<br>"), { ALLOWED_TAGS: ["br", "b", "strong", "i", "em", "u", "p", "ul", "ol", "li", "span"], ALLOWED_ATTR: [] });
+};
+
 OpenedChatData = {
     number: null,
 }
@@ -197,7 +221,7 @@ $(document).on('click', '.phone-application', function(e){
                         $(".house-app-mykeys-container").html("");
                         if (Keys.length > 0) {
                             $.each(Keys, function(i, key){
-                                var elem = '<div class="mykeys-key" id="keyid-'+i+'"><span class="mykeys-key-label">' + key.HouseData.adress + '</span> <span class="mykeys-key-sub">Click to set GPS</span> </div>';
+                                var elem = '<div class="mykeys-key" id="keyid-'+i+'"><span class="mykeys-key-label">' + QB.Phone.Esc(key.HouseData.adress) + '</span> <span class="mykeys-key-sub">Click to set GPS</span> </div>';
                                 $(".house-app-mykeys-container").append(elem);
                                 $("#keyid-"+i).data('KeyData', key);
                             });
@@ -408,12 +432,12 @@ QB.Phone.Notifications.Add = function(icon, title, text, color, timeout) {
                 }
                 QB.Phone.Animations.TopSlideDown(".phone-notification-container", 200, 8);
                 if (icon !== "politie") {
-                    $(".notification-icon").html('<i class="'+icon+'"></i>');
+                    $(".notification-icon").html('<i class="'+QB.Phone.Esc(icon)+'"></i>');
                 } else {
                     $(".notification-icon").html('<img src="./img/politie.png" class="police-icon-notify">');
                 }
-                $(".notification-title").html(title);
-                $(".notification-text").html(text);
+                $(".notification-title").text(title === undefined || title === null ? "" : title);
+                $(".notification-text").text(text === undefined || text === null ? "" : text);
                 if (QB.Phone.Notifications.Timeout !== undefined || QB.Phone.Notifications.Timeout !== null) {
                     clearTimeout(QB.Phone.Notifications.Timeout);
                 }
@@ -435,9 +459,9 @@ QB.Phone.Notifications.Add = function(icon, title, text, color, timeout) {
                 if (!QB.Phone.Data.IsOpen) {
                     QB.Phone.Animations.BottomSlideUp('.container', 300, -52);
                 }
-                $(".notification-icon").html('<i class="'+icon+'"></i>');
-                $(".notification-title").html(title);
-                $(".notification-text").html(text);
+                $(".notification-icon").html('<i class="'+QB.Phone.Esc(icon)+'"></i>');
+                $(".notification-title").text(title === undefined || title === null ? "" : title);
+                $(".notification-text").text(text === undefined || text === null ? "" : text);
                 if (QB.Phone.Notifications.Timeout !== undefined || QB.Phone.Notifications.Timeout !== null) {
                     clearTimeout(QB.Phone.Notifications.Timeout);
                 }
@@ -461,7 +485,7 @@ QB.Phone.Functions.LoadPhoneData = function(data) {
     QB.Phone.Functions.LoadContacts(data.PhoneData.Contacts);
     QB.Phone.Functions.SetupApplications(data);
 
-    $("#player-id").html("<span>" + "ID: " + data.PlayerId + "</span>")
+    $("#player-id").html("<span>" + "ID: " + QB.Phone.Esc(data.PlayerId) + "</span>")
 }
 
 QB.Phone.Functions.UpdateTime = function(data) {
@@ -489,7 +513,7 @@ QB.Screen.Notification = function(title, content, icon, timeout, color) {
             if (color != null && color != undefined) {
                 $(".screen-notifications-container").css({"background-color":color});
             }
-            $(".screen-notification-icon").html('<i class="'+icon+'"></i>');
+            $(".screen-notification-icon").html('<i class="'+QB.Phone.Esc(icon)+'"></i>');
             $(".screen-notification-title").text(title);
             $(".screen-notification-content").text(content);
             $(".screen-notifications-container").css({'display':'block'}).animate({
@@ -531,7 +555,7 @@ QB.Screen.popUp = function(source){
     if(!up){
         $('#popup').fadeIn('slow');
         $('.popupclass').fadeIn('slow');
-        $('<img  src='+source+' style = "width:100%; height: 100%;">').appendTo('.popupclass')
+        $('<img style="width:100%; height: 100%;">').attr('src', QB.Phone.SafeUrl(source)).appendTo('.popupclass')
         up = true
     }
 }
@@ -574,7 +598,7 @@ $(document).ready(function(){
                 QB.Phone.Notifications.LoadMentionedTweets(event.data.Tweets);
                 break;
             case "UpdateBank":
-                $(".bank-app-account-balance").html("&#36; "+event.data.NewBalance);
+                $(".bank-app-account-balance").text("$ "+event.data.NewBalance);
                 $(".bank-app-account-balance").data('balance', event.data.NewBalance);
                 break;
             case "UpdateChat":
@@ -622,8 +646,8 @@ $(document).ready(function(){
                         $(".call-notifications").css({"display":"block"});
                         $(".call-notifications").animate({right: 5+"vh"});
                     }
-                    $(".call-notifications-title").html("In conversation ("+timeString+")");
-                    $(".call-notifications-content").html("Calling with "+event.data.Name);
+                    $(".call-notifications-title").text("In conversation ("+timeString+")");
+                    $(".call-notifications-content").text("Calling with "+(event.data.Name || ""));
                     $(".call-notifications").removeClass('call-notifications-shake');
                 } else {
                     $(".call-notifications").animate({

@@ -580,7 +580,9 @@ local playertables = {
     { table = 'apartments' },
     { table = 'bank_accounts' },
     { table = 'crypto_transactions' },
-    { table = 'phone_invoices' },
+    -- an invoice pfm-phone marked 'paying' was charged (or is being charged): its sweep still owes
+    -- the business the money, which does not need the payer, so it is kept until settled
+    { table = 'phone_invoices', keep = { column = 'pay_state', where = "(pay_state IS NULL OR pay_state <> 'paying')" } },
     { table = 'phone_messages' },
     { table = 'playerskins' },
     { table = 'player_contacts' },
@@ -617,11 +619,32 @@ local function notifyCharacterDeleted(citizenid, snap)
     TriggerEvent('pfm-core:server:characterDeleted', citizenid, snap or { apartments = {}, plates = {} })
 end
 
+--- Whether `tbl` has `column` (information_schema). A table entry with `keep` only filters on a
+--- column some databases lack (pfm-phone adds pay_state on start): without it the filter would fail
+--- the whole delete. When the check itself fails, the filter is used (the delete then fails rather
+--- than removing a row that still owes a business its money).
+local keepColumnSeen = {}
+local function hasColumn(tbl, column)
+    local key = tbl .. '.' .. column
+    if keepColumnSeen[key] then return true end
+    local ok, n = pcall(MySQL.scalar.await,
+        'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?', { tbl, column })
+    if not ok or n == nil then return true end
+    if (tonumber(n) or 0) > 0 then
+        keepColumnSeen[key] = true
+        return true
+    end
+    return false
+end
+
 local function deleteQueries(citizenid)
     local query   = 'DELETE FROM %s WHERE citizenid = ?'
     local queries = {}
     for i = 1, #playertables do
-        queries[i] = { query = query:format(playertables[i].table), values = { citizenid } }
+        local entry = playertables[i]
+        local sql = query:format(entry.table)
+        if entry.keep and hasColumn(entry.table, entry.keep.column) then sql = sql .. ' AND ' .. entry.keep.where end
+        queries[i] = { query = sql, values = { citizenid } }
     end
     return queries
 end

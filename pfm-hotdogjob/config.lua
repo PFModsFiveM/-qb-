@@ -4,10 +4,11 @@ Config.UseTarget = GetConvar('UseTarget', 'false') == 'true'
 
 Config.StandDeposit = 250
 
--- Server-side sale limits
+-- Sales (server/main.lua decides them: the quality in stock, the amount and the price below)
 Config.MaxSalePerCustomer = 3 -- most hotdogs a single customer sale can contain
 Config.SaleCooldown = 5       -- minimum seconds between sales
-Config.RepCooldown = 3        -- minimum seconds between reputation gains
+-- Cooking is a server-checked pfm-minigames challenge; stock lives on the server and is capped by
+-- Config.Stock[quality].Max[level] (level from the hotdog reputation: 50 / 100 / 200)
 
 -- Consecutive sales in one stand session add a small payout multiplier (reset when the stand is returned)
 Config.StreakBonus = { enabled = false, perDelivery = 0.02, cap = 0.25 }

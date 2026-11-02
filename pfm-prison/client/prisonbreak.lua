@@ -6,23 +6,11 @@ local requiredItems = {}
 local inRange = false
 local securityLockdown = false
 local PlayerJob = {}
-local Gates = {
-    [1] = {
-        gatekey = 13,
-        coords = vector3(1845.99, 2604.7, 45.58),
-        hit = false,
-    },
-    [2] = {
-        gatekey = 14,
-        coords = vector3(1819.47, 2604.67, 45.56),
-        hit = false,
-    },
-    [3] = {
-        gatekey = 15,
-        coords = vector3(1804.74, 2616.311, 45.61),
-        hit = false,
-    }
-}
+-- gate positions and doors come from Config.Gates (shared with the server, which decides)
+local Gates = {}
+for i, g in ipairs(Config.Gates or {}) do
+    Gates[i] = { gatekey = g.gatekey, coords = g.coords, hit = false }
+end
 
 -- Functions
 
@@ -49,13 +37,27 @@ end
 
 -- Events
 
+-- the gates, lockdown and alarm as the server has them
+local function LoadPrisonState()
+    QBCore.Functions.TriggerCallback('prison:server:GetState', function(state)
+        if type(state) ~= 'table' then return end
+        securityLockdown = state.lockdown == true
+        for _, g in pairs(Gates) do g.hit = false end
+        for _, i in ipairs(type(state.gates) == 'table' and state.gates or {}) do
+            if Gates[i] then Gates[i].hit = true end
+        end
+    end)
+end
+
 AddEventHandler('onResourceStart', function(resource)
     if resource ~= GetCurrentResourceName() then return end
     PlayerJob = QBCore.Functions.GetPlayerData().job
+    if LocalPlayer.state['isLoggedIn'] then LoadPrisonState() end
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     PlayerJob = QBCore.Functions.GetPlayerData().job
+    LoadPrisonState()
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUpdated', function(key, val)
@@ -68,37 +70,44 @@ RegisterNetEvent('QBCore:Client:OnPlayerUpdated', function(key, val)
     end
 end)
 
+-- Hacking a gate: the server checks the inmate, the gate and the items (the gatecrack is used up)
+-- and hands back the hack, then decides the result (pfm-minigames checks the puzzle when it can).
 RegisterNetEvent('electronickit:UseElectronickit', function()
-    if currentGate ~= 0 and not securityLockdown and not Gates[currentGate].hit then
+    if currentGate ~= 0 and not securityLockdown and Gates[currentGate] and not Gates[currentGate].hit then
         local hasItem = QBCore.Functions.HasItem('gatecrack')
         if hasItem then
-            TriggerEvent('qb-inventory:client:requiredItems', requiredItems, false)
-            QBCore.Functions.Progressbar('hack_gate', Lang:t('info.connecting_device'), math.random(5000, 10000), false, true, {
-                disableMovement = true,
-                disableCarMovement = true,
-                disableMouse = false,
-                disableCombat = true,
-            }, {
-                animDict = 'anim@gangops@facility@servers@',
-                anim = 'hotwire',
-                flags = 16,
-            }, {}, {}, function()                                      -- Done
-                StopAnimTask(PlayerPedId(), 'anim@gangops@facility@servers@', 'hotwire', 1.0)
-                local success = exports['pfm-minigames']:Hacking(5, 30) -- code block size & seconds to solve
-                if success then
-                    TriggerServerEvent('prison:server:SetGateHit', currentGate)
-                    TriggerServerEvent('qb-doorlock:server:updateState', Gates[currentGate].gatekey, false, false, false, true)
-                else
-                    TriggerServerEvent('prison:server:SecurityLockdown')
-                end
-            end, function() -- Cancel
-                StopAnimTask(PlayerPedId(), 'anim@gangops@facility@servers@', 'hotwire', 1.0)
-                QBCore.Functions.Notify(Lang:t('error.cancelled'), 'error')
-            end)
+            TriggerServerEvent('prison:server:StartGateHack', currentGate)
         else
             QBCore.Functions.Notify(Lang:t('error.item_missing'), 'error')
         end
     end
+end)
+
+RegisterNetEvent('prison:client:GateHackStart', function(gate, ticketId, challenge)
+    if not Gates[gate] then return end
+    TriggerEvent('qb-inventory:client:requiredItems', requiredItems, false)
+    QBCore.Functions.Progressbar('hack_gate', Lang:t('info.connecting_device'), math.random(5000, 10000), false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true,
+    }, {
+        animDict = 'anim@gangops@facility@servers@',
+        anim = 'hotwire',
+        flags = 16,
+    }, {}, {}, function()                                      -- Done
+        StopAnimTask(PlayerPedId(), 'anim@gangops@facility@servers@', 'hotwire', 1.0)
+        local success
+        if type(challenge) == 'table' then
+            success = exports['pfm-minigames']:PlayChallenge(challenge) -- judged by the server
+        else
+            success = exports['pfm-minigames']:Hacking(Config.GateHack and Config.GateHack.Size or 5, Config.GateHack and Config.GateHack.Seconds or 30)
+        end
+        TriggerServerEvent('prison:server:GateHackResult', ticketId, success == true)
+    end, function() -- Cancel
+        StopAnimTask(PlayerPedId(), 'anim@gangops@facility@servers@', 'hotwire', 1.0)
+        QBCore.Functions.Notify(Lang:t('error.cancelled'), 'error')
+    end)
 end)
 
 RegisterNetEvent('prison:client:SetLockDown', function(isLockdown)
@@ -112,13 +121,12 @@ RegisterNetEvent('prison:client:SetLockDown', function(isLockdown)
 end)
 
 RegisterNetEvent('prison:client:PrisonBreakAlert', function()
-    local coords = vector3(Config.Locations['middle'].coords.x, Config.Locations['middle'].coords.y, Config.Locations['middle'].coords.z)
+    local coords = vector3(Config.Locations['middle'].x, Config.Locations['middle'].y, Config.Locations['middle'].z)
     local alertData = { title = Lang:t('info.police_alert_title'), coords = { x = coords.x, y = coords.y, z = coords.z }, description = Lang:t('info.police_alert_description') }
     TriggerEvent('qb-phone:client:addPoliceAlert', alertData)
     TriggerEvent('police:client:policeAlert', coords, Lang:t('info.police_alert_description'))
 
     local BreakBlip = AddBlipForCoord(coords.x, coords.y, coords.z)
-    TriggerServerEvent('prison:server:JailAlarm')
     SetBlipSprite(BreakBlip, 161)
     SetBlipScale(BreakBlip, 3.0)
     SetBlipColour(BreakBlip, 3)
@@ -135,7 +143,7 @@ RegisterNetEvent('prison:client:PrisonBreakAlert', function()
 end)
 
 RegisterNetEvent('prison:client:SetGateHit', function(key, isHit)
-    Gates[key].hit = isHit
+    if Gates[key] then Gates[key].hit = isHit == true end
 end)
 
 RegisterNetEvent('prison:client:JailAlarm', function(toggle)
@@ -209,25 +217,4 @@ CreateThread(function()
     end
 end)
 
-CreateThread(function()
-    while true do
-        local pos = GetEntityCoords(PlayerPedId(), true)
-        if #(pos.xy - vec2(Config.Locations['middle'].x, Config.Locations['middle'].y)) > 200 and inJail then
-            inJail = false
-            jailTime = 0
-            RemoveBlip(currentBlip)
-            RemoveBlip(CellsBlip)
-            CellsBlip = nil
-            RemoveBlip(TimeBlip)
-            TimeBlip = nil
-            RemoveBlip(ShopBlip)
-            ShopBlip = nil
-            TriggerServerEvent('prison:server:SecurityLockdown')
-            TriggerEvent('prison:client:PrisonBreakAlert')
-            TriggerServerEvent('prison:server:SetJailStatus', 0)
-            TriggerServerEvent('prison:server:GiveJailItems', true)
-            QBCore.Functions.Notify(Lang:t('error.escaped'), 'error')
-        end
-        Wait(1000)
-    end
-end)
+-- Leaving the prison is decided by the server (escape or back to a cell): no client check here.

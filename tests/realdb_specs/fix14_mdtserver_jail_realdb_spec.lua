@@ -205,6 +205,22 @@ describe('MDT fines through the ledger', function()
         S.Tick()
         assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pf-policemdt:fine:%'")), 1)
     end)
+    it('while a fine waits for the bank, no new fine is taken for that citizen', function()
+        local realUpdate = MySQL.update
+        local fail = true
+        MySQL.update = setmetatable({ await = function(q, p)
+            if fail and q == PFLedger.SQL.creditSociety then fail = false; error('injected: connection lost') end
+            return realUpdate.await(q, p)
+        end }, { __call = function(_, ...) return realUpdate(...) end })
+        local res = sentence({ 'F1' })
+        MySQL.update = realUpdate
+        assert_eq(res.pending, true, tostring(res.error))
+        Mock.clock = Mock.clock + 60
+        local again = sentence({ 'F1' })
+        assert_eq(again.success, false)
+        assert_eq(again.error, 'A fine for this citizen is still being confirmed by the bank; wait for it to settle')
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pf-policemdt:fine:%'")), 1, 'one charge attempt only')
+    end)
     it('without the ledger nothing is charged and nobody is sentenced', function()
         states['pfm-banking'] = 'stopped'
         local res = sentence({ 'F1' })
@@ -236,6 +252,20 @@ describe('MDT sentencing needs the citizen present', function()
         local res = sentence({ 'F1' })
         assert_eq(res.error, 'off_duty')
         assert_eq(bank(CITIZEN), 1000)
+    end)
+    it('at a station: a cuffed suspect in the cells counts as with the officer at the desk; a free visitor does not', function()
+        Mock.coords[OFFICER] = STATION
+        Mock.coords[CITIZEN] = vector3(STATION.x + 30.0, STATION.y, STATION.z) -- 30 m away, same station
+        local res = sentence({ 'J1' }, 'sentence')
+        assert_eq(res.error, 'The suspect must be with you')
+        Mock.players[CITIZEN].PlayerData.metadata.ishandcuffed = true
+        res = sentence({ 'J1' }, 'sentence')
+        assert_eq(res.success, true, tostring(res.error))
+        -- cuffed but in another station's area is not "with" this officer
+        MySQL.query.await('DELETE FROM pf_mdt_active_jails')
+        Mock.clock = Mock.clock + 10
+        Mock.coords[CITIZEN] = vector3(1853.0, 3689.0, 34.3)
+        assert_eq(sentence({ 'J1' }, 'sentence').error, 'The suspect must be with you')
     end)
     it('jail time needs the citizen in handcuffs or at a booking desk', function()
         local res = sentence({ 'J1' }, 'sentence')

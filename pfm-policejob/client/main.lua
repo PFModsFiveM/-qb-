@@ -50,8 +50,8 @@ end)
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     local player = QBCore.Functions.GetPlayerData()
     PlayerJob = player.job
-    isHandcuffed = false
-    TriggerServerEvent('police:server:SetHandcuffStatus', false)
+    -- the server decided on load whether police cuffs come back (it owns the cuff state)
+    isHandcuffed = player.metadata and player.metadata.ishandcuffed == true
     TriggerServerEvent('police:server:UpdateBlips')
     TriggerServerEvent('police:server:UpdateCurrentCops')
 
@@ -89,7 +89,6 @@ end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
     TriggerServerEvent('police:server:UpdateBlips')
-    TriggerServerEvent('police:server:SetHandcuffStatus', false)
     TriggerServerEvent('police:server:UpdateCurrentCops')
     isHandcuffed = false
     isEscorted = false
@@ -208,18 +207,20 @@ RegisterNetEvent('police:client:policeAlert', function(coords, text)
     end
 end)
 
-RegisterNetEvent('police:client:SendToJail', function(time)
-    TriggerServerEvent('police:server:SetHandcuffStatus', false)
+-- Jailed: the server took the cuffs off and pfm-prison takes the player to a cell; this only lets
+-- go of an escort.
+RegisterNetEvent('police:client:SendToJail', function()
     isHandcuffed = false
     isEscorted = false
+    TriggerEvent('hospital:client:isEscorted', false)
     ClearPedTasks(PlayerPedId())
     DetachEntity(PlayerPedId(), true, false)
-    TriggerEvent('prison:client:Enter', time)
 end)
 
 RegisterNetEvent('police:client:SendPoliceEmergencyAlert', function()
     local Player = QBCore.Functions.GetPlayerData()
-    TriggerServerEvent('police:server:policeAlert', Lang:t('info.officer_down', { lastname = Player.charinfo.lastname, callsign = Player.metadata.callsign }))
+    -- the server builds the officer-down text itself and checks the officer is down
+    TriggerServerEvent('police:server:OfficerDown')
     TriggerServerEvent('hospital:server:ambulanceAlert', Lang:t('info.officer_down', { lastname = Player.charinfo.lastname, callsign = Player.metadata.callsign }))
 end)
 

@@ -447,8 +447,9 @@ end)
 
 -- Lockpicking runs on the server: it checks the door and the pick, sends the minigame
 -- (qb-doorlock:client:pickChallenge), opens the door and decides whether the pick breaks.
+local picking = false
 RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
-	if not closestDoor.data or not next(closestDoor.data) or PlayerData.metadata['isdead'] or PlayerData.metadata['ishandcuffed'] or (not closestDoor.data.pickable and not closestDoor.data.lockpick) or not closestDoor.data.locked then
+	if picking or not closestDoor.data or not next(closestDoor.data) or PlayerData.metadata['isdead'] or PlayerData.metadata['ishandcuffed'] or (not closestDoor.data.pickable and not closestDoor.data.lockpick) or not closestDoor.data.locked then
 		return
 	end
 	TriggerServerEvent('qb-doorlock:server:startPick', closestDoor.id, isAdvanced == true)
@@ -456,9 +457,10 @@ end)
 
 RegisterNetEvent('qb-doorlock:client:pickChallenge', function(doorID, challenge)
 	local door = Config.DoorList[doorID]
-	if not door then return end
-	local passed = exports['pfm-minigames']:PlayChallenge(challenge)
-	if passed then
+	if not door or picking then return end
+	picking = true
+	local ok, passed = pcall(function() return exports['pfm-minigames']:PlayChallenge(challenge) end)
+	if ok and passed then
 		QBCore.Functions.Notify(Lang:t('success.lockpick_success'), 'success', 2500)
 		local coordsToFace = door.doors and door.doors[1].objCoords or door.objCoords
 		if coordsToFace then
@@ -477,6 +479,7 @@ RegisterNetEvent('qb-doorlock:client:pickChallenge', function(doorID, challenge)
 	end
 	-- also after a failure: the server rolls the pick's breakage then
 	TriggerServerEvent('qb-doorlock:server:finishPick', doorID)
+	picking = false
 end)
 
 RegisterNetEvent('qb-doorlock:client:addNewDoor', function()

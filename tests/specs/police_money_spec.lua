@@ -18,14 +18,49 @@ Mock.exportsByResource['pfm-inventory'] = {
     OpenInventoryById = function() end,
 }
 local directInserts = 0    -- the old /fine wrote phone_invoices itself (no ledger token)
-FakeDB.extraPatterns = { { 'INSERT INTO phone_invoices', function() directInserts = directInserts + 1 return 1 end } }
+-- pfm_police_fines (server/fines.lua) on the fake database: just the statements fines.lua sends
+FineRows = {}
+local function fineMove(p)
+    local row = FineRows[p[7]]
+    if not row or row.state ~= p[8] or row.attempt ~= p[9] then return { affectedRows = 0 } end
+    row.state, row.paid_from, row.invoice_id, row.last_error, row.next_at = p[1], p[2], p[3], p[4], p[5]
+    row.checks = row.checks + p[6]
+    return { affectedRows = 1 }
+end
+FakeDB.extraPatterns = {
+    { 'INSERT INTO phone_invoices', function() directInserts = directInserts + 1 return 1 end },
+    { 'INSERT INTO pfm_police_fines', function(p)
+        local id = #FineRows + 1
+        FineRows[id] = { id = id, citizenid = p[1], society = p[2], amount = p[3], officer_citizenid = p[4], officer_name = p[5],
+            reason = p[6], state = 'charging', attempt = 1, checks = 0, next_at = p[7] }
+        return id
+    end },
+    { 'UPDATE pfm_police_fines SET state = ?, paid_from', fineMove },
+    { "UPDATE pfm_police_fines SET state = 'charging', attempt = attempt + 1", function(p)
+        local row = FineRows[p[2]]
+        if not row or row.state ~= 'retry' or row.attempt ~= p[3] then return { affectedRows = 0 } end
+        row.state, row.attempt, row.next_at = 'charging', row.attempt + 1, p[1]
+        return { affectedRows = 1 }
+    end },
+    { 'FROM pfm_police_fines WHERE state IN', function(p)
+        local out = {}
+        for _, row in ipairs(FineRows) do
+            if (row.state == 'charging' or row.state == 'pending' or row.state == 'retry') and row.next_at <= p[1] then
+                local copy = {}
+                for k, v in pairs(row) do copy[k] = v end
+                out[#out + 1] = copy
+            end
+        end
+        return out
+    end },
+}
 -- pfm-phone's CreateInvoice export; nil answer = the phone is not running / refused it
 local phoneInvoices, phoneAnswer = {}, 41
 Mock.exportsByResource['pfm-phone'] = {
     CreateInvoice = function(_, data) phoneInvoices[#phoneInvoices + 1] = data return phoneAnswer end,
 }
 
-LedgerEnv.load('pfm-policejob', { 'pfm-policejob/config.lua', 'pfm-policejob/server/main.lua', 'pfm-policejob/server/commands.lua', 'pfm-policejob/server/interactions.lua' })
+LedgerEnv.load('pfm-policejob', { 'pfm-policejob/config.lua', 'pfm-policejob/server/main.lua', 'pfm-policejob/server/fines.lua', 'pfm-policejob/server/commands.lua', 'pfm-policejob/server/interactions.lua' })
 
 local COP, SUSPECT, ROBBER = 1, 2, 3
 local function money(src) return Mock.players[src].PlayerData.money end
@@ -37,6 +72,7 @@ BeforeEach = function()
     Mock.players, Mock.coords = {}, {}
     bags, inventoryFull = {}, false
     directInserts, phoneInvoices, phoneAnswer = 0, {}, 41
+    FineRows = {}
     FakeDB.society('police', 0)
     local cop = Mock.newPlayer(COP)
     cop.PlayerData.job = { name = 'police', type = 'leo', onduty = true }

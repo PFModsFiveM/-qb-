@@ -29,7 +29,7 @@ function GetCurrentResourceName() return 'pf-government' end
 QBCoreMock.Shared.Jobs = { government = { label = 'Government' } }
 Config = nil
 load_resource('pfm-banking/payouts.lua')
-for _, f in ipairs({ 'config.lua', 'server/core.lua', 'server/treasury.lua', 'server/taxes.lua', 'server/utilities.lua',
+for _, f in ipairs({ 'config.lua', 'server/core.lua', 'server/schema.lua', 'server/treasury.lua', 'server/taxes.lua', 'server/utilities.lua',
     'server/bills.lua', 'server/businesses.lua', 'server/audit.lua', 'server/licenses.lua', 'server/integrations.lua',
     'server/staff.lua', 'server/callbacks.lua' }) do
     load_resource('[pfscripts]/pf-government/' .. f)
@@ -41,6 +41,8 @@ local govX = Mock.exportsByResource['__self']
 Mock.exportsByResource['pf-government'] = govX
 load_resource('tests/lua/gov_registry_exports.lua')
 Mock.exportsByResource['__self'] = nil
+Mock.exportsByResource['pfm-core'].RunMigrations = function(_, res, list) return RunMigrations(res, list) end
+assert(GovSchema.Ensure(), 'government migrations (bill payments are recorded in pf_gov_bill_payments)')
 InitializeTreasury()
 InitializeTaxes()
 InitializeBusinesses()
