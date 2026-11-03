@@ -183,3 +183,131 @@ describe('roadside: paid for a real repair of that car', function()
         assert_eq(alive[veh], nil)
     end)
 end)
+
+describe('roadside: cancel and timeout', function()
+    local TIMEOUT = Config.AdvancedSystems.RoadsideService.TimeoutSeconds
+    local COOLDOWN = Config.AdvancedSystems.RoadsideService.CooldownSeconds
+    local function cancel(src) Mock.fireNet('pf-mechanicjob:server:advanced:cancelRoadside', src) end
+
+    it('a cancelled call removes its car; a new call is allowed after the cooldown', function()
+        start(MECH, SPOT)
+        local veh = callCar()
+        cancel(MECH)
+        assert_eq(alive[veh], nil, 'the call car is removed')
+        local done = Mock.clientEventsNamed('pf-mechanicjob:client:advanced:roadsideDone')
+        assert_eq(done[#done].target, MECH)
+        goTo(MECH, veh)
+        Mock.clock = Mock.clock + MIN + 1
+        complete(MECH)
+        assert_eq(bank(MECH), 0, 'a cancelled call pays nothing')
+        Mock.coords[MECH] = HERE
+        start(MECH, SPOT)
+        assert_eq(#spawned, 1, 'cancelling does not skip the cooldown')
+        Mock.clock = Mock.clock + COOLDOWN
+        start(MECH, SPOT)
+        assert_eq(#spawned, 2)
+    end)
+
+    it('an abandoned call times out: its car is removed and it no longer blocks a new call', function()
+        start(MECH, SPOT)
+        local veh = callCar()
+        Mock.clock = Mock.clock + TIMEOUT - 5
+        PFMech.RoadsideSweep()
+        assert_true(alive[veh], 'not yet')
+        start(MECH, SPOT)
+        assert_eq(#spawned, 1, 'the live call still blocks')
+        Mock.clock = Mock.clock + 10
+        start(MECH, SPOT)                                     -- past its time: replaced at once
+        assert_eq(alive[veh], nil)
+        assert_eq(#spawned, 2)
+        local veh2 = callCar()
+        Mock.clock = Mock.clock + TIMEOUT + 1
+        PFMech.RoadsideSweep()
+        assert_eq(alive[veh2], nil, 'the sweep closes it too')
+    end)
+end)
+
+describe('roadside: payment keys', function()
+    local realPay = PFPayout.Pay
+    local script, keys
+    local function scripted()
+        PFPayout.Pay = function(who, account, amount, opts)
+            keys[#keys + 1] = opts.key
+            local nextRes = table.remove(script, 1)
+            if nextRes then return nextRes.ok == true, nextRes end
+            return realPay(who, account, amount, opts)
+        end
+    end
+    local function readyCall()
+        start(MECH, SPOT)
+        local veh = callCar()
+        goTo(MECH, veh)
+        repair(MECH, veh, 'engine_part')
+        repair(MECH, veh, 'body_part')
+        Mock.clock = Mock.clock + MIN + 1
+        return veh
+    end
+
+    it('a clearly failed key stays failed: the next try uses a new numbered key, after a pause', function()
+        keys, script = {}, { { ok = false, state = 'failed', error = 'insufficient_funds', txId = 7 } }
+        scripted()
+        local veh = readyCall()
+        complete(MECH)
+        assert_eq(#keys, 1)
+        assert_true(keys[1]:sub(-2) == ':1', keys[1])
+        assert_true(alive[veh], 'the call stays open')
+        complete(MECH)
+        assert_eq(#keys, 1, 'waits before the next key')
+        Mock.clock = Mock.clock + 31
+        complete(MECH)
+        PFPayout.Pay = realPay
+        assert_eq(#keys, 2)
+        assert_true(keys[2]:sub(-2) == ':2', keys[2])
+        assert_true(bank(MECH) > 0)
+        assert_eq(#LedgerEnv.paid('pf-mechanicjob:roadside:'), 1)
+        assert_eq(alive[veh], nil)
+    end)
+
+    it('an unclear result keeps its key (and the call) until it settles; no cancel or timeout meanwhile', function()
+        keys, script = {}, {
+            { ok = false, state = 'pending', unclear = true },
+            { ok = false, error = 'bank_unavailable' },
+        }
+        scripted()
+        local veh = readyCall()
+        complete(MECH)
+        Mock.fireNet('pf-mechanicjob:server:advanced:cancelRoadside', MECH)
+        assert_true(alive[veh], 'no cancel while the payment is unclear')
+        Mock.clock = Mock.clock + Config.AdvancedSystems.RoadsideService.TimeoutSeconds + 1
+        PFMech.RoadsideSweep()
+        assert_true(alive[veh], 'no timeout either')
+        complete(MECH)                                        -- the bank is down this time: same key later
+        Mock.clock = Mock.clock + 31
+        complete(MECH)
+        PFPayout.Pay = realPay
+        assert_eq(#keys, 3)
+        assert_eq(keys[2], keys[1])
+        assert_eq(keys[3], keys[1], 'never a new key after an unclear result')
+        assert_eq(#LedgerEnv.paid('pf-mechanicjob:roadside:'), 1)
+        assert_eq(alive[veh], nil)
+    end)
+
+    it('an unclear key that later settles as failed moves on to the next number', function()
+        keys, script = {}, {
+            { ok = false, state = 'pending', unclear = true },
+            { ok = false, state = 'failed', error = 'insufficient_funds', txId = 9 },
+        }
+        scripted()
+        readyCall()
+        complete(MECH)
+        Mock.clock = Mock.clock + 11
+        complete(MECH)
+        Mock.clock = Mock.clock + 31
+        complete(MECH)
+        PFPayout.Pay = realPay
+        assert_eq(#keys, 3)
+        assert_eq(keys[2], keys[1])
+        assert_true(keys[3] ~= keys[1] and keys[3]:sub(-2) == ':2', keys[3])
+        assert_true(bank(MECH) > 0)
+    end)
+end)

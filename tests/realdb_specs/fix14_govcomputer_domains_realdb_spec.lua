@@ -2,7 +2,10 @@
 --   C2  two buyers of one domain: the domain is locked before the first wait, so only one is charged;
 --       a charge the bank cannot settle at once keeps the domain reserved for that buyer (also over a
 --       restart), is never charged again and gives the domain once the ledger completes it;
---   X9  a refused payment no longer blocks the buyer for good: each try has its own ledger key.
+--   X9  a refused payment no longer blocks the buyer for good: each try has its own ledger key, also
+--       after a refusal the ledger never recorded or a bank call that threw;
+--   C2  a charge whose domain was taken is refunded; a refund that did not go through is retried
+--       (a new numbered key after a refusal, the same key while unclear), and the settle loop walks a copy.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 local states = { ['pf-mechanicjob'] = 'missing', ['pf-restaurants'] = 'missing', ['pf-stores'] = 'missing', ['pf-services'] = 'missing', ['pf-government'] = 'missing' }
@@ -164,7 +167,127 @@ describe('X9: a refused payment does not block the buyer', function()
         assert_eq(bank(A), 5000 - PRICE)
         assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = ? AND state = 'completed'", { ('pf-computer:domain:%s:%s:2'):format(domain, 'BUYA' .. n) }), 1)
     end)
+    it('ledger_unavailable once (nothing written to the ledger), then a retry succeeds', function()
+        local domain = 'boot' .. n .. '.ls'
+        local cid = 'BUYA' .. n
+        local real = bankX.Transfer
+        bankX.Transfer = function(_, opts) bankX.Transfer = real; return { ok = false, error = 'ledger_unavailable' } end
+        assert_eq(buy(A, domain).error, 'bank_unavailable')
+        assert_eq(bank(A), 10000)
+        local res = buy(A, domain)
+        assert_true(res.ok, 'blocked after a refusal the ledger never recorded: ' .. tostring(res.error))
+        assert_eq(owner(domain), cid)
+        assert_eq(bank(A), 10000 - PRICE)
+        assert_eq(charges(domain), 1)
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE pay_key = ?', { ('pf-computer:domain:%s:%s:1'):format(domain, cid) }), 'failed')
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE pay_key = ?', { ('pf-computer:domain:%s:%s:2'):format(domain, cid) }), 'done')
+    end)
+    it('a thrown bank call (nothing reached the ledger), then a retry: one charge, the domain is given', function()
+        local domain = 'throw' .. n .. '.ls'
+        local real = bankX.Transfer
+        bankX.Transfer = function() bankX.Transfer = real; error('bank export failed') end
+        assert_eq(buy(A, domain).error, 'payment_pending', 'unknown at the time of the call')
+        assert_eq(buy(B, domain).error, 'domain_busy', 'still reserved for the first buyer')
+        local res = buy(A, domain)
+        assert_true(res.ok, 'blocked after a thrown bank call: ' .. tostring(res.error))
+        assert_eq(owner(domain), 'BUYA' .. n)
+        assert_eq(bank(A), 10000 - PRICE)
+        assert_eq(charges(domain), 1)
+        assert_eq(buy(A, domain).error, 'domain_taken')
+        assert_eq(bank(A), 10000 - PRICE, 'no second charge')
+    end)
+    it('a thrown bank call released by the settle loop, then a retry goes through', function()
+        local domain = 'throwloop' .. n .. '.ls'
+        local real = bankX.Transfer
+        bankX.Transfer = function() bankX.Transfer = real; error('bank export failed') end
+        assert_eq(buy(A, domain).error, 'payment_pending')
+        PFComputerSettleDomainPurchases()
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE domain = ?', { domain }), 'failed')
+        local res = buy(A, domain)
+        assert_true(res.ok, tostring(res.error))
+        assert_eq(bank(A), 10000 - PRICE)
+        assert_eq(charges(domain), 1)
+    end)
     it('the purchases table exists (migration 4)', function()
         assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-computer' AND version = 4"), 1)
+    end)
+end)
+
+describe('C2: a charge whose domain was taken meanwhile is refunded, and a failed refund is retried', function()
+    it('refund refused, kept "refunding" over a restart, retried under the next numbered key, paid once', function()
+        local domain = 'taken' .. n .. '.ls'
+        local cid = 'BUYA' .. n
+        local key = ('pf-computer:domain:%s:%s:1'):format(domain, cid)
+        unclearNextTransfer()
+        assert_eq(buy(A, domain).error, 'payment_pending')
+        assert_eq(bank(A), 10000 - PRICE)
+        -- someone else got the domain meanwhile (an admin grant), seen after a restart
+        MySQL.insert.await('INSERT INTO pf_computer_domains (domain, owner_cid, owner_name, price) VALUES (?, ?, ?, 0)', { domain, 'OTHER' .. n, 'Other' })
+        loadComputer()
+        MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key = ?", { key })
+        -- the first refund is refused before the ledger writes anything
+        local real = bankX.Transfer
+        bankX.Transfer = function(_, opts) bankX.Transfer = real; return { ok = false, error = 'invalid_account' } end
+        PFComputerSettleDomainPurchases()
+        assert_eq(owner(domain), 'OTHER' .. n)
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE pay_key = ?', { key }), 'refunding', 'not "refunded" while the money is still out')
+        assert_eq(bank(A), 10000 - PRICE)
+        -- a refusal the ledger recorded on the first refund key: that key stays failed
+        MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state, error)
+            VALUES (?, ?, 'refund', 'system:pf-computer-domains', ?, ?, 'failed', 'insufficient_funds')]],
+            { ('refundfail%d'):format(n), key .. ':refund', ('player:%s:bank'):format(cid), PRICE })
+        loadComputer()                                   -- the refund owed survives a restart
+        PFComputerSettleDomainPurchases()
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE pay_key = ?', { key }), 'refunded')
+        assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = ? AND state = 'completed'", { key .. ':refund:2' }), 1)
+        assert_eq(bank(A), 10000, 'the charge came back')
+        PFComputerSettleDomainPurchases()
+        loadComputer()
+        PFComputerSettleDomainPurchases()
+        assert_eq(bank(A), 10000, 'refunded once')
+        assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE ? AND kind = 'refund' AND state = 'completed'", { key .. ':refund%' }), 1)
+    end)
+    it('an unclear refund keeps its key and is never paid twice', function()
+        local domain = 'taken2' .. n .. '.ls'
+        local cid = 'BUYA' .. n
+        local key = ('pf-computer:domain:%s:%s:1'):format(domain, cid)
+        unclearNextTransfer()
+        assert_eq(buy(A, domain).error, 'payment_pending')
+        MySQL.insert.await('INSERT INTO pf_computer_domains (domain, owner_cid, owner_name, price) VALUES (?, ?, ?, 0)', { domain, 'OTHER' .. n, 'Other' })
+        loadComputer()
+        MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key = ?", { key })
+        unclearNextTransfer()                            -- the refund moves, its answer is lost
+        PFComputerSettleDomainPurchases()
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE pay_key = ?', { key }), 'refunding')
+        PFComputerSettleDomainPurchases()
+        assert_eq(count("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE ?", { key .. ':refund%' }), 1, 'no second refund key while unclear')
+        MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key = ?", { key .. ':refund' })
+        PFComputerSettleDomainPurchases()
+        assert_eq(MySQL.scalar.await('SELECT state FROM pf_computer_domain_purchases WHERE pay_key = ?', { key }), 'refunded')
+        assert_eq(bank(A), 10000)
+    end)
+    it('the settle loop walks a copy: a reservation added while it runs waits for the next run', function()
+        local d1, d2 = 'walk' .. n .. '.ls', 'walkb' .. n .. '.ls'
+        unclearNextTransfer()
+        assert_eq(buy(A, d1).error, 'payment_pending')
+        local realGet = bankX.GetTransaction
+        local seen = {}
+        bankX.GetTransaction = function(self, key)
+            seen[#seen + 1] = key
+            if #seen == 1 then
+                -- a second buyer's unclear charge lands while the loop waits on the bank
+                bankX.GetTransaction = function(s2, k2) seen[#seen + 1] = k2; return realGet(s2, k2) end
+                unclearNextTransfer()
+                assert_eq(buy(B, d2).error, 'payment_pending')
+                seen = { key }
+            end
+            return realGet(self, key)
+        end
+        local settled = PFComputerSettleDomainPurchases()
+        bankX.GetTransaction = realGet
+        assert_eq(settled, 1, 'only the reservations there when the run started')
+        for _, k in ipairs(seen) do
+            assert_false(k:find(d2, 1, true) ~= nil, 'the new reservation was settled in the same run: ' .. k)
+        end
     end)
 end)

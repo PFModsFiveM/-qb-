@@ -16,7 +16,7 @@ FakeDB.extraPatterns = {
         if type(r) == 'string' then r = { role = r, business = 'mechanic' } end
         return r and { r } or {}
     end },
-    { 'INSERT INTO pf_mech_job_offers', function(p) offers[#offers + 1] = { business = p[1], citizenid = p[2], by = p[3] } return {} end },
+    { 'INSERT IGNORE INTO pf_mech_job_offers', function(p) offers[#offers + 1] = { business = p[1], citizenid = p[2], by = p[3] } return 1 end },
     { 'pf_mech_job_offers', function() return {} end },
     { 'SELECT name FROM pf_business WHERE business', function() return {} end },
     { 'SELECT job FROM players WHERE citizenid = ?', function(p)

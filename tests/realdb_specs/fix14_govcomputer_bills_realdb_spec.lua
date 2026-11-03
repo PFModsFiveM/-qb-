@@ -2,9 +2,11 @@
 --   G2  bill:create is server-only, and its target, amount, type, text and due date are the server's;
 --   X6  a fine is collected at once only in person (server positions); a remote fine is an unpaid bill;
 --       the client's due date is ignored; officials are limited per hour and per citizen per day;
---       waiving a collected fine refunds it through the ledger (from the treasury, once);
+--       waiving a collected fine refunds it through the ledger (from the treasury, once) and books it
+--       once, also when the refund came back unclear and a later waiver finds it completed;
 --   X7  a bill payment the bank cannot settle at once is "being processed", never "no money", is
---       never charged again under a new key, and is credited once the ledger completes it.
+--       never charged again under a new key, and is credited once the ledger completes it; a refund
+--       the ledger refused moves to a new numbered key, an unclear one keeps its key.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 function IsDuplicityVersion() return true end
@@ -198,6 +200,61 @@ describe('X6: fines', function()
         assert_eq(w.refunded, nil)
         assert_eq(txCount(('pf-government:fine:%d:waive'):format(remote.result.billId)), 0)
     end)
+    it('treasury mirror mode: a refund that came back unclear and later completes is booked once', function()
+        local mirrorBefore
+        local saved = Config.Treasury.UseSocietyAccount
+        Config.Treasury.UseSocietyAccount = false
+        local ok, err = pcall(function()
+            local res = nui(CLERK, 'fine:issueImmediate', { targetCitizenId = 'CIV' .. seq, amount = 600 })
+            assert_true(res.ok, tostring(res.error))
+            local id = res.result.billId
+            assert_eq(Mock.players[CIV].PlayerData.money.bank, 4400)
+            mirrorBefore = GetTreasuryBalance()
+            -- the refund moves, its answer is lost
+            local real = bankX.Transfer
+            bankX.Transfer = function(_, opts)
+                bankX.Transfer = real
+                local r = real(opts)
+                MySQL.update.await("UPDATE pf_transactions SET state = 'debited' WHERE idempotency_key = ?", { opts.key })
+                return { ok = false, state = 'debited', error = 'debited', txId = r.txId }
+            end
+            local w = nui(CLERK, 'bill:waive', { billId = id, reason = 'Issued in error' })
+            assert_eq(w.error, 'refund_pending')
+            assert_eq(GetTreasuryBalance(), mirrorBefore, 'nothing booked while unclear')
+            -- the ledger completes it; the official waives again
+            MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key = ?", { ('pf-government:fine:%d:waive:1'):format(id) })
+            w = nui(CLERK, 'bill:waive', { billId = id, reason = 'Issued in error' })
+            assert_true(w.ok, tostring(w.error))
+            assert_eq(bill(id).status, 'waived')
+            assert_eq(Mock.players[CIV].PlayerData.money.bank, 5000, 'refunded once')
+            assert_eq(GetTreasuryBalance(), mirrorBefore - 600, 'the mirror follows the completed refund')
+            assert_eq(num(MySQL.scalar.await("SELECT COUNT(*) FROM pf_gov_transactions WHERE source_type = 'fine_refund' AND source_id = ?", { tostring(id) })), 1)
+            assert_eq(num(MySQL.scalar.await("SELECT COUNT(*) FROM pf_gov_audit_log WHERE action_type = 'bill_refund' AND target_id = ?", { tostring(id) })), 1)
+            assert_false(nui(CLERK, 'bill:waive', { billId = id, reason = 'again' }).ok)
+            assert_eq(GetTreasuryBalance(), mirrorBefore - 600, 'booked once')
+            assert_eq(txCount(('pf-government:fine:%d:waive'):format(id)), 1)
+        end)
+        Config.Treasury.UseSocietyAccount = saved
+        if not ok then error(err, 0) end
+    end)
+    it('a waiver whose bill update missed after the refund is booked once when retried', function()
+        local res = nui(CLERK, 'fine:issueImmediate', { targetCitizenId = 'CIV' .. seq, amount = 300 })
+        local id = res.result.billId
+        -- the refund goes through; the bill changes just before the waive is written
+        local real = bankX.Transfer
+        bankX.Transfer = function(_, opts)
+            bankX.Transfer = real
+            local r = real(opts)
+            MySQL.update.await('UPDATE pf_gov_bills SET amount_paid = amount_paid + 0.5 WHERE id = ?', { id })
+            return r
+        end
+        assert_eq(nui(CLERK, 'bill:waive', { billId = id, reason = 'x' }).error, 'changed')
+        MySQL.update.await('UPDATE pf_gov_bills SET amount_paid = amount_paid - 0.5 WHERE id = ?', { id })
+        assert_true(nui(CLERK, 'bill:waive', { billId = id, reason = 'x' }).ok)
+        assert_eq(Mock.players[CIV].PlayerData.money.bank, 5000)
+        assert_eq(num(MySQL.scalar.await("SELECT COUNT(*) FROM pf_gov_transactions WHERE source_type = 'fine_refund' AND source_id = ?", { tostring(id) })), 1, 'one booking')
+        assert_eq(num(MySQL.scalar.await("SELECT COUNT(*) FROM pf_gov_audit_log WHERE action_type = 'bill_refund' AND target_id = ?", { tostring(id) })), 1)
+    end)
     it('a refund the treasury cannot cover leaves the fine as it was, and a later waiver tries again', function()
         local res = nui(CLERK, 'fine:issueImmediate', { targetCitizenId = 'CIV' .. seq, amount = 600 })
         local id = res.result.billId
@@ -286,6 +343,43 @@ describe('X7: bill payments the bank settles late', function()
         ReconcileBillPayments()
         assert_eq(Mock.players[FAR].PlayerData.money.bank, 5000, 'refunded in full')
         assert_eq(num(bill(id).amount_paid), 500)
+    end)
+    it('a refund of a late charge the ledger refused moves to the next numbered key', function()
+        local id = remoteFine(500)
+        unclearOnce()
+        govX.PayBillFromPlayer(FAR, id, 500)
+        assert_true((govX.PayBillFromPlayer(CIV, id, 500)))
+        local payKey = MySQL.scalar.await('SELECT pay_key FROM pf_gov_bill_payments WHERE bill_id = ? AND citizenid = ?', { id, 'FAR' .. seq })
+        MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key LIKE ?", { 'pf-government:billpay:' .. id .. ':%' })
+        MySQL.update.await("UPDATE pf_gov_bill_payments SET created_at = NOW() - INTERVAL 5 MINUTE WHERE bill_id = ?", { id })
+        -- the first refund key was refused by the ledger (it stays failed)
+        MySQL.insert.await([[INSERT INTO pf_transactions (tx_id, idempotency_key, kind, from_account, to_account, amount, state, error)
+            VALUES (?, ?, 'refund', 'system:pf-government-fines', ?, 500, 'failed', 'insufficient_funds')]],
+            { 'govrefundfail' .. seq, payKey .. ':refund', ('player:%s:bank'):format('FAR' .. seq) })
+        ReconcileBillPayments()
+        assert_eq(Mock.players[FAR].PlayerData.money.bank, 5000, 'refunded under a fresh key')
+        assert_eq(num(MySQL.scalar.await("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = ? AND state = 'completed'", { payKey .. ':refund:2' })), 1)
+        assert_eq(num(MySQL.scalar.await('SELECT refunded FROM pf_gov_bill_payments WHERE pay_key = ?', { payKey })), 500)
+        ReconcileBillPayments()
+        assert_eq(Mock.players[FAR].PlayerData.money.bank, 5000, 'once')
+    end)
+    it('an unclear refund of a late charge keeps its key until the ledger settles it', function()
+        local id = remoteFine(400)
+        unclearOnce()
+        govX.PayBillFromPlayer(FAR, id, 400)
+        assert_true((govX.PayBillFromPlayer(CIV, id, 400)))
+        local payKey = MySQL.scalar.await('SELECT pay_key FROM pf_gov_bill_payments WHERE bill_id = ? AND citizenid = ?', { id, 'FAR' .. seq })
+        MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key LIKE ?", { 'pf-government:billpay:' .. id .. ':%' })
+        MySQL.update.await("UPDATE pf_gov_bill_payments SET created_at = NOW() - INTERVAL 5 MINUTE WHERE bill_id = ?", { id })
+        unclearOnce()                                    -- the refund moves, its answer is lost
+        ReconcileBillPayments()
+        ReconcileBillPayments()
+        assert_eq(txCount(payKey .. ':refund'), 1, 'no second refund while unclear')
+        assert_eq(MySQL.scalar.await('SELECT refunded FROM pf_gov_bill_payments WHERE pay_key = ?', { payKey }), nil)
+        MySQL.update.await("UPDATE pf_transactions SET state = 'completed' WHERE idempotency_key = ?", { payKey .. ':refund' })
+        ReconcileBillPayments()
+        assert_eq(num(MySQL.scalar.await('SELECT refunded FROM pf_gov_bill_payments WHERE pay_key = ?', { payKey })), 400)
+        assert_eq(Mock.players[FAR].PlayerData.money.bank, 5000)
     end)
     it('has its table (migration 4, safe to run again)', function()
         MySQL.query.await("DELETE FROM pf_schema_migrations WHERE resource = 'pf-government' AND version = 4")

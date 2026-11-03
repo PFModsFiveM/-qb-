@@ -2,6 +2,8 @@
 -- server/schema.lua): a fitted part is recorded per car and slot, so it still comes back out as an
 -- item after a restart (the record used to live in memory). Taking it off removes the record once,
 -- and the saved props (player_vehicles.mods) follow the server's change.
+-- MECH-5: the service history's owner check finds the owner's car whether player_vehicles keeps
+-- its plate padded, with spaces inside, or as the book writes it (no spaces).
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 QBCore = QBCoreMock
@@ -97,5 +99,33 @@ describe('MECH-2 fitted parts survive a restart', function()
         assert_eq(mods().modTurbo, false)
         assert_eq(count('turbo'), 1)
         assert_eq(record('engine'), 'engine4', 'other slots untouched')
+    end)
+end)
+
+describe('MECH-5 the owner reads the service history of their car', function()
+    local OWNER, STRANGER = 2, 3
+    local function history(src, plate) return Mock.callCallback('pf_mech:service:get', src, plate) end
+    local function addCar(cid, plate)
+        MySQL.query.await([[INSERT INTO player_vehicles (citizenid, vehicle, hash, mods, plate, state)
+            VALUES (?, 'sultan', '0', '{}', ?, 0)]], { cid, plate })
+    end
+
+    it('matches the plate as stored, trimmed, or without its inner spaces; nobody else reads it', function()
+        Mock.newPlayer(OWNER, 'OWN1')
+        Mock.newPlayer(STRANGER, 'STR1')
+        MySQL.query.await('DELETE FROM pf_service_book')
+        MySQL.query.await([[INSERT INTO pf_service_book (plate, model, title, service, service_description, svc_date)
+            VALUES ('AB12CD', 'Sultan', 'Oil', 'Changed oil', '', '2026-01-01'),
+                   ('PAD001', 'Sultan', 'Brakes', 'New pads', '', '2026-01-02'),
+                   ('TUNED001', 'Sultan', 'Tune', 'Engine', '', '2026-01-03')]])
+        addCar('OWN1', 'AB 12 CD')                            -- spaces inside
+        addCar('OWN1', ' PAD001 ')                            -- padded
+        assert_eq(#history(OWNER, 'AB12CD'), 1, 'what the book and the client send')
+        assert_eq(#history(OWNER, 'PAD001'), 1)
+        assert_eq(#history(OWNER, ' pad001 '), 1)
+        assert_eq(#history(OWNER, 'TUNED001'), 1, 'stored exactly')
+        assert_eq(#history(STRANGER, 'AB12CD'), 0)
+        assert_eq(#history(STRANGER, 'TUNED001'), 0)
+        assert_eq(#history(OWNER, 'AB12C'), 0, 'not a prefix match')
     end)
 end)

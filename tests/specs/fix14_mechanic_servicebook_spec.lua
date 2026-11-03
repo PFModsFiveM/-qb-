@@ -28,6 +28,10 @@ MySQL.insert = { await = function(q, p)
 end }
 MySQL.scalar = { await = function(q, p)
     if q:find('SELECT citizenid FROM player_vehicles', 1, true) then return owners[p[1]] end
+    -- the owner check: one of this character's cars has the plate (the SQL is tested on a real DB)
+    if q:find('FROM player_vehicles WHERE citizenid = ?', 1, true) then
+        return (owners[p[3]] == p[1]) and 1 or nil
+    end
 end }
 MySQL.query = { await = function(q, p)
     if q:find('FROM pf_service_book WHERE plate = ?', 1, true) then

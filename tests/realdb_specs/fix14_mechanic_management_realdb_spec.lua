@@ -71,6 +71,11 @@ local function offer(cid, business) return MySQL.single.await('SELECT * FROM pf_
 local function hire(src, who) return Mock.callCallback('pf_mech:management:hire', src, who) end
 local function answer(src, id, accept) Mock.fireNet('pf_mech:management:respondOffer', src, id, accept) end
 local function jobName(cid) return json.decode(MySQL.scalar.await('SELECT job FROM players WHERE citizenid = ?', { cid })).name end
+-- the offer's last send and answer, `hours` in the past (the resend time is counted from them)
+local function ageOffer(cid, hours)
+    MySQL.update.await([[UPDATE pf_mech_job_offers SET created_at = DATE_SUB(created_at, INTERVAL ? HOUR),
+        responded_at = IF(responded_at IS NULL, NULL, DATE_SUB(responded_at, INTERVAL ? HOUR)) WHERE citizenid = ?]], { hours, hours, cid })
+end
 
 BeforeEach = function()
     Mock.reset()
@@ -148,12 +153,14 @@ describe('MECH-1 / MECH-X6 job offers', function()
         answer(OFF, id, true)
         assert_eq(off.PlayerData.job.name, 'ambulance', 'expired')
         Mock.clock = Mock.clock + 10
-        hire(BOSS, 'OFF1')                                   -- offered again: open again
+        ageOffer('OFF1', 25)
+        hire(BOSS, 'OFF1')                                   -- offered again a day later: open again
         assert_eq(offer('OFF1').status, 'pending')
         assert_true(Mock.callCallback('pf_mech:management:cancelOffer', BOSS, id))
         answer(OFF, id, true)
         assert_eq(off.PlayerData.job.name, 'ambulance', 'withdrawn')
         Mock.clock = Mock.clock + 10
+        ageOffer('OFF1', 25)
         hire(BOSS, 'OFF1')
         answer(OFF, id, true)
         answer(OFF, id, true)
@@ -170,6 +177,56 @@ describe('MECH-1 / MECH-X6 job offers', function()
         assert_eq(select(2, hire(BOSS, 'MGR1')), 'already_employed')
         assert_eq(select(2, hire(BOSS, 'OFF1')), 'slow_down')
         assert_eq(emp.PlayerData.job.name, 'mechanic')
+    end)
+
+    it('one offer per citizen and shop a day: a refusal stays a refusal, no prompt or mail again', function()
+        local cop = online(COP, 'COP1', 'police', 3)
+        assert_eq(hire(BOSS, 'COP1'), true)
+        local id = offer('COP1').id
+        Mock.clock = Mock.clock + 10
+        assert_eq(select(2, hire(MGR, 'COP1')), 'already_offered', 'another manager, same open offer')
+        answer(COP, id, false)
+        Mock.clock = Mock.clock + 10
+        assert_eq(select(2, hire(BOSS, 'COP1')), 'declined_recently')
+        assert_eq(offer('COP1').status, 'declined', 'not turned back into an open offer')
+        assert_eq(#Mock.clientEventsNamed('pf_mech:offers:show'), 1, 'asked once only')
+        answer(COP, id, true)
+        assert_eq(cop.PlayerData.job.name, 'police')
+        -- a send-and-withdraw loop cannot repeat the prompt either
+        player('NEW2', 'unemployed', 0, 'Nora')
+        Mock.clock = Mock.clock + 10
+        assert_eq(hire(BOSS, 'NEW2'), true)
+        assert_true(Mock.callCallback('pf_mech:management:cancelOffer', BOSS, offer('NEW2').id))
+        Mock.clock = Mock.clock + 10
+        assert_eq(select(2, hire(BOSS, 'NEW2')), 'offered_recently')
+        assert_eq(offer('NEW2').status, 'cancelled')
+        -- a day after the refusal the shop may ask again
+        ageOffer('COP1', 25)
+        Mock.clock = Mock.clock + 10
+        assert_eq(hire(BOSS, 'COP1'), true)
+        assert_eq(offer('COP1').status, 'pending')
+        assert_eq(offer('COP1').id, id, 'the same row, reopened')
+    end)
+
+    it('someone who worked here and left can be offered the job again at once', function()
+        local off = online(OFF, 'OFF1', 'ambulance', 1)
+        hire(BOSS, 'OFF1')
+        answer(OFF, offer('OFF1').id, true)
+        assert_eq(off.PlayerData.job.name, 'mechanic')
+        off.Functions.SetJob('ambulance', 1)
+        Mock.clock = Mock.clock + 10
+        assert_eq(hire(BOSS, 'OFF1'), true)
+        assert_eq(offer('OFF1').status, 'pending')
+    end)
+
+    it('accepting while already working at that shop keeps the grade', function()
+        local off = online(OFF, 'OFF1', 'ambulance', 1)
+        hire(BOSS, 'OFF1')
+        off.Functions.SetJob('mechanic', 3)                  -- hired another way meanwhile
+        off.PlayerData.job.grade.level = 3
+        answer(OFF, offer('OFF1').id, true)
+        assert_eq(off.PlayerData.job.grade.level, 3)
+        assert_eq(offer('OFF1').status, 'accepted')
     end)
 
     it("the shop's managers see its offers", function()
