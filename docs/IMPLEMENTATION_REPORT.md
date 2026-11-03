@@ -2666,3 +2666,47 @@ Grouped by area. Many need a change outside the files the area's agent owned.
 **Batch 13 gaps not taken up in 13b**
 - Banking: car wash, truck robbery, rentals, taxi, farming, App Store and revive still make a new key per click, so a retry after an unclear result that later completes can charge twice. The pfm-shops bail still shows two notices on an unclear result.
 - Strict state bags: the progressbar copy has no LICENSE (upstream is GPL-3.0). pma-voice checks proximity for type and range only, not against `Cfg.voiceModes`. A channel switch while holding push-to-talk clears `radioActive` until release.
+
+## Batch 14 — 2026-11-03: the confirmed security and backlog items (12 areas)
+
+A read-only sweep confirmed 107 open items across both repos. Each area got one agent that first re-verified every
+item on the current code, then fixed it, and an adversarial checker that read the diff, traced honest play and ran
+the new specs against the old code. Areas that failed a check were reworked and checked again (MDT server: offline
+bail; mechanic: NOS empty bottle; gov-computer: domain purchase keys). Every area passed.
+
+| Area | Items | What changed (short) |
+|---|---|---|
+| Minigames, doors, keys | minigame-success, DOOR-1, KEYS-1, PICK-2 | pfm-minigames gets a server half: `IssueChallenge(src, kind, opts)` / `Verify(src, id)`, one answer per id, expiry and min/max duration. Doorlock and vehicle-key lockpicks and hotwiring are decided on the server; pick breakage is rolled there. |
+| Heists | 9 items | Bank hack and thermite results verified through challenges; fire sessions owned by the server; bank doors opened through the doorlock server path at the verified step and relocked at reset; store registers, padlock safes (the combination never leaves the server) and house lockpick/search verified; armoured truck and guards spawned by the server, the charge planted only with guards down and the truck stopped; the accept race locked before the ledger wait, an unclear fee followed and refunded if it settles after the job was freed. |
+| Police, prison, duty | POL-1..4, X-1..3, X-6..8, PRISON-01, prison gates, DUTY-1, 13B-POLICE | Cuff state only written by the server; escape detection, prison timer, jail items and gate hacks server-decided; spikes server-placed; `/fine` and bills through one keyed charge to the society with numbered attempts; impound fuel from pfm-fuel; duty points registered by resources (`RegisterDutyPoints`). |
+| Police and EMS MDT server | MDT-01..11, EMS-01, MDT-XSS-4, MDT-NEGBANK | One permission table (`Config.Permissions`) with on-duty checks; sentencing only with the citizen present or booked; the MDT jail on the server (`pf_mdt_active_jails`), bail as an accepted offer with one keyed transfer and a released marker; roster reset backed up; charge caps and audit; image URLs validated. |
+| MDT UI | MDT-XSS-1..5, DEV-MSG-1, MDT-RTE-1, MDT-DEAD-1 | Every server string into the DOM as text; image URLs through `safeImageUrl`; inline handler arguments through `escapeJsAttr`; the rich text editor is an allow list; postMessage accepted only from the right frame; dead pages removed (pf-jobs legacy NUI, pf-emsmdt app-extended.js). |
+| Phone and voice | PH-1..3, X-4, X-5, 13B-PAYING | Calls held on the server with random ids; chat messages built by the server and appended under a lock; the upload webhook stays on the server (`pfm_phone_webhook` convar); `voice_serverCallsOnly` (default on) stops clients joining call channels. |
+| Banking | BANK-1, X-9 | Shared-account managers cannot raise their own or others' rights beyond what they hold; the account lock is taken before the first wait. |
+| Gov and computer | G1-3, X6-X10, GOV-XSS-1, GOV-ID-1, C2 | Website edits need the `website` permission; bills are server-only and capped; remote fines become unpaid bills; bill payments recorded before the charge (`pf_gov_bill_payments`); waivers and surplus refunds on numbered keys; identity edits use the character-creation validator; domain purchases reserved and keyed per try (`pf_computer_domain_purchases`). |
+| Mechanic | MECH-1..11, MECH-X1..X9 | Hiring is an offer the citizen accepts (offline too, once a day); fitted parts persist; repairs, lift, clutch, coal, diagnostics, NOS drain, preview and service book checked on the server; roadside calls server-spawned, cancellable, timed out and paid on numbered keys to the character who took them; per-shop roles and settings. |
+| Street jobs | hotdog x2, newsjob, drugs x2, ledger-unclear-handback, JOBS-1, JOBS-2, TOW-DEP | Hot dog cooking, price, quality and stock on the server; drug deliveries run by the server with a capped police multiplier; `PFPayout.IsClearFailure(res)` decides when goods go back; Gruppe 6 stops checked; taxi rating from the server; tow and taxi deposits read before charging. |
+| Restaurants | R1, R2, X1-X5 | Kitchen events only to staff on shift, without citizen ids; roles need a shift; menu text is plain; pfm-menu escapes every string. |
+| Vehicles | GAR-1..3, VS-1, VEND-1, CLASS-1, LAP-1 | House garages from the server; parking and take-out checked against the server's car (a second live copy or a different model is refused); sale mods from the server's record; vending distance and vehicle class on the server; lap times from server checkpoint stamps (radius 25 m). |
+
+Lead fixes during integration: numbered keys for drug hand-over payments (pfm-drugs migration v2 `pay_attempt`);
+one settle run per character for corner and hot dog sales (nothing lost, nothing handed back twice); the truck fee
+follow-up; garage park checks; NOS drain loop walks a snapshot under pcall; roadside calls bound to the character;
+premises-equipment registers get Clock in/out.
+
+Tests: mocked 2496 passed, 0 failed (254 files); real DB 644 passed, 0 failed (69 files); all tests/js specs green;
+`realdb/ledger_parallel.js` and `realdb/sql_install_check.js` pass. Not tested in game.
+
+Open (carried into the overhaul plan, `docs/pf_ultimate/PF_REMAINING_WORK.md`): wave 2 (KEYS-2 callers to the server
+GiveKeys export, GAR-4 garage props path); pf-tablet/pf-computer frame message guards; the PFPayout wrapper reports a
+thrown bank call as `bank_unavailable` (a clear failure) although a row may have been written; per-target fine cap
+and phone uniqueness not locked across officials; MDT tick release vs bail lock; client prompts for MDT bail.
+
+In-game checks: see each area in the batch 14 reports; the main ones are the bank heist flow end to end, store and
+house robberies, the armoured truck, prison gates and escape detection, MDT sentencing at a traffic stop and at the
+station with bail, phone calls and photo upload, NOS boosting to empty, roadside calls, restaurant clock-in, garage
+park and take-out, lap races.
+
+The PF Ultimate overhaul blueprint (Police, EMS, Medical, Justice, Jail, Prison, Corrections, Community Service) is
+in `docs/pf_ultimate/` (plan, architecture, migrations, integration matrix, progress tracker, test report, remaining
+work). Implementation starts with batch 15.

@@ -101,7 +101,7 @@ server/medical/diagnosis.lua      (b17) findings, suspected/confirmed diagnoses
 server/medical/exam.lua           (b17) exam actions per modality
 server/medical/treatment.lua      (b17) treatment engine (replaces server/treatment.lua logic)
 server/medical/recovery.lua       (b17) stage transitions, restrictions, offline progression
-server/medical/effects.lua        (b15 stub of push; b17 full) pushes effect profiles to owners
+server/medical/effects.lua        (b15 computes the combined profile; b17 pushes it to the new client applier)
 server/items.lua                  (b17) usable medical items (moved out of server/main.lua)
 server/ems/equipment.lua          (b17) stretchers, wheelchairs, medbags, loading, entity safety
 server/ems/fleet.lua              (b20) rig stock, restock, maintenance requests
@@ -410,7 +410,8 @@ PFMed.Engine.Tick(now)                                       -- one pass over ac
 PFMed.Engine.OnConsciousness(fn(cid, from, to, cause))       -- downstate subscribes
 PFMed.Engine.Activate(cid) / Deactivate(cid)                 -- add/remove from the active set
 PFMed.Down.Set(src, state, cause) / PFMed.Down.IssueReviveToken(src, mode) -- b16
-PFMed.Effects.Push(src)                                      -- b15 minimal, b17 full
+PFMed.Effects.Profile(cid) -> profile                       -- b15: from injuries + physiology
+PFMed.Effects.Push(src)                                      -- b17: sends the profile to client/effects.lua on change
 ```
 
 ### 4.2 Diagnosis and exam (AJ b17; UI in EMDT b21)
