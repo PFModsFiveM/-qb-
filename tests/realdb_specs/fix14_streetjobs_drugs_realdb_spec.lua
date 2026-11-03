@@ -69,9 +69,14 @@ end
 describe('fix14 drugs deliveries on a real database', function()
     it('the migration is recorded and safe to run again', function()
         assert_true(RunMigrations('pfm-drugs', PFDrugs.Migrations))
-        for _, sql in ipairs(PFDrugs.Migrations[1].up) do MySQL.query.await(sql) end
+        for _, m in ipairs(PFDrugs.Migrations) do
+            for _, sql in ipairs(m.up) do MySQL.query.await(sql) end
+        end
         local n = MySQL.scalar.await('SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = ?', { 'pfm-drugs' })
-        assert_eq(tonumber(n), 1)
+        assert_eq(tonumber(n), #PFDrugs.Migrations)
+        local col = MySQL.scalar.await([[SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pfm_drug_deliveries' AND COLUMN_NAME = 'pay_attempt']])
+        assert_eq(tonumber(col), 1)
     end)
 
     it('a run is kept in the table and survives a restart', function()

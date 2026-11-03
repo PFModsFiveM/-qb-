@@ -156,6 +156,18 @@ describe('GAR-2 parking', function()
         assert_eq(#spawned, 1)
     end)
 
+    it('a second live car with the plate is refused while the tracked one exists, and a different model is refused', function()
+        local real = car('OUT1', at('motelgarage'), P)
+        assert_true(park(P, 'OUT1', 'motelgarage'))                -- tracked until it leaves the world
+        local stray = car('OUT1', at('motelgarage'), P)            -- a client-made copy with the plate
+        cars.OUT1.state = 0
+        assert_false(park(P, 'OUT1', 'motelgarage'), 'the tracked car keeps its place')
+        runTimers()
+        existing[real] = nil
+        Mock.models[stray] = GetHashKey('adder')                   -- not the owned model
+        assert_false(park(P, 'OUT1', 'motelgarage'), 'another model with the plate is not the owned car')
+    end)
+
     it('the garage\'s own type counts: a depot takes no cars, a job garage only its job, a gang garage only its gang', function()
         car('OUT1', at('depotLot'), P)
         assert_false(park(P, 'OUT1', 'depotLot', 'public'))
@@ -163,6 +175,7 @@ describe('GAR-2 parking', function()
         assert_false(park(P, 'OUT1', 'police', 'public'), 'not police')
         Mock.players[P].PlayerData.job = { name = 'police', type = 'leo' }
         assert_true(park(P, 'OUT1', 'police', 'public'))
+        runTimers()                                                -- the parked car leaves the world
         cars.OUT1.state = 0
         car('OUT1', at('ballas'), P)
         assert_false(park(P, 'OUT1', 'ballas', 'job'), 'not a Ballas member')

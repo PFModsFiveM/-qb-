@@ -185,4 +185,39 @@ describe('armored truck accept', function()
         assert_eq(started(R), 1)
         assert_eq(started(OTHER), 0)
     end)
+    it('a bank outage on a retry keeps waiting; a fee still unsettled when the job is freed is refunded once it settles paid', function()
+        local keys = {}
+        local answer = { ok = false, state = 'pending', unclear = true }
+        PFPayout.Charge = function(_, _, _, opts)
+            keys[#keys + 1] = opts.key
+            return false, answer
+        end
+        accept(R)
+        local function runTimers(ms)
+            local due = Timers
+            Timers = {}
+            for _, t in ipairs(due) do if t.ms == ms then t.fn() else Timers[#Timers + 1] = t end end
+        end
+        answer = { ok = false, error = 'bank_unavailable' }
+        runTimers(15000)
+        assert_eq(#keys, 2)
+        accept(OTHER)
+        assert_eq(started(OTHER), 0, 'an outage on a retry does not free the job')
+        answer = { ok = false, state = 'pending', unclear = true }
+        for _ = 1, 25 do runTimers(15000) end
+        -- the job is free for someone else now; the unsettled fee is followed under its key
+        accept(OTHER)
+        local refunds = {}
+        local realPay = PFPayout.Pay
+        PFPayout.Pay = function(who, acct, amount, opts) refunds[#refunds + 1] = opts.key return true, { ok = true } end
+        PFPayout.Charge = function(_, _, _, opts)
+            keys[#keys + 1] = opts.key
+            if opts.key == keys[1] then return 'bank', { ok = true } end
+            return realCharge(_, _, _, opts)
+        end
+        runTimers(60000)
+        PFPayout.Pay = realPay
+        assert_eq(#refunds, 1)
+        assert_eq(refunds[1], keys[1] .. ':refund', 'the fee paid for a freed job goes back under its refund key')
+    end)
 end)

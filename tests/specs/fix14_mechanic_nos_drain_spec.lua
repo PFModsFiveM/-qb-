@@ -39,8 +39,11 @@ BeforeEach = function()
     Mock.players, Mock.coords, Mock.vehicleOf = {}, {}, {}
     states, saves = {}, {}
     existing = { [CAR] = true }
-    Mock.newPlayer(DRIVER)
-    Mock.newPlayer(PASSENGER)
+    for _, src in ipairs({ DRIVER, PASSENGER }) do
+        local p = Mock.newPlayer(src)
+        p.inv = {}
+        p.Functions.AddItem = function(name, n) p.inv[name] = (p.inv[name] or 0) + (n or 1) return true end
+    end
     Mock.vehicleOf[DRIVER], Mock.vehicleOf[PASSENGER] = CAR, CAR
     drivers = { [CAR] = DRIVER }
     Entity(CAR).state.nos = { has = true, level = 100, levelSel = 1, color = '#55CCFF' }
@@ -72,6 +75,8 @@ describe('MECH-11 the server drains the bottle', function()
         assert_eq(nos().level, 0)
         assert_eq(nos().color, '#55CCFF')
         assert_eq(saves[#saves].nos.has, false, 'the empty bottle is saved')
+        assert_eq(Mock.players[DRIVER].inv.emptynos, 1, 'the server hands the driver the empty')
+        assert_eq(Mock.players[PASSENGER].inv.emptynos, nil)
     end)
 
     it('the level is saved each time it falls past a step of 10', function()
@@ -85,8 +90,8 @@ describe('MECH-11 the server drains the bottle', function()
         boost(PASSENGER, true)
         seconds(5)
         assert_eq(nos().level, 100)
-        Mock.fireNet('pf_mech:nos:giveEmpty', PASSENGER, CAR)
-        Mock.fireNet('pf_mech:nos:giveEmpty', DRIVER, CAR)
+        assert_eq(Mock.netHandlers['pf_mech:nos:giveEmpty'], nil, 'no empty-on-request')
+        Mock.fireNet('pf_mech:nos:removeEmpty', PASSENGER, CAR)
         assert_eq(nos().has, true)
         assert_eq(nos().level, 100)
         assert_eq(#saves, 0)

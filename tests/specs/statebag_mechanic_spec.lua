@@ -101,8 +101,7 @@ describe('NOS fitting', function()
         assert_eq(st(CAR).nos.level, CAP)
         assert_eq(st(CAR).nos.levelSel, 1)
         assert_eq(count(ME, 'nos'), 0)
-        Mock.fireNet('pf_mech:nos:giveEmpty', ME)
-        assert_eq(count(ME, 'emptynos'), 1, 'one empty owed for the bottle taken')
+        assert_eq(count(ME, 'emptynos'), 0, 'the empty comes back when the bottle is used up')
     end)
 
     it('no bottle used, a car far away, a running engine or NOS already fitted: nothing', function()
@@ -157,34 +156,34 @@ describe('NOS while driving', function()
 
     it('a bottle with gas left is never emptied on request; the server drain empties it', function()
         st(CAR).nos = { has = true, level = 30, color = '#FF0000', levelSel = 1 }
-        Mock.fireNet('pf_mech:nos:giveEmpty', OTHER, CAR)
+        assert_eq(Mock.netHandlers['pf_mech:nos:giveEmpty'], nil, 'no empty-on-request any more')
         seat(ME, CAR)
-        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
-        assert_eq(st(CAR).nos.has, true, 'the driver cannot empty it either')
+        Mock.fireNet('pf_mech:nos:removeEmpty', ME, CAR)
+        assert_eq(st(CAR).nos.has, true, 'not even by taking it off')
         assert_eq(st(CAR).nos.level, 30)
         Mock.fireNet('pf_mech:nos:boost', ME, CAR, true)
         for _ = 1, 5 do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
         assert_eq(st(CAR).nos.has, false)
         assert_eq(st(CAR).nos.level, 0)
         assert_eq(st(CAR).nos.color, '#FF0000')
-        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
-        assert_eq(count(ME, 'emptynos'), 0, 'no empty without a bottle the server took')
+        assert_eq(count(ME, 'emptynos'), 1, 'the driver gets the empty from the drain')
+        for _ = 1, 5 do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
+        Mock.fireNet('pf_mech:nos:removeEmpty', ME, CAR)
+        assert_eq(count(ME, 'emptynos'), 1, 'one empty per bottle')
     end)
 
-    it('removing an empty bottle needs the player at that car and an empty owed', function()
-        Mock.players[ME].inv.nos = 1
-        useItem(ME, 'nos')
-        Mock.clock = Mock.clock + 5
-        Mock.fireNet('pf_mech:nos:consumeBottle', ME, CAR)
-        st(CAR).nos.level = 0
+    it('removing an empty bottle needs the player at that car; it gives that bottle\'s empty once', function()
+        st(CAR).nos = { has = true, level = 0 }
         st(OTHER_CAR).nos = { has = true, level = 0 }
         Mock.fireNet('pf_mech:nos:removeEmpty', ME, OTHER_CAR)          -- far away
         assert_true(st(OTHER_CAR).nos ~= nil)
-        Mock.fireNet('pf_mech:nos:removeEmpty', OTHER, CAR)             -- beside it, nothing owed
-        assert_true(st(CAR).nos ~= nil)
+        assert_eq(count(ME, 'emptynos'), 0)
         Mock.fireNet('pf_mech:nos:removeEmpty', ME, CAR)
+        Mock.fireNet('pf_mech:nos:removeEmpty', ME, CAR)
+        Mock.fireNet('pf_mech:nos:removeEmpty', OTHER, CAR)
         assert_eq(st(CAR).nos, nil)
         assert_eq(count(ME, 'emptynos'), 1)
+        assert_eq(count(OTHER, 'emptynos'), 0)
     end)
 end)
 
@@ -466,7 +465,7 @@ describe('NOS client (client/nos.lua)', function()
         assert_eq(sel[1].args[2], 2)
         assert_eq(notes[#notes], 'NOS Level 2', 'shown at once, before the server answers')
         -- a few seconds of boost, then the key is let go (one run of the loop: its state is kept)
-        local stopAt = frame + 200
+        local stopAt = frame + 150                                       -- 2.5 s, before the silence check
         pressed = setmetatable({}, { __index = function(_, k) if k == BOOST then return frame < stopAt end end })
         run(260)
         local all = sent('pf_mech:nos:boost')
@@ -478,13 +477,11 @@ describe('NOS client (client/nos.lua)', function()
         assert_eq(#writes, 0, 'no state bag written')
     end)
 
-    it('an empty bottle is reported to the server with the car', function()
+    it('the client never asks for the empty bottle: the server hands it over', function()
         reset({ has = true, level = 1.0, levelSel = 1 })
         pressed[BOOST] = true
         run(40)
-        local ev = sent('pf_mech:nos:giveEmpty')
-        assert_eq(#ev, 1)
-        assert_eq(ev[1].args[1], CAR + 1000)
+        assert_eq(#sent('pf_mech:nos:giveEmpty'), 0)
         assert_eq(#writes, 0)
     end)
 end)

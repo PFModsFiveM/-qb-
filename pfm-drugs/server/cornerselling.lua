@@ -41,6 +41,7 @@ end
 -- The drugs stay sold and the pay is asked again under the same key until the ledger settles it;
 -- only a clear failure hands the drugs back (an unclear one may still be paid by the ledger's recovery).
 local PendingSales = {}
+local SettlingSales = {} -- [citizenid] while a settle run waits on the bank
 local SALE_RETRY_MS, SALE_RETRIES = 30000, 20
 
 local function payCornerSale(src, sale, retry)
@@ -57,27 +58,39 @@ local function settleCornerSales(src)
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     local cid = Player.PlayerData.citizenid
+    -- one run per character at a time; the list is taken out first, so a sale added while this run
+    -- waits on the bank goes into a fresh list and is merged back at the end (nothing is lost, and
+    -- no sale is asked twice or handed back twice)
+    if SettlingSales[cid] then return end
     local list = PendingSales[cid]
     if not list then return end
+    SettlingSales[cid], PendingSales[cid] = true, nil
     local keep = {}
-    for _, sale in ipairs(list) do
-        local res = payCornerSale(src, sale, true)
-        if res == 'failed' then
-            exports['pfm-inventory']:AddItem(src, sale.item, sale.amount, false, false, 'qb-drugs:corner-refund')
-            TriggerClientEvent('QBCore:Notify', src, 'A buyer\'s payment did not go through. You got the product back.', 'error')
-        elseif res == 'pending' then
-            keep[#keep + 1] = sale
+    local ok, err = pcall(function()
+        for i, sale in ipairs(list) do
+            local res = payCornerSale(src, sale, true)
+            list[i] = nil
+            if res == 'failed' then
+                exports['pfm-inventory']:AddItem(src, sale.item, sale.amount, false, false, 'qb-drugs:corner-refund')
+                TriggerClientEvent('QBCore:Notify', src, 'A buyer\'s payment did not go through. You got the product back.', 'error')
+            elseif res == 'pending' then
+                keep[#keep + 1] = sale
+            end
         end
-    end
+    end)
+    for _, sale in pairs(list) do keep[#keep + 1] = sale end -- not reached because of an error: kept
+    for _, sale in ipairs(PendingSales[cid] or {}) do keep[#keep + 1] = sale end
     PendingSales[cid] = #keep > 0 and keep or nil
+    SettlingSales[cid] = nil
+    if not ok then print(('^1[pfm-drugs]^7 settling corner sales failed: %s'):format(tostring(err))) end
 end
 
 local function retryCornerSales(src, cid, left)
     SetTimeout(SALE_RETRY_MS, function()
         local P = exports['pfm-core']:GetPlayer(src)
-        if not P or P.PlayerData.citizenid ~= cid or not PendingSales[cid] then return end
+        if not P or P.PlayerData.citizenid ~= cid or not (PendingSales[cid] or SettlingSales[cid]) then return end
         settleCornerSales(src)
-        if PendingSales[cid] and left > 1 then retryCornerSales(src, cid, left - 1) end
+        if (PendingSales[cid] or SettlingSales[cid]) and left > 1 then retryCornerSales(src, cid, left - 1) end
     end)
 end
 

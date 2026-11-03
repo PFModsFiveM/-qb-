@@ -105,7 +105,7 @@ local COUNTDOWN_MS = 10000 -- the racers' countdown (10 x 1 s on the client) bet
 -- stands at that checkpoint (server position), in order, no sooner than the track allows; the finish
 -- time and best lap come from those stamps. The client's race clock (UI ticks) and its checkpoint
 -- numbers used to be taken, so any time became the track record.
-local function CheckpointRadius() return tonumber(Config.CheckpointRadius) or 40.0 end
+local function CheckpointRadius() return tonumber(Config.CheckpointRadius) or 25.0 end
 local function MaxSpeed() return math.max(1.0, tonumber(Config.MaxSpeed) or 90.0) end
 
 local function CheckpointPoint(race, i)

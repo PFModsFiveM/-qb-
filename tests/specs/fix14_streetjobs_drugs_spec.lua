@@ -14,7 +14,7 @@ load_resource('tests/lua/ledger_env.lua')
 -- the run table on the fake database
 local runRows = {}
 local RUN_COLS = { 'citizenid', 'state', 'delivery_id', 'dealer', 'item_idx', 'amount', 'location', 'started_at', 'earliest',
-    'handed', 'pay_amount', 'outcome', 'debt', 'debt_id', 'debt_attempt', 'next_at', 'day', 'day_count' }
+    'handed', 'pay_amount', 'pay_attempt', 'outcome', 'debt', 'debt_id', 'debt_attempt', 'next_at', 'day', 'day_count' }
 FakeDB.extraPatterns = {
     { 'SELECT * FROM pfm_drug_deliveries', function(p) return runRows[p[1]] and { runRows[p[1]] } or {} end },
     { 'INSERT INTO pfm_drug_deliveries', function(p)
@@ -240,6 +240,31 @@ describe('fix14 drugs: goods are handed back only on a clear payment failure', f
         assert_eq(out.ok, false)
         assert_eq(count(P, item), d.amount, 'handed back')
         assert_eq(PFDrugs.HandOver(P).outcome, 'perfect', 'the run is still open and pays now')
+    end)
+
+    it('a clearly failed pay that spent its key is paid next time under a new numbered key', function()
+        local d = request().delivery
+        local item = itemOf(d)
+        local keys = {}
+        bankExports.Transfer = function(_, opts)
+            keys[#keys + 1] = opts.key
+            return { ok = false, state = 'compensated', error = 'credit_failed' }
+        end
+        local out = deliver(d)
+        assert_eq(out.ok, false)
+        assert_eq(count(P, item), d.amount, 'a clear failure hands the bricks back')
+        bankExports.Transfer = function(...)
+            local args = { ... }
+            local opts = args[#args]
+            keys[#keys + 1] = opts.key
+            return realTransfer(opts)
+        end
+        local again = PFDrugs.HandOver(P)
+        assert_eq(again.ok, true)
+        assert_true(keys[2] ~= keys[1], 'the spent key is not asked again')
+        assert_eq(keys[2], keys[1] .. ':1')
+        assert_eq(#LedgerEnv.paid(keys[2]), 1)
+        assert_true(cash() > 0)
     end)
 
     it('a corner sale whose pay is unclear keeps the drugs sold; a clear failure hands them back', function()

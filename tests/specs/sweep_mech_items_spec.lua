@@ -142,16 +142,22 @@ describe('performance part returns', function()
 end)
 
 describe('NOS', function()
-    it('no empty bottle without a full one used', function()
-        for _ = 1, 3 do Mock.fireNet('pf_mech:nos:giveEmpty', CIV) end
+    it('no empty bottle on request; a bottle is only taken when it is fitted to a car', function()
+        assert_eq(Mock.netHandlers['pf_mech:nos:giveEmpty'], nil, 'the request is gone')
+        Mock.players[CIV].inv.nos = 1
+        Mock.fireNet('pf_mech:nos:consumeBottle', CIV)                -- no car
+        assert_eq(count(CIV, 'nos'), 1)
         assert_eq(count(CIV, 'emptynos'), 0)
     end)
-    it('one empty bottle per full bottle installed', function()
-        Mock.players[CIV].inv.nos = 1
-        Mock.fireNet('pf_mech:nos:consumeBottle', CIV)
-        Mock.fireNet('pf_mech:nos:giveEmpty', CIV)
-        Mock.fireNet('pf_mech:nos:giveEmpty', CIV)
-        assert_eq(count(CIV, 'nos'), 0)
+    it('one empty bottle per bottle the server drains, to the driver', function()
+        Entity(CAR).state.nos = { has = true, level = 10, levelSel = 1 }
+        Mock.vehicleOf[CIV] = CAR
+        Mock.fireNet('pf_mech:nos:boost', CIV, CAR, true)
+        for _ = 1, 3 do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
+        assert_eq(Entity(CAR).state.nos.has, false)
+        Mock.fireNet('pf_mech:nos:boost', CIV, CAR, false)
+        Mock.fireNet('pf_mech:nos:boost', CIV, CAR, true)              -- nothing left to boost
+        for _ = 1, 3 do Mock.clock = Mock.clock + 1; PFMech.NosDrainTick() end
         assert_eq(count(CIV, 'emptynos'), 1)
     end)
     it('the level falls on the server while the driver boosts; nobody else moves it', function()

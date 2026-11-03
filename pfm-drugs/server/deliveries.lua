@@ -76,15 +76,22 @@ D.Migrations = {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
         },
     },
+    {
+        version = 2,
+        name = 'numbered attempt for the hand-over payment key',
+        up = {
+            [[ALTER TABLE `pfm_drug_deliveries` ADD COLUMN IF NOT EXISTS `pay_attempt` INT NOT NULL DEFAULT 0 AFTER `pay_amount`]],
+        },
+    },
 }
 
 local Runs = {}  -- [citizenid] = the citizen's row (loaded once)
 local Busy = {}  -- [citizenid] while a request or hand-over runs (taken before the first wait)
 
 local COLUMNS = { 'state', 'delivery_id', 'dealer', 'item_idx', 'amount', 'location', 'started_at', 'earliest',
-    'handed', 'pay_amount', 'outcome', 'debt', 'debt_id', 'debt_attempt', 'next_at', 'day', 'day_count' }
+    'handed', 'pay_amount', 'pay_attempt', 'outcome', 'debt', 'debt_id', 'debt_attempt', 'next_at', 'day', 'day_count' }
 local NUMERIC = { item_idx = true, amount = true, location = true, started_at = true, earliest = true, handed = true,
-    pay_amount = true, debt = true, debt_attempt = true, next_at = true, day = true, day_count = true }
+    pay_amount = true, pay_attempt = true, debt = true, debt_attempt = true, next_at = true, day = true, day_count = true }
 -- text columns are written as '' when empty (no nil holes in the parameter list)
 
 local function blankRun(cid)
@@ -271,6 +278,14 @@ end
 -- and reopens the run; an unclear result keeps them taken and the run waiting on the same key. On a
 -- retry (the first answer was unclear) a bank that does not answer says nothing about that key: the
 -- run keeps waiting. Returns 'paid', 'failed' or 'pending'.
+-- Attempt 0 keeps the original key (payments already waiting on it still settle under it); each
+-- attempt after a clear failure that wrote a ledger row gets its own numbered key.
+local function deliveryPayKey(r)
+    local n = math.floor(tonumber(r.pay_attempt) or 0)
+    if n <= 0 then return ('pfm-drugs:delivery:%s'):format(r.delivery_id) end
+    return ('pfm-drugs:delivery:%s:%d'):format(r.delivery_id, n)
+end
+
 local function payRun(src, r, retry)
     local itemCfg = itemCfgOf(r)
     local amount = math.floor(tonumber(r.pay_amount) or 0)
@@ -282,7 +297,7 @@ local function payRun(src, r, retry)
             if not ok then res.state = 'failed' end
         else
             ok, res = PFPayout.Pay(src, 'cash', amount, {
-                key = ('pfm-drugs:delivery:%s'):format(r.delivery_id), reason = 'qb-drugs:server:successDelivery', kind = 'sale', quiet = true,
+                key = deliveryPayKey(r), reason = 'qb-drugs:server:successDelivery', kind = 'sale', quiet = true,
             })
         end
         if not ok then
@@ -290,6 +305,10 @@ local function payRun(src, r, retry)
             if Config.UseMarkedBills or (not silent and PFPayout.IsClearFailure(res)) then
                 -- nothing was paid and nothing will be: the bricks go back, the run stays open
                 if itemCfg then giveItem(src, itemCfg.item, tonumber(r.handed) or 0, 'qb-drugs:delivery-refund') end
+                if not Config.UseMarkedBills and type(res) == 'table'
+                    and res.error ~= 'bank_unavailable' and res.error ~= 'ledger_unavailable' then
+                    r.pay_attempt = math.floor(tonumber(r.pay_attempt) or 0) + 1 -- that key is spent
+                end
                 r.state, r.handed, r.pay_amount, r.outcome = 'active', 0, 0, nil
                 saveRun(r)
                 notify(src, 'The dealer could not pay right now. You still have the product.', 'error')
@@ -427,6 +446,7 @@ function D.RequestDelivery(src, dealerName)
 
         local before = { state = r.state, day_count = r.day_count }
         r.state, r.delivery_id, r.dealer, r.item_idx, r.amount, r.location = 'active', PFPayout.NewId(), dealerName, itemIdx, amount, locIdx
+        r.pay_attempt = 0
         r.started_at, r.earliest = now, now + math.max(MIN_TRIP_SECONDS, math.ceil(trip / MAX_TRIP_SPEED))
         r.handed, r.pay_amount, r.outcome = 0, 0, nil
         r.day_count = r.day_count + 1

@@ -15,6 +15,7 @@ local STOPPED_SPEED = 1.0                -- m/s
 local DEAD_HEALTH = 100                  -- GTA peds die at 100 health or less (dead ones read 0)
 local GUARD_SEATS = { -1, 0, 1 }
 local SETTLE_RETRY_MS, SETTLE_TRIES = 15000, 20 -- an unclear fee is asked again under its own key
+local FOLLOW_RETRY_MS, FOLLOW_TRIES = 60000, 120 -- after the job is freed: once a minute for two hours
 local RewardCooldowns = {} -- per-player cooldown to prevent rapid re-triggering
 
 local function Notify(src, text, kind)
@@ -70,20 +71,45 @@ end
 
 -- The activation fee, through the ledger under one key per mission. A clear refusal frees the job; an
 -- unclear result keeps it locked and asks the same key again until it settles (never a new key).
+-- An activation fee that was still unsettled when the job was freed: asked again under the SAME key
+-- (the ledger answers with the key's final result once it settles) and refunded if it turns out paid,
+-- since the mission it paid for no longer runs.
+local function FollowUnsettledFee(cid, key, tries)
+	SetTimeout(FOLLOW_RETRY_MS, function()
+		local account, res = PFPayout.Charge(cid, 'bank', Config.ActivationCost, { key = key, kind = 'fee', reason = 'Armored truck job', quiet = true })
+		if account then
+			PFPayout.Pay(cid, 'bank', Config.ActivationCost, { key = key .. ':refund', reason = 'Armored truck job cancelled', quiet = true })
+			return
+		end
+		local outage = type(res) == 'table' and (res.error == 'bank_unavailable' or res.error == 'ledger_unavailable')
+		if not outage and PFPayout.IsClearFailure(res) then return end -- nothing was taken
+		if tries < FOLLOW_TRIES then return FollowUnsettledFee(cid, key, tries + 1) end
+		print(('^1[pfm-truckrobbery]^7 activation fee %s for %s never settled; check the ledger journal'):format(key, cid))
+	end)
+end
+
 local function ChargeActivation(src, id, key, tries)
 	if not Mission or Mission.id ~= id then return end
-	local account, res = PFPayout.Charge(Mission.cid, 'bank', Config.ActivationCost, { key = key, kind = 'fee', reason = 'Armored truck job' })
-	if not Mission or Mission.id ~= id then return end
+	local cid = Mission.cid
+	local account, res = PFPayout.Charge(cid, 'bank', Config.ActivationCost, { key = key, kind = 'fee', reason = 'Armored truck job', quiet = tries > 0 })
+	if not Mission or Mission.id ~= id then
+		-- the job ended while this call waited: a fee taken now goes back
+		if account then PFPayout.Pay(cid, 'bank', Config.ActivationCost, { key = key .. ':refund', reason = 'Armored truck job cancelled', quiet = true }) end
+		return
+	end
 	if account then
 		if GetPlayerName(src) and MissionPlayer == src then return StartMission(src, id) end
 		-- paid, but the player left while it settled: the fee goes back (stable key, paid once)
-		PFPayout.Pay(Mission.cid, 'bank', Config.ActivationCost, { key = key .. ':refund', reason = 'Armored truck job cancelled' })
+		PFPayout.Pay(cid, 'bank', Config.ActivationCost, { key = key .. ':refund', reason = 'Armored truck job cancelled' })
 		return EndMission(id)
 	end
-	if PFPayout.IsClearFailure(res) then return EndMission(id) end
+	-- on a retry, a bank that does not answer says nothing about this key (its first answer was unclear)
+	local outage = type(res) == 'table' and (res.error == 'bank_unavailable' or res.error == 'ledger_unavailable')
+	if PFPayout.IsClearFailure(res) and not (tries > 0 and outage) then return EndMission(id) end
 	if tries >= SETTLE_TRIES then
-		print(('[pfm-truckrobbery] activation fee %s still unsettled; the job is freed, the ledger settles the key'):format(key))
-		return EndMission(id)
+		print(('[pfm-truckrobbery] activation fee %s still unsettled; the job is freed and the fee is followed (refunded if it settles paid)'):format(key))
+		EndMission(id)
+		return FollowUnsettledFee(cid, key, 0)
 	end
 	SetTimeout(SETTLE_RETRY_MS, function() ChargeActivation(src, id, key, tries + 1) end)
 end

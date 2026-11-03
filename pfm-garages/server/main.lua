@@ -675,6 +675,8 @@ QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(sourc
     if not Player or type(plate) ~= 'string' or plate == '' or #plate > 16 or type(garageId) ~= 'string' or #garageId > 128 then
         return cb(nil, nil, nil)
     end
+    plate = trimPlate(plate)
+    if plate == '' then return cb(nil, nil, nil) end
     local garage = Config.Garages[garageId]
     if not garage or type(garage.spawnPoint) ~= 'table' or not garage.spawnPoint[1] then return cb(nil, nil, nil) end
     if not mayUseGarage(Player, garage) or not atGarage(src, garage) then return cb(nil, nil, nil) end
@@ -701,6 +703,15 @@ end)
 local PARK_REMOVE_MS = 4000   -- the owner's client gets everyone out and deletes the car in ~1.5 s
 
 --- The car with this plate the player sits in, else the nearest one with it within reach.
+--- True unless both the entity's model and the row's model name are known and differ.
+local function sameModel(entityModel, modelName)
+    local m = tonumber(entityModel)
+    if not m or m == 0 or type(modelName) ~= 'string' or modelName == '' then return true end
+    local want = GetHashKey(modelName)
+    if type(want) ~= 'number' then return true end
+    return (m % 4294967296) == (want % 4294967296)
+end
+
 local function carToPark(src, plate)
     local ped = GetPlayerPed(src)
     local veh = GetVehiclePedIsIn(ped, false)
@@ -743,6 +754,10 @@ local function depositLocked(src, Player, plate, garageId, garage)
     -- world and the garage handed out a second copy
     local veh = carToPark(src, plate)
     if not veh then return false end
+    -- another live copy is tracked as this car (a client-made car given the real plate): refuse, so the
+    -- tracked car keeps its place and a second take-out stays impossible
+    if isOutside(plate) and OutsideVehicles[plate].entity ~= veh then return false end
+    if not sameModel(GetEntityModel(veh), row.vehicle) then return false end
     local ok, res = pcall(MySQL.update.await, 'UPDATE player_vehicles SET state = 1, garage = ? WHERE plate = ? AND citizenid = ? AND state IN (0, 1)', { garageId, plate, cid })
     if not ok or affected(res) < 1 then return false end
     removeParked(plate, veh)

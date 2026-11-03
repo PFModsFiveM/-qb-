@@ -152,14 +152,9 @@ describe('NOS is saved when it changes', function()
         boostFor(ME, CAR, 9)                                        -- used up
         assert_eq(rows.diag[PLATE].nos_level, 0)
         assert_eq(rows.diag[PLATE].nos_has, 0)
-        Mock.fireNet('pf_mech:nos:giveEmpty', ME, CAR)
-        assert_eq(Mock.players[ME].inv.emptynos, 1)
+        assert_eq(Mock.players[ME].inv.emptynos, 1, 'the server hands the driver the empty')
         -- a saved car still carrying an empty bottle (from before the server drain): taken off
         st(CAR).nos = { has = true, level = 0 }
-        Mock.players[ME].inv.nos = 1
-        Mock.useables.nos(ME, { name = 'nos' })
-        Mock.clock = Mock.clock + 4
-        Mock.fireNet('pf_mech:nos:consumeBottle', ME)                -- (an old client: takes the bottle only)
         Mock.fireNet('pf_mech:nos:removeEmpty', ME, CAR)
         assert_eq(st(CAR).nos, nil)
         assert_eq(rows.diag[PLATE].nos_has, 0)

@@ -20,6 +20,7 @@ local Sessions = {} -- [src] = the stand's shift (stock, cook, offer, sales)
 local SrcToCid = {}
 local Served = {}   -- [customer net id] = os.time() of their last purchase (any stand)
 local PendingSales = {} -- [citizenid] = { sale, ... } whose pay the bank had not settled
+local SettlingSales = {} -- [citizenid] while a settle run waits on the bank
 
 local STAND_MODEL = 'prop_hotdogstand_01'
 local STAND_REGISTER_RANGE = 15.0 -- metres from the depot spawn point (and the player) a new stand may be
@@ -281,34 +282,45 @@ end
 -- stand's stock (if that shift is still out).
 local function settleSales(src)
     local cid = SrcToCid[src]
-    local list = cid and PendingSales[cid]
+    -- one run per character at a time; the list is taken out first, so a sale added while this run
+    -- waits on the bank goes into a fresh list and is merged back at the end
+    if not cid or SettlingSales[cid] then return end
+    local list = PendingSales[cid]
     if not list then return end
+    SettlingSales[cid], PendingSales[cid] = true, nil
     local keep = {}
-    local session = Sessions[src]
-    for _, sale in ipairs(list) do
-        local res = paySale(src, sale, true)
-        local same = session and session.id == sale.stand and session or nil
-        if res == 'paid' then
-            salePaid(src, same, sale)
-        elseif res == 'failed' then
-            if same then
-                same.stock[sale.quality] = (same.stock[sale.quality] or 0) + sale.count
-                same.sold = math.max(0, same.sold - sale.count)
-                pushStock(src, same)
+    local ok, err = pcall(function()
+        for i, sale in ipairs(list) do
+            local res = paySale(src, sale, true)
+            list[i] = nil
+            local session = Sessions[src]
+            local same = session and session.id == sale.stand and session or nil
+            if res == 'paid' then
+                salePaid(src, same, sale)
+            elseif res == 'failed' then
+                if same then
+                    same.stock[sale.quality] = (same.stock[sale.quality] or 0) + sale.count
+                    same.sold = math.max(0, same.sold - sale.count)
+                    pushStock(src, same)
+                end
+                notify(src, 'A customer\'s payment did not go through.', 'error')
+            else
+                keep[#keep + 1] = sale
             end
-            notify(src, 'A customer\'s payment did not go through.', 'error')
-        else
-            keep[#keep + 1] = sale
         end
-    end
+    end)
+    for _, sale in pairs(list) do keep[#keep + 1] = sale end -- not reached because of an error: kept
+    for _, sale in ipairs(PendingSales[cid] or {}) do keep[#keep + 1] = sale end
     PendingSales[cid] = #keep > 0 and keep or nil
+    SettlingSales[cid] = nil
+    if not ok then print(('^1[pfm-hotdogjob]^7 settling sales failed: %s'):format(tostring(err))) end
 end
 
 local function retrySales(src, cid, left)
     SetTimeout(SALE_RETRY_MS, function()
-        if SrcToCid[src] ~= cid or not PendingSales[cid] then return end
+        if SrcToCid[src] ~= cid or not (PendingSales[cid] or SettlingSales[cid]) then return end
         settleSales(src)
-        if PendingSales[cid] and left > 1 then retrySales(src, cid, left - 1) end
+        if (PendingSales[cid] or SettlingSales[cid]) and left > 1 then retrySales(src, cid, left - 1) end
     end)
 end
 
