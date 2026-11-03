@@ -81,7 +81,7 @@ local function towGarages(Player)
             out[#out + 1] = { id = id, label = g.label or id, type = g.type, coords = point(g.takeVehicle) }
         end
     end
-    table.sort(out, function(a, b) return a.label < b.label end)
+    table.sort(out, function(a, b) return tostring(a.label) < tostring(b.label) end)
     return out
 end
 

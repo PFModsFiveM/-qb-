@@ -38,6 +38,7 @@ function PFGarages.Start()
     else
         MySQL.update('UPDATE player_vehicles SET depotprice = ? WHERE state = 0', { Config.DepotPrice or 500 })
     end
+    PFGarages.LoadHouseGarages()
     if PFGarages.RegisterApps then PFGarages.RegisterApps() end
 end
 
@@ -167,6 +168,140 @@ end
 PFGarages.FleetPlateSet = fleetPlateSet
 PFGarages.IsFleetPlate = isFleetPlate
 PFGarages.VehicleClasses = vehicleClasses
+
+local function trimPlate(plate)
+    return (tostring(plate or ''):gsub('^%s+', ''):gsub('%s+$', ''))
+end
+
+local function samePlate(a, b) return trimPlate(a):upper() == trimPlate(b):upper() end
+
+--- Rows changed by an update (oxmysql returns a number; some wrappers a table).
+local function affected(res)
+    if type(res) == 'table' then return tonumber(res.affectedRows) or 0 end
+    return tonumber(res) or 0
+end
+
+local function finite(n)
+    n = tonumber(n)
+    if not n or n ~= n or n == math.huge or n == -math.huge then return nil end
+    return n
+end
+
+-- ── house garages ───────────────────────────────────────────────────────────────────────────────
+-- Built only on the server: from houselocations when the resource starts and from pfm-houses when a
+-- real estate agent places one (exports SetHouseGarage). Every client used to send its whole garage
+-- list (qb-garages:server:syncGarage), so anyone could point another house's garage at their own
+-- house, move it, give it a label that broke the Garages app, or add any number of entries.
+
+--- The id of a house's garage everywhere: Config.Garages key, player_vehicles.garage, client zones.
+local function houseGarageId(house)
+    return (house:lower():gsub(' ', ''))
+end
+PFGarages.HouseGarageId = houseGarageId
+
+--- x, y, z, heading of a point given as a table, a vector or the JSON text houselocations keeps.
+local function readPoint(v)
+    if type(v) == 'string' then
+        local ok, decoded = pcall(json.decode, v)
+        v = ok and decoded or nil
+    end
+    local t = type(v)
+    if t ~= 'table' and t ~= 'vector3' and t ~= 'vector4' then return nil end
+    local ok, x, y, z, w = pcall(function() return finite(v.x), finite(v.y), finite(v.z), finite(v.w or v.h) end)
+    if not ok or not x or not y or not z then return nil end
+    return x, y, z, w or 0.0
+end
+
+local function houseGarageEntry(house, label, coords)
+    if type(house) ~= 'string' or house == '' or #house > 128 then return nil end
+    local x, y, z, w = readPoint(coords)
+    -- houselocations stores 0,0,0 for a house without a garage
+    if not x or (x == 0 and y == 0 and z == 0) then return nil end
+    label = type(label) == 'string' and label:gsub('%c', '') or ''
+    if label == '' then label = house end
+    return {
+        houseName = house,
+        label = label:sub(1, 100),
+        takeVehicle = vector3(x, y, z),
+        spawnPoint = { vector4(x, y, z, w) },
+        type = 'house',
+        category = Config.VehicleClass and Config.VehicleClass['all'] or nil,
+        showBlip = false,
+    }
+end
+
+--- Adds or moves the garage of a house. A configured garage (public, job, gang, depot) is never
+--- replaced, and an id already used by another house keeps that house's garage.
+function PFGarages.SetHouseGarage(house, label, coords)
+    local entry = houseGarageEntry(house, label, coords)
+    if not entry then return false end
+    local id = houseGarageId(house)
+    local current = Config.Garages[id]
+    if current and (current.type ~= 'house' or current.houseName ~= house) then return false end
+    Config.Garages[id] = entry
+    return true
+end
+
+exports('SetHouseGarage', function(house, label, coords) return PFGarages.SetHouseGarage(house, label, coords) end)
+
+--- Reads every house garage from the houses table (pfm-houses may not be installed: then none).
+function PFGarages.LoadHouseGarages()
+    local ok, rows = pcall(MySQL.query.await, 'SELECT name, label, garage FROM houselocations', {})
+    if not ok or type(rows) ~= 'table' then return 0 end
+    local n = 0
+    for _, r in ipairs(rows) do
+        if PFGarages.SetHouseGarage(r.name, r.label, r.garage) then n = n + 1 end
+    end
+    return n
+end
+
+-- ── who may use a garage, and from where ────────────────────────────────────────────────────────
+
+local GARAGE_REACH = 15.0   -- the garage zone is 10 m (5 m for a house); a car's length and lag on top
+local DEPOSIT_REACH = 10.0  -- the parked car: the one the player sits in, else one this close
+
+--- The garage's own rules (the client only shows zones it may use; the server used to trust the
+--- type the client named).
+local function mayUseGarage(Player, garage)
+    local kind, data = garage.type, Player.PlayerData
+    if kind == 'public' or kind == 'depot' then return true end
+    if kind == 'job' then
+        local job = data.job or {}
+        return (garage.job ~= nil and job.name == garage.job) or (garage.jobType ~= nil and job.type == garage.jobType)
+    end
+    if kind == 'gang' then return garage.job ~= nil and (data.gang or {}).name == garage.job end
+    if kind == 'house' then
+        if not garage.houseName or GetResourceState('pfm-houses') ~= 'started' then return false end
+        local ok, has = pcall(function() return exports['pfm-houses']:hasKey(data.license, data.citizenid, garage.houseName) end)
+        return ok and has == true
+    end
+    return false
+end
+
+--- The player stands at the garage (server position).
+local function atGarage(src, garage)
+    local p = garage.takeVehicle
+    if not p then return false end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    return #(vector3(pos.x, pos.y, pos.z) - vector3(p.x, p.y, p.z)) <= GARAGE_REACH
+end
+
+--- The garage takes this model (Config.ClassSystem), by the same rule its list uses.
+local function classAllowed(garage, model)
+    if not Config.ClassSystem or type(garage.category) ~= 'table' then return true end
+    local vehicleData = sharedVehicles[model]
+    local class = vehicleClasses[vehicleData and vehicleData.category or 'compacts']
+    for _, c in ipairs(garage.category) do
+        if c == class then return true end
+    end
+    return false
+end
+
+PFGarages.MayUseGarage = mayUseGarage
+
+-- One take-out or parking per car at a time: the checks and the update are separated by database
+-- waits (two spawns at once both read "parked" and made two cars).
+local plateBusy = {}
 
 -- ── impound release fee ─────────────────────────────────────────────────────────────────────────
 -- One payment path for the depot NUI and the Garages app. The fee is read from the player's own
@@ -336,9 +471,14 @@ end
 
 -- Callbacks
 
+-- The garage of a house as the server has it, for a client that has not heard of it yet. (This sent
+-- the whole houselocations row.)
 QBCore.Functions.CreateCallback('qb-garages:server:getHouseGarage', function(_, cb, house)
-    local houseInfo = MySQL.single.await('SELECT * FROM houselocations WHERE name = ?', { house })
-    cb(houseInfo)
+    if type(house) ~= 'string' or house == '' or #house > 128 then return cb(nil) end
+    local g = Config.Garages[houseGarageId(house)]
+    if not g or g.type ~= 'house' or g.houseName ~= house then return cb(nil) end
+    local p = g.takeVehicle
+    cb({ label = g.label, coords = { x = p.x, y = p.y, z = p.z, w = g.spawnPoint[1].w or 0.0 } })
 end)
 
 -- Collects the citizenids of online players in the given job/gang (including the requester)
@@ -459,63 +599,94 @@ end
 --- Forgets a car this resource tracked as out (it was parked by a tow).
 function PFGarages.ForgetOutside(plate) OutsideVehicles[plate] = nil end
 
--- Spawns a vehicle and returns its network ID and properties.
--- Only a car that is in the garage (state 1, no impound fee), or whose impound fee was just paid, and
--- that is not already out; next to the player. (Any owned car could be spawned any number of times,
--- from the impound without paying, anywhere.)
-QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(source, cb, plate, _, coords)
-    local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player or type(plate) ~= 'string' or type(coords) ~= 'table' or not tonumber(coords.x) or not tonumber(coords.y) or not tonumber(coords.z) then
-        cb(nil, nil, nil)
-        return
-    end
-    local cid = Player.PlayerData.citizenid
-    local ownedVehicle = MySQL.single.await('SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
-    if not ownedVehicle or isOutside(plate) then
-        cb(nil, nil, nil)
-        return
-    end
-    if isFleetPlate(plate) then
-        TriggerClientEvent('QBCore:Notify', source, 'This vehicle is in a job fleet. Take it from the job garage.', 'error')
-        cb(nil, nil, nil)
-        return
-    end
-    if #(GetEntityCoords(GetPlayerPed(source)) - vector3(tonumber(coords.x), tonumber(coords.y), tonumber(coords.z))) > 100.0 then
-        cb(nil, nil, nil)
-        return
-    end
-    local fee = tonumber(ownedVehicle.depotprice) or 0
-    if tonumber(ownedVehicle.state) == 2 then   -- seized: only the police release it
-        cb(nil, nil, nil)
-        return
-    end
-    if fee > 0 then
-        if not PFGarages.ReleasePaid(plate, cid, fee) then
-            cb(nil, nil, nil)
-            return
+--- A free spawn point of the garage: the one the client picked (it checks which are free), else the
+--- first one no car stands on, else the first. Positions always come from the garage config.
+local function spawnPointOf(garage, index)
+    local points = garage.spawnPoint
+    index = math.tointeger(tonumber(index))
+    if index and points[index] then return points[index] end
+    local cars = GetAllVehicles and GetAllVehicles() or {}
+    for _, p in ipairs(points) do
+        local taken = false
+        for _, veh in ipairs(cars) do
+            local pos = GetEntityCoords(veh)
+            if #(vector3(pos.x, pos.y, pos.z) - vector3(p.x, p.y, p.z)) < 3.0 then taken = true break end
         end
-        PFGarages.ConsumeRelease(plate)
-        MySQL.update('UPDATE player_vehicles SET depotprice = 0 WHERE plate = ? AND citizenid = ?', { plate, cid })
-    elseif tonumber(ownedVehicle.state) ~= 1 then
-        cb(nil, nil, nil)
-        return
+        if not taken then return p end
     end
-    MySQL.update('UPDATE player_vehicles SET state = 0 WHERE plate = ? AND citizenid = ?', { plate, cid })
-    local vehType = sharedVehicles[ownedVehicle.vehicle] and sharedVehicles[ownedVehicle.vehicle].type or GetVehicleTypeByModel(ownedVehicle.vehicle)
-    local hash = type(ownedVehicle.vehicle) == 'number' and ownedVehicle.vehicle or type(ownedVehicle.vehicle) == 'string' and GetHashKey(ownedVehicle.vehicle) or nil
-    if not hash then
-        cb(nil, nil, nil)
-        return
+    return points[1]
+end
+
+local function refuseSpawn(src, message)
+    if message then TriggerClientEvent('QBCore:Notify', src, message, 'error') end
+    return nil
+end
+
+--- Takes the car out, while the caller holds the car's lock. Returns netId, props, plate or nil.
+local function spawnLocked(src, Player, plate, garageId, garage, spawnIndex)
+    local cid = Player.PlayerData.citizenid
+    local row = MySQL.single.await('SELECT vehicle, mods, state, depotprice, garage FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
+    if not row then return nil end
+    -- never a second copy: not while this resource has it out, nor while any car shows its plate
+    if PFGarages.FindVehicle(plate) then return refuseSpawn(src, 'This vehicle is still out in the city.') end
+    if isFleetPlate(plate) then return refuseSpawn(src, 'This vehicle is in a job fleet. Take it from the job garage.') end
+    local state, fee = tonumber(row.state), math.floor(tonumber(row.depotprice) or 0)
+    if state == 2 then return nil end   -- seized: only the police release it
+    if fee > 0 then
+        -- an impounded car leaves from a depot, once its fee is paid
+        if garage.type ~= 'depot' or not PFGarages.ReleasePaid(plate, cid, fee) then return nil end
+    else
+        -- a parked car leaves from the garage it is parked in (Config.SharedGarages: any garage of
+        -- the player's); the client's spawn position and garage used to be taken as they came
+        if state ~= 1 or garage.type == 'depot' then return nil end
+        if not Config.SharedGarages and row.garage ~= garageId then return nil end
     end
-    local veh = CreateVehicleServerSetter(hash, vehType, coords.x, coords.y, coords.z, coords.w)
+    if not classAllowed(garage, row.vehicle) then return nil end
+    local hash = type(row.vehicle) == 'number' and row.vehicle or type(row.vehicle) == 'string' and GetHashKey(row.vehicle) or nil
+    if not hash then return nil end
+    local vehType = sharedVehicles[row.vehicle] and sharedVehicles[row.vehicle].type or GetVehicleTypeByModel(row.vehicle)
+    local point = spawnPointOf(garage, spawnIndex)
+    local veh = CreateVehicleServerSetter(hash, vehType, point.x, point.y, point.z, point.w or 0.0)
+    if not veh or veh == 0 then return nil end
+    -- the row leaves the garage (or depot) only in the state checked above
+    local ok, res = pcall(MySQL.update.await, 'UPDATE player_vehicles SET state = 0, depotprice = 0 WHERE plate = ? AND citizenid = ? AND state = ? AND depotprice = ?', { plate, cid, state, fee })
+    if not ok or affected(res) < 1 then
+        DeleteEntity(veh)
+        return nil
+    end
+    if fee > 0 then PFGarages.ConsumeRelease(plate) end
     local netId = NetworkGetNetworkIdFromEntity(veh)
     SetVehicleNumberPlateText(veh, plate)
     -- pfm-fuel gives the car the fuel stored in this row (the plate set above reaches the server only through the owner's client)
     if GetResourceState('pfm-fuel') == 'started' then pcall(function() exports['pfm-fuel']:UseStoredFuel(veh, plate) end) end
-    local vehProps = {}
-    if ownedVehicle.mods then vehProps = json.decode(ownedVehicle.mods) end
     OutsideVehicles[plate] = { netID = netId, entity = veh }
-    cb(netId, vehProps, plate)
+    local decoded, props = pcall(json.decode, type(row.mods) == 'string' and row.mods or '')
+    return netId, decoded and type(props) == 'table' and props or {}, plate
+end
+
+-- Spawns a car of the player's at the garage they stand at, on one of its spawn points, and returns
+-- its network ID and properties: a parked car (state 1) from the garage it is parked in, an impounded
+-- one from a depot once its fee is paid; never one that is already out. The client names the plate,
+-- the garage and a spawn point number. (Any owned car came out anywhere within 100 m of the client's
+-- position, from any garage.)
+QBCore.Functions.CreateCallback('qb-garages:server:spawnvehicle', function(source, cb, plate, garageId, spawnIndex)
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(plate) ~= 'string' or plate == '' or #plate > 16 or type(garageId) ~= 'string' or #garageId > 128 then
+        return cb(nil, nil, nil)
+    end
+    local garage = Config.Garages[garageId]
+    if not garage or type(garage.spawnPoint) ~= 'table' or not garage.spawnPoint[1] then return cb(nil, nil, nil) end
+    if not mayUseGarage(Player, garage) or not atGarage(src, garage) then return cb(nil, nil, nil) end
+    if plateBusy[plate] then return cb(nil, nil, nil) end
+    plateBusy[plate] = true
+    local ok, netId, props, vehPlate = pcall(spawnLocked, src, Player, plate, garageId, garage, spawnIndex)
+    plateBusy[plate] = nil
+    if not ok then
+        print(('^1[pfm-garages]^7 taking out %s failed: %s'):format(plate, tostring(netId)))
+        return cb(nil, nil, nil)
+    end
+    cb(netId, props, vehPlate)
 end)
 
 -- Checks if a vehicle can be spawned based on its type and location.
@@ -527,31 +698,76 @@ QBCore.Functions.CreateCallback('qb-garages:server:IsSpawnOk', function(_, cb, p
     cb(true)
 end)
 
-QBCore.Functions.CreateCallback('qb-garages:server:canDeposit', function(source, cb, plate, type, garage, state)
-    local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then
-        cb(false)
-        return
+local PARK_REMOVE_MS = 4000   -- the owner's client gets everyone out and deletes the car in ~1.5 s
+
+--- The car with this plate the player sits in, else the nearest one with it within reach.
+local function carToPark(src, plate)
+    local ped = GetPlayerPed(src)
+    local veh = GetVehiclePedIsIn(ped, false)
+    if veh and veh ~= 0 and samePlate(GetVehicleNumberPlateText(veh), plate) then return veh end
+    local pos = GetEntityCoords(ped)
+    local best, bestDist
+    for _, v in ipairs(GetAllVehicles and GetAllVehicles() or {}) do
+        if samePlate(GetVehicleNumberPlateText(v), plate) then
+            local p = GetEntityCoords(v)
+            local d = #(vector3(p.x, p.y, p.z) - vector3(pos.x, pos.y, pos.z))
+            if d <= DEPOSIT_REACH and (not bestDist or d < bestDist) then best, bestDist = v, d end
+        end
     end
-    local isOwned = GetPlateOwner(plate)
-    if isOwned ~= Player.PlayerData.citizenid then
-        cb(false)
-        return
+    return best
+end
+
+--- A parked car leaves the world. The owner's client still saves its look and condition and deletes
+--- it (everyone gets out first); the server removes it if that did not happen. Until it is gone it
+--- counts as out, so it cannot be taken out a second time.
+local function removeParked(plate, veh)
+    local model = GetEntityModel(veh)
+    OutsideVehicles[plate] = { netID = NetworkGetNetworkIdFromEntity(veh), entity = veh }
+    SetTimeout(PARK_REMOVE_MS, function()
+        if DoesEntityExist(veh) and GetEntityModel(veh) == model then DeleteEntity(veh) end
+        local out = OutsideVehicles[plate]
+        if out and out.entity == veh then OutsideVehicles[plate] = nil end
+    end)
+end
+
+local function depositLocked(src, Player, plate, garageId, garage)
+    local cid = Player.PlayerData.citizenid
+    local row = MySQL.single.await('SELECT vehicle, state FROM player_vehicles WHERE plate = ? AND citizenid = ? LIMIT 1', { plate, cid })
+    if not row or tonumber(row.state) == 2 then return false end
+    if isFleetPlate(plate) then
+        TriggerClientEvent('QBCore:Notify', src, 'This vehicle is in a job fleet. Park it at the job garage.', 'error')
+        return false
     end
-    if type == 'house' and not Config.Garages[garage] then
-        cb(false)
-        return
+    if not classAllowed(garage, row.vehicle) then return false end
+    -- the car itself, as the server sees it: parking only changed the row, so the car stayed in the
+    -- world and the garage handed out a second copy
+    local veh = carToPark(src, plate)
+    if not veh then return false end
+    local ok, res = pcall(MySQL.update.await, 'UPDATE player_vehicles SET state = 1, garage = ? WHERE plate = ? AND citizenid = ? AND state IN (0, 1)', { garageId, plate, cid })
+    if not ok or affected(res) < 1 then return false end
+    removeParked(plate, veh)
+    return true
+end
+
+-- Parks the player's car at the garage they stand at. The garage, its type and who may use it are
+-- the server's (a house garage needs a key); the car must be the one the player sits in (or right
+-- beside them) with that plate. The client used to name the garage type and any plate from anywhere.
+QBCore.Functions.CreateCallback('qb-garages:server:canDeposit', function(source, cb, plate, _, garageId, state)
+    local src = source
+    local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player or type(plate) ~= 'string' or #plate > 16 or type(garageId) ~= 'string' or #garageId > 128 or tonumber(state) ~= 1 then
+        return cb(false)
     end
-    if type == 'house' and not exports['pfm-houses']:hasKey(Player.PlayerData.license, Player.PlayerData.citizenid, Config.Garages[garage].houseName) then
-        cb(false)
-        return
-    end
-    if state == 1 then
-        MySQL.update('UPDATE player_vehicles SET state = ?, garage = ? WHERE plate = ?', { state, garage, plate })
-        cb(true)
-    else
-        cb(false)
-    end
+    plate = trimPlate(plate)
+    local garage = Config.Garages[garageId]
+    if plate == '' or not garage or garage.type == 'depot' then return cb(false) end
+    if not mayUseGarage(Player, garage) or not atGarage(src, garage) then return cb(false) end
+    if plateBusy[plate] then return cb(false) end
+    plateBusy[plate] = true
+    local ok, parked = pcall(depositLocked, src, Player, plate, garageId, garage)
+    plateBusy[plate] = nil
+    if not ok then print(('^1[pfm-garages]^7 parking %s failed: %s'):format(plate, tostring(parked))) end
+    cb(ok and parked == true)
 end)
 
 -- Events
@@ -624,6 +840,8 @@ RegisterNetEvent('qb-garages:server:UpdateOutsideVehicle', function(plate, vehic
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player or not IsPlateOwnedBy(Player, plate) then return end
     if vehicleNetID then
+        -- a car this resource tracks (out, or being parked) is not replaced by another one
+        if type(vehicleNetID) ~= 'number' or isOutside(plate) then return end
         OutsideVehicles[plate] = {
             netID = vehicleNetID,
             entity = NetworkGetEntityFromNetworkId(vehicleNetID)
@@ -670,19 +888,6 @@ RegisterNetEvent('qb-garages:server:PayDepotPrice', function(data)
     if msg == 'not_enough' or msg == nil then msg = Lang:t('error.not_enough') end
     if res.error ~= 'not_owned' and res.error ~= 'bad_plate' then
         TriggerClientEvent('QBCore:Notify', src, msg, 'error')
-    end
-end)
-
--- House Garages
-
-RegisterNetEvent('qb-garages:server:syncGarage', function(updatedGarages)
-    if type(updatedGarages) ~= 'table' then return end
-    -- Only accept new house-garage entries from clients; never let a client overwrite
-    -- or remove the static config garages (public/job/gang/depot)
-    for name, garage in pairs(updatedGarages) do
-        if type(garage) == 'table' and garage.type == 'house' and (not Config.Garages[name] or Config.Garages[name].type == 'house') then
-            Config.Garages[name] = garage
-        end
     end
 end)
 

@@ -462,12 +462,22 @@ RegisterNetEvent('qb-houses:server:addGarage', function(house, coords)
     if not isRealEstate(exports['pfm-core']:GetPlayer(src)) then return end
     if type(house) ~= 'string' or not Config.Houses[house] or type(coords) ~= 'table' then return end
     if not tonumber(coords.x) or not tonumber(coords.y) or not tonumber(coords.z) then return end
-    if #(GetEntityCoords(GetPlayerPed(src)) - vector3(tonumber(coords.x), tonumber(coords.y), tonumber(coords.z))) > 10.0 then return end
+    -- (written so that a NaN position fails too)
+    if not (#(GetEntityCoords(GetPlayerPed(src)) - vector3(tonumber(coords.x), tonumber(coords.y), tonumber(coords.z))) <= 10.0) then return end
+    -- only the position and heading are kept (the client's table was stored as it came)
+    local heading = tonumber(coords.w) or tonumber(coords.h)
+    if not heading or heading ~= heading or math.abs(heading) > 360 then heading = 0.0 end
+    coords = { x = tonumber(coords.x), y = tonumber(coords.y), z = tonumber(coords.z), w = heading }
     MySQL.update('UPDATE houselocations SET garage = ? WHERE name = ?', { json.encode(coords), house })
+    Config.Houses[house].garage = coords
     local garageInfo = {
         label = Config.Houses[house].adress,
         takeVehicle = coords
     }
+    -- pfm-garages keeps its own list of house garages (it no longer takes one from clients)
+    if GetResourceState('pfm-garages') == 'started' then
+        pcall(function() exports['pfm-garages']:SetHouseGarage(house, garageInfo.label, coords) end)
+    end
     TriggerClientEvent('qb-garages:client:addHouseGarage', -1, house, garageInfo)
     TriggerClientEvent('QBCore:Notify', src, Lang:t('info.added_garage', { value = garageInfo.label }))
 end)

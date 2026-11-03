@@ -122,6 +122,7 @@ local function trimPlate(plate)
     return (tostring(plate or ''):gsub('^%s+', ''):gsub('%s+$', ''))
 end
 
+--- Returns the storage kind ('trunk' or 'glovebox') and the vehicle entity, or nil.
 function CheckVehicleStorage(source, inventory)
     if type(inventory) ~= 'string' or #inventory > 64 then return nil end
     local kind, plate = inventory:match('^(%a+)%-(.+)$')
@@ -131,17 +132,66 @@ function CheckVehicleStorage(source, inventory)
     local ped = GetPlayerPed(source)
     if kind == 'glovebox' then
         local veh = GetVehiclePedIsIn(ped, false)
-        if veh and veh ~= 0 and trimPlate(GetVehicleNumberPlateText(veh)) == plate then return kind end
+        if veh and veh ~= 0 and trimPlate(GetVehicleNumberPlateText(veh)) == plate then return kind, veh end
         return nil
     end
     local pos = GetEntityCoords(ped)
     for _, veh in ipairs(GetAllVehicles()) do
         if trimPlate(GetVehicleNumberPlateText(veh)) == plate and #(pos - GetEntityCoords(veh)) <= VEHICLE_REACH then
             if (GetVehicleDoorLockStatus(veh) or 0) >= 2 then return nil end
-            return kind
+            return kind, veh
         end
     end
     return nil
+end
+
+-- The size of a trunk or glovebox comes from the car's model on the server: pfm-core's vehicle list
+-- gives its category, and the category its class (the same table as pfm-garages). The class the
+-- client named used to choose it, so a compact answered as a van got a van's trunk.
+local CATEGORY_CLASS = {
+    compacts = 0, sedans = 1, suvs = 2, coupes = 3, muscle = 4, sportsclassics = 5, sports = 6, super = 7,
+    motorcycles = 8, offroad = 9, industrial = 10, utility = 11, vans = 12, cycles = 13, boats = 14,
+    helicopters = 15, planes = 16, service = 17, emergency = 18, military = 19, commercial = 20, trains = 21,
+    openwheel = 22,
+}
+local classByModel   -- [model hash, signed and unsigned] = class; built on first use
+
+local function addModelClass(map, hash, class)
+    hash = math.tointeger(tonumber(hash))
+    if not hash then return end
+    local unsigned = hash & 0xFFFFFFFF
+    map[unsigned] = class
+    map[unsigned >= 0x80000000 and unsigned - 0x100000000 or unsigned] = class
+end
+
+local function modelClass(veh)
+    if not classByModel then
+        local map = {}
+        local ok, vehicles = pcall(function() return exports['pfm-core']:GetShared('Vehicles') end)
+        for model, v in pairs(ok and type(vehicles) == 'table' and vehicles or {}) do
+            local class = type(v) == 'table' and CATEGORY_CLASS[v.category]
+            if class and type(model) == 'string' then addModelClass(map, v.hash or GetHashKey(model), class) end
+        end
+        -- kept once pfm-core gave the list (asked again while it cannot)
+        if next(map) then classByModel = map else return nil end
+    end
+    local hash = math.tointeger(tonumber(GetEntityModel(veh)))
+    return hash and classByModel[hash] or nil
+end
+
+--- slots, maxweight of the trunk or glovebox of `veh`. A model the list does not know (an ambient
+--- car) gets the class its client names, but never more than the default size.
+local function vehicleStorage(kind, veh, clientClass)
+    local slotsKey = kind == 'trunk' and 'trunkSlots' or 'gloveboxSlots'
+    local weightKey = kind == 'trunk' and 'trunkWeight' or 'gloveboxWeight'
+    local default = VehicleStorage.default
+    local class = modelClass(veh)
+    if class then
+        local size = VehicleStorage[class] or default
+        return size[slotsKey], size[weightKey]
+    end
+    local size = VehicleStorage[clientClass] or default
+    return math.min(size[slotsKey], default[slotsKey]), math.min(size[weightKey], default[weightKey])
 end
 
 RegisterCommand('inventory', function(source)
@@ -154,22 +204,11 @@ RegisterCommand('inventory', function(source)
     if not QBPlayer or QBPlayer.PlayerData.metadata['isdead'] or QBPlayer.PlayerData.metadata['inlaststand'] or QBPlayer.PlayerData.metadata['ishandcuffed'] then return end
     QBCore.Functions.TriggerClientCallback('qb-inventory:client:vehicleCheck', source, function(inventory, class)
         if not inventory then return OpenInventory(source) end
-        local kind = CheckVehicleStorage(source, inventory)
+        local kind, veh = CheckVehicleStorage(source, inventory)
         if not kind then return OpenInventory(source) end
         class = tonumber(class)
         if class and (class ~= math.floor(class) or class < 0 or class > 22) then class = nil end
-        if kind == 'trunk' then
-            OpenInventory(source, inventory, {
-                slots = VehicleStorage[class] and VehicleStorage[class].trunkSlots or VehicleStorage.default.trunkSlots,
-                maxweight = VehicleStorage[class] and VehicleStorage[class].trunkWeight or VehicleStorage.default.trunkWeight
-            })
-            return
-        elseif kind == 'glovebox' then
-            OpenInventory(source, inventory, {
-                slots = VehicleStorage[class] and VehicleStorage[class].gloveboxSlots or VehicleStorage.default.gloveboxSlots,
-                maxweight = VehicleStorage[class] and VehicleStorage[class].gloveboxWeight or VehicleStorage.default.gloveboxWeight
-            })
-            return
-        end
+        local slots, maxweight = vehicleStorage(kind, veh, class)
+        OpenInventory(source, inventory, { slots = slots, maxweight = maxweight })
     end)
 end, false)

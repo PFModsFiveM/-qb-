@@ -130,11 +130,10 @@ end
 
 local function SellData(data, model)
     QBCore.Functions.TriggerCallback('qb-vehiclesales:server:CheckModelName', function(DataReturning)
+        -- the server lists the car with the look saved on its record, not props from this client
         local vehicleData = {}
-        vehicleData.ent = GetVehiclePedIsUsing(PlayerPedId())
         vehicleData.model = DataReturning
         vehicleData.plate = model
-        vehicleData.mods = QBCore.Functions.GetVehicleProperties(vehicleData.ent)
         vehicleData.desc = data.desc
         -- the car leaves only once the server has listed it (qb-occasions:client:vehicleListed);
         -- a refused listing (financed, impounded, a fleet car) keeps it here

@@ -55,6 +55,7 @@ local function OpenGarageMenu(data)
                 type = data.type,
                 index = data.indexgarage,
                 depotPrice = v.depotprice or 0,
+                depotPaid = v.depotPaid == true,
                 balance = v.balance or 0
             }
         end
@@ -213,8 +214,10 @@ local function doCarDamage(currentVehicle, stats, props)
     end
 end
 
+-- A free spawn point of the garage and its number (the server spawns the car on that point of its
+-- own garage config).
 function GetSpawnPoint(garage)
-    local location = nil
+    local location, index = nil, nil
     if #garage.spawnPoint > 1 then
         local maxTries = #garage.spawnPoint
         for _ = 1, maxTries do
@@ -234,17 +237,17 @@ function GetSpawnPoint(garage)
                 false
             )
             if not isOccupied then
-                location = chosenSpawnPoint
+                location, index = chosenSpawnPoint, randomIndex
                 break
             end
         end
     elseif #garage.spawnPoint == 1 then
-        location = garage.spawnPoint[1]
+        location, index = garage.spawnPoint[1], 1
     end
     if not location then
         QBCore.Functions.Notify(Lang:t('error.vehicle_occupied'), 'error')
     end
-    return location
+    return location, index
 end
 
 -- NUI Callbacks
@@ -299,7 +302,7 @@ end
 RegisterNetEvent('qb-garages:client:takeOutGarage', function(data)
     QBCore.Functions.TriggerCallback('qb-garages:server:IsSpawnOk', function(spawn)
         if spawn then
-            local location = GetSpawnPoint(data.garage)
+            local location, spawnIndex = GetSpawnPoint(data.garage)
             if not location then return end
             QBCore.Functions.TriggerCallback('qb-garages:server:spawnvehicle', function(netId, properties, vehPlate)
                 if not netId then
@@ -316,7 +319,7 @@ RegisterNetEvent('qb-garages:client:takeOutGarage', function(data)
                 if Config.Warp then TaskWarpPedIntoVehicle(PlayerPedId(), veh, -1) end
                 if Config.VisuallyDamageCars then doCarDamage(veh, data.stats, properties) end
                 SetVehicleEngineOn(veh, true, true, false)
-            end, data.plate, data.vehicle, location, true)
+            end, data.plate, data.index, spawnIndex)
         else
             QBCore.Functions.Notify(Lang:t('error.not_depot'), 'error', 5000)
         end
@@ -397,9 +400,31 @@ local function RemoveHouseZone(zoneName)
     end
 end
 
+-- House garages on this client come from the server (pfm-houses' broadcasts, or this resource's
+-- callback); the server builds its own list and no longer takes one from clients. A garage is keyed
+-- by the house name, lower case without spaces, as on the server.
+local function houseGarageId(house) return (string.gsub(string.lower(house), ' ', '')) end
+
+local function setHouseGarageConfig(house, label, coords)
+    if type(house) ~= 'string' or type(coords) ~= 'table' then return false end
+    local x, y, z = tonumber(coords.x), tonumber(coords.y), tonumber(coords.z)
+    -- houselocations keeps 0,0,0 for a house without a garage
+    if not x or not y or not z or (x == 0 and y == 0 and z == 0) then return false end
+    local w = tonumber(coords.w) or tonumber(coords.h) or 0.0
+    Config.Garages[houseGarageId(house)] = {
+        houseName = house,
+        takeVehicle = vector3(x, y, z),
+        spawnPoint = { vector4(x, y, z, w) },
+        label = type(label) == 'string' and label or house,
+        type = 'house',
+        category = Config.VehicleClass['all']
+    }
+    return true
+end
+
 RegisterNetEvent('qb-garages:client:setHouseGarage', function(house, hasKey) -- event sent periodically from housing
-    if not house then return end
-    local formattedHouseName = string.gsub(string.lower(house), ' ', '')
+    if type(house) ~= 'string' then return end
+    local formattedHouseName = houseGarageId(house)
     local zoneName = 'house_' .. formattedHouseName
     if Config.Garages[formattedHouseName] then
         if hasKey and not ZoneExists(zoneName) then
@@ -408,56 +433,23 @@ RegisterNetEvent('qb-garages:client:setHouseGarage', function(house, hasKey) -- 
             RemoveHouseZone(zoneName)
         end
     else
-        QBCore.Functions.TriggerCallback('qb-garages:server:getHouseGarage', function(garageInfo) -- create garage if not exist
-            if not garageInfo.garage then return end
-            local garageCoords = json.decode(garageInfo.garage)
-            Config.Garages[formattedHouseName] = {
-                houseName = house,
-                takeVehicle = vector3(garageCoords.x, garageCoords.y, garageCoords.z),
-                spawnPoint = {
-                    vector4(garageCoords.x, garageCoords.y, garageCoords.z, garageCoords.w or garageCoords.h)
-                },
-                label = garageInfo.label,
-                type = 'house',
-                category = Config.VehicleClass['all']
-            }
-            TriggerServerEvent('qb-garages:server:syncGarage', Config.Garages)
+        QBCore.Functions.TriggerCallback('qb-garages:server:getHouseGarage', function(garageInfo) -- the server's entry, if the house has a garage
+            if type(garageInfo) ~= 'table' then return end
+            setHouseGarageConfig(house, garageInfo.label, garageInfo.coords)
         end, house)
     end
 end)
 
 RegisterNetEvent('qb-garages:client:houseGarageConfig', function(houseGarages)
+    if type(houseGarages) ~= 'table' then return end
     for houseName, garageConfig in pairs(houseGarages) do
-        local formattedHouseName = string.gsub(string.lower(garageConfig.label), ' ', '')
-        if garageConfig.takeVehicle and garageConfig.takeVehicle.x and garageConfig.takeVehicle.y and garageConfig.takeVehicle.z and garageConfig.takeVehicle.w then
-            Config.Garages[formattedHouseName] = {
-                houseName = houseName,
-                takeVehicle = vector3(garageConfig.takeVehicle.x, garageConfig.takeVehicle.y, garageConfig.takeVehicle.z),
-                spawnPoint = {
-                    vector4(garageConfig.takeVehicle.x, garageConfig.takeVehicle.y, garageConfig.takeVehicle.z, garageConfig.takeVehicle.w)
-                },
-                label = garageConfig.label,
-                type = 'house',
-                category = Config.VehicleClass['all']
-            }
-        end
+        if type(garageConfig) == 'table' then setHouseGarageConfig(houseName, garageConfig.label, garageConfig.takeVehicle) end
     end
-    TriggerServerEvent('qb-garages:server:syncGarage', Config.Garages)
 end)
 
 RegisterNetEvent('qb-garages:client:addHouseGarage', function(house, garageInfo) -- event from housing on garage creation
-    local formattedHouseName = string.gsub(string.lower(house), ' ', '')
-    Config.Garages[formattedHouseName] = {
-        houseName = house,
-        takeVehicle = vector3(garageInfo.takeVehicle.x, garageInfo.takeVehicle.y, garageInfo.takeVehicle.z),
-        spawnPoint = {
-            vector4(garageInfo.takeVehicle.x, garageInfo.takeVehicle.y, garageInfo.takeVehicle.z, garageInfo.takeVehicle.w)
-        },
-        label = garageInfo.label,
-        type = 'house',
-        category = Config.VehicleClass['all']
-    }
-    TriggerServerEvent('qb-garages:server:syncGarage', Config.Garages)
+    if type(garageInfo) ~= 'table' then return end
+    setHouseGarageConfig(house, garageInfo.label, garageInfo.takeVehicle)
 end)
 
 -- PF global UI theme

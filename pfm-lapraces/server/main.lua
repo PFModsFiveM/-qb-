@@ -6,19 +6,14 @@ local NotFinished = {}
 
 -- Functions
 
-local function SecondsToClock(seconds)
-    seconds = tonumber(seconds)
-    local retval
-    if seconds <= 0 then
-        retval = '00:00:00';
-    else
-        local hours = string.format('%02.f', math.floor(seconds / 3600));
-        local mins = string.format('%02.f', math.floor(seconds / 60 - (hours * 60)));
-        local secs = string.format('%02.f', math.floor(seconds - hours * 3600 - mins * 60));
-        retval = hours .. ':' .. mins .. ':' .. secs
-    end
-    return retval
+--- m:ss.mmm of a time in milliseconds.
+local function MsToClock(ms)
+    ms = math.max(0, math.floor(tonumber(ms) or 0))
+    return ('%d:%02d.%03d'):format(ms // 60000, (ms % 60000) // 1000, ms % 1000)
 end
+
+--- Whole seconds, for the phone's leaderboards (they show seconds as h:mm:ss).
+local function ToSeconds(ms) return math.floor((tonumber(ms) or 0) / 1000) end
 
 local function IsWhitelisted(CitizenId)
     local retval = false
@@ -104,8 +99,41 @@ end
 
 local MAX_LAPS = 50
 local MAX_CHECKPOINTS = 100
-local START_SLACK = 15 -- seconds of countdown and network delay between StartRace and the racers' clocks
-local MIN_TICKS_PER_SECOND = 5
+local COUNTDOWN_MS = 10000 -- the racers' countdown (10 x 1 s on the client) between StartRace and GO
+
+-- Race times are measured here: each checkpoint pass is stamped with the server clock when the racer
+-- stands at that checkpoint (server position), in order, no sooner than the track allows; the finish
+-- time and best lap come from those stamps. The client's race clock (UI ticks) and its checkpoint
+-- numbers used to be taken, so any time became the track record.
+local function CheckpointRadius() return tonumber(Config.CheckpointRadius) or 40.0 end
+local function MaxSpeed() return math.max(1.0, tonumber(Config.MaxSpeed) or 90.0) end
+
+local function CheckpointPoint(race, i)
+    local cp = race.Checkpoints and race.Checkpoints[i]
+    local c = type(cp) == 'table' and cp.coords
+    if type(c) ~= 'table' then return nil end
+    local x, y, z = tonumber(c.x), tonumber(c.y), tonumber(c.z)
+    if not x or not y then return nil end
+    return vector3(x, y, z or 0.0)
+end
+
+--- The shortest time (ms) a car can need from checkpoint a to b: their distance less the reach of both
+--- (a pass counts anywhere within it), at the top speed allowed.
+local function MinSegmentMs(race, a, b)
+    local pa, pb = CheckpointPoint(race, a), CheckpointPoint(race, b)
+    if not pa or not pb then return 0 end
+    local d = #(pa - pb) - 2 * CheckpointRadius()
+    if d <= 0 then return 0 end
+    return math.floor(d / MaxSpeed() * 1000)
+end
+
+--- The shortest a lap of this track can take: every segment, including the one back to the start.
+local function MinLapMs(race)
+    local n = #(race.Checkpoints or {})
+    local total = 0
+    for i = 1, n do total = total + MinSegmentMs(race, i, i % n + 1) end
+    return total
+end
 
 local function GenerateRaceId()
     local RaceId = 'LR-' .. math.random(1111, 9999)
@@ -129,7 +157,7 @@ local function FinishLine(race, laps)
     return vector3(tonumber(c.x), tonumber(c.y), tonumber(c.z) or 0.0)
 end
 
-local function ReportWinner(src, Player, race, laps, racers)
+local function ReportWinner(src, Player, race, laps, racers, totalMs)
     if racers < 2 or GetResourceState('pf-services') ~= 'started' then return end
     local line = FinishLine(race, laps)
     if not line then return end
@@ -139,7 +167,7 @@ local function ReportWinner(src, Player, race, laps, racers)
     if not svc then return end
     local ci = Player.PlayerData.charinfo or {}
     local winner = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
-    local seconds = math.max(0, os.time() - (race.StartedAt or os.time()))
+    local seconds = math.max(0, ToSeconds(totalMs))
     pcall(function()
         svc:Emit('race.finished', { race = race.RaceName, winner = winner, seconds = seconds, time = ('%d:%02d'):format(seconds // 60, seconds % 60),
             laps = tonumber(laps) or 0, racers = racers }, {
@@ -151,118 +179,98 @@ end
 
 -- Events
 
-RegisterNetEvent('qb-lapraces:server:FinishPlayer', function(RaceData, TotalTime, TotalLaps, BestLap)
-    local src = source
-    if type(RaceData) ~= 'table' then return end
-    -- Only a racer in a started race finishes it, once, with times the server's clock allows: a time
-    -- shorter than the race has run is refused (records were any number a client sent).
-    local Player, racer = RacerOf(src, RaceData.RaceId)
-    if not Player or not Races[RaceData.RaceId].Started or racer.FinishSent then return end
-    local AvailableKey = GetOpenedRaceKey(RaceData.RaceId)
-    if not AvailableKey then return end
-    TotalTime, TotalLaps, BestLap = tonumber(TotalTime), tonumber(TotalLaps), tonumber(BestLap)
-    if not TotalTime or TotalTime ~= TotalTime or TotalTime <= 0 or not TotalLaps or TotalLaps < 0 then return end
-    -- the client's race clock counts UI frames (one per 12 ms or more), so it can only be bounded below:
-    -- at least MIN_TICKS_PER_SECOND for each second the race has run on the server
-    local elapsed = os.time() - (Races[RaceData.RaceId].StartedAt or os.time())
-    if TotalTime < (elapsed - START_SLACK) * MIN_TICKS_PER_SECOND then return end
-    if TotalLaps >= 2 and (not BestLap or BestLap ~= BestLap or BestLap <= 0 or BestLap > TotalTime) then return end
+--- Counts the racer's next checkpoint, from the server's view: the racer stands within reach of it
+--- (server position), the race has started (the countdown is over) and the time since the previous
+--- checkpoint is not shorter than the track allows. Returns true, or false and why.
+local function PassCheckpoint(src, race, racer)
+    local now = GetGameTimer()
+    if now < (race.StartMs or 0) then return false, 'early' end
+    local n = #race.Checkpoints
+    local e = racer.Next
+    local point = CheckpointPoint(race, e)
+    if not point then return false, 'track' end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    -- (written so that a NaN position fails too)
+    if not (#(vector3(pos.x, pos.y, pos.z) - point) <= CheckpointRadius()) then return false, 'far' end
+    local prev = e == 1 and n or e - 1
+    if now - racer.LastPassAt < MinSegmentMs(race, prev, e) then return false, 'fast' end
+    local laps = race.ActiveLaps or 0
+    if e == 1 then
+        -- a lap ends at the start line
+        local lapMs = now - racer.LapStartAt
+        if lapMs < (race.MinLapMs or 0) then return false, 'fast' end
+        racer.BestLapMs = racer.BestLapMs and math.min(racer.BestLapMs, lapMs) or lapMs
+        racer.LapStartAt = now
+        if racer.Lap >= laps then
+            racer.Completed, racer.FinishedAt = true, now
+        else
+            racer.Lap, racer.Next = racer.Lap + 1, 2
+        end
+    elseif laps == 0 and e == n then
+        -- a sprint ends at its last checkpoint
+        racer.Completed, racer.FinishedAt = true, now
+    else
+        racer.Next = e == n and 1 or e + 1
+    end
+    racer.LastPassAt, racer.Checkpoint = now, e
+    return true
+end
+
+local function HolderOf(Player)
+    local ci = Player.PlayerData.charinfo or {}
+    return { [1] = ci.firstname, [2] = ci.lastname }
+end
+
+--- The racer passed their last checkpoint: their place, time and best lap (server-measured) are
+--- recorded, a track record kept, and the race closed once everyone is done.
+local function FinishRacer(src, Player, RaceId, racer)
+    local race = Races[RaceId]
+    local AvailableKey = GetOpenedRaceKey(RaceId)
+    if not AvailableKey or racer.FinishSent then return end
+    local totalMs = racer.FinishedAt - race.StartMs
+    local bestMs = ((race.ActiveLaps or 0) >= 1 and racer.BestLapMs) or totalMs
     local first, racers = true, 0
-    for _, r in pairs(Races[RaceData.RaceId].Racers) do
+    for _, r in pairs(race.Racers) do
         racers = racers + 1
         if r.FinishSent then first = false end
     end
     racer.FinishSent = true
     racer.Finished = true
-    if first then ReportWinner(src, Player, Races[RaceData.RaceId], AvailableRaces[AvailableKey].Laps, racers) end
-    RaceData = { RaceId = RaceData.RaceId, RaceName = Races[RaceData.RaceId].RaceName }
-    local PlayersFinished = 0
-    local AmountOfRacers = 0
-    for _, v in pairs(Races[RaceData.RaceId].Racers) do
-        if v.Finished then
-            PlayersFinished = PlayersFinished + 1
-        end
+    if first then ReportWinner(src, Player, race, race.ActiveLaps, racers, totalMs) end
+    local PlayersFinished, AmountOfRacers = 0, 0
+    for _, v in pairs(race.Racers) do
+        if v.Finished then PlayersFinished = PlayersFinished + 1 end
         AmountOfRacers = AmountOfRacers + 1
     end
-    local BLap
-    if TotalLaps < 2 then
-        BLap = TotalTime
-    else
-        BLap = BestLap
+    LastRaces[RaceId] = LastRaces[RaceId] or {}
+    LastRaces[RaceId][#LastRaces[RaceId] + 1] = {
+        TotalTime = ToSeconds(totalMs), BestLap = ToSeconds(bestMs), TotalTimeMs = totalMs, BestLapMs = bestMs, Holder = HolderOf(Player),
+    }
+    -- a record from before server timing (no TimeMs: the client's tick count) does not count
+    local record = race.Records
+    if type(record) ~= 'table' or not tonumber(record.TimeMs) or bestMs < tonumber(record.TimeMs) then
+        race.Records = { Time = ToSeconds(bestMs), TimeMs = bestMs, Holder = HolderOf(Player) }
+        MySQL.update('UPDATE lapraces SET records = ? WHERE raceid = ?', { json.encode(race.Records), RaceId })
+        TriggerClientEvent('qb-phone:client:RaceNotify', src, 'New track record on ' .. tostring(race.RaceName) .. ': ' .. MsToClock(bestMs) .. '!')
     end
-    if LastRaces[RaceData.RaceId] ~= nil then
-        LastRaces[RaceData.RaceId][#LastRaces[RaceData.RaceId] + 1] = {
-            TotalTime = TotalTime,
-            BestLap = BLap,
-            Holder = {
-                [1] = Player.PlayerData.charinfo.firstname,
-                [2] = Player.PlayerData.charinfo.lastname
-            }
-        }
-    else
-        LastRaces[RaceData.RaceId] = {}
-        LastRaces[RaceData.RaceId][#LastRaces[RaceData.RaceId] + 1] = {
-            TotalTime = TotalTime,
-            BestLap = BLap,
-            Holder = {
-                [1] = Player.PlayerData.charinfo.firstname,
-                [2] = Player.PlayerData.charinfo.lastname
-            }
-        }
-    end
-    if Races[RaceData.RaceId].Records ~= nil and next(Races[RaceData.RaceId].Records) ~= nil then
-        if BLap < Races[RaceData.RaceId].Records.Time then
-            Races[RaceData.RaceId].Records = {
-                Time = BLap,
-                Holder = {
-                    [1] = Player.PlayerData.charinfo.firstname,
-                    [2] = Player.PlayerData.charinfo.lastname
-                }
-            }
-            MySQL.update('UPDATE lapraces SET records = ? WHERE raceid = ?',
-                { json.encode(Races[RaceData.RaceId].Records), RaceData.RaceId })
-            TriggerClientEvent('qb-phone:client:RaceNotify', src, 'You have won the WR from ' .. RaceData.RaceName ..
-                ' disconnected with a time of: ' .. SecondsToClock(BLap) .. '!')
-        end
-    else
-        Races[RaceData.RaceId].Records = {
-            Time = BLap,
-            Holder = {
-                [1] = Player.PlayerData.charinfo.firstname,
-                [2] = Player.PlayerData.charinfo.lastname
-            }
-        }
-        MySQL.update('UPDATE lapraces SET records = ? WHERE raceid = ?',
-            { json.encode(Races[RaceData.RaceId].Records), RaceData.RaceId })
-        TriggerClientEvent('qb-phone:client:RaceNotify', src, 'You have won the WR from ' .. RaceData.RaceName ..
-            ' put down with a time of: ' .. SecondsToClock(BLap) .. '!')
-    end
-    AvailableRaces[AvailableKey].RaceData = Races[RaceData.RaceId]
-    TriggerClientEvent('qb-lapraces:client:PlayerFinishs', -1, RaceData.RaceId, PlayersFinished, Player)
+    AvailableRaces[AvailableKey].RaceData = race
+    TriggerClientEvent('qb-lapraces:client:RaceFinished', src, RaceId, totalMs, bestMs)
+    -- the finisher's name only (the whole player object went to every client)
+    TriggerClientEvent('qb-lapraces:client:PlayerFinishs', -1, RaceId, PlayersFinished, { PlayerData = { charinfo = { firstname = HolderOf(Player)[1], lastname = HolderOf(Player)[2] } } })
     if PlayersFinished == AmountOfRacers then
-        if NotFinished ~= nil and next(NotFinished) ~= nil and NotFinished[RaceData.RaceId] ~= nil and
-            next(NotFinished[RaceData.RaceId]) ~= nil then
-            for _, v in pairs(NotFinished[RaceData.RaceId]) do
-                LastRaces[RaceData.RaceId][#LastRaces[RaceData.RaceId] + 1] = {
-                    TotalTime = v.TotalTime,
-                    BestLap = v.BestLap,
-                    Holder = {
-                        [1] = v.Holder[1],
-                        [2] = v.Holder[2]
-                    }
-                }
-            end
+        for _, v in pairs(NotFinished[RaceId] or {}) do
+            LastRaces[RaceId][#LastRaces[RaceId] + 1] = { TotalTime = v.TotalTime, BestLap = v.BestLap, Holder = { [1] = v.Holder[1], [2] = v.Holder[2] } }
         end
-        Races[RaceData.RaceId].LastLeaderboard = LastRaces[RaceData.RaceId]
-        Races[RaceData.RaceId].Racers = {}
-        Races[RaceData.RaceId].Started = false
-        Races[RaceData.RaceId].Waiting = false
+        race.LastLeaderboard = LastRaces[RaceId]
+        race.Racers = {}
+        race.Started = false
+        race.Waiting = false
         table.remove(AvailableRaces, AvailableKey)
-        LastRaces[RaceData.RaceId] = nil
-        NotFinished[RaceData.RaceId] = nil
+        LastRaces[RaceId] = nil
+        NotFinished[RaceId] = nil
     end
     TriggerClientEvent('qb-phone:client:UpdateLapraces', -1)
-end)
+end
 
 RegisterNetEvent('qb-lapraces:server:CreateLapRace', function(RaceName)
     local src = source
@@ -500,18 +508,22 @@ RegisterNetEvent('qb-lapraces:server:UpdateRaceState', function(RaceId, Started,
     if Started == false and Waiting == true then race.Waiting = true end
 end)
 
-RegisterNetEvent('qb-lapraces:server:UpdateRacerData', function(RaceId, Checkpoint, Lap, Finished)
+-- A racer's client reports it drove through its next checkpoint. Which checkpoint that is, and whether
+-- it counts, is the server's (the checkpoint and lap numbers the client sends are not used); one that
+-- does not count sends the client back to the checkpoint it missed. The last one finishes the racer.
+RegisterNetEvent('qb-lapraces:server:UpdateRacerData', function(RaceId)
     local src = source
     local Player, racer = RacerOf(src, RaceId)
-    if not Player or not Races[RaceId].Started then return end
-    Checkpoint, Lap = tonumber(Checkpoint), tonumber(Lap)
-    if not Checkpoint or not Lap or Checkpoint < 0 or Checkpoint > MAX_CHECKPOINTS or Lap < 0 or Lap > MAX_LAPS + 1 then return end
-
-    racer.Checkpoint = math.floor(Checkpoint)
-    racer.Lap = math.floor(Lap)
-    racer.Finished = Finished == true
-
-    TriggerClientEvent('qb-lapraces:client:UpdateRaceRacerData', -1, RaceId, Races[RaceId])
+    if not Player then return end
+    local race = Races[RaceId]
+    if not race.Started or not race.StartMs or racer.Completed or not racer.Next then return end
+    local ok, why = PassCheckpoint(src, race, racer)
+    if not ok then
+        TriggerClientEvent('qb-lapraces:client:CheckpointMissed', src, RaceId, racer.Next, racer.Lap, why)
+        return
+    end
+    TriggerClientEvent('qb-lapraces:client:UpdateRaceRacerData', -1, RaceId, race)
+    if racer.Completed then FinishRacer(src, Player, RaceId, racer) end
 end)
 
 RegisterNetEvent('qb-lapraces:server:StartRace', function(RaceId)
@@ -523,9 +535,20 @@ RegisterNetEvent('qb-lapraces:server:StartRace', function(RaceId)
     if RaceId ~= nil and AvailableKey ~= nil then
         if AvailableRaces[AvailableKey].SetupCitizenId == MyPlayer.PlayerData.citizenid then
             if AvailableRaces[AvailableKey].RaceData.Started then return end
-            AvailableRaces[AvailableKey].RaceData.Started = true
-            AvailableRaces[AvailableKey].RaceData.Waiting = false
-            AvailableRaces[AvailableKey].RaceData.StartedAt = os.time()
+            local race = Races[RaceId]
+            race.Started = true
+            race.Waiting = false
+            race.StartedAt = os.time()
+            -- the server's race clock: GO is when the racers' countdown ends
+            race.StartMs = GetGameTimer() + COUNTDOWN_MS
+            race.ActiveLaps = AvailableRaces[AvailableKey].Laps
+            race.MinLapMs = MinLapMs(race)
+            for _, racer in pairs(race.Racers) do
+                racer.Next, racer.Lap, racer.Checkpoint = 2, 1, 1
+                racer.LastPassAt, racer.LapStartAt = race.StartMs, race.StartMs
+                racer.BestLapMs, racer.Completed, racer.FinishedAt = nil, false, nil
+            end
+            AvailableRaces[AvailableKey].RaceData = race
             for CitizenId, _ in pairs(Races[RaceId].Racers) do
                 local Player = QBCore.Functions.GetPlayerByCitizenId(CitizenId)
                 if Player ~= nil then
@@ -549,18 +572,25 @@ RegisterNetEvent('qb-lapraces:server:SaveRace', function(RaceData)
     if not Player or type(RaceData) ~= 'table' or not IsWhitelisted(Player.PlayerData.citizenid) then return end
     if type(RaceData.RaceName) ~= 'string' or #RaceData.RaceName < 1 or #RaceData.RaceName > 64 or not IsNameAvailable(RaceData.RaceName) then return end
     if type(RaceData.Checkpoints) ~= 'table' or #RaceData.Checkpoints < 2 or #RaceData.Checkpoints > MAX_CHECKPOINTS then return end
-    local distance = tonumber(RaceData.RaceDistance)
-    if not distance or distance ~= distance or distance < 0 or distance > 1e6 then return end
-    RaceData.RaceDistance = distance
-    local RaceId = GenerateRaceId()
+    -- every checkpoint needs a real position (the server times the race from them)
     local Checkpoints = {}
     for k, v in ipairs(RaceData.Checkpoints) do
         if type(v) ~= 'table' or type(v.coords) ~= 'table' then return end
+        local x, y, z = tonumber(v.coords.x), tonumber(v.coords.y), tonumber(v.coords.z)
+        if not x or not y or not z or x ~= x or y ~= y or z ~= z or math.abs(x) > 1e5 or math.abs(y) > 1e5 or math.abs(z) > 1e5 then return end
         Checkpoints[k] = {
-            offset = v.offset,
-            coords = v.coords
+            offset = type(v.offset) == 'table' and v.offset or {},
+            coords = { x = x, y = y, z = z }
         }
     end
+    -- the length is measured here too (the creator's client sent it)
+    local distance = 0
+    for k = 1, #Checkpoints - 1 do
+        local a, b = Checkpoints[k].coords, Checkpoints[k + 1].coords
+        distance = distance + #(vector3(a.x, a.y, a.z) - vector3(b.x, b.y, b.z))
+    end
+    RaceData.RaceDistance = distance
+    local RaceId = GenerateRaceId()
     Races[RaceId] = {
         RaceName = RaceData.RaceName,
         Checkpoints = Checkpoints,
@@ -684,6 +714,9 @@ CreateThread(function()
             if v.records ~= nil then
                 Records = json.decode(v.records)
             end
+            -- a record from before server timing was the client's tick count: shown as no record,
+            -- and replaced in the database by the first time the server measures on that track
+            if type(Records) ~= 'table' or not tonumber(Records.TimeMs) then Records = {} end
             Races[v.raceid] = {
                 RaceName = v.name,
                 Checkpoints = json.decode(v.checkpoints),

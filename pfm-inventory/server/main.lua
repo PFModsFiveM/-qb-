@@ -355,11 +355,15 @@ CreateThread(function()
     end
 end)
 
+-- [src] = vector3: where the player stood when they opened a vending machine (see openVending)
+local vendingAt = {}
+
 -- Handlers
 
 AddEventHandler('playerDropped', function()
     local src = source
     clearBusyState(src)
+    vendingAt[src] = nil
     for _, inv in pairs(Inventories) do
         if inv.isOpen == src then
             inv.isOpen = false
@@ -537,14 +541,44 @@ end
 
 -- Events
 
+-- Vending machines are map props (not networked), so the server has no list of them. The machine
+-- position pfm-target sends is taken only within reach of the player's own position, and purchases
+-- are allowed only near where the player stood when it opened. The client's position used to become
+-- the coords of the one shared vending shop: it opened anywhere, and each open moved it away from
+-- everyone else at a real machine (their purchases were then refused).
+local VENDING_REACH = 3.5      -- pfm-target offers a machine within 2.5 m; a little more for lag
+local VENDING_BUY_REACH = 3.0  -- from where the player stood when the machine opened
+
+local function readPoint(v)
+    local t = type(v)
+    if t ~= 'table' and t ~= 'vector3' and t ~= 'vector4' then return nil end
+    local ok, x, y, z = pcall(function() return tonumber(v.x), tonumber(v.y), tonumber(v.z) end)
+    if not ok or not x or not y or not z or x ~= x or y ~= y or z ~= z then return nil end
+    return vector3(x, y, z)
+end
+
+--- Whether the player may buy from the vending shop now (they opened a machine and are still at it).
+local function vendingReach(src, playerCoords)
+    local at = vendingAt[src]
+    return at ~= nil and #(playerCoords - at) <= VENDING_BUY_REACH
+end
+
 RegisterNetEvent('qb-inventory:server:openVending', function(data)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if not Player then return end
+    local machine = readPoint(type(data) == 'table' and data.coords or nil)
+    if not machine then return end
+    local pos = GetEntityCoords(GetPlayerPed(src))
+    pos = vector3(pos.x, pos.y, pos.z)
+    -- (written so that a NaN or infinite distance fails too)
+    if not (#(pos - machine) <= VENDING_REACH) then return end
+    vendingAt[src] = pos
+    -- one vending shop without a position; its stock is filled again on every open (each machine
+    -- in the city is its own vending machine, so a shared stock would empty all of them)
     CreateShop({
         name = 'vending',
         label = 'Vending Machine',
-        coords = data.coords,
         slots = #Config.VendingItems,
         items = Config.VendingItems
     })
@@ -559,6 +593,7 @@ RegisterNetEvent('qb-inventory:server:closeInventory', function(inventory)
     if not QBPlayer then return end
     SetInventoryBusy(src, false)
     if type(inventory) ~= 'string' then return end
+    if inventory == 'shop-vending' then vendingAt[src] = nil end
     if inventory:find('shop%-') then return end
     if inventory:find('^otherplayer%-') then
         local targetId = tonumber(inventory:match('^otherplayer%-(.+)'))
@@ -927,6 +962,11 @@ QBCore.Functions.CreateCallback('qb-inventory:server:attemptPurchase', function(
             cb(false)
             return
         end
+    end
+    -- the vending shop has no position: only a player who opened a machine, while still at it
+    if shop == 'vending' and not vendingReach(source, vector3(playerCoords.x, playerCoords.y, playerCoords.z)) then
+        cb(false)
+        return
     end
 
     local shopSlot = tonumber(itemInfo.slot)

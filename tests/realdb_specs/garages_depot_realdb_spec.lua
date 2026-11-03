@@ -58,7 +58,7 @@ local function row(plate) return MySQL.single.await('SELECT state, depotprice FR
 local function charges(plate)
     return tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pfm-garages:depot:%' AND state = 'completed' AND reason = ?", { 'Impound release ' .. plate })) or 0
 end
-local function spawn(src, plate) return Mock.callCallback('qb-garages:server:spawnvehicle', src, plate, 'sultan', DEPOT) end
+local function spawn(src, plate) return Mock.callCallback('qb-garages:server:spawnvehicle', src, plate, 'depotLot', 1) end
 
 local plateNo = 0
 local function newPlate() plateNo = plateNo + 1 return ('DEP%04d'):format(plateNo) end

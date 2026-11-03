@@ -126,16 +126,22 @@ describe('lap race result', function()
         Mock.fireNet('qb-lapraces:server:SetupRace', A, id, 0)
         Mock.fireNet('qb-lapraces:server:JoinRace', A, { RaceId = id })
         Mock.fireNet('qb-lapraces:server:JoinRace', B, { RaceId = id })
+        Mock.gameTimer = 100000
         Mock.fireNet('qb-lapraces:server:StartRace', A, id)
-        Mock.clock = Mock.clock + 100
         return id
+    end
+    -- the racer drives through a checkpoint `ms` after GO (the server times it)
+    local function pass(src, id, pos, ms)
+        Mock.coords[src] = pos
+        Mock.gameTimer = 110001 + ms - 1
+        Mock.fireNet('qb-lapraces:server:UpdateRacerData', src, id)
     end
     it('the first finisher, at the finish line, is one lead with the server race time', function()
         local id = setup('Docks Sprint')
-        Mock.coords[A] = vector3(1005, 3, 30)
-        Mock.fireNet('qb-lapraces:server:FinishPlayer', A, { RaceId = id }, 1000, 0, 0)
-        Mock.coords[B] = vector3(1000, 0, 30)
-        Mock.fireNet('qb-lapraces:server:FinishPlayer', B, { RaceId = id }, 1200, 0, 0)
+        pass(A, id, vector3(500, 0, 30), 40000)
+        pass(A, id, vector3(1005, 3, 30), 100000)
+        pass(B, id, vector3(500, 0, 30), 50000)
+        pass(B, id, vector3(1000, 0, 30), 120000)
         local ev = events('race.finished')
         assert_eq(#ev, 1)
         assert_eq(ev[1].data.race, 'Docks Sprint')
@@ -145,8 +151,8 @@ describe('lap race result', function()
     end)
     it('a "finish" sent far from the finish line is not reported', function()
         local id = setup('Hill Sprint')
-        Mock.coords[A] = vector3(20, 20, 30)                                   -- still at the start
-        Mock.fireNet('qb-lapraces:server:FinishPlayer', A, { RaceId = id }, 1000, 0, 0)
+        pass(A, id, vector3(20, 20, 30), 40000)                                -- still at the start
+        pass(A, id, vector3(20, 20, 30), 100000)
         assert_eq(#Emits, 0)
     end)
 end)

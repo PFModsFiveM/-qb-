@@ -206,6 +206,7 @@ body {
     line-height: 1.4;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: pre-line; /* menu strings are text: a newline (or a legacy <br>) breaks the line */
 }
 
 .text {
@@ -215,6 +216,7 @@ body {
     line-height: 1.45;
     overflow: hidden;
     word-break: break-word;
+    white-space: pre-line;
 }
 
 .hotkey {

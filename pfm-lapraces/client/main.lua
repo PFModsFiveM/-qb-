@@ -349,9 +349,11 @@ local function RaceUI()
     CreateThread(function()
         while true do
             if CurrentRaceData.Checkpoints ~= nil and next(CurrentRaceData.Checkpoints) ~= nil then
-                if CurrentRaceData.Started then
-                    CurrentRaceData.RaceTime = CurrentRaceData.RaceTime + 1
-                    CurrentRaceData.TotalTime = CurrentRaceData.TotalTime + 1
+                -- the on-screen clock, in milliseconds (the server measures the times that count)
+                if CurrentRaceData.Started and not CurrentRaceData.Finishing then
+                    local now = GetGameTimer()
+                    CurrentRaceData.RaceTime = now - (CurrentRaceData.LapStartMs or now)
+                    CurrentRaceData.TotalTime = now - (CurrentRaceData.StartMs or now)
                 end
                 SendNUIMessage({
                     action = 'Update',
@@ -405,6 +407,7 @@ local function SetupRace(sRaceData, Laps)
         RaceTime = 0,
         TotalTime = 0,
         BestLap = 0,
+        Finishing = false,
         Racers = {}
     }
 
@@ -490,26 +493,20 @@ local function GetMaxDistance(OffsetCoords)
     return Retval
 end
 
-local function SecondsToClock(seconds)
-    seconds = tonumber(seconds)
-    local retval
-    if seconds <= 0 then
-        retval = '00:00:00';
-    else
-        local hours = string.format('%02.f', math.floor(seconds / 3600));
-        local mins = string.format('%02.f', math.floor(seconds / 60 - (hours * 60)));
-        local secs = string.format('%02.f', math.floor(seconds - hours * 3600 - mins * 60));
-        retval = hours .. ':' .. mins .. ':' .. secs
-    end
-    return retval
+--- m:ss.mmm of a time in milliseconds.
+local function MsToClock(ms)
+    ms = math.max(0, math.floor(tonumber(ms) or 0))
+    return ('%d:%02d.%03d'):format(ms // 60000, (ms % 60000) // 1000, ms % 1000)
 end
 
-local function FinishRace()
-    TriggerServerEvent('qb-lapraces:server:FinishPlayer', CurrentRaceData, CurrentRaceData.TotalTime, CurrentRaceData.TotalLaps, CurrentRaceData.BestLap)
-    if CurrentRaceData.BestLap ~= 0 then
-        QBCore.Functions.Notify('Race finished in ' .. SecondsToClock(CurrentRaceData.TotalTime) .. ', with the best lap: ' .. SecondsToClock(CurrentRaceData.BestLap))
-    else
-        QBCore.Functions.Notify('Race finished in ' .. SecondsToClock(CurrentRaceData.TotalTime))
+--- Ends the race on this client with the times the server measured (nil: no time, e.g. it did not answer).
+local function FinishRace(totalMs, bestMs)
+    if totalMs then
+        if CurrentRaceData.TotalLaps > 1 and bestMs then
+            QBCore.Functions.Notify('Race finished in ' .. MsToClock(totalMs) .. ', with the best lap: ' .. MsToClock(bestMs))
+        else
+            QBCore.Functions.Notify('Race finished in ' .. MsToClock(totalMs))
+        end
     end
     for k, _ in pairs(CurrentRaceData.Checkpoints) do
         if CurrentRaceData.Checkpoints[k].blip ~= nil then
@@ -541,7 +538,22 @@ local function FinishRace()
     CurrentRaceData.TotalTime = 0
     CurrentRaceData.BestLap = 0
     CurrentRaceData.RaceId = nil
+    CurrentRaceData.Finishing = false
     RaceData.InRace = false
+end
+
+--- The last checkpoint was reported: the server finishes the race (qb-lapraces:client:RaceFinished)
+--- or sends the racer back to a checkpoint it did not count (qb-lapraces:client:CheckpointMissed).
+local function AwaitFinish()
+    CurrentRaceData.Finishing = true
+    local raceId = CurrentRaceData.RaceId
+    SetTimeout(15000, function()
+        if CurrentRaceData.Finishing and CurrentRaceData.RaceId == raceId then
+            -- no answer: leave the race rather than stay in it
+            TriggerServerEvent('qb-lapraces:server:LeaveRace', { RaceId = raceId })
+            FinishRace(nil, nil)
+        end
+    end)
 end
 
 local function Info()
@@ -632,6 +644,7 @@ RegisterNetEvent('qb-lapraces:client:LeaveRace', function(_)
     CurrentRaceData.TotalTime = 0
     CurrentRaceData.BestLap = 0
     CurrentRaceData.RaceId = nil
+    CurrentRaceData.Finishing = false
     RaceData.InRace = false
     FreezeEntityPosition(GetVehiclePedIsIn(PlayerPedId(), false), false)
 end)
@@ -661,6 +674,8 @@ RegisterNetEvent('qb-lapraces:client:RaceCountdown', function()
             SetBlipScale(CurrentRaceData.Checkpoints[CurrentRaceData.CurrentCheckpoint + 1].blip, 1.0)
             FreezeEntityPosition(GetVehiclePedIsIn(PlayerPedId(), true), false)
             DoPilePfx()
+            CurrentRaceData.StartMs = GetGameTimer()
+            CurrentRaceData.LapStartMs = CurrentRaceData.StartMs
             CurrentRaceData.Started = true
             Countdown = 10
         else
@@ -670,6 +685,29 @@ RegisterNetEvent('qb-lapraces:client:RaceCountdown', function()
     else
         QBCore.Functions.Notify('You are not currently in a race..', 'error')
     end
+end)
+
+RegisterNetEvent('qb-lapraces:client:RaceFinished', function(RaceId, totalMs, bestMs)
+    if CurrentRaceData.RaceId == nil or CurrentRaceData.RaceId ~= RaceId then return end
+    FinishRace(totalMs, bestMs)
+end)
+
+-- The server did not count a checkpoint (too far from it, before the start or faster than the track
+-- allows): the racer goes back to the one it expects.
+RegisterNetEvent('qb-lapraces:client:CheckpointMissed', function(RaceId, expected, lap, why)
+    if CurrentRaceData.RaceId == nil or CurrentRaceData.RaceId ~= RaceId then return end
+    local total = #CurrentRaceData.Checkpoints
+    expected, lap = math.tointeger(tonumber(expected)), math.tointeger(tonumber(lap))
+    if not expected or expected < 1 or expected > total or not lap then return end
+    CurrentRaceData.Finishing = false
+    CurrentRaceData.CurrentCheckpoint = expected == 1 and total or expected - 1
+    CurrentRaceData.Lap = lap
+    for k, cp in pairs(CurrentRaceData.Checkpoints) do
+        if cp.blip then SetBlipScale(cp.blip, k == expected and 1.0 or 0.6) end
+    end
+    local target = CurrentRaceData.Checkpoints[expected].coords
+    SetNewWaypoint(target.x, target.y)
+    if why ~= 'early' then QBCore.Functions.Notify('Checkpoint ' .. expected .. ' was missed, go back through it', 'error', 3500) end
 end)
 
 RegisterNetEvent('qb-lapraces:client:PlayerFinishs', function(RaceId, Place, FinisherData)
@@ -750,7 +788,9 @@ CreateThread(function()
         local pos = GetEntityCoords(ped)
 
         if CurrentRaceData.RaceName ~= nil then
-            if CurrentRaceData.Started then
+            if CurrentRaceData.Started and CurrentRaceData.Finishing then
+                -- waiting for the server to finish the race
+            elseif CurrentRaceData.Started then
                 local cp
                 if CurrentRaceData.CurrentCheckpoint + 1 > #CurrentRaceData.Checkpoints then
                     cp = 1
@@ -776,7 +816,7 @@ CreateThread(function()
                             PlaySound(-1, 'SELECT', 'HUD_FRONTEND_DEFAULT_SOUNDSET', 0, 0, 1)
                             CurrentRaceData.CurrentCheckpoint = CurrentRaceData.CurrentCheckpoint + 1
                             TriggerServerEvent('qb-lapraces:server:UpdateRacerData', CurrentRaceData.RaceId, CurrentRaceData.CurrentCheckpoint, CurrentRaceData.Lap, true)
-                            FinishRace()
+                            AwaitFinish()
                         end
                     else
                         if CurrentRaceData.CurrentCheckpoint + 1 > #CurrentRaceData.Checkpoints then
@@ -785,7 +825,7 @@ CreateThread(function()
                                 PlaySound(-1, 'SELECT', 'HUD_FRONTEND_DEFAULT_SOUNDSET', 0, 0, 1)
                                 CurrentRaceData.CurrentCheckpoint = CurrentRaceData.CurrentCheckpoint + 1
                                 TriggerServerEvent('qb-lapraces:server:UpdateRacerData', CurrentRaceData.RaceId, CurrentRaceData.CurrentCheckpoint, CurrentRaceData.Lap, true)
-                                FinishRace()
+                                AwaitFinish()
                             else
                                 DoPilePfx()
                                 PlaySound(-1, 'SELECT', 'HUD_FRONTEND_DEFAULT_SOUNDSET', 0, 0, 1)
@@ -794,6 +834,7 @@ CreateThread(function()
                                 elseif CurrentRaceData.BestLap == 0 then
                                     CurrentRaceData.BestLap = CurrentRaceData.RaceTime
                                 end
+                                CurrentRaceData.LapStartMs = GetGameTimer()
                                 CurrentRaceData.RaceTime = 0
                                 CurrentRaceData.Lap = CurrentRaceData.Lap + 1
                                 CurrentRaceData.CurrentCheckpoint = 1

@@ -9,23 +9,36 @@ const imageEl = document.getElementById("image");
 const isImageIcon = (icon) =>
     typeof icon === "string" && (icon.includes("/") || /\.(png|jpe?g|webp|gif|svg)$/i.test(icon));
 
+// Menu strings are text, never HTML: a header or text can come from what a player typed (a dish
+// name, a label), and markup in it could click a button of the menu for the viewer. esc() makes any
+// value safe in text and in attribute values (textContent escapes & < >; quotes are added).
+const esc = (value) => {
+    const div = document.createElement("div");
+    div.textContent = value == null ? "" : String(value);
+    return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+};
+
+// Old qb-menu callers break lines with <br> (pfm-crafting does): that one tag still breaks the line
+// (as a newline, shown by white-space: pre-line); everything else is shown as typed.
+const menuText = (value) => esc(value == null ? "" : String(value).replace(/<br\s*\/?>/gi, "\n"));
+
 const iconHtml = (icon) => {
     if (!icon) return "";
     if (isImageIcon(icon)) {
-        return `<div class="icon"><img src="${icon}" onerror="this.parentElement.remove();" /></div>`;
+        return `<div class="icon"><img src="${esc(icon)}" onerror="this.parentElement.remove();" /></div>`;
     }
-    return `<div class="icon"><i class="${icon}"></i></div>`;
+    return `<div class="icon"><i class="${esc(icon)}"></i></div>`;
 };
 
 const getButtonRender = (header, message, id, isMenuHeader, isDisabled, icon, order, hotkey) => {
     return `
-        <div class="${isMenuHeader ? "title" : "button"} ${isDisabled ? "disabled" : ""}" id="${id}" style="animation-delay:${Math.min(order * 30, 280)}ms">
+        <div class="${isMenuHeader ? "title" : "button"} ${isDisabled ? "disabled" : ""}" id="${esc(id)}" style="animation-delay:${Math.min(Number(order) * 30 || 0, 280)}ms">
             ${iconHtml(icon)}
             <div class="column">
-                <div class="header">${header}</div>
-                ${message ? `<div class="text">${message}</div>` : ""}
+                <div class="header">${menuText(header)}</div>
+                ${message ? `<div class="text">${menuText(message)}</div>` : ""}
             </div>
-            ${!isMenuHeader && !isDisabled && hotkey ? `<div class="hotkey">${hotkey}</div>` : ""}
+            ${!isMenuHeader && !isDisabled && hotkey ? `<div class="hotkey">${esc(hotkey)}</div>` : ""}
             ${!isMenuHeader && !isDisabled ? `<i class="fas fa-chevron-right chevron"></i>` : ""}
         </div>
     `;
@@ -38,8 +51,8 @@ const openMenu = (data = null) => {
     focusIndex = -1;
     images = [];
     buttonParams = [];
-    data.forEach((item, index) => {
-        if (!item.hidden) {
+    (Array.isArray(data) ? data : []).forEach((item, index) => {
+        if (item && !item.hidden) {
             images[index] = item;
             const selectable = !item.isMenuHeader && !item.disabled;
             const hotkey = selectable && hotkeyNum < 9 ? ++hotkeyNum : null;

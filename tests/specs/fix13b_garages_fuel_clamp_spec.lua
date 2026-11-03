@@ -15,11 +15,16 @@ local function owns(p, plateAt, cidAt) return cars[p[plateAt]] and cars[p[plateA
 FakeDB.extraPatterns = {
     { "AND TABLE_NAME = 'job_garage_vehicles'", function() return 1 end },
     { 'SELECT plate FROM job_garage_vehicles WHERE active = 1 AND plate IN', function() return {} end },
-    { 'SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
+    { 'SELECT vehicle, mods, state, depotprice, garage FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
         local c = cars[p[1]]
         return (c and c.citizenid == p[2]) and { c } or {}
     end },
-    { 'UPDATE player_vehicles SET state = 0', function(p) if cars[p[1]] then cars[p[1]].state = 0 end return 1 end },
+    { 'UPDATE player_vehicles SET state = 0, depotprice = 0 WHERE plate = ? AND citizenid = ? AND state = ? AND depotprice = ?', function(p)
+        local c = cars[p[1]]
+        if not c or c.citizenid ~= p[2] or c.state ~= p[3] or (c.depotprice or 0) ~= p[4] then return 0 end
+        c.state = 0
+        return 1
+    end },
     { 'UPDATE player_vehicles SET fuel = ?, engine = ?, body = ? WHERE plate = ? AND citizenid = ?', function(p)
         if owns(p, 4, 5) then
             cars[p[4]].fuel = p[1]
@@ -70,8 +75,9 @@ local otherState = GetResourceState
 function GetResourceState(name) if name == 'pfm-fuel' then return fuelState end return otherState(name) end
 
 local P = 1
-local HERE = vector3(10, 10, 10)
-local function takeOut(plate) return Mock.callCallback('qb-garages:server:spawnvehicle', P, plate, 'sultan', vector4(12, 10, 10, 0)) end
+local MOTEL = Config.Garages.motelgarage.takeVehicle
+local HERE = vector3(MOTEL.x, MOTEL.y, MOTEL.z)
+local function takeOut(plate) return Mock.callCallback('qb-garages:server:spawnvehicle', P, plate, 'motelgarage', 1) end
 local function park(plate, fuel) Mock.fireNet('qb-garages:server:updateVehicleStats', P, plate, fuel, 900, 800) end
 --- pfm-fuel's level for `veh`, given for `plate`
 local function level(veh, value, plate) fuelLevel[veh], levelFor[veh] = value, plate end
@@ -85,9 +91,9 @@ BeforeEach = function()
     Mock.newPlayer(P).PlayerData.money = { cash = 0, bank = 5000 }
     Mock.coords[P] = HERE
     cars = {
-        OWN1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, fuel = 12 },
-        OWN2 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, fuel = 40 },
-        OWN3 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, fuel = nil },
+        OWN1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, fuel = 12, garage = 'motelgarage' },
+        OWN2 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, fuel = 40, garage = 'motelgarage' },
+        OWN3 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, fuel = nil, garage = 'motelgarage' },
     }
 end
 

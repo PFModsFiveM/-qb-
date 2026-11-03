@@ -73,12 +73,15 @@ RegisterNUICallback('clickedButton', function(option, cb)
     if sendData then
         local data = sendData[tonumber(option)]
         sendData = nil
+        -- an index the menu does not have, a header or a disabled entry (the page never offers those
+        -- as buttons) does nothing
+        if type(data) ~= 'table' or data.isMenuHeader or data.disabled or data.hidden then cb('ok') return end
         if data.action ~= nil then
             data.action()
             cb('ok')
             return
         end
-        if data then
+        if type(data.params) == 'table' then
             if data.params.event then
                 if data.params.isServer then
                     TriggerServerEvent(data.params.event, data.params.args)

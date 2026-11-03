@@ -40,9 +40,15 @@ FakeDB.extraPatterns = {
         local r = copy(c) r.plate = p[1]
         return { r }
     end },
-    { 'SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
+    { 'SELECT vehicle, mods, state, depotprice, garage FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
         local c = cars[p[1]]
         return (c and c.citizenid == p[2]) and { c } or nil
+    end },
+    { 'UPDATE player_vehicles SET state = 0, depotprice = 0 WHERE plate = ? AND citizenid = ? AND state = ? AND depotprice = ?', function(p)
+        local c = cars[p[1]]
+        if not c or c.citizenid ~= p[2] or c.state ~= p[3] or (c.depotprice or 0) ~= p[4] then return 0 end
+        c.state, c.depotprice = 0, 0
+        return 1
     end },
     { 'SELECT depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
         local c = cars[p[1]]
@@ -142,7 +148,7 @@ local HERE = vector3(10, 10, 10)
 local DEPOT = Config.Garages.depotLot.spawnPoint[1]
 local MOTEL = Config.Garages.motelgarage.takeVehicle
 local function bank(src) return Mock.players[src].PlayerData.money.bank end
-local function spawn(src, plate, at) return Mock.callCallback('qb-garages:server:spawnvehicle', src, plate, 'sultan', at or DEPOT) end
+local function spawn(src, plate, garage) return Mock.callCallback('qb-garages:server:spawnvehicle', src, plate, garage or 'depotLot', 1) end
 local function app(method, src, payload) return handlers.garages[method](src, payload or {}) end
 local function find(list, plate) for _, v in ipairs(list.vehicles) do if v.plate == plate then return v end end end
 local function inWorld(plate, pos)

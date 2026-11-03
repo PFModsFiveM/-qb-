@@ -1,6 +1,6 @@
 -- pfm-garages: a car is spawned only from the garage (state 1) or after its impound fee was paid, never
--- twice while the first copy exists, and next to the player; the client cannot mark a car parked or
--- clear its impound fee.
+-- twice while the first copy exists, and at the garage the player stands at; the client cannot mark a
+-- car parked or clear its impound fee.
 load_resource('tests/lua/ledger_env.lua')
 QBCoreMock.Shared.Vehicles = { sultan = { name = 'Sultan', price = 1000, category = 'sports' } }
 
@@ -20,9 +20,16 @@ FakeDB.extraPatterns = {
         table.sort(out, function(a, b) return a.plate < b.plate end)
         return out
     end },
-    { 'SELECT vehicle, mods, state, depotprice FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
+    { 'SELECT vehicle, mods, state, depotprice, garage FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
         local c = cars[p[1]]
         return (c and c.citizenid == p[2]) and { c } or {}
+    end },
+    -- the take-out: only in the state the spawn checked
+    { 'UPDATE player_vehicles SET state = 0, depotprice = 0 WHERE plate = ? AND citizenid = ? AND state = ? AND depotprice = ?', function(p)
+        local c = cars[p[1]]
+        if not c or c.citizenid ~= p[2] or c.state ~= p[3] or (c.depotprice or 0) ~= p[4] then return 0 end
+        c.state, c.depotprice = 0, 0
+        return 1
     end },
     { 'SELECT vehicle, mods FROM player_vehicles WHERE plate = ? AND citizenid = ?', function(p)
         local c = cars[p[1]]
@@ -46,10 +53,12 @@ function SetVehicleNumberPlateText() end
 function DoesEntityExist(e) return existing[e] == true end
 
 local P, OTHER = 1, 2
-local HERE = vector3(10, 10, 10)
-local AT = vector4(12, 10, 10, 0)
+local MOTEL = Config.Garages.motelgarage.takeVehicle
+local DEPOT = Config.Garages.depotLot.takeVehicle
+local HERE = vector3(MOTEL.x, MOTEL.y, MOTEL.z)
 
-local function spawn(src, plate, coords) return Mock.callCallback('qb-garages:server:spawnvehicle', src, plate, 'sultan', coords or AT) end
+local function spawn(src, plate, garage) return Mock.callCallback('qb-garages:server:spawnvehicle', src, plate, garage or 'motelgarage', 1) end
+local function atDepot(src) Mock.coords[src] = vector3(DEPOT.x, DEPOT.y, DEPOT.z) end
 
 BeforeEach = function()
     Mock.reset()
@@ -62,9 +71,9 @@ BeforeEach = function()
         Mock.coords[src] = HERE
     end
     cars = {
-        PARKED1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0 },
-        OUT1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 0, depotprice = 0 },
-        IMPOUND1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 0, depotprice = 500 },
+        PARKED1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 1, depotprice = 0, garage = 'motelgarage' },
+        OUT1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 0, depotprice = 0, garage = 'motelgarage' },
+        IMPOUND1 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 0, depotprice = 500, garage = 'motelgarage' },
     }
 end
 
@@ -81,17 +90,20 @@ describe('taking a car out', function()
         assert_eq(spawn(P, 'OUT1'), nil)
     end)
     it('an impounded car needs its fee paid first', function()
-        assert_eq(spawn(P, 'IMPOUND1'), nil)
+        atDepot(P)
+        assert_eq(spawn(P, 'IMPOUND1', 'depotLot'), nil)
         Mock.fireNet('qb-garages:server:updateVehicleState', P, 0, 'IMPOUND1') -- used to clear the fee
         assert_eq(cars.IMPOUND1.depotprice, 500)
         Mock.fireNet('qb-garages:server:PayDepotPrice', P, { plate = 'IMPOUND1' })
         assert_eq(Mock.players[P].PlayerData.money.bank, 4500)
-        assert_true(spawn(P, 'IMPOUND1') ~= nil)
+        assert_true(spawn(P, 'IMPOUND1', 'depotLot') ~= nil)
         assert_eq(cars.IMPOUND1.depotprice, 0)
     end)
-    it('someone else cannot take my car, and nobody can spawn one across the map', function()
+    it('someone else cannot take my car, and nobody can spawn one away from the garage', function()
         assert_eq(spawn(OTHER, 'PARKED1'), nil)
-        assert_eq(spawn(P, 'PARKED1', vector4(2000, 2000, 10, 0)), nil)
+        Mock.coords[P] = vector3(MOTEL.x + 200, MOTEL.y, MOTEL.z)
+        assert_eq(spawn(P, 'PARKED1'), nil)
+        assert_eq(cars.PARKED1.state, 1)
     end)
 end)
 
@@ -104,13 +116,14 @@ describe('job fleet cars', function()
         assert_true(spawn(P, 'PARKED1') ~= nil)
     end)
     it('are not listed at the impound and their fee cannot be paid there', function()
-        cars.IMPOUND2 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 0, depotprice = 500 }
+        cars.IMPOUND2 = { citizenid = 'CID1', vehicle = 'sultan', mods = '{}', state = 0, depotprice = 500, garage = 'motelgarage' }
         fleetPlates.IMPOUND2 = true
         local list = Mock.callCallback('qb-garages:server:GetGarageVehicles', P, 'nowhere', 'depot', {})
         assert_eq(#list, 1)
         assert_eq(list[1].plate, 'IMPOUND1')
         Mock.fireNet('qb-garages:server:PayDepotPrice', P, { plate = 'IMPOUND2' })
         assert_eq(Mock.players[P].PlayerData.money.bank, 5000)
-        assert_eq(spawn(P, 'IMPOUND2'), nil)
+        atDepot(P)
+        assert_eq(spawn(P, 'IMPOUND2', 'depotLot'), nil)
     end)
 end)

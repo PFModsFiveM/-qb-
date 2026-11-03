@@ -48,6 +48,11 @@ document.addEventListener("keydown", function (event) {
 document.getElementById("close-btn").addEventListener("click", closeGarageMenu);
 document.getElementById("search").addEventListener("input", renderVehicleList);
 
+// Vehicle names and plates come from the server; they go into the markup escaped.
+function esc(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
 function post(cb, body) {
     return fetch(`https://pfm-garages/${cb}`, {
         method: "POST",
@@ -70,6 +75,8 @@ function displayUI() {
 function getVehicleAction(v) {
     const hasDepotFee = v.depotPrice && v.depotPrice > 0;
     if (v.state === 2) return { status: "Impounded", cls: "impound", button: null };
+    // the fee was paid ahead in the Garages app: the server lets the car out of the depot unpaid
+    if (v.depotPaid && v.type === "depot") return { status: "Fee paid", cls: "depot", button: { label: "Drive", kind: "drive" } };
     if (v.state === 0) {
         if (hasDepotFee) {
             if (v.type === "public") return { status: "In depot", cls: "depot", button: null };
@@ -126,14 +133,14 @@ function renderVehicleList() {
         card.className = "vehicle-item";
 
         const financed = v.balance && v.balance > 0;
-        const name = v.brand ? `${v.brand} ${v.vehicleLabel}` : v.vehicleLabel;
+        const name = esc(v.brand ? `${v.brand} ${v.vehicleLabel}` : v.vehicleLabel);
 
         card.innerHTML = `
             <div class="v-row">
                 <div class="v-main">
                     <div class="v-name">${name}${v.shared ? '<span class="chip shared" title="Owned by another member — only the owner can take it out">shared</span>' : ""}</div>
                     <div class="v-meta">
-                        <span class="plate">${v.plate}</span>
+                        <span class="plate">${esc(v.plate)}</span>
                         <span class="meta"><span class="material-icons-round">route</span>${Number(v.distance || 0).toLocaleString()} mi</span>
                         ${financed ? `<span class="meta finance" title="Outstanding finance"><span class="material-icons-round">account_balance</span>$${Math.floor(v.balance).toLocaleString()}</span>` : ""}
                     </div>

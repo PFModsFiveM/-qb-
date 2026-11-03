@@ -328,7 +328,17 @@ end)
 -- waits (two sellers at once could fill one spot twice).
 local listingBusy = false
 
-local function listVehicle(src, Player, price, desc, mods)
+--- The look a listing shows and hands on: the car's own record (what the garage or a mechanic last
+--- saved), with its plate. The client's props were stored as they came, so a car taken back from
+--- the lot (or bought) came with any upgrades a client named.
+local function listingMods(row)
+    local ok, mods = pcall(json.decode, type(row.mods) == 'string' and row.mods or '')
+    if not ok or type(mods) ~= 'table' then mods = {} end
+    mods.plate = row.plate
+    return json.encode(mods)
+end
+
+local function listVehicle(src, Player, price, desc)
     local cid = Player.PlayerData.citizenid
     local plate, veh = seatedVehicle(src)
     if not plate then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_in_veh'), 'error', 3500) end
@@ -347,7 +357,7 @@ local function listVehicle(src, Player, price, desc, mods)
     if not claimed or (claimed.affectedRows or 0) < 1 then
         return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_your_vehicle'), 'error', 3500)
     end
-    local values = { cid, price, desc, row.plate, row.vehicle, mods, generateOID() }
+    local values = { cid, price, desc, row.plate, row.vehicle, listingMods(row), generateOID() }
     local ok, id = pcall(function()
         if PFUsedCars.dbReady then
             values[#values + 1] = json.encode(keptState(row))
@@ -370,7 +380,7 @@ local function listVehicle(src, Player, price, desc, mods)
 end
 
 -- Put the car the player sits in on the lot. The car is identified by the server (the seat), its
--- model comes from the owner's record; the price, description and look come from the contract.
+-- model and look come from the owner's record; the price and description come from the contract.
 RegisterNetEvent('qb-occasions:server:sellVehicle', function(vehiclePrice, vehicleData)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
@@ -381,11 +391,9 @@ RegisterNetEvent('qb-occasions:server:sellVehicle', function(vehiclePrice, vehic
     vehiclePrice = math.floor(tonumber(vehiclePrice) or 0)
     if vehiclePrice < 1 or vehiclePrice > 50000000 then return end
     local desc = tostring(vehicleData.desc or ''):sub(1, 250)
-    local mods = type(vehicleData.mods) == 'table' and json.encode(vehicleData.mods) or '{}'
-    if #mods > 20000 then return end
     if listingBusy then return TriggerClientEvent('QBCore:Notify', src, Lang:t('error.lot_busy'), 'error', 3500) end
     listingBusy = true
-    local ok, err = pcall(listVehicle, src, Player, vehiclePrice, desc, mods)
+    local ok, err = pcall(listVehicle, src, Player, vehiclePrice, desc)
     listingBusy = false
     if not ok then print('^1[pfm-vehiclesales]^7 listing failed: ' .. tostring(err)) end
 end)
