@@ -12,16 +12,23 @@ local copsCallCooldown = {}  -- [src] = os.time()
 -- Every step that leads to loot is recorded here when the server sees it happen; the next step
 -- requires it. (These used to be separate client events: a cheater skipped the items, hacks,
 -- drills and police minimums and sent only the final "open" / "opened" events.)
-local hackAttempts = {}      -- [src] = { bank = bankId, at = os.time() }  electronic kit + trojan used at a panel
+-- The hacks and thermite charges are pfm-minigames challenges: the server issues the puzzle and judges
+-- the answer, so a client's own "I passed" opens nothing.
+local hackAttempts = {}      -- [src] = { bank = bankId, at = os.time(), challengeId }  kit + trojan used at a panel
 local pacificDoorOpened = false -- security card 02 used at the Pacific door this robbery
 local lockerJobs = {}        -- [src] = { bank, locker, at }   drilling / cracking started
-local thermiteUsed = {}      -- [src] = { station = key or nil, at }
+local thermiteUsed = {}      -- [src] = { station = key | nil, bank, gate, at, challengeId }  charge placed
 local alarmRaised = {}       -- [bankId] = os.time() of the last alarm
 
 local HACK_MIN_SECONDS, HACK_MAX_SECONDS = 2, 120
 local LOCKER_MIN_SECONDS = { small = 25, big = 16 } -- the progress bars run 27-37 s and 18-30 s
 local LOCKER_MAX_SECONDS = 180
 local THERMITE_MAX_SECONDS = 60
+local THERMITE_STATION_RANGE = 3.0 -- the client offers the charge within 1.5 m of the station
+local THERMITE_GATE_RANGE = 2.0    -- the gate zones are 1 m boxes
+local THERMITE_FUSE_MS = 3000      -- the client counts 3 s down before a placed charge goes off
+local FIRE_MIN_MS, FIRE_MAX_MS = 10000, 15000
+local FIRE_MAX_COUNT = 7
 
 local function GetCopCount()
     local amount = 0
@@ -67,6 +74,57 @@ end
 
 local function HasItem(src, item)
     return exports['pfm-inventory']:GetItemByName(src, item) ~= nil
+end
+
+-- ── server-judged minigames (pfm-minigames) ──────────────────────
+local function IssueChallenge(src, kind, opts)
+    local ok, ch = pcall(function() return exports['pfm-minigames']:IssueChallenge(src, kind, opts) end)
+    if ok and type(ch) == 'table' and type(ch.id) == 'string' then return ch end
+    return nil
+end
+
+local function ChallengePassed(src, id)
+    if type(id) ~= 'string' then return false end
+    local ok, passed = pcall(function() return exports['pfm-minigames']:Verify(src, id) end)
+    return ok and passed == true
+end
+
+local function CancelChallenge(src, id)
+    if type(id) ~= 'string' then return end
+    pcall(function() exports['pfm-minigames']:Cancel(src, id) end)
+end
+
+-- ── bank doors (pfm-doorlock) ────────────────────────────────────
+-- Opened and locked only here, through pfm-doorlock's server path, when the server has seen the step
+-- that opens them (a client may not unlock these doors itself). sentSource names the player the
+-- door change is for; it must be a loaded player.
+local function SetBankDoor(src, doorId, locked)
+    if not doorId or not src then return end
+    TriggerEvent('qb-doorlock:server:updateState', doorId, locked, false, false, true, false, false, src)
+end
+
+local function BankDoorIds()
+    local ids, seen = {}, {}
+    local function add(id) if id and not seen[id] then seen[id] = true; ids[#ids + 1] = id end end
+    add((Config.BankDoors or {}).pacificFront)
+    add((Config.BankDoors or {}).paletoVault)
+    for _, bankId in ipairs({ 'pacific', 'paleto' }) do
+        for _, gate in ipairs(Config.BigBanks[bankId]['thermite'] or {}) do add(gate['doorId']) end
+    end
+    return ids
+end
+
+-- Locks every big-bank door again. pfm-doorlock wants a loaded player for the change; with nobody
+-- online it is retried until someone is.
+local function RelockBankDoors(ids)
+    ids = ids or BankDoorIds()
+    local players = QBCore.Functions.GetPlayers() or {}
+    local src = tonumber(players[1])
+    if not src then
+        SetTimeout(30000, function() RelockBankDoors(ids) end)
+        return
+    end
+    for _, id in ipairs(ids) do SetBankDoor(src, id, true) end
 end
 
 local function BankPanelCoords(bankId)
@@ -237,19 +295,6 @@ local function AllStationsHit()
     return hit >= Config.HitsNeeded
 end
 
---- This will check if the given coords are in the area of the given distance of a powerstation
---- @param coords vector3
---- @param dist number
---- @return boolean
-local function IsNearPowerStation(coords, dist)
-    for _, v in pairs(Config.PowerStations) do
-        if #(coords - v.coords) < dist then
-            return true
-        end
-    end
-    return false
-end
-
 -- Events
 
 RegisterNetEvent('qb-bankrobbery:server:setBankState', function(bankId)
@@ -268,16 +313,19 @@ RegisterNetEvent('qb-bankrobbery:server:setBankState', function(bankId)
         if not exports['pfm-inventory']:RemoveItem(src, 'security_card_01', 1, false, 'qb-bankrobbery:server:setBankState') then return end
         TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['security_card_01'], 'remove')
     else
-        -- Fleeca and the Pacific vault open only after a hack this player started at this panel
+        -- Fleeca and the Pacific vault open only after a hack this player started at this panel, and
+        -- only when pfm-minigames judged that hack passed
         local hack = hackAttempts[src]
         hackAttempts[src] = nil -- single use
         if not hack or hack.bank ~= bankId then return end
         local elapsed = os.time() - hack.at
         if elapsed < HACK_MIN_SECONDS or elapsed > HACK_MAX_SECONDS then return end
         if bankId == 'pacific' and not pacificDoorOpened then return end
+        if not ChallengePassed(src, hack.challengeId) then return end
     end
 
     bank['isOpened'] = true
+    if bankId == 'paleto' then SetBankDoor(src, (Config.BankDoors or {}).paletoVault, false) end
     if bankId == 'paleto' or bankId == 'pacific' then
         TriggerEvent('qb-bankrobbery:server:setTimeout')
     else
@@ -467,10 +515,19 @@ AddEventHandler('qb-bankrobbery:server:setTimeout', function()
                 Config.BigBanks['paleto']['lockers'][k]['isBusy'] = false
                 Config.BigBanks['paleto']['lockers'][k]['isOpened'] = false
             end
+            for _, bankId in ipairs({ 'pacific', 'paleto' }) do
+                for i, gate in ipairs(Config.BigBanks[bankId]['thermite'] or {}) do
+                    if gate['isOpened'] then
+                        gate['isOpened'] = false
+                        TriggerClientEvent('qb-bankrobbery:client:setThermiteGate', -1, bankId, i, false)
+                    end
+                end
+            end
             TriggerClientEvent('qb-bankrobbery:client:ClearTimeoutDoors', -1)
             Config.BigBanks['paleto']['isOpened'] = false
             Config.BigBanks['pacific']['isOpened'] = false
             pacificDoorOpened = false
+            RelockBankDoors()
             ClearLootedForPrefix('paleto:')
             ClearLootedForPrefix('pacific:')
             timeOut = false
@@ -538,23 +595,15 @@ RegisterNetEvent('qb-bankrobbery:server:callCops', function(type, bank, coords)
     TriggerClientEvent('qb-bankrobbery:client:robberyCall', -1, type, coords)
 end)
 
-RegisterNetEvent('qb-bankrobbery:server:SetStationStatus', function(key, isHit)
-    local src = source
-    -- players can only blow a station; restoring power is the server's job (blackout timer)
-    if isHit ~= true then return end
+-- A power station blows only when the server saw a thermite charge pass there (thermiteFinish below).
+-- (There used to be a client event that blew a station, also after a failed charge.)
+local function BlowStation(src, key)
     if not Config.PowerStations[key] or Config.PowerStations[key].hit then return end
-    -- must actually be standing at that power station, and no spamming
-    if #(GetEntityCoords(GetPlayerPed(src)) - Config.PowerStations[key].coords) > 15.0 then return end
     local now = os.time()
     if stationCooldowns[src] and now - stationCooldowns[src] < 10 then return end
-    -- a thermite charge must just have been used at this station by this player
-    local used = thermiteUsed[src]
-    thermiteUsed[src] = nil
-    if not used or used.station ~= key or now - used.at > THERMITE_MAX_SECONDS then return end
-    if GetCopCount() < (Config.MinimumThermitePolice or 0) then return end
     stationCooldowns[src] = now
-    Config.PowerStations[key].hit = isHit
-    TriggerClientEvent('qb-bankrobbery:client:SetStationStatus', -1, key, isHit)
+    Config.PowerStations[key].hit = true
+    TriggerClientEvent('qb-bankrobbery:client:SetStationStatus', -1, key, true)
     if AllStationsHit() then
         exports['pfm-weathersync']:setBlackout(true)
         -- a city-wide blackout is public news (kind registered here: it is not in the shared catalog)
@@ -579,60 +628,138 @@ RegisterNetEvent('qb-bankrobbery:server:SetStationStatus', function(key, isHit)
     else
         CheckStationHits()
     end
-end)
+end
 
--- The client plugs the electronic kit + trojan USB into a bank panel. Both are used up here, and
--- the hack this starts is what lets setBankState open that bank.
-RegisterNetEvent('qb-bankrobbery:server:removeElectronicKit', function()
-    local src = source
+-- The client plugs the electronic kit + trojan USB into a bank panel. Both are used up here, and the
+-- server hands that player a hacking challenge; setBankState opens the bank only if it was passed.
+QBCore.Functions.CreateCallback('qb-bankrobbery:server:startHack', function(src, cb)
     local Player = exports['pfm-core']:GetPlayer(src)
-    if not Player then return end
+    if not Player then return cb(false) end
     local bankId = BankAtPanel(src)
-    if not bankId or robberyBusy then return end
-    if not HasItem(src, 'electronickit') or not HasItem(src, 'trojan_usb') then return end
-    if not exports['pfm-inventory']:RemoveItem(src, 'electronickit', 1, false, 'qb-bankrobbery:server:removeElectronicKit') then return end
-    if not exports['pfm-inventory']:RemoveItem(src, 'trojan_usb', 1, false, 'qb-bankrobbery:server:removeElectronicKit') then return end
+    if not bankId or robberyBusy then return cb(false) end
+    local bank = bankId == 'pacific' and Config.BigBanks['pacific'] or Config.SmallBanks[bankId]
+    if bank['isOpened'] or GetCopCount() < MinimumPolice(bankId) then return cb(false) end
+    -- the Pacific vault panel is behind the front gate: no kit is used up before the card opened it
+    if bankId == 'pacific' and not pacificDoorOpened then return cb(false) end
+    if not HasItem(src, 'electronickit') or not HasItem(src, 'trojan_usb') then return cb(false) end
+    local ch = IssueChallenge(src, 'hacking', {
+        size = (Config.HackChallenge or {}).size or 5, seconds = (Config.HackChallenge or {}).seconds or 30,
+        tag = 'bankrobbery:hack:' .. tostring(bankId),
+    })
+    if not ch then return cb(false) end
+    if not exports['pfm-inventory']:RemoveItem(src, 'electronickit', 1, false, 'qb-bankrobbery:server:startHack')
+        or not exports['pfm-inventory']:RemoveItem(src, 'trojan_usb', 1, false, 'qb-bankrobbery:server:startHack') then
+        CancelChallenge(src, ch.id)
+        return cb(false)
+    end
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['electronickit'], 'remove')
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['trojan_usb'], 'remove')
-    hackAttempts[src] = { bank = bankId, at = os.time() }
+    if hackAttempts[src] then CancelChallenge(src, hackAttempts[src].challengeId) end
+    hackAttempts[src] = { bank = bankId, at = os.time(), challengeId = ch.id }
+    cb(ch)
 end)
 
--- Security card 02 opens the Pacific front door (step one of the Pacific robbery). Card 01 (Paleto)
--- is used inside setBankState.
+-- Security card 02 opens the Pacific front door (step one of the Pacific robbery): the card is used up
+-- here and the server opens the gate. Card 01 (Paleto) is used inside setBankState.
 RegisterNetEvent('qb-bankrobbery:server:removeBankCard', function(number)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if number ~= '02' then return end
-    if robberyBusy or #(PlayerCoords(src) - Config.BigBanks['pacific']['coords'][1]) > 3.0 then return end
+    if robberyBusy or pacificDoorOpened or #(PlayerCoords(src) - Config.BigBanks['pacific']['coords'][1]) > 3.0 then return end
     if GetCopCount() < (Config.MinimumPacificPolice or 0) then return end
     if not exports['pfm-inventory']:RemoveItem(src, 'security_card_02', 1, false, 'qb-bankrobbery:server:removeBankCard') then return end
     TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['security_card_02'], 'remove')
     pacificDoorOpened = true
+    SetBankDoor(src, (Config.BankDoors or {}).pacificFront, false)
+    -- a crew that never gets the vault open does not leave the gate open for the next one
+    SetTimeout(60000 * (Config.PacificFrontDoorMinutes or 15), function()
+        if Config.BigBanks['pacific']['isOpened'] or not pacificDoorOpened then return end
+        pacificDoorOpened = false
+        RelockBankDoors({ (Config.BankDoors or {}).pacificFront })
+    end)
 end)
 
-RegisterNetEvent('thermite:StartServerFire', function(coords, maxChildren, isGasFire)
-    local src = source
-    local ped = GetPlayerPed(src)
-    local coords2 = GetEntityCoords(ped)
-    maxChildren = math.min(math.max(tonumber(maxChildren) or 1, 1), 25)
-    isGasFire = isGasFire == true
-    if not coords or not coords.x or #(coords2 - vector3(coords.x + 0.0, coords.y + 0.0, coords.z + 0.0)) > 15.0 then return end
-    local thermiteCoords = Config.BigBanks['pacific'].thermite[1].coords
-    local thermite2Coords = Config.BigBanks['pacific'].thermite[2].coords
-    local thermite3Coords = Config.BigBanks['paleto'].thermite[1].coords
-    if #(coords2 - thermiteCoords) < 10 or #(coords2 - thermite2Coords) < 10 or #(coords2 - thermite3Coords) < 10 or IsNearPowerStation(coords2, 10) then
-        TriggerClientEvent('thermite:StartFire', -1, coords, maxChildren, isGasFire)
+-- ── thermite ─────────────────────────────────────────────────────
+-- What a charge is placed on, from the server's position of the player: a power station that is not
+-- blown yet, or a thermite gate whose earlier step is done (the bank's vault for the first gate, the
+-- gate before it for the next).
+local function ThermiteTarget(src)
+    local pos = PlayerCoords(src)
+    for key, station in pairs(Config.PowerStations) do
+        if #(pos - station.coords) <= THERMITE_STATION_RANGE then
+            if station.hit then return nil end
+            return { station = key }
+        end
     end
-end)
+    for _, bankId in ipairs({ 'pacific', 'paleto' }) do
+        local bank = Config.BigBanks[bankId]
+        for i, gate in ipairs(bank['thermite'] or {}) do
+            if gate['coords'] and #(pos - gate['coords']) <= THERMITE_GATE_RANGE then
+                if gate['isOpened'] then return nil end
+                local before
+                if i == 1 then before = bank['isOpened'] else before = bank['thermite'][i - 1]['isOpened'] end
+                if not before then return nil end
+                return { bank = bankId, gate = i }
+            end
+        end
+    end
+    return nil
+end
 
--- Clears thermite fires for everyone; rate-limited, since it used to be a free griefing tool.
-local lastStopFires = 0
-RegisterNetEvent('thermite:StopFires', function()
-    local now = os.time()
-    if now - lastStopFires < 30 then return end
-    lastStopFires = now
-    TriggerClientEvent('thermite:StopFires', -1)
+local function OpenThermiteGate(src, bankId, i)
+    local gate = Config.BigBanks[bankId] and Config.BigBanks[bankId]['thermite'][i]
+    if not gate or gate['isOpened'] then return end
+    gate['isOpened'] = true
+    TriggerClientEvent('qb-bankrobbery:client:setThermiteGate', -1, bankId, i, true)
+    SetBankDoor(src, gate['doorId'], false)
+end
+
+-- Thermite fires belong to the server: it lights them at the player's position (server side) when a
+-- charge goes off, passed or failed, and puts out exactly those fires 10-15 s later. Clients keep
+-- each session's fires apart, so one robbery's stop never touches another's fires. (Clients used to
+-- start fires at any spot near a station or vault and put out everyone's fires at will.)
+local fireCounter = 0
+local function StartFireSession(pos, delayMs)
+    fireCounter = fireCounter + 1
+    local id = fireCounter
+    local at = vector3(pos.x, pos.y, pos.z)
+    SetTimeout(delayMs, function()
+        TriggerClientEvent('thermite:StartFire', -1, id, at, 24, false, math.random(1, FIRE_MAX_COUNT))
+        SetTimeout(math.random(FIRE_MIN_MS, FIRE_MAX_MS), function()
+            TriggerClientEvent('thermite:StopFires', -1, id)
+        end)
+    end)
+    return id
+end
+
+-- The client played the thermite challenge it got from thermite:server:check. Passed: the charge
+-- burns through after the fuse and the station or gate goes; failed: it flares up at the player.
+RegisterNetEvent('qb-bankrobbery:server:thermiteFinish', function()
+    local src = source
+    local used = thermiteUsed[src]
+    thermiteUsed[src] = nil -- one finish per charge
+    if not used then return end
+    local passed = ChallengePassed(src, used.challengeId)
+    if os.time() - used.at > THERMITE_MAX_SECONDS then passed = false end
+    local pos = PlayerCoords(src)
+    if used.station then
+        if #(pos - Config.PowerStations[used.station].coords) > THERMITE_STATION_RANGE + 2.0 then passed = false end
+    else
+        local gate = Config.BigBanks[used.bank]['thermite'][used.gate]
+        if #(pos - gate['coords']) > THERMITE_GATE_RANGE + 2.0 then passed = false end
+    end
+    StartFireSession(pos, passed and THERMITE_FUSE_MS or 0)
+    TriggerClientEvent('qb-bankrobbery:client:thermiteResult', src, passed)
+    if not passed then return end
+    SetTimeout(THERMITE_FUSE_MS, function()
+        if used.station then
+            if GetCopCount() < (Config.MinimumThermitePolice or 0) then return end
+            BlowStation(src, used.station)
+        else
+            OpenThermiteGate(src, used.bank, used.gate)
+        end
+    end)
 end)
 
 -- Callbacks
@@ -645,21 +772,27 @@ QBCore.Functions.CreateCallback('qb-bankrobbery:server:GetConfig', function(_, c
     cb(Config.PowerStations, Config.BigBanks, Config.SmallBanks)
 end)
 
+-- A thermite charge is placed: the server finds what it is on (a station or a gate, from the player's
+-- position), uses up the charge and hands out the challenge; thermiteFinish judges it. Returns the
+-- challenge, or false when nothing can be burnt here.
 QBCore.Functions.CreateCallback('thermite:server:check', function(source, cb)
     local Player = exports['pfm-core']:GetPlayer(source)
     if not Player then return cb(false) end
-    if exports['pfm-inventory']:RemoveItem(source, 'thermite', 1, false, 'thermite:server:check') then
-        TriggerClientEvent('qb-inventory:client:ItemBox', source, sharedItems['thermite'], 'remove')
-        -- remember where the charge was used: a power station counts as blown only right after this
-        local pos, station = PlayerCoords(source), nil
-        for key, v in pairs(Config.PowerStations) do
-            if #(pos - v.coords) <= 15.0 then station = key break end
-        end
-        thermiteUsed[source] = { station = station, at = os.time() }
-        cb(true)
-    else
-        cb(false)
+    local target = ThermiteTarget(source)
+    if not target or GetCopCount() < (Config.MinimumThermitePolice or 0) then return cb(false) end
+    if not HasItem(source, 'thermite') then return cb(false) end
+    local ch = IssueChallenge(source, 'skillbar', {
+        difficulty = (Config.ThermiteChallenge or {}).difficulty or 'medium', tag = 'bankrobbery:thermite',
+    })
+    if not ch then return cb(false) end
+    if not exports['pfm-inventory']:RemoveItem(source, 'thermite', 1, false, 'thermite:server:check') then
+        CancelChallenge(source, ch.id)
+        return cb(false)
     end
+    TriggerClientEvent('qb-inventory:client:ItemBox', source, sharedItems['thermite'], 'remove')
+    if thermiteUsed[source] then CancelChallenge(source, thermiteUsed[source].challengeId) end
+    thermiteUsed[source] = { station = target.station, bank = target.bank, gate = target.gate, at = os.time(), challengeId = ch.id }
+    cb(ch)
 end)
 
 -- Items

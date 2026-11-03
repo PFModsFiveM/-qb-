@@ -1,22 +1,10 @@
 local closestStation = 0
-local currentStation = 0
-local currentFires = {}
-local currentGate = 0
+local currentFires = {} -- [fire session id] = { script fire handles }
+local placing = false
+local placedOn = nil -- 'station' | 'gate': what the charge in progress was placed on
 local requiredItems = { [1] = { name = QBCore.Shared.Items['thermite']['name'], image = QBCore.Shared.Items['thermite']['image'] } }
 
 -- Functions
-
---- This will create a fire at the given coords and for the given time
---- @param coords vector3
---- @param time number
---- @return nil
-local function CreateFire(coords, time)
-    for _ = 1, math.random(1, 7), 1 do
-        TriggerServerEvent('thermite:StartServerFire', coords, 24, false)
-    end
-    Wait(time)
-    TriggerServerEvent('thermite:StopFires')
-end
 
 --- This will load an animation dictionary so you can play an animation in that dictionary
 --- @param dict string
@@ -30,65 +18,76 @@ end
 
 -- Events
 
-RegisterNetEvent('thermite:StartFire', function(coords, maxChildren, isGasFire)
-    if #(vector3(coords.x, coords.y, coords.z) - GetEntityCoords(PlayerPedId())) < 100 then
-        local pos = {
-            x = coords.x,
-            y = coords.y,
-            z = coords.z,
-        }
-        pos.z = pos.z - 0.9
-        local fire = StartScriptFire(pos.x, pos.y, pos.z, maxChildren, isGasFire)
-        currentFires[#currentFires + 1] = fire
+-- Fires are lit and put out by the server (one session per charge that went off); only this session's
+-- fires are removed when it ends.
+RegisterNetEvent('thermite:StartFire', function(id, coords, maxChildren, isGasFire, count)
+    if type(coords) ~= 'table' and type(coords) ~= 'vector3' then return end
+    if #(vector3(coords.x, coords.y, coords.z) - GetEntityCoords(PlayerPedId())) >= 100 then return end
+    currentFires[id] = currentFires[id] or {}
+    for _ = 1, math.max(1, math.min(tonumber(count) or 1, 7)) do
+        local fire = StartScriptFire(coords.x, coords.y, coords.z - 0.9, maxChildren, isGasFire == true)
+        currentFires[id][#currentFires[id] + 1] = fire
     end
 end)
 
-RegisterNetEvent('thermite:StopFires', function()
-    for i = 1, #currentFires do
-        RemoveScriptFire(currentFires[i])
+RegisterNetEvent('thermite:StopFires', function(id)
+    local fires = currentFires[id]
+    if not fires then return end
+    currentFires[id] = nil
+    for i = 1, #fires do
+        RemoveScriptFire(fires[i])
     end
 end)
 
+-- The server decides what the charge is placed on (a power station or a thermite gate), uses it up
+-- and sends the challenge; the minigame's answer goes to the server, which then lights the charge.
 RegisterNetEvent('thermite:UseThermite', function()
+    if placing then return end
     local ped = PlayerPedId()
     local pos = GetEntityCoords(ped)
-    if closestStation ~= 0 then
-        Config.OnEvidence(pos, 85)
-        local dist = #(pos - Config.PowerStations[closestStation].coords)
-        if dist < 1.5 then
-            if CurrentCops >= Config.MinimumThermitePolice then
-                if not Config.PowerStations[closestStation].hit then
-                    loadAnimDict('weapon@w_sp_jerrycan')
-                    TaskPlayAnim(PlayerPedId(), 'weapon@w_sp_jerrycan', 'fire', 3.0, 3.9, 180, 49, 0, 0, 0, 0)
-                    Config.ShowRequiredItems(requiredItems, false)
-                    SetNuiFocus(true, true)
-                    SendNUIMessage({
-                        action = 'openThermite',
-                        amount = math.random(5, 10),
-                    })
-                    currentStation = closestStation
-                else
-                    QBCore.Functions.Notify(Lang:t('error.fuses_already_blown'), 'error')
-                end
-            else
-                QBCore.Functions.Notify(Lang:t('error.minium_police_required', { police = Config.MinimumThermitePolice }), 'error')
-            end
+    local atStation = closestStation ~= 0 and #(pos - Config.PowerStations[closestStation].coords) < 1.5
+    if not atStation and currentThermiteGate == 0 then return end
+    Config.OnEvidence(pos, 85)
+    if CurrentCops < Config.MinimumThermitePolice then
+        QBCore.Functions.Notify(Lang:t('error.minium_police_required', { police = Config.MinimumThermitePolice }), 'error')
+        return
+    end
+    if atStation and Config.PowerStations[closestStation].hit then
+        QBCore.Functions.Notify(Lang:t('error.fuses_already_blown'), 'error')
+        return
+    end
+    placing = true
+    placedOn = atStation and 'station' or 'gate'
+    QBCore.Functions.TriggerCallback('thermite:server:check', function(challenge)
+        if not challenge then
+            placing = false
+            return
         end
-    elseif currentThermiteGate ~= 0 then
-        Config.OnEvidence(pos, 85)
-        if CurrentCops >= Config.MinimumThermitePolice then
-            currentGate = currentThermiteGate
-            loadAnimDict('weapon@w_sp_jerrycan')
-            TaskPlayAnim(PlayerPedId(), 'weapon@w_sp_jerrycan', 'fire', 3.0, 3.9, -1, 49, 0, 0, 0, 0)
-            Config.ShowRequiredItems(requiredItems, false)
-            SetNuiFocus(true, true)
-            SendNUIMessage({
-                action = 'openThermite',
-                amount = math.random(5, 10),
-            })
-        else
-            QBCore.Functions.Notify(Lang:t('error.minium_police_required', { police = Config.MinimumThermitePolice }), 'error')
-        end
+        Config.ShowRequiredItems(requiredItems, false)
+        loadAnimDict('weapon@w_sp_jerrycan')
+        TaskPlayAnim(ped, 'weapon@w_sp_jerrycan', 'fire', 3.0, 3.9, -1, 49, 0, 0, 0, 0)
+        pcall(function() exports['pfm-minigames']:PlayChallenge(challenge) end)
+        ClearPedTasks(ped)
+        TriggerServerEvent('qb-bankrobbery:server:thermiteFinish')
+        SetTimeout(10000, function() placing = false end) -- in case the verdict never arrives
+    end)
+end)
+
+-- The server's verdict on the charge: passed, it goes off after the fuse; failed, it flares up here.
+RegisterNetEvent('qb-bankrobbery:client:thermiteResult', function(passed)
+    placing = false
+    if not passed then
+        PlaySound(-1, 'Place_Prop_Fail', 'DLC_Dmod_Prop_Editor_Sounds', 0, 0, 1)
+        return
+    end
+    for time = 3, 1, -1 do
+        QBCore.Functions.Notify(Lang:t('general.thermite_detonating_in_seconds', { time = time }))
+        Wait(1000)
+    end
+    if placedOn == 'station' then
+        QBCore.Functions.Notify(Lang:t('success.fuses_are_blown'), 'success')
+    elseif placedOn == 'gate' then
+        QBCore.Functions.Notify(Lang:t('success.door_has_opened'), 'success')
     end
 end)
 
@@ -96,55 +95,12 @@ RegisterNetEvent('qb-bankrobbery:client:SetStationStatus', function(key, isHit)
     Config.PowerStations[key].hit = isHit
 end)
 
--- NUI Callbacks
-
-RegisterNUICallback('thermiteclick', function(_, cb)
-    PlaySound(-1, 'CLICK_BACK', 'WEB_NAVIGATION_SOUNDS_PHONE', 0, 0, 1)
-    cb('ok')
-end)
-
-RegisterNUICallback('thermitefailed', function(_, cb)
-    QBCore.Functions.TriggerCallback('thermite:server:check', function(success)
-        if success then
-            PlaySound(-1, 'Place_Prop_Fail', 'DLC_Dmod_Prop_Editor_Sounds', 0, 0, 1)
-            ClearPedTasks(PlayerPedId())
-            local coords = GetEntityCoords(PlayerPedId())
-            local randTime = math.random(10000, 15000)
-            CreateFire(coords, randTime)
-        end
-        cb('ok')
-    end)
-end)
-
-RegisterNUICallback('thermitesuccess', function(_, cb)
-    QBCore.Functions.TriggerCallback('thermite:server:check', function(success)
-        if success then
-            ClearPedTasks(PlayerPedId())
-            local time = 3
-            local coords = GetEntityCoords(PlayerPedId())
-            while time > 0 do
-                QBCore.Functions.Notify(Lang:t('general.thermite_detonating_in_seconds', { time = time }))
-                Wait(1000)
-                time -= 1
-            end
-            local randTime = math.random(10000, 15000)
-            CreateFire(coords, randTime)
-            if currentStation ~= 0 then
-                QBCore.Functions.Notify(Lang:t('success.fuses_are_blown'), 'success')
-                TriggerServerEvent('qb-bankrobbery:server:SetStationStatus', currentStation, true)
-            elseif currentGate ~= 0 then
-                QBCore.Functions.Notify(Lang:t('success.door_has_opened'), 'success')
-                Config.DoorlockAction(currentGate, false)
-                currentGate = 0
-            end
-        end
-        cb('ok')
-    end)
-end)
-
-RegisterNUICallback('closethermite', function(_, cb)
-    SetNuiFocus(false, false)
-    cb('ok')
+RegisterNetEvent('qb-bankrobbery:client:setThermiteGate', function(bankId, i, isOpened)
+    local bank = Config.BigBanks[bankId]
+    local gate = bank and bank['thermite'] and bank['thermite'][i]
+    if not gate then return end
+    gate['isOpened'] = isOpened == true
+    if isOpened and currentThermiteGate == gate['doorId'] then currentThermiteGate = 0 end
 end)
 
 -- Threads

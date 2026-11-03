@@ -30,8 +30,10 @@ FakeDB.extraPatterns = {
         return out
     end },
     { 'FROM pf_mdt_active_jails', function() return {} end },
-    { "WHERE citizenId = ? AND status = 'payment_pending'", function(p)
-        for _, r in ipairs(sentences) do if r.citizenId == p[1] and r.status == 'payment_pending' then return { r } end end
+    { "WHERE citizenId = ? AND (status = 'payment_pending'", function(p)
+        for _, r in ipairs(sentences) do
+            if r.citizenId == p[1] and (r.status == 'payment_pending' or (r.status == 'pending' and (tonumber(r.fineAmount) or 0) > 0)) then return { r } end
+        end
         return {}
     end },
     { "WHERE status = 'payment_pending'", function()

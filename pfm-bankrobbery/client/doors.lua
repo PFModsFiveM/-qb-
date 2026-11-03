@@ -1,5 +1,4 @@
 RegisterNetEvent('qb-bankrobbery:client:ClearTimeoutDoors', function()
-    Config.DoorlockAction(4, true)
     local PaletoObject = GetClosestObjectOfType(Config.BigBanks['paleto']['coords']['x'], Config.BigBanks['paleto']['coords']['y'], Config.BigBanks['paleto']['coords']['z'], 5.0, Config.BigBanks['paleto']['object'], false, false, false)
     if PaletoObject ~= 0 then
         SetEntityHeading(PaletoObject, Config.BigBanks['paleto']['heading'].closed)
@@ -16,6 +15,9 @@ RegisterNetEvent('qb-bankrobbery:client:ClearTimeoutDoors', function()
         Config.BigBanks['paleto']['lockers'][k]['isBusy'] = false
         Config.BigBanks['paleto']['lockers'][k]['isOpened'] = false
     end
+    for _, bankId in ipairs({ 'pacific', 'paleto' }) do
+        for _, gate in ipairs(Config.BigBanks[bankId]['thermite'] or {}) do gate['isOpened'] = false end
+    end
     Config.BigBanks['paleto']['isOpened'] = false
     Config.BigBanks['pacific']['isOpened'] = false
 end)
@@ -27,14 +29,13 @@ CreateThread(function()
         local PaletoDist = #(pos - Config.BigBanks['paleto']['coords'])
         local PacificDist = #(pos - Config.BigBanks['pacific']['coords'][2])
         if PaletoDist < 15 then
+            -- (the Paleto gate itself is opened and locked by the server through pfm-doorlock)
             if Config.BigBanks['paleto']['isOpened'] then
-                Config.DoorlockAction(4, false)
                 local object = GetClosestObjectOfType(Config.BigBanks['paleto']['coords']['x'], Config.BigBanks['paleto']['coords']['y'], Config.BigBanks['paleto']['coords']['z'], 5.0, Config.BigBanks['paleto']['object'], false, false, false)
                 if object ~= 0 then
                     SetEntityHeading(object, Config.BigBanks['paleto']['heading'].open)
                 end
             else
-                Config.DoorlockAction(4, true)
                 local object = GetClosestObjectOfType(Config.BigBanks['paleto']['coords']['x'], Config.BigBanks['paleto']['coords']['y'], Config.BigBanks['paleto']['coords']['z'], 5.0, Config.BigBanks['paleto']['object'], false, false, false)
                 if object ~= 0 then
                     SetEntityHeading(object, Config.BigBanks['paleto']['heading'].closed)

@@ -29,6 +29,9 @@ local function answer(sql, params)
     if sql:find('AS r, (SELECT COUNT(*)', 1, true) then
         return { { r = db.roster[params[1]] and 1 or 0, s = db.profiles[params[2]] and 1 or 0 } }
     end
+    if sql:find('SELECT callsign, rank, unit_type, training_status FROM pf_emsmdt_roster WHERE citizenid', 1, true) then
+        return db.ownLine and { db.ownLine } or {}
+    end
     if sql:find('FROM pf_emsmdt_roster WHERE id = ?', 1, true) then
         local l = db.line or {}
         return { { id = params[1], citizenid = l.citizenid, rank = l.rank or 'Paramedic', callsign = 'M-1' } }
@@ -75,7 +78,7 @@ local function job(name, level, onduty, isboss) return { name = name, onduty = o
 BeforeEach = function()
     Mock.reset()
     Mock.players = {}
-    db.log, db.players, db.roster, db.profiles, db.line = {}, {}, {}, {}, nil
+    db.log, db.players, db.roster, db.profiles, db.line, db.ownLine = {}, {}, {}, {}, nil, nil
     Mock.gameTimer = (Mock.gameTimer or 0) + 100000
     Mock.newPlayer(CHIEF).PlayerData.job = job('ambulance', 5, true, true)
     Mock.newPlayer(MEDIC).PlayerData.job = job('ambulance', 1)
@@ -106,6 +109,17 @@ describe('EMS roster lines', function()
         db.line = { rank = 'Supervisor', citizenid = 'CID1' }
         assert_eq(updateRow(SUPERVISOR, { id = 2, callsign = 'S-1', rank = 'Supervisor', officer_name = 'Me' }).error, 'rank_too_high')
         assert_eq(ran('UPDATE pf_emsmdt_roster SET'), 0)
+    end)
+    it("the chief's rank through employment is the boss's too", function()
+        local res = Mock.callCallback('pf_emsmdt:officers:updateEmployment', SUPERVISOR, { citizenid = 'CID2', callsign = 'M-9', rank = 'EMS Chief' })
+        assert_eq(res.error, 'protected_chief')
+        db.ownLine = { callsign = 'C-1', rank = 'EMS Chief' }
+        assert_eq(Mock.callCallback('pf_emsmdt:officers:updateEmployment', SUPERVISOR, { citizenid = 'CID2', callsign = 'C-1', rank = 'Paramedic' }).error, 'protected_chief')
+        assert_eq(ran('INSERT INTO pf_emsmdt_roster ('), 0)
+        assert_eq(ran('UPDATE pf_emsmdt_roster SET callsign'), 0)
+        db.ownLine = nil
+        res = Mock.callCallback('pf_emsmdt:officers:updateEmployment', CHIEF, { citizenid = 'CID2', callsign = 'M-9', rank = 'EMS Chief' })
+        assert_eq(res.success, true, tostring(res.error))
     end)
     it('a supervisor off duty cannot change the roster', function()
         Mock.players[CHIEF].PlayerData.job.onduty = false

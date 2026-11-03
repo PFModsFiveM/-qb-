@@ -41,6 +41,13 @@ local function answer(sql, params)
         return { { id = params[1], citizenid = db.rosterLine and db.rosterLine.citizenid or nil, rank = db.rosterLine and db.rosterLine.rank or 'Officer', callsign = '101' } }
     end
     if sql:find('SELECT * FROM pf_mdt_officer_mgmt_profiles', 1, true) then return { { terminated = 0 } } end
+    if sql:find('SELECT * FROM pf_mdt_incident_evidence', 1, true) or sql:find('SELECT * FROM pf_mdt_evidence', 1, true) then
+        return json.decode(json.encode(db.evidence or {}))
+    end
+    if sql:find('FROM pf_mdt_reports WHERE reportId = ?', 1, true) then return db.report and { db.report } or {} end
+    if sql:find('SELECT callsign, rank, unit_type, training_status FROM pf_mdt_roster WHERE citizenid', 1, true) then
+        return db.ownLine and { db.ownLine } or {}
+    end
     if sql:find('FROM pf_mdt_charges WHERE id = ?', 1, true) then
         return { { id = params[1], code = 'C1', name = 'Charge', description = '', fineAmount = 100, bailAmount = 0, prisonTime = 0, category = 'General' } }
     end
@@ -103,6 +110,7 @@ BeforeEach = function()
     Mock.players = {}
     Mock.gameTimer = Mock.gameTimer + 100000
     db.log, db.players, db.incidents, db.roster, db.staff, db.rosterLine = {}, {}, {}, {}, {}, nil
+    db.evidence, db.report, db.ownLine = nil, nil, nil
     Config.Permissions = json.decode(json.encode(DEFAULT_PERMS))
     Config.Licenses = json.decode(json.encode(DEFAULT_LICENSES))
     Mock.newPlayer(BOSS); setJob(BOSS, 'police', 4); Mock.players[BOSS].PlayerData.job.isboss = true
@@ -170,6 +178,7 @@ describe('one permission table', function()
         assert_eq(fired.success, true, tostring(fired.error))
     end)
     it('removing a licence needs its grade; suspending is open to every officer, and both are recorded', function()
+        Mock.players[CIVIL].PlayerData.metadata.licences = { driver = true, weapon = true }
         Mock.fireNet('pf_mdt:removeLicense', OFFICER, { citizenId = 'CID4', licenseType = 'weapon' })
         assert_eq(ran('pf_mdt_license_actions'), 0)
         Mock.fireNet('pf_mdt:suspendLicense', OFFICER, { citizenId = 'CID4', licenseType = 'driver', durationDays = 2, reason = 'reckless driving' })
@@ -181,6 +190,12 @@ describe('one permission table', function()
         assert_eq(p[6], 'CID2', 'who did it')
         Mock.fireNet('pf_mdt:removeLicense', SGT, { citizenId = 'CID4', licenseType = 'weapon' })
         assert_eq(lastParams('INSERT INTO pf_mdt_license_actions')[3], 'remove')
+    end)
+    it('a licence the citizen does not hold is not recorded as suspended', function()
+        Mock.players[CIVIL].PlayerData.metadata.licences = { driver = false }
+        Mock.fireNet('pf_mdt:suspendLicense', OFFICER, { citizenId = 'CID4', licenseType = 'driver', durationDays = 2, reason = 'x' })
+        assert_eq(ran('INSERT INTO pf_mdt_license_actions'), 0)
+        assert_eq(ran('UPDATE players SET metadata'), 0)
     end)
     it('with RequireReason a suspension without a reason is refused', function()
         Config.Licenses.RequireReason = true
@@ -206,6 +221,15 @@ describe('incidents belong to their author', function()
         Mock.fireNet('pf_mdt:updateIncident', OFFICER2, { id = 'INC-2', description = 'added my part' })
         assert_eq(ran('UPDATE pf_mdt_incidents'), 1)
     end)
+    it('the lists on an incident are bounded', function()
+        local many = {}
+        for i = 1, 500 do many[i] = { id = 'CID' .. i, name = string.rep('n', 40) } end
+        Mock.fireNet('pf_mdt:createIncident', OFFICER, { title = 'Riot', involvedCitizens = many, charges = many })
+        local p = lastParams('INSERT INTO pf_mdt_incidents')
+        assert_true(p ~= nil, 'the incident is stored')
+        assert_eq(#json.decode(p[8]), 50)
+        assert_true(#p[16] <= 16000)
+    end)
     it('an incident that does not exist is not written', function()
         Mock.fireNet('pf_mdt:updateIncident', SGT, { id = 'INC-404', title = 'x' })
         assert_eq(ran('UPDATE pf_mdt_incidents'), 0)
@@ -228,6 +252,23 @@ describe('image URLs', function()
         assert_eq(U('https://cdn.discordapp.com/' .. string.rep('a', 600)), nil, 'too long')
         assert_eq(U(42), nil)
         assert_eq(U({}), nil)
+        -- HTML character references turn back into quotes inside an attribute
+        assert_eq(U('https://cdn.discordapp.com/a&#39;);alert(1).png'), nil)
+        assert_eq(U('https://cdn.discordapp.com/a&quot;.png'), nil)
+        assert_eq(U('https://cdn.discordapp.com/a.png?x=1&y=2'), 'https://cdn.discordapp.com/a.png?x=1&y=2', 'a plain query string stays')
+    end)
+    it('stored evidence photos and report evidence go out checked again (rows from before the check)', function()
+        db.evidence = { { id = 1, image_url = GOOD_URL }, { id = 2, image_url = 'javascript:alert(1)' } }
+        local res = Mock.callCallback('pf_mdt:getIncidentEvidence', OFFICER, { incidentId = 'INC-1' })
+        assert_eq(res.evidence[1].image_url, GOOD_URL)
+        assert_eq(res.evidence[2].image_url, nil)
+        res = Mock.callCallback('pf_mdt:searchEvidence', OFFICER, { query = '', page = 1, pageSize = 100000 })
+        assert_eq(res.evidence[2].image_url, nil)
+        assert_eq(lastParams('SELECT * FROM pf_mdt_evidence')[5], 50, 'the page size is capped')
+        db.report = { reportId = 'R1', title = 'x', linkedEvidence = json.encode({ { url = 'https://evil.example/a.png', title = 'b' }, { url = GOOD_URL, title = 'ok' } }) }
+        res = Mock.callCallback('pf_mdt:getReport', OFFICER, { id = 'R1' })
+        assert_eq(#res.report.linkedEvidence, 1)
+        assert_eq(res.report.linkedEvidence[1].url, GOOD_URL)
     end)
     it('a profile photo, a vehicle photo or evidence with a bad URL is not stored', function()
         local bad = 'x"><img src=x onerror=alert(1)>'
@@ -305,6 +346,21 @@ describe('roster and staff are per department', function()
         assert_eq(Mock.callCallback('pf_mdt:officers:addDiscipline', DEPUTY, { citizenid = 'CID2', type = 'warning', reason = 'x' }).error, 'other_department')
         assert_eq(Mock.players[OFFICER].PlayerData.job.name, 'police')
         assert_eq(ran('UPDATE players SET job'), 0)
+    end)
+    it("the chief's rank through employment is the boss's too", function()
+        Config.Permissions.manageOfficers.police = 3
+        local res = Mock.callCallback('pf_mdt:officers:updateEmployment', SGT, { citizenid = 'CID2', callsign = '102', rank = 'Chief of Police' })
+        assert_eq(res.error, 'protected_chief')
+        db.ownLine = { callsign = '1', rank = 'Chief of Police' }
+        res = Mock.callCallback('pf_mdt:officers:updateEmployment', SGT, { citizenid = 'CID2', callsign = '1', rank = 'Officer' })
+        assert_eq(res.error, 'protected_chief', 'nor demote the chief')
+        assert_eq(ran('INSERT INTO pf_mdt_roster ('), 0)
+        assert_eq(ran('UPDATE pf_mdt_roster SET callsign'), 0)
+        db.ownLine = nil
+        res = Mock.callCallback('pf_mdt:officers:updateEmployment', SGT, { citizenid = 'CID2', callsign = '102', rank = 'Sergeant' })
+        assert_eq(res.success, true, tostring(res.error))
+        res = Mock.callCallback('pf_mdt:officers:updateEmployment', BOSS, { citizenid = 'CID2', callsign = '102', rank = 'Chief of Police' })
+        assert_eq(res.success, true, tostring(res.error))
     end)
     it('a former officer who took another job only leaves the roster; their new job stays', function()
         db.players.CID99 = { job = { name = 'mechanic', grade = { level = 2 } } }

@@ -62,7 +62,7 @@ end)
 --- This will open the bank door of the paleto bank
 --- @return nil
 local function OpenPaletoDoor()
-    Config.DoorlockAction(4, false)
+    -- (the gate is opened by the server through pfm-doorlock; this turns the vault door)
     local object = GetClosestObjectOfType(Config.BigBanks['paleto']['coords']['x'], Config.BigBanks['paleto']['coords']['y'], Config.BigBanks['paleto']['coords']['z'], 5.0, Config.BigBanks['paleto']['object'], false, false, false)
     if object ~= 0 then
         SetEntityHeading(object, Config.BigBanks['paleto']['heading'].open)
@@ -259,11 +259,15 @@ RegisterNetEvent('electronickit:UseElectronickit', function()
                             disableCombat = true,
                         }, {}, {}, {}, function() -- Done
                             StopAnimTask(ped, 'anim@gangops@facility@servers@', 'hotwire', 1.0)
-                            TriggerServerEvent('qb-bankrobbery:server:removeElectronicKit')
-                            local success = exports['pfm-minigames']:Hacking(5, 30) -- code block size & seconds to solve
-                            if success then
-                                TriggerServerEvent('qb-bankrobbery:server:setBankState', closestBank)
-                            end
+                            local bankId = closestBank
+                            -- the server uses up the kit and USB and sends the hack; it judges the answer
+                            QBCore.Functions.TriggerCallback('qb-bankrobbery:server:startHack', function(challenge)
+                                if not challenge then return end
+                                local ok, passed = pcall(function() return exports['pfm-minigames']:PlayChallenge(challenge) end)
+                                if ok and passed then
+                                    TriggerServerEvent('qb-bankrobbery:server:setBankState', bankId)
+                                end
+                            end)
                             if copsCalled or not Config.SmallBanks[closestBank]['alarm'] then return end
                             TriggerServerEvent('qb-bankrobbery:server:callCops', 'small', closestBank, pos)
                             copsCalled = true

@@ -99,3 +99,14 @@ Config.StoreNames = {
 Config.RobberyReportWindow = 15 * 60
 -- A player-owned pf-stores shop whose counter is this close to the robbed register is told.
 Config.OwnedStoreRadius = 25.0
+
+-- ══ Minigames (pfm-minigames challenges, judged by the server) ════
+-- Registers: the pin lockpick. A failed or abandoned attempt may break the pick (percent, rolled on
+-- the server).
+Config.RegisterLockpickPins = 1
+Config.LockpickBreakChance = { lockpick = 40, advancedlockpick = 20 }
+Config.LockpickCooldownSeconds = 2
+-- Padlock safes: the dial is cracked with the arrow-key minigame (this many keys, this many misses
+-- allowed).
+Config.PadlockKeys = 12
+Config.PadlockMaxFaults = 2

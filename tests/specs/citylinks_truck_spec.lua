@@ -12,23 +12,55 @@ QBCoreMock.Functions.GetPlayers = function() local out = {} for id in pairs(Mock
 LedgerEnv.load('pfm-truckrobbery', { 'pfm-truckrobbery/config.lua', 'pfm-truckrobbery/server/main.lua' })
 function Wait() if coroutine.isyieldable() then coroutine.yield() end end
 
-local R, COP, OTHER, TRUCK = 1, 2, 3, 500
-Mock.models[TRUCK] = GetHashKey('stockade')
+local R, COP, OTHER = 1, 2, 3
+local TRUCK
+-- server-spawned entities: the truck and its guards
+Health, Heading, Guards = {}, {}, {}
+local nextEntity = 600
+function CreateVehicleServerSetter(model, _, x, y, z, h)
+    nextEntity = nextEntity + 1
+    Mock.models[nextEntity], Mock.coords[nextEntity], Heading[nextEntity] = model, vector3(x, y, z), h
+    return nextEntity
+end
+function CreatePedInsideVehicle(veh)
+    nextEntity = nextEntity + 1
+    Health[nextEntity], Mock.coords[nextEntity] = 200, Mock.coords[veh]
+    Guards[#Guards + 1] = nextEntity
+    return nextEntity
+end
+function GiveWeaponToPed() end
+function GetEntityHealth(e) return Health[e] or 0 end
+function GetEntityVelocity() return vector3(0, 0, 0) end
+function GetEntityHeading(e) return Heading[e] or 0.0 end
+-- the mission player near the spawn point: the server spawns the truck there
+local function spawnTruck(src, s)
+    Mock.coords[src] = vector3(s.x + 100, s.y, s.z)
+    Mock.fireNet('AttackTransport:requestTruck', src)
+    local ev = Mock.clientEventsNamed('AttackTransport:truckReady')
+    return ev[#ev].args[1]
+end
 
 local function startMission()
     coroutine.resume(coroutine.create(function() Mock.fireNet('AttackTransport:akceptujto', R) end))
     local ev = Mock.clientEventsNamed('AttackTransport:Pozwolwykonac')
     local s = Config.VehicleSpawn[ev[#ev].args[1]]
-    Mock.coords[TRUCK] = vector3(s.x, s.y, s.z)
-    Mock.fireNet('AttackTransport:truckSpawned', R, TRUCK)
+    TRUCK = spawnTruck(R, s)
     return s
+end
+-- guards dead, charge planted at the back doors, and the fuse burnt
+local function blowDoors()
+    for _, g in ipairs(Guards) do Health[g] = 0 end
+    local c, h = Mock.coords[TRUCK], math.rad(Heading[TRUCK])
+    Mock.coords[R] = vector3(c.x + math.sin(h) * 3.6, c.y - math.cos(h) * 3.6, c.z)
+    Mock.fireNet('AttackTransport:plantBomb', R)
+    Mock.clock = Mock.clock + Config.TimeToBlow + 1
 end
 
 BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
     Mock.clock = Mock.clock + 100000
-    Mock.players, Mock.coords, Inv, Emits = {}, {}, {}, {}
+    Mock.players, Mock.coords, Inv, Emits, Guards = {}, {}, {}, {}, {}
     Mock.newPlayer(R).PlayerData.money.bank = 100000
     Mock.newPlayer(OTHER)
     Config.ActivePolice = 1
@@ -49,17 +81,17 @@ describe('armored truck robbery event', function()
         assert_eq(#Emits, 1)
         assert_eq(Emits[1].kind, 'crime.robbery.truck')
         assert_near(Emits[1].opts.coords.x, s.x + 40, 0.01)
-        Mock.clock = Mock.clock + 120
+        blowDoors()
         Mock.coords[R] = vector3(s.x + 41, s.y, s.z)
-        Mock.fireNet('AttackTransport:graczZrobilnapad', R, 20000)
+        Mock.fireNet('AttackTransport:graczZrobilnapad', R)
         assert_true((Inv.markedbills or 0) > 0)
         assert_eq(#Emits, 1)
     end)
-    it('a robber who skipped the alert is still reported when the cash is taken', function()
+    it('a robber who skipped the alert is still reported, at the truck, once the charge is planted', function()
         local s = startMission()
-        Mock.clock = Mock.clock + 120
+        blowDoors()
         Mock.coords[R] = vector3(s.x + 1, s.y, s.z)
-        Mock.fireNet('AttackTransport:graczZrobilnapad', R, 20000)
+        Mock.fireNet('AttackTransport:graczZrobilnapad', R)
         assert_eq(#Emits, 1)
         assert_eq(Emits[1].opts.dedupe:sub(1, 8), 'mission:')
         assert_near(Emits[1].opts.coords.x, s.x, 0.01)

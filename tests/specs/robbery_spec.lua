@@ -16,6 +16,26 @@ Mock.exportsByResource['pfm-inventory'] = {
     end,
     GetItemByName = function(_, src, item) if count(src, item) > 0 then return { name = item, amount = count(src, item) } end end,
 }
+-- pfm-minigames: the spec decides each challenge's verdict (Pass) before the resource verifies it
+Challenges, Issued = {}, {}
+Mock.exportsByResource['pfm-minigames'] = {
+    IssueChallenge = function(_, src, kind)
+        local id = 'ch' .. (#Issued + 1)
+        Challenges[id] = { src = src, kind = kind }
+        Issued[#Issued + 1] = id
+        return { id = id, kind = kind, puzzle = {}, expiresIn = 30000 }
+    end,
+    Verify = function(_, src, id)
+        local c = Challenges[id]
+        Challenges[id] = nil
+        return c ~= nil and c.src == src and c.passed == true, 0
+    end,
+    Cancel = function(_, _, id) Challenges[id] = nil return true end,
+}
+local function PassLatest() local c = Challenges[Issued[#Issued]]; if c then c.passed = true end end
+Timers = {}
+function SetTimeout(ms, fn) Timers[#Timers + 1] = fn end
+local function runTimers() local list = Timers; Timers = {}; for _, fn in ipairs(list) do fn() end end
 -- reward tables name many items the mock list does not have
 setmetatable(QBCoreMock.Shared.Items, { __index = function(_, k) return { name = k, label = k, unique = false } end })
 
@@ -49,6 +69,8 @@ local function fire(name, src, ...) Mock.fireNet(name, src, ...) end
 BeforeEach = function()
     Mock.reset()
     Mock.clock = Mock.clock + 10000
+    Mock.gameTimer = Mock.gameTimer + 60000
+    Challenges, Issued, Timers = {}, {}, {}
     Mock.players, Mock.coords, Inv = {}, {}, {}
     for _, src in ipairs({ ROBBER, OTHER }) do
         local p = Mock.newPlayer(src)
@@ -78,14 +100,17 @@ describe('house robbery', function()
         fire('qb-houserobbery:server:enterHouse', ROBBER, HOUSE)
         assert_false(Config.Houses[HOUSE].opened)
     end)
-    it('a picked lock opens the house once the minigame had time, at the door only', function()
+    it('a picked lock opens the house once the minigame passed and had time, at the door only', function()
         give(ROBBER, 'advancedlockpick')
         at(ROBBER, door())
         fire('qb-houserobbery:server:startLockpick', ROBBER, HOUSE)
+        PassLatest()
         fire('qb-houserobbery:server:enterHouse', ROBBER, HOUSE)        -- instantly: refused
         assert_false(Config.Houses[HOUSE].opened)
+        Mock.gameTimer = Mock.gameTimer + 5000
         fire('qb-houserobbery:server:startLockpick', ROBBER, HOUSE)
-        Mock.clock = Mock.clock + 5
+        PassLatest()
+        Mock.gameTimer = Mock.gameTimer + 5000
         fire('qb-houserobbery:server:enterHouse', ROBBER, HOUSE)
         assert_true(Config.Houses[HOUSE].opened)
     end)
@@ -93,15 +118,27 @@ describe('house robbery', function()
         give(ROBBER, 'advancedlockpick')
         at(ROBBER, door()); at(OTHER, door())
         fire('qb-houserobbery:server:startLockpick', ROBBER, HOUSE)
-        Mock.clock = Mock.clock + 5
+        PassLatest()
+        Mock.gameTimer = Mock.gameTimer + 5000
         fire('qb-houserobbery:server:enterHouse', ROBBER, HOUSE)
-        fire('qb-houserobbery:server:searchFurniture', OTHER, 1, HOUSE)   -- never went in
+        fire('qb-houserobbery:server:startSearch', OTHER, 1, HOUSE)      -- never went in
+        PassLatest()
+        fire('qb-houserobbery:server:searchFurniture', OTHER, 1, HOUSE)
         assert_eq(lootCount(OTHER), 0)
         assert_false(Config.Houses[HOUSE].furniture[1].searched)
+        fire('qb-houserobbery:server:startSearch', ROBBER, 1, HOUSE)
+        PassLatest()
+        Mock.gameTimer = Mock.gameTimer + 3000
         fire('qb-houserobbery:server:searchFurniture', ROBBER, 1, HOUSE)
         assert_true(Config.Houses[HOUSE].furniture[1].searched)
         local after = lootCount(ROBBER)
-        for _ = 1, 20 do fire('qb-houserobbery:server:searchFurniture', ROBBER, 1, HOUSE) end
+        for _ = 1, 20 do
+            Mock.clock = Mock.clock + 5
+            fire('qb-houserobbery:server:startSearch', ROBBER, 1, HOUSE)
+            PassLatest()
+            Mock.gameTimer = Mock.gameTimer + 3000
+            fire('qb-houserobbery:server:searchFurniture', ROBBER, 1, HOUSE)
+        end
         assert_eq(lootCount(ROBBER), after)
     end)
     it('busy flags cannot be set by players who are not inside', function()
@@ -130,7 +167,8 @@ describe('bank robbery', function()
         resetBanks()
         give(ROBBER, 'electronickit'); give(ROBBER, 'trojan_usb')
         at(ROBBER, panel())
-        fire('qb-bankrobbery:server:removeElectronicKit', ROBBER)
+        Mock.callCallback('qb-bankrobbery:server:startHack', ROBBER)
+        PassLatest()
         assert_eq(count(ROBBER, 'electronickit'), 0)
         assert_eq(count(ROBBER, 'trojan_usb'), 0)
         Mock.clock = Mock.clock + 10
@@ -167,14 +205,15 @@ describe('bank robbery', function()
     it('power stations are blown only right after thermite was used there', function()
         local key = next(Config.PowerStations)
         at(OTHER, Config.PowerStations[key].coords)
-        fire('qb-bankrobbery:server:SetStationStatus', OTHER, key, true)
+        fire('qb-bankrobbery:server:thermiteFinish', OTHER)
+        runTimers()
         assert_false(Config.PowerStations[key].hit == true)
         give(OTHER, 'thermite')
-        local ok = Mock.callCallback('thermite:server:check', OTHER)
-        assert_true(ok)
-        fire('qb-bankrobbery:server:SetStationStatus', OTHER, key, true)
-        assert_true(Config.PowerStations[key].hit)
-        fire('qb-bankrobbery:server:SetStationStatus', OTHER, key, false)  -- players cannot restore power
+        local ch = Mock.callCallback('thermite:server:check', OTHER)
+        assert_eq(type(ch), 'table')
+        PassLatest()
+        fire('qb-bankrobbery:server:thermiteFinish', OTHER)
+        runTimers()
         assert_true(Config.PowerStations[key].hit)
     end)
 end)

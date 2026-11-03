@@ -7,13 +7,8 @@ RegisterNetEvent('police:SetCopCount', function(amount)
     CurrentCops = amount
 end)
 
---- This function will be executed once a doorlock action is happening, so locking or unlocking a door
---- @param doorId number | string
---- @param setLocked boolean
---- @return nil
-function Config.DoorlockAction(doorId, setLocked)
-    TriggerServerEvent('qb-doorlock:server:updateState', doorId, setLocked, false, false, true, false, false)
-end
+-- Bank doors (pfm-doorlock) are opened and locked by the server when it has seen the step that
+-- opens them (server/main.lua SetBankDoor); clients no longer send door changes.
 
 --- This will be triggered once an action happens that can drop evidence
 --- @param pos vector3

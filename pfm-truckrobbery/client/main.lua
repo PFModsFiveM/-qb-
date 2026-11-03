@@ -3,7 +3,6 @@ local BlowBackdoor = 0
 local SilenceAlarm = 0
 local PoliceAlert = 0
 local PoliceBlip = 0
-local LootTime = 1
 local GuardsDead = 0
 local prop
 local lootable = 0
@@ -19,6 +18,7 @@ local pilot
 local navigator
 local navigator2
 local bag
+local planting = false
 
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     QBCore.Functions.GetPlayerData(function(PlayerData)
@@ -90,10 +90,12 @@ CreateThread(function()
 end)
 ---
 
+-- (only a hint for the robber: the server checks every guard before the charge can be planted)
 local function CheckGuards()
-	if IsPedDeadOrDying(pilot) == 1 or IsPedDeadOrDying(navigator) == 1 then
-		GuardsDead = 1
+	for _, guard in ipairs({ pilot, navigator, navigator2 }) do
+		if guard and DoesEntityExist(guard) and not IsPedDeadOrDying(guard, true) then return end
 	end
+	GuardsDead = 1
 end
 
 function AlertPolice()
@@ -216,93 +218,76 @@ function MissionNotification()
 end
 ---
 --
+-- Waits until this client knows a server-spawned entity and owns it (AI tasks only work for the owner).
+local function TakeEntity(netId)
+	local timeout = GetGameTimer() + 10000
+	while not NetworkDoesNetworkIdExist(netId) and GetGameTimer() < timeout do Wait(50) end
+	if not NetworkDoesNetworkIdExist(netId) then return nil end
+	local entity = NetworkGetEntityFromNetworkId(netId)
+	NetworkRequestControlOfEntity(entity)
+	while not NetworkHasControlOfEntity(entity) and GetGameTimer() < timeout do
+		Wait(50)
+		NetworkRequestControlOfEntity(entity)
+	end
+	return entity
+end
+
+local function ArmGuard(ped)
+	SetPedFleeAttributes(ped, 0, 0)
+	SetPedCombatAttributes(ped, 46, 1)
+	SetPedCombatAbility(ped, 100)
+	SetPedCombatMovement(ped, 2)
+	SetPedCombatRange(ped, 2)
+	SetPedKeepTask(ped, true)
+	SetPedAsCop(ped, true)
+end
+
+-- The server picked the spawn point; it spawns the truck and the guards once we are close.
 RegisterNetEvent('AttackTransport:Pozwolwykonac', function(spawnIndex)
 	MissionNotification()
 	ClearPedTasks(dealer)
 	TaskWanderStandard(dealer, 100,100)
-	local DrawCoord = spawnIndex or math.random(1,5) -- the server picks the spawn point
-	VehicleCoords = Config.VehicleSpawn[DrawCoord]
-
-	local spawned = false
+	VehicleCoords = Config.VehicleSpawn[spawnIndex] or Config.VehicleSpawn[1]
+	MissionStart = 1
 	CreateThread(function()
 		local ped = PlayerPedId()
 		SetNewWaypoint(VehicleCoords.x, VehicleCoords.y)
-		while not spawned do
-			local coords = GetEntityCoords(ped)
-			local distance = #(coords - vector3(VehicleCoords.x, VehicleCoords.y, VehicleCoords.z))
+		while MissionStart == 1 and not transport do
+			local distance = #(GetEntityCoords(ped) - vector3(VehicleCoords.x, VehicleCoords.y, VehicleCoords.z))
 			if distance < 200 then
-				spawned = true
-				RequestModel(`stockade`)
-				while not HasModelLoaded(`stockade`) do
-					Wait(0)
-				end
-				ClearAreaOfVehicles(VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 15.0, false, false, false, false, false)
-				transport = CreateVehicle(`stockade`, VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 52.0, true, true)
-				SetEntityAsMissionEntity(transport)
-				TriggerServerEvent('AttackTransport:truckSpawned', NetworkGetNetworkIdFromEntity(transport))
-				TruckBlip = AddBlipForEntity(transport)
-				SetBlipSprite(TruckBlip, 57)
-				SetBlipColour(TruckBlip, 1)
-				SetBlipFlashes(TruckBlip, true)
-				BeginTextCommandSetBlipName("STRING")
-				AddTextComponentSubstringPlayerName('Van with Cash')
-				EndTextCommandSetBlipName(TruckBlip)
-				--
-				RequestModel("s_m_m_security_01")
-				while not HasModelLoaded("s_m_m_security_01") do
-					Wait(10)
-				end
-				pilot = CreatePed(26, "s_m_m_security_01", VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 268.9422, true, false)
-				navigator = CreatePed(26, "s_m_m_security_01", VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 268.9422, true, false)
-				navigator2 = CreatePed(26, "s_m_m_security_01", VehicleCoords.x, VehicleCoords.y, VehicleCoords.z, 268.9422, true, false)
-
-				SetPedIntoVehicle(pilot, transport, -1)
-				SetPedIntoVehicle(navigator, transport, 0)
-				SetPedIntoVehicle(navigator2, transport, 1)
-				SetPedFleeAttributes(pilot, 0, 0)
-				SetPedCombatAttributes(pilot, 46, 1)
-				SetPedCombatAbility(pilot, 100)
-				SetPedCombatMovement(pilot, 2)
-				SetPedCombatRange(pilot, 2)
-				SetPedKeepTask(pilot, true)
-				GiveWeaponToPed(pilot, Config.DriverWep,250,false,true)
-				SetPedAsCop(pilot, true)
-				--
-				SetPedFleeAttributes(navigator, 0, 0)
-				SetPedCombatAttributes(navigator, 46, 1)
-				SetPedCombatAbility(navigator, 100)
-				SetPedCombatMovement(navigator, 2)
-				SetPedCombatRange(navigator, 2)
-				SetPedKeepTask(navigator, true)
-				GiveWeaponToPed(navigator, Config.NavWep,250,false,true)
-				SetPedAsCop(navigator, true)
-				--
-				SetPedFleeAttributes(navigator2, 0, 0)
-				SetPedCombatAttributes(navigator2, 46, 1)
-				SetPedCombatAbility(navigator2, 100)
-				SetPedCombatMovement(navigator2, 2)
-				SetPedCombatRange(navigator2, 2)
-				SetPedKeepTask(navigator2, true)
-				GiveWeaponToPed(navigator2, Config.NavWep,250,false,true)
-				SetPedAsCop(navigator2, true)
-				--
-				TaskVehicleDriveWander(pilot, transport, 80.0, 443)
+				TriggerServerEvent('AttackTransport:requestTruck')
+				Wait(5000)
+			else
+				Wait(1000)
 			end
-			startMission()
-			Wait(500)
 		end
 	end)
-	MissionStart = 1
+end)
+
+RegisterNetEvent('AttackTransport:truckReady', function(truckNet, guardNets)
+	if MissionStart ~= 1 or transport then return end
+	transport = TakeEntity(truckNet)
+	if not transport then return end
+	SetEntityAsMissionEntity(transport)
+	TruckBlip = AddBlipForEntity(transport)
+	SetBlipSprite(TruckBlip, 57)
+	SetBlipColour(TruckBlip, 1)
+	SetBlipFlashes(TruckBlip, true)
+	BeginTextCommandSetBlipName("STRING")
+	AddTextComponentSubstringPlayerName('Van with Cash')
+	EndTextCommandSetBlipName(TruckBlip)
+	local guards = {}
+	for i, netId in ipairs(guardNets or {}) do guards[i] = TakeEntity(netId) end
+	pilot, navigator, navigator2 = guards[1], guards[2], guards[3]
+	for _, guard in ipairs(guards) do if guard then ArmGuard(guard) end end
+	if pilot then TaskVehicleDriveWander(pilot, transport, 80.0, 443) end
+	startMission()
 end)
 
 function stopAndBeAngry()
 	CreateThread(function()
 		SetVehicleBrake(transport)
 		Wait(1000)
-
-		GiveWeaponToPed(navigator, Config.NavWeap, 420, 0, 1)
-		GiveWeaponToPed(navigator2, Config.NavWeap, 420, 0, 1)
-		GiveWeaponToPed(pilot, Config.DriverWeap, 420, 0, 1)
 
 		SetPedDropsWeaponsWhenDead(navigator,false)
 		SetPedRelationshipGroupDefaultHash(navigator,`COP`)
@@ -370,47 +355,55 @@ function startMission()
 	end)
 end
 
+-- Asks the server to plant the charge; it checks the guards, the truck and where we stand.
 function CheckVehicleInformation()
-	if IsVehicleStopped(transport) then
-		if IsVehicleSeatFree(transport, -1) and IsVehicleSeatFree(transport, 0) and IsVehicleSeatFree(transport, 1) and GuardsDead == 1 then
-			if not IsEntityInWater(PlayerPedId()) then
-				RequestAnimDict('anim@heists@ornate_bank@thermal_charge_heels')
-				while not HasAnimDictLoaded('anim@heists@ornate_bank@thermal_charge_heels') do
-					Wait(50)
-				end
-				local x,y,z = table.unpack(GetEntityCoords(PlayerPedId()))
-				prop = CreateObject(`prop_c4_final_green`, x, y, z+0.2,  true,  true, true)
-				AttachEntityToEntity(prop, PlayerPedId(), GetPedBoneIndex(PlayerPedId(), 60309), 0.06, 0.0, 0.06, 90.0, 0.0, 0.0, true, true, false, true, 1, true)
-				SetCurrentPedWeapon(PlayerPedId(), `WEAPON_UNARMED`,true)
-				FreezeEntityPosition(PlayerPedId(), true)
-				TaskPlayAnim(PlayerPedId(), 'anim@heists@ornate_bank@thermal_charge_heels', "thermal_charge", 3.0, -8, -1, 63, 0, 0, 0, 0 )
-				Wait(5500)
-				ClearPedTasks(PlayerPedId())
-				DetachEntity(prop)
-				AttachEntityToEntity(prop, transport, GetEntityBoneIndexByName(transport, 'door_pside_r'), -0.7, 0.0, 0.0, 0.0, 0.0, 0.0, true, true, false, true, 1, true)
-				hideLastHint()
-				QBCore.Functions.Notify('The load will be detonated in '..Config.TimeToBlow ..' seconds.', "error")
-				FreezeEntityPosition(PlayerPedId(), false)
-				Wait(Config.TimeToBlow*1000)
-				local transCoords = GetEntityCoords(transport)
-				SetVehicleDoorBroken(transport, 2, false)
-				SetVehicleDoorBroken(transport, 3, false)
-				AddExplosion(transCoords.x,transCoords.y,transCoords.z, 'EXPLOSION_TANKER', 2.0, true, false, 2.0)
-				-- ApplyForceToEntity(transport, 0, transCoords.x,transCoords.y,transCoords.z, 0.0, 0.0, 0.0, 1, false, true, true, true, true)
-				BlownUp = 1
-				lootable = 1
-				QBCore.Functions.Notify('You can start collecting cash.', "success")
-				RemoveBlip(TruckBlip)
-			else
-				QBCore.Functions.Notify('Get out of the water', "error")
-			end
-		else
-			QBCore.Functions.Notify('The vehicle must be empty to place the load', "error")
-		end
-	else
+	if not IsVehicleStopped(transport) then
 		QBCore.Functions.Notify('You can not rob a vehicle that is moving.', "error")
+		BlowBackdoor = 0
+		return
 	end
+	if IsEntityInWater(PlayerPedId()) then
+		QBCore.Functions.Notify('Get out of the water', "error")
+		BlowBackdoor = 0
+		return
+	end
+	TriggerServerEvent('AttackTransport:plantBomb')
+	-- the server answers with bombPlanted, or a notification of what is missing
+	SetTimeout(3000, function() if BlownUp == 0 and not planting then BlowBackdoor = 0 end end)
 end
+
+RegisterNetEvent('AttackTransport:bombPlanted', function(seconds)
+	if MissionStart ~= 1 or not transport then return end
+	planting = true
+	seconds = tonumber(seconds) or Config.TimeToBlow
+	RequestAnimDict('anim@heists@ornate_bank@thermal_charge_heels')
+	while not HasAnimDictLoaded('anim@heists@ornate_bank@thermal_charge_heels') do
+		Wait(50)
+	end
+	local x,y,z = table.unpack(GetEntityCoords(PlayerPedId()))
+	prop = CreateObject(`prop_c4_final_green`, x, y, z+0.2,  true,  true, true)
+	AttachEntityToEntity(prop, PlayerPedId(), GetPedBoneIndex(PlayerPedId(), 60309), 0.06, 0.0, 0.06, 90.0, 0.0, 0.0, true, true, false, true, 1, true)
+	SetCurrentPedWeapon(PlayerPedId(), `WEAPON_UNARMED`,true)
+	FreezeEntityPosition(PlayerPedId(), true)
+	TaskPlayAnim(PlayerPedId(), 'anim@heists@ornate_bank@thermal_charge_heels', "thermal_charge", 3.0, -8, -1, 63, 0, 0, 0, 0 )
+	Wait(5500)
+	ClearPedTasks(PlayerPedId())
+	DetachEntity(prop)
+	AttachEntityToEntity(prop, transport, GetEntityBoneIndexByName(transport, 'door_pside_r'), -0.7, 0.0, 0.0, 0.0, 0.0, 0.0, true, true, false, true, 1, true)
+	hideLastHint()
+	QBCore.Functions.Notify('The load will be detonated in '..seconds ..' seconds.', "error")
+	FreezeEntityPosition(PlayerPedId(), false)
+	Wait(seconds*1000)
+	local transCoords = GetEntityCoords(transport)
+	SetVehicleDoorBroken(transport, 2, false)
+	SetVehicleDoorBroken(transport, 3, false)
+	AddExplosion(transCoords.x,transCoords.y,transCoords.z, 'EXPLOSION_TANKER', 2.0, true, false, 2.0)
+	BlownUp = 1
+	lootable = 1
+	planting = false
+	QBCore.Functions.Notify('You can start collecting cash.', "success")
+	RemoveBlip(TruckBlip)
+end)
 
 -- Crim Client
 CreateThread(function()
@@ -441,12 +434,13 @@ RegisterNetEvent('AttackTransport:CleanUp', function()
 	PoliceAlert = 0
 	PoliceBlip = 0
 	moneyCalc = 1
-	LootTime = 1
 	GuardsDead = 0
 	lootable = 0
 	BlownUp = 0
 	MissionStart = 0
 	warning = 0
+	planting = false
+	transport, pilot, navigator, navigator2 = nil, nil, nil, nil
 end)
 
 -- Crim Client
@@ -471,12 +465,12 @@ function TakingMoney()
 		hintToDisplay('Hold [G] to bail out')
 		Wait(0)
 	end
-	LootTime = GetGameTimer() - _time
 	DeleteEntity(bag)
 	ClearPedTasks(PlayerPedId())
 	FreezeEntityPosition(PlayerPedId(), false)
 	SetPedComponentVariation(PlayerPedId(), 5, 45, 0, 2)
-	TriggerServerEvent("AttackTransport:graczZrobilnapad", LootTime)
+	-- the server pays only for the charge it saw planted, once it has gone off
+	TriggerServerEvent("AttackTransport:graczZrobilnapad")
 	TriggerEvent('AttackTransport:CleanUp')
 	Wait(2500)
 end

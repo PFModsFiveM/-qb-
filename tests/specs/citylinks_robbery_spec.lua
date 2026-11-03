@@ -30,6 +30,35 @@ Mock.exportsByResource['pfm-inventory'] = {
     end,
     GetItemByName = function(_, src, item) if count(src, item) > 0 then return { name = item, amount = count(src, item) } end end,
 }
+-- pfm-minigames: the spec decides each challenge's verdict (Pass) before the resource verifies it
+Challenges, Issued = {}, {}
+Mock.exportsByResource['pfm-minigames'] = {
+    IssueChallenge = function(_, src, kind)
+        local id = 'ch' .. (#Issued + 1)
+        Challenges[id] = { src = src, kind = kind }
+        Issued[#Issued + 1] = id
+        return { id = id, kind = kind, puzzle = {}, expiresIn = 30000 }
+    end,
+    Verify = function(_, src, id)
+        local c = Challenges[id]
+        Challenges[id] = nil
+        return c ~= nil and c.src == src and c.passed == true, 0
+    end,
+    Cancel = function(_, _, id) Challenges[id] = nil return true end,
+}
+local function Pass(id) if Challenges[id] then Challenges[id].passed = true end end
+local function PassLatest() Pass(Issued[#Issued]) end
+-- timers run when the spec says so
+Timers = {}
+function SetTimeout(ms, fn) Timers[#Timers + 1] = fn end
+local function runTimers() local list = Timers; Timers = {}; for _, fn in ipairs(list) do fn() end end
+-- a register picked through the server: start, a passed challenge, finish
+local function pickRegister(src, register)
+    Mock.fireNet('qb-storerobbery:server:startRegister', src, register)
+    PassLatest()
+    Mock.gameTimer = Mock.gameTimer + 3000
+    Mock.fireNet('qb-storerobbery:server:finishRegister', src, register)
+end
 local blackout
 Mock.exportsByResource['pfm-weathersync'] = { setBlackout = function(_, on) blackout = on end }
 setmetatable(QBCoreMock.Shared.Items, { __index = function(_, k) return { name = k, label = k, unique = false } end })
@@ -65,6 +94,7 @@ BeforeEach = function()
     Mock.clock = Mock.clock + 10000
     Mock.gameTimer = Mock.gameTimer + 60000
     Mock.players, Mock.coords, Mock.dropped, Inv, Emits, Kinds, weapon = {}, {}, {}, {}, {}, {}, {}
+    Challenges, Issued, Timers = {}, {}, {}
     started = { ['pf-services'] = true }
     local r = Mock.newPlayer(R)
     r.PlayerData.job = { name = 'unemployed', type = 'none', onduty = false }
@@ -82,7 +112,7 @@ describe('bank robbery', function()
         Mock.fireNet('qb-bankrobbery:server:setBankState', R, bank)          -- no hack: nothing
         assert_eq(#Emits, 0)
         give(R, 'electronickit'); give(R, 'trojan_usb')
-        Mock.fireNet('qb-bankrobbery:server:removeElectronicKit', R)
+        Pass(Mock.callCallback('qb-bankrobbery:server:startHack', R).id)
         Mock.clock = Mock.clock + 10
         Mock.fireNet('qb-bankrobbery:server:setBankState', R, bank)
         Mock.fireNet('qb-bankrobbery:server:setBankState', R, bank)          -- already open
@@ -103,10 +133,12 @@ describe('bank robbery', function()
         for _, st in pairs(Config.PowerStations) do st.hit = false end
         give(R, 'thermite')
         at(R, Config.PowerStations[4].coords)
-        Mock.fireNet('qb-bankrobbery:server:SetStationStatus', R, 4, true)  -- no thermite used: refused
+        Mock.fireNet('qb-bankrobbery:server:thermiteFinish', R)           -- no thermite used: nothing
+        runTimers()
         assert_eq(#emitted('crime.blackout'), 0)
-        assert_true(Mock.callCallback('thermite:server:check', R))
-        Mock.fireNet('qb-bankrobbery:server:SetStationStatus', R, 4, true)
+        Pass(Mock.callCallback('thermite:server:check', R).id)
+        Mock.fireNet('qb-bankrobbery:server:thermiteFinish', R)
+        runTimers()
         Config.HitsNeeded = old
         assert_true(blackout)
         local ev = emitted('crime.blackout')
@@ -122,29 +154,29 @@ describe('store robbery', function()
         give(R, 'lockpick')
         for k, reg in pairs(Config.Registers) do reg.robbed = false; reg.time = 0 end
         at(R, Config.Registers[1][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 1)
+        pickRegister(R, 1)
         at(R, Config.Registers[2][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 2)       -- same store
+        pickRegister(R, 2)                                                    -- same store
         local ev = emitted('crime.robbery.store')
         assert_eq(#ev, 1)
         assert_eq(ev[1].data.place, 'LTD Gasoline, Grove Street')
         assert_true(same(ev[1].opts.coords, Config.Registers[1][1]))
         assert_eq(ev[1].opts.dedupe, 'store:1')
         at(R, Config.Registers[7][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 7)       -- another store
+        pickRegister(R, 7)                                                    -- another store
         assert_eq(#emitted('crime.robbery.store'), 2)
     end)
     it('no event from a client away from the register, without a lockpick or police', function()
         Config = StoreCfg
         for _, reg in pairs(Config.Registers) do reg.robbed = false end
         at(R, Config.Registers[3][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 3)       -- no lockpick
+        pickRegister(R, 3)                                                    -- no lockpick
         give(R, 'lockpick')
         Mock.coords[R] = vector3(0, 0, 0)
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 3)       -- far away
+        pickRegister(R, 3)                                                    -- far away
         Mock.players[COP2] = nil
         at(R, Config.Registers[3][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 3)       -- one cop, two needed
+        pickRegister(R, 3)                                                    -- one cop, two needed
         assert_eq(#Emits, 0)
     end)
     it('a robbery while pf-services is not running still works and sends nothing', function()
@@ -153,7 +185,7 @@ describe('store robbery', function()
         for _, reg in pairs(Config.Registers) do reg.robbed = false end
         give(R, 'lockpick')
         at(R, Config.Registers[10][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 10)
+        pickRegister(R, 10)
         assert_true(Config.Registers[10].robbed)
         assert_eq(#Emits, 0)
     end)
@@ -171,7 +203,7 @@ describe('store robbery', function()
         Mock.newPlayer(OWNER, 'OWNERCID')
         give(R, 'lockpick')
         at(R, Config.Registers[8][1])
-        Mock.fireNet('qb-storerobbery:server:setRegisterStatus', R, 8)
+        pickRegister(R, 8)
         local told = 0
         for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do if e.target == OWNER then told = told + 1 end end
         assert_eq(told, 1)

@@ -1,6 +1,7 @@
 local QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 local sharedItems = exports['pfm-core']:GetShared('Items')
 local SafeCodes = {}
+local typeOf = type
 
 -- server-side robbery sessions (PF hardening):
 local activeRegisters = {} -- [register] = { src, at }
@@ -12,8 +13,13 @@ local copsCallCooldown = {} -- [src] = os.time()
 local keypadFails = {}      -- [citizenid] = { [safe] = { count, lockedUntil } }
 local MAX_KEYPAD_FAILS = 3
 local KEYPAD_LOCKOUT = 600
--- The padlock dial needs well over 20 s to turn through the combination by hand.
-local MIN_PADLOCK_SECONDS = 20
+-- The padlock is cracked with a server-judged key challenge (about 18 s to play through); the
+-- challenge itself enforces how fast it can be played.
+local MIN_PADLOCK_SECONDS = 15
+-- Register lockpicking: one attempt per player at a time, judged by pfm-minigames.
+local pickAttempts = {}    -- [src] = { register, at (ms), challengeId, item }
+local lastPickStart = {}   -- [src] = GetGameTimer()
+local PICK_MIN_MS, PICK_MAX_MS = 1000, 60000
 
 CreateThread(function()
     while true do
@@ -123,25 +129,117 @@ end
 
 -- ══ registers ═════════════════════════════════════════════════════
 
--- the lockpick minigame succeeded: validate everything server-side and open a session
-RegisterNetEvent('qb-storerobbery:server:setRegisterStatus', function(register)
+-- ── server-judged minigames (pfm-minigames) ──────────────────────
+local function IssueChallenge(src, kind, opts)
+    local ok, ch = pcall(function() return exports['pfm-minigames']:IssueChallenge(src, kind, opts) end)
+    if ok and typeOf(ch) == 'table' and typeOf(ch.id) == 'string' then return ch end
+    return nil
+end
+
+local function ChallengePassed(src, id)
+    if typeOf(id) ~= 'string' then return false end
+    local ok, passed = pcall(function() return exports['pfm-minigames']:Verify(src, id) end)
+    return ok and passed == true
+end
+
+local function CancelChallenge(src, id)
+    if typeOf(id) ~= 'string' then return end
+    pcall(function() exports['pfm-minigames']:Cancel(src, id) end)
+end
+
+local function Holds(src, item)
+    return item ~= nil and exports['pfm-inventory']:GetItemByName(src, item) ~= nil
+end
+
+-- Register lockpicking, all on the server: startRegister checks the player, the register and the pick
+-- and sends a pin-lockpick challenge; finishRegister opens the register only when pfm-minigames judged
+-- that challenge passed, in time, with the player still there holding the pick. A failed, restarted
+-- or abandoned attempt rolls the pick's breakage here (it used to break only when the client asked).
+local function PickItem(src, wantAdvanced)
+    if wantAdvanced and Holds(src, 'advancedlockpick') then return 'advancedlockpick' end
+    if Holds(src, 'lockpick') then return 'lockpick' end
+    if Holds(src, 'advancedlockpick') then return 'advancedlockpick' end
+    return nil
+end
+
+local function FailPick(src, attempt)
+    CancelChallenge(src, attempt.challengeId)
+    TriggerClientEvent('qb-storerobbery:client:registerResult', src, attempt.register, false)
+    if not Holds(src, attempt.item) then return end
+    local chance = (Config.LockpickBreakChance or {})[attempt.item] or 0
+    if math.random(1, 100) > chance then return end
+    if exports['pfm-inventory']:RemoveItem(src, attempt.item, 1, false, 'qb-storerobbery:lockpickBroke') then
+        TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems[attempt.item], 'remove')
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.you_broke_the_lock_pick'), 'error')
+    end
+end
+
+local function RegisterAt(src, register)
+    register = tonumber(register)
+    local reg = register and Config.Registers[register]
+    if not reg then return nil end
+    if #(GetEntityCoords(GetPlayerPed(src)) - reg[1].xyz) > 3.0 then return nil end
+    return register, reg
+end
+
+RegisterNetEvent('qb-storerobbery:server:startRegister', function(register, wantAdvanced)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
-    register = tonumber(register)
-    local reg = register and Config.Registers[register]
-    if not reg then return end
-    local playerCoords = GetEntityCoords(GetPlayerPed(src))
-    if #(playerCoords - reg[1].xyz) > 3.0 then return DropPlayer(src, 'Attempted exploit abuse') end
-    if reg.robbed then return end
+    local reg
+    register, reg = RegisterAt(src, register)
+    if not register or reg.robbed or activeRegisters[register] then return end
+    local meta = Player.PlayerData.metadata or {}
+    if meta.isdead or meta.inlaststand or meta.ishandcuffed then return end
     if GetCopCount() < (Config.MinimumStoreRobberyPolice or 2) then return end
-    if not Player.GetItemByName('lockpick') and not Player.GetItemByName('advancedlockpick') then return end
+    local now = GetGameTimer()
+    if lastPickStart[src] and now - lastPickStart[src] < (Config.LockpickCooldownSeconds or 2) * 1000 then return end
+    local item = PickItem(src, wantAdvanced == true)
+    if not item then return end
+    lastPickStart[src] = now
 
-    reg.robbed = true
-    reg.time = Config.resetTime
-    activeRegisters[register] = { src = src, at = os.time() }
-    TriggerClientEvent('qb-storerobbery:client:setRegisterStatus', -1, register, reg)
-    ReportStoreRobbery(reg.safeKey, reg[1])
+    -- a new attempt ends the open one as failed (a restart does not dodge the breakage)
+    if pickAttempts[src] then
+        local old = pickAttempts[src]
+        pickAttempts[src] = nil
+        FailPick(src, old)
+    end
+
+    local ch = IssueChallenge(src, 'lockpick', { pins = Config.RegisterLockpickPins or 1, tag = 'storerobbery:register:' .. register })
+    if not ch then return end
+    local attempt = { register = register, at = now, challengeId = ch.id, item = item }
+    pickAttempts[src] = attempt
+    SetTimeout(PICK_MAX_MS + 1000, function()
+        if pickAttempts[src] ~= attempt then return end
+        pickAttempts[src] = nil
+        FailPick(src, attempt)
+    end)
+    TriggerClientEvent('qb-storerobbery:client:registerChallenge', src, register, ch)
+end)
+
+RegisterNetEvent('qb-storerobbery:server:finishRegister', function(register)
+    local src = source
+    local attempt = pickAttempts[src]
+    register = tonumber(register)
+    if not attempt or attempt.register ~= register then return end
+    pickAttempts[src] = nil -- one finish per attempt
+
+    local passed = ChallengePassed(src, attempt.challengeId)
+    local elapsed = GetGameTimer() - attempt.at
+    local Player = exports['pfm-core']:GetPlayer(src)
+    local _, reg = RegisterAt(src, register)
+    if passed and elapsed >= PICK_MIN_MS and elapsed <= PICK_MAX_MS and Player and reg and not reg.robbed
+        and not activeRegisters[register] and Holds(src, attempt.item)
+        and GetCopCount() >= (Config.MinimumStoreRobberyPolice or 2) then
+        reg.robbed = true
+        reg.time = Config.resetTime
+        activeRegisters[register] = { src = src, at = os.time() }
+        TriggerClientEvent('qb-storerobbery:client:setRegisterStatus', -1, register, reg)
+        TriggerClientEvent('qb-storerobbery:client:registerResult', src, register, true)
+        ReportStoreRobbery(reg.safeKey, reg[1])
+        return
+    end
+    FailPick(src, attempt)
 end)
 
 RegisterNetEvent('qb-storerobbery:server:takeMoney', function(register, isDone)
@@ -162,18 +260,9 @@ RegisterNetEvent('qb-storerobbery:server:takeMoney', function(register, isDone)
         if os.time() - session.at < 20 then return DropPlayer(src, 'Attempted exploit abuse') end
         activeRegisters[register] = nil
         GiveMarkedBills(src, math.random(1, 3), Config.RegisterCash)
-        if math.random(1, 100) <= Config.stickyNoteChance then
-            local code = SafeCodes[reg.safeKey]
-            local info
-            if Config.Safes[reg.safeKey].type == 'keypad' then
-                info = { label = Lang:t('text.safe_code') .. tostring(code) }
-            else
-                local label = Lang:t('text.safe_code') .. ' '
-                for i = 1, #code do
-                    label = label .. tostring(math.floor((code[i] % 360) / 3.60)) .. ' - '
-                end
-                info = { label = label:sub(1, -3) }
-            end
+        -- a keypad code on a sticky note (padlock safes are cracked with the dial minigame instead)
+        if Config.Safes[reg.safeKey].type == 'keypad' and math.random(1, 100) <= Config.stickyNoteChance then
+            local info = { label = Lang:t('text.safe_code') .. tostring(SafeCodes[reg.safeKey]) }
             exports['pfm-inventory']:AddItem(src, 'stickynote', 1, false, info, 'qb-storerobbery:server:takeMoney')
             TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['stickynote'], 'add')
         end
@@ -235,13 +324,12 @@ QBCore.Functions.CreateCallback('qb-storerobbery:server:isCombinationRight', fun
     cb(correct)
 end)
 
--- padlock: the dial minigame needs the combination client-side, but only
--- with an active, rate-limited, in-range attempt on an unrobbed safe
+-- padlock: the dial is cracked with a key challenge the server issues and judges; the combination
+-- never leaves the server (it used to be handed to the client, and the reward paid 20 s later
+-- with no proof the dial was ever turned)
 local padlockRequests = {} -- [src] = os.time()
-QBCore.Functions.CreateCallback('qb-storerobbery:server:getPadlockCombination', function(src, cb, safe)
+QBCore.Functions.CreateCallback('qb-storerobbery:server:startPadlock', function(src, cb, safe)
     safe = tonumber(safe)
-    -- padlock safes only: asking this for a keypad safe used to hand out its 4-digit code and open
-    -- it without a guess (skipping the keypad lockout)
     if not CanTouchSafe(src, safe) or Config.Safes[safe].type ~= 'padlock' then
         cb(nil)
         return
@@ -251,9 +339,23 @@ QBCore.Functions.CreateCallback('qb-storerobbery:server:getPadlockCombination', 
         cb(nil)
         return
     end
+    -- one crack at a time per safe: another player's live attempt is not taken over
+    local current = safeAttempts[safe]
+    if current and current.src ~= src and now - current.at < 60 then
+        cb(nil)
+        return
+    end
+    local ch = IssueChallenge(src, 'keys', {
+        amount = Config.PadlockKeys or 12, maxFaults = Config.PadlockMaxFaults or 2, tag = 'storerobbery:safe:' .. safe,
+    })
+    if not ch then
+        cb(nil)
+        return
+    end
     padlockRequests[src] = now
-    safeAttempts[safe] = { src = src, at = now }
-    cb(SafeCodes[safe])
+    if current then CancelChallenge(current.src, current.challengeId) end
+    safeAttempts[safe] = { src = src, at = now, challengeId = ch.id }
+    cb(ch)
 end)
 
 RegisterNetEvent('qb-storerobbery:server:SafeReward', function(safe)
@@ -268,11 +370,15 @@ RegisterNetEvent('qb-storerobbery:server:SafeReward', function(safe)
         return DropPlayer(src, 'Attempted exploit abuse')
     end
 
-    -- only the player who actually opened it can claim: keypad unlock,
-    -- or an active padlock attempt old enough for the minigame to have run
-    local attempt = safeAttempts[safe]
+    -- only the player who actually opened it can claim: keypad unlock, or this player's padlock
+    -- challenge, judged passed by pfm-minigames
     local allowed = safeUnlocked[safe] == src
-        or (attempt and attempt.src == src and os.time() - attempt.at >= MIN_PADLOCK_SECONDS)
+    if not allowed and safeData.type == 'padlock' then
+        local attempt = safeAttempts[safe]
+        if not attempt or attempt.src ~= src then return end
+        safeAttempts[safe] = nil -- one claim per crack
+        allowed = os.time() - attempt.at >= MIN_PADLOCK_SECONDS and ChallengePassed(src, attempt.challengeId)
+    end
     if not allowed then return end
 
     MarkSafeRobbed(safe)
@@ -340,17 +446,9 @@ end)
 
 -- ══ lockpicks ═════════════════════════════════════════════════════
 
-RegisterNetEvent('qb-storerobbery:server:removeAdvancedLockpick', function()
-    local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then return end
-    exports['pfm-inventory']:RemoveItem(source, 'advancedlockpick', 1, false, 'qb-storerobbery:server:removeAdvancedLockpick')
-end)
-
-RegisterNetEvent('qb-storerobbery:server:removeLockpick', function()
-    local Player = exports['pfm-core']:GetPlayer(source)
-    if not Player then return end
-    exports['pfm-inventory']:RemoveItem(source, 'lockpick', 1, false, 'qb-storerobbery:server:removeLockpick')
-end)
+-- Kept as no-ops for old clients: a lockpick breaks only on the server, when an attempt fails.
+RegisterNetEvent('qb-storerobbery:server:removeAdvancedLockpick', function() end)
+RegisterNetEvent('qb-storerobbery:server:removeLockpick', function() end)
 
 -- ══ register reset ticker ═════════════════════════════════════════
 
@@ -382,6 +480,8 @@ AddEventHandler('playerDropped', function()
     local src = source
     copsCallCooldown[src] = nil
     padlockRequests[src] = nil
+    pickAttempts[src] = nil
+    lastPickStart[src] = nil
     for k, v in pairs(activeRegisters) do
         if v.src == src then activeRegisters[k] = nil end
     end

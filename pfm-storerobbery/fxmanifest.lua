@@ -26,3 +26,6 @@ files {
     'html/style.css',
     'html/reset.css'
 }
+
+-- register lockpicks and padlock dials are server-judged pfm-minigames challenges
+dependency 'pfm-minigames'

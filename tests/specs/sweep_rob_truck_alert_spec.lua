@@ -8,8 +8,32 @@ LedgerEnv.load('pfm-truckrobbery', { 'pfm-truckrobbery/config.lua', 'pfm-truckro
 -- the mission timer waits: keep it paused inside a coroutine
 function Wait() if coroutine.isyieldable() then coroutine.yield() end end
 
-local R, OTHER, COP, TRUCK = 1, 3, 2, 500
-Mock.models[TRUCK] = GetHashKey('stockade')
+local R, OTHER, COP = 1, 3, 2
+-- server-spawned entities: the truck and its guards
+Health, Heading, Guards = {}, {}, {}
+local nextEntity = 600
+function CreateVehicleServerSetter(model, _, x, y, z, h)
+    nextEntity = nextEntity + 1
+    Mock.models[nextEntity], Mock.coords[nextEntity], Heading[nextEntity] = model, vector3(x, y, z), h
+    return nextEntity
+end
+function CreatePedInsideVehicle(veh)
+    nextEntity = nextEntity + 1
+    Health[nextEntity], Mock.coords[nextEntity] = 200, Mock.coords[veh]
+    Guards[#Guards + 1] = nextEntity
+    return nextEntity
+end
+function GiveWeaponToPed() end
+function GetEntityHealth(e) return Health[e] or 0 end
+function GetEntityVelocity() return vector3(0, 0, 0) end
+function GetEntityHeading(e) return Heading[e] or 0.0 end
+-- the mission player near the spawn point: the server spawns the truck there
+local function spawnTruck(src, s)
+    Mock.coords[src] = vector3(s.x + 100, s.y, s.z)
+    Mock.fireNet('AttackTransport:requestTruck', src)
+    local ev = Mock.clientEventsNamed('AttackTransport:truckReady')
+    return ev[#ev].args[1]
+end
 
 local function accept()
     coroutine.resume(coroutine.create(function() Mock.fireNet('AttackTransport:akceptujto', R) end))
@@ -38,8 +62,7 @@ describe('armored truck alerts', function()
     it('only the mission player, at the truck, once per 30 s, as plain text', function()
         local spawn = accept()
         local s = Config.VehicleSpawn[spawn]
-        Mock.coords[TRUCK] = vector3(s.x, s.y, s.z)
-        Mock.fireNet('AttackTransport:truckSpawned', R, TRUCK)
+        spawnTruck(R, s)
         Mock.fireNet('qb-armoredtruckheist:server:callCops', OTHER, 'x', vector3(1, 2, 3))
         assert_eq(#Mock.clientEventsNamed('qb-armoredtruckheist:client:robberyCall'), 0)
         Mock.fireNet('qb-armoredtruckheist:server:callCops', R, '<img src=x>Route 68', vector3(1, 2, 3))

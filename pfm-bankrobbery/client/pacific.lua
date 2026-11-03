@@ -38,7 +38,7 @@ RegisterNetEvent('qb-bankrobbery:UseBankcardB', function()
                         disableCombat = true,
                     }, {}, {}, {}, function() -- Done
                         StopAnimTask(ped, 'anim@gangops@facility@servers@', 'hotwire', 1.0)
-                        Config.DoorlockAction(1, false)
+                        -- the server uses up the card and opens the gate
                         TriggerServerEvent('qb-bankrobbery:server:removeBankCard', '02')
                         if copsCalled or not Config.BigBanks['pacific']['alarm'] then return end
                         TriggerServerEvent('qb-bankrobbery:server:callCops', 'pacific', 0, pos)
@@ -78,12 +78,15 @@ RegisterNetEvent('electronickit:UseElectronickit', function()
                             disableMouse = false,
                             disableCombat = true,
                         }, {}, {}, {}, function() -- Done
-                            TriggerServerEvent('qb-bankrobbery:server:removeElectronicKit')
                             StopAnimTask(ped, 'anim@gangops@facility@servers@', 'hotwire', 1.0)
-                            local success = exports['pfm-minigames']:Hacking(5, 30) -- code block size & seconds to solve
-                            if success then
-                                TriggerServerEvent('qb-bankrobbery:server:setBankState', 'pacific')
-                            end
+                            -- the server uses up the kit and USB and sends the hack; it judges the answer
+                            QBCore.Functions.TriggerCallback('qb-bankrobbery:server:startHack', function(challenge)
+                                if not challenge then return end
+                                local ok, passed = pcall(function() return exports['pfm-minigames']:PlayChallenge(challenge) end)
+                                if ok and passed then
+                                    TriggerServerEvent('qb-bankrobbery:server:setBankState', 'pacific')
+                                end
+                            end)
                             if copsCalled or not Config.BigBanks['pacific']['alarm'] then return end
                             TriggerServerEvent('qb-bankrobbery:server:callCops', 'pacific', 0, pos)
                             copsCalled = true

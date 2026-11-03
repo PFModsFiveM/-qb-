@@ -40,6 +40,21 @@ end
 Config.HitsNeeded = 13 -- The amount of powerstation needed to be hit to cause a blackout
 Config.BlackoutTimer = 10 -- The amount of minutes a blackout will take until all power comes back
 
+-- pfm-doorlock door ids (its Config.DoorList) the server opens when a step is done: security card 02
+-- at the Pacific front gate, security card 01 at the Paleto vault gate. The thermite gates are the
+-- doorId of each Config.BigBanks[*].thermite entry (sh_config.lua). All of them lock again when the
+-- big banks reset.
+Config.BankDoors = {
+    pacificFront = 1,
+    paletoVault = 4,
+}
+-- The Pacific front gate locks again after this many minutes if the vault was not opened meanwhile.
+Config.PacificFrontDoorMinutes = 15
+
+-- Minigames, issued and judged by the server (pfm-minigames challenges).
+Config.HackChallenge = { size = 5, seconds = 30 }       -- Fleeca and Pacific vault panels
+Config.ThermiteChallenge = { difficulty = 'medium' }     -- power stations and thermite gates
+
 Config.RewardTypes = {
     [1] = {
         type = "item"

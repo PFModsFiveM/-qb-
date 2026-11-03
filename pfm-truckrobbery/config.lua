@@ -20,3 +20,11 @@ Config.Payout = {
 Config.ActivationCost = 500 -- how much is the activation of the mission (clean from the bank)
 Config.Currency = "$"
 Config.ResetTimer = 600 -- cooldown for mission in seconds
+
+-- The truck and its guards are spawned by the server when the mission player comes this close to the
+-- spawn point, and the stages are checked there (guards dead, truck stopped, robber at the back).
+Config.SpawnDistance = 250.0
+Config.TruckModel = `stockade`
+Config.GuardModel = `s_m_m_security_01`
+-- Item used up when the charge is planted (nil: none needed, as before).
+Config.ChargeItem = nil

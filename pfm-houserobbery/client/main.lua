@@ -8,6 +8,7 @@ local IsLockpicking = false
 local houseObj = {}
 local POIOffsets = nil
 local usingAdvanced = false
+local picking = false
 local CurrentCops = 0
 
 -- Functions
@@ -74,33 +75,37 @@ end
 
 -- (the burglar alarm is rolled on the server when the lockpick starts: server/main.lua)
 
+-- Searching is judged by the server: it marks the piece busy and sends a skillbar (startSearch); the
+-- answer goes to the server, and searchFurniture rolls the loot only if it passed.
 local function searchCabin(cabin)
-    local ped = PlayerPedId()
     if math.random(1, 100) <= 85 and not QBCore.Functions.IsWearingGloves() then
         local pos = GetEntityCoords(PlayerPedId())
         TriggerServerEvent('evidence:server:CreateFingerDrop', pos)
     end
-    loadAnimDict('creatures@rottweiler@tricks@')
-    TaskPlayAnim(PlayerPedId(), 'creatures@rottweiler@tricks@', 'petting_franklin', 8.0, 8.0, -1, 17, 0, false, false, false)
-    TriggerServerEvent('qb-houserobbery:server:SetBusyState', cabin, currentHouse, true)
-    FreezeEntityPosition(ped, true)
     IsLockpicking = true
-    local success = exports['pfm-minigames']:Skillbar()
-    if success then
-        ClearPedTasks(PlayerPedId())
-        TriggerServerEvent('qb-houserobbery:server:searchFurniture', cabin, currentHouse)
-        Config.Houses[currentHouse]['furniture'][cabin]['searched'] = true
-        TriggerServerEvent('qb-houserobbery:server:SetBusyState', cabin, currentHouse, false)
-        FreezeEntityPosition(ped, false)
-        IsLockpicking = false
-    else
-        ClearPedTasks(PlayerPedId())
-        TriggerServerEvent('qb-houserobbery:server:SetBusyState', cabin, currentHouse, false)
-        QBCore.Functions.Notify(Lang:t('error.process_cancelled'), 'error', 3500)
-        FreezeEntityPosition(ped, false)
-        IsLockpicking = false
-    end
+    TriggerServerEvent('qb-houserobbery:server:startSearch', cabin, currentHouse)
+    SetTimeout(5000, function()
+        if IsLockpicking == true then IsLockpicking = false end -- the server sent no challenge
+    end)
 end
+
+RegisterNetEvent('qb-houserobbery:client:searchChallenge', function(house, cabin, challenge)
+    if house ~= currentHouse then return end
+    IsLockpicking = 'playing'
+    local ped = PlayerPedId()
+    loadAnimDict('creatures@rottweiler@tricks@')
+    TaskPlayAnim(ped, 'creatures@rottweiler@tricks@', 'petting_franklin', 8.0, 8.0, -1, 17, 0, false, false, false)
+    FreezeEntityPosition(ped, true)
+    local ok, passed = pcall(function() return exports['pfm-minigames']:PlayChallenge(challenge) end)
+    ClearPedTasks(ped)
+    FreezeEntityPosition(ped, false)
+    -- also after a failure: it ends the search on the server (frees the piece)
+    TriggerServerEvent('qb-houserobbery:server:searchFurniture', cabin, house)
+    if not (ok and passed) then
+        QBCore.Functions.Notify(Lang:t('error.process_cancelled'), 'error', 3500)
+    end
+    IsLockpicking = false
+end)
 
 -- Events
 
@@ -156,41 +161,43 @@ RegisterNetEvent('lockpicks:UseLockpick', function(isAdvanced)
                     end
                 end
 
+                if picking then return end
+                picking = true
                 loadAnimDict('mp_missheist_countrybank@nervous')
                 TaskPlayAnim(PlayerPedId(), 'mp_missheist_countrybank@nervous', 'nervous_idle', 8.0, 8.0, -1, 49, 0.0, false, false, false)
-                -- the server only lets us in after it has seen the attempt start at this door
-                TriggerServerEvent('qb-houserobbery:server:startLockpick', closestHouse)
-                if usingAdvanced then
-                    local success = exports['pfm-minigames']:Skillbar()
-                    if success then
-                        TriggerServerEvent('qb-houserobbery:server:enterHouse', closestHouse)
-                        QBCore.Functions.Notify(Lang:t('success.worked'), 'success', 2500)
-                    else
-                        if math.random(1, 100) <= Config.ChanceToBreakAdvancedLockPick then
-                            TriggerServerEvent('qb-houserobbery:server:removeAdvancedLockpick')
-                            TriggerEvent('qb-inventory:client:ItemBox', sharedItems['advancedlockpick'], 'remove')
-                        end
-                        QBCore.Functions.Notify(Lang:t('error.didnt_work'), 'error', 2500)
+                -- the server checks the door and the tools, sends the skillbar and judges it
+                TriggerServerEvent('qb-houserobbery:server:startLockpick', closestHouse, usingAdvanced == true)
+                SetTimeout(5000, function()
+                    if picking == true then -- no challenge came (the server refused the attempt)
+                        picking = false
+                        ClearPedTasks(PlayerPedId())
                     end
-                else
-                    local success = exports['pfm-minigames']:Skillbar('medium')
-                    if success then
-                        TriggerServerEvent('qb-houserobbery:server:enterHouse', closestHouse)
-                        QBCore.Functions.Notify(Lang:t('success.worked'), 'success', 2500)
-                    else
-                        if math.random(1, 100) <= Config.ChanceToBreakLockPick then
-                            TriggerServerEvent('qb-houserobbery:server:removeLockpick')
-                            TriggerEvent('qb-inventory:client:ItemBox', sharedItems['lockpick'], 'remove')
-                        end
-                        QBCore.Functions.Notify(Lang:t('error.didnt_work'), 'error', 2500)
-                    end
-                end
+                end)
             else
                 QBCore.Functions.Notify(Lang:t('error.door_open'), 'error', 3500)
             end
         else
             QBCore.Functions.Notify(Lang:t('error.not_enough_police'), 'error', 3500)
         end
+    end
+end)
+
+RegisterNetEvent('qb-houserobbery:client:pickChallenge', function(house, challenge)
+    if picking ~= true then return end
+    picking = 'playing'
+    pcall(function() exports['pfm-minigames']:PlayChallenge(challenge) end)
+    ClearPedTasks(PlayerPedId())
+    -- also after a failure: the server then rolls whether the pick breaks
+    TriggerServerEvent('qb-houserobbery:server:enterHouse', house)
+    SetTimeout(10000, function() if picking == 'playing' then picking = false end end)
+end)
+
+RegisterNetEvent('qb-houserobbery:client:pickResult', function(_, opened)
+    picking = false
+    if opened then
+        QBCore.Functions.Notify(Lang:t('success.worked'), 'success', 2500)
+    else
+        QBCore.Functions.Notify(Lang:t('error.didnt_work'), 'error', 2500)
     end
 end)
 
@@ -226,7 +233,7 @@ CreateThread(function()
                         if Config.Houses[k]['opened'] then
                             DrawText3Ds(Config.Houses[k]['coords']['x'], Config.Houses[k]['coords']['y'], Config.Houses[k]['coords']['z'], Lang:t('info.henter'))
                             if IsControlJustPressed(0, 38) then
-                                enterRobberyHouse(k)
+                                TriggerServerEvent('qb-houserobbery:server:enterHouse', k)
                             end
                         else
                             if not requiredItemsShowed then

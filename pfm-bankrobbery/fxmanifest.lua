@@ -6,8 +6,6 @@ author 'Kakarot'
 description 'Allows players to rob banks and blow up power stations'
 version '1.3.0'
 
-ui_page 'html/index.html'
-
 shared_scripts {
     'sh_config.lua', -- Shared config
     '@pfm-core/shared/locale.lua',
@@ -31,8 +29,8 @@ server_scripts {
     'server/main.lua'
 }
 
-files {
-    'html/*',
+-- hacks and thermite are server-judged pfm-minigames challenges
+dependencies {
+    'PolyZone',
+    'pfm-minigames',
 }
-
-dependency 'PolyZone'

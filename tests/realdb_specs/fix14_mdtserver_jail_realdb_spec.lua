@@ -129,6 +129,7 @@ end
 describe('MDT database', function()
     it('the migrations made the tables and can run again', function()
         assert_eq(RunMigrations('pf-policemdt-DEV', S.Migrations), true)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_mdt_active_jails' AND COLUMN_NAME = 'released_why'")), 1)
         for _, t in ipairs({ 'pf_mdt_active_jails', 'pf_mdt_sentences', 'pf_mdt_license_actions', 'pf_mdt_charge_audit', 'pf_mdt_roster_backup' }) do
             assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', { t })), 1, t)
         end
@@ -238,6 +239,38 @@ describe('MDT fines through the ledger', function()
     end)
 end)
 
+describe('MDT sentences cut off by a crash or restart', function()
+    local function stale(fine, minutes)
+        local id = MySQL.insert.await([[INSERT INTO pf_mdt_sentences (citizenId, title, sentenceType, fineAmount, prisonTime, status, createdAt)
+            VALUES ('CIT2', 'Cut off', 'fine', ?, ?, 'pending', NOW() - INTERVAL 1 HOUR)]], { fine, minutes })
+        return id
+    end
+    it('a fine the ledger took is settled as paid; one it never took is failed; meanwhile no new fine', function()
+        local paid = stale(300, 0)
+        local never = stale(200, 0)
+        local tx = exports['pfm-banking']:Transfer({ from = 'player:CIT2:bank', to = 'society:police', amount = 300, key = 'pf-policemdt:fine:' .. paid, kind = 'fine', reason = 'x' })
+        assert_eq(tx.ok, true, tostring(tx.error))
+        assert_eq(bank(CITIZEN), 700)
+        local res = sentence({ 'F1' })
+        assert_eq(res.success, false, 'a fine cut off by a restart blocks a new one until it settles')
+        assert_eq(bank(CITIZEN), 700)
+        S.Tick()
+        assert_eq(sentenceRow(paid).status, 'done')
+        assert_eq(tonumber(sentenceRow(paid).fineSuccess), 1)
+        assert_eq(sentenceRow(paid).fine_key, 'pf-policemdt:fine:' .. paid)
+        assert_eq(sentenceRow(never).status, 'failed')
+        assert_eq(bank(CITIZEN), 700, 'nothing charged again')
+        Mock.clock = Mock.clock + 10
+        assert_eq(sentence({ 'F1' }).success, true, 'settled: the next fine goes through')
+    end)
+    it('a sentence that is still running is not touched', function()
+        local id = MySQL.insert.await([[INSERT INTO pf_mdt_sentences (citizenId, title, sentenceType, fineAmount, prisonTime, status)
+            VALUES ('CIT2', 'Now', 'fine', 300, 0, 'pending')]])
+        S.Tick()
+        assert_eq(sentenceRow(id).status, 'pending')
+    end)
+end)
+
 describe('MDT sentencing needs the citizen present', function()
     it('a citizen across the map, an offline one or the officer themself cannot be sentenced', function()
         Mock.coords[CITIZEN] = OUTSIDE
@@ -266,6 +299,25 @@ describe('MDT sentencing needs the citizen present', function()
         Mock.clock = Mock.clock + 10
         Mock.coords[CITIZEN] = vector3(1853.0, 3689.0, 34.3)
         assert_eq(sentence({ 'J1' }, 'sentence').error, 'The suspect must be with you')
+    end)
+    it('a suspect who walks off while the bank takes the fine is fined but not jailed', function()
+        Mock.coords[OFFICER], Mock.coords[CITIZEN] = STATION, STATION
+        local bankExports = Mock.exportsByResource['pfm-banking']
+        local realTransfer = bankExports.Transfer
+        -- a hand-written export mock takes a self argument; the ledger's own export does not
+        bankExports.Transfer = function(_, opts)
+            local r = realTransfer(opts)
+            Mock.coords[CITIZEN] = OUTSIDE -- gone during the ledger wait
+            return r
+        end
+        local res = sentence({ 'F1', 'J1' }, 'fine+sentence')
+        bankExports.Transfer = realTransfer
+        assert_eq(res.success, false)
+        assert_eq(res.finePaid, true)
+        assert_eq(bank(CITIZEN), 700)
+        assert_eq(jailRow('CIT2'), nil, 'not jailed from across the map')
+        assert_eq(count(CITIZEN, 'phone'), 1)
+        assert_eq(sentenceRow(res.id).status, 'done', 'the paid fine stays paid')
     end)
     it('jail time needs the citizen in handcuffs or at a booking desk', function()
         local res = sentence({ 'J1' }, 'sentence')
@@ -327,6 +379,23 @@ describe('the server-owned jail', function()
         S.Tick()
         assert_eq(tonumber(jailRow('CIT2').remaining_seconds), 600, 'no time served outside')
         assert_eq(sent('pf_mdt:client:StartMdtSentence', CITIZEN), 1, 'sent back to a cell')
+    end)
+    it('a client that ignores the send-back is moved by the server', function()
+        local moved = {}
+        SetEntityCoords = function(ped, x, y, z) moved[#moved + 1] = { ped = ped, x = x, y = y, z = z } end
+        jailCitizen()
+        S.Tick()
+        Mock.clock = Mock.clock + 30
+        Mock.coords[CITIZEN] = OUTSIDE
+        S.Tick()
+        assert_eq(#moved, 0, 'the first time the client is trusted to go back')
+        Mock.clock = Mock.clock + 30 -- still outside after the grace
+        S.Tick()
+        SetEntityCoords = nil
+        assert_eq(#moved, 1)
+        assert_eq(moved[1].ped, CITIZEN)
+        local spawn = Config.Sentencing.Prison.Spawns[1]
+        assert_true(math.abs(moved[1].z - spawn.z) < 1.0, 'moved to a cell')
     end)
     it('a client that says its timer ran out early gets nothing; at the end it is released', function()
         jailCitizen()
@@ -408,6 +477,54 @@ describe('MDT bail', function()
         assert_eq(tonumber(sentenceRow(res.id).bailed), 1)
         assert_eq(bank(PAYER), 4500, 'paid once')
         assert_eq(count(CITIZEN, 'phone'), 1)
+    end)
+    it('bail for a prisoner who is offline is paid once; the release waits for the login', function()
+        local res = jailCitizen()
+        Mock.coords[OFFICER], Mock.coords[PAYER], Mock.coords[FAR] = STREET, STREET, STREET
+        local cit = Mock.players[CITIZEN]
+        Mock.players[CITIZEN] = nil -- logs off in jail
+        assert_eq(offer().success, true)
+        Mock.gameTimer = Mock.gameTimer + 10000
+        assert_eq(offer('FAR4').success, true, 'two payers hold offers')
+        local ok, msg = S.AcceptBail(PAYER)
+        assert_eq(ok, true, tostring(msg))
+        assert_eq(bank(PAYER), 4500)
+        local row = jailRow('CIT2')
+        assert_eq(row.released_why, 'bail', 'kept for the login, marked released')
+        local ok2, msg2 = S.AcceptBail(FAR)
+        assert_eq(ok2, false, 'the second offer cannot pay again')
+        assert_eq(msg2, 'The prisoner was already released')
+        assert_eq(bank(FAR), 5000)
+        Mock.gameTimer = Mock.gameTimer + 10000
+        local o = offer()
+        assert_eq(o.success, false, 'no new offer either')
+        assert_eq(S.AcceptBail(PAYER), false)
+        assert_eq(bank(PAYER), 4500)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key LIKE 'pf-policemdt:bail:%' AND state = 'completed'")), 1)
+        assert_eq(society(), 500)
+        -- the prisoner loads in: released with the items, once
+        Mock.players[CITIZEN] = cit
+        S.Resume(CITIZEN)
+        assert_eq(jailRow('CIT2'), nil)
+        assert_eq(count(CITIZEN, 'phone'), 1)
+        assert_eq(sent('pf_mdt:client:StartMdtSentence', CITIZEN), 1, 'not sent back to a cell after bail')
+        assert_eq(tonumber(sentenceRow(res.id).bailed), 1)
+    end)
+    it('a prisoner released while offline (unjail) has no bail left, and served time has none either', function()
+        jailCitizen()
+        Mock.coords[OFFICER], Mock.coords[PAYER] = STREET, STREET
+        local cit = Mock.players[CITIZEN]
+        Mock.players[CITIZEN] = nil
+        local ok, how = S.Release('CIT2', 'admin')
+        assert_eq(ok, true)
+        assert_eq(how, 'on_login')
+        assert_eq(S.Release('CIT2', 'admin'), false, 'released once')
+        assert_eq(offer().success, false)
+        Mock.players[CITIZEN] = cit
+        MySQL.update.await("UPDATE pf_mdt_active_jails SET remaining_seconds = 0, released_why = NULL WHERE citizenid = 'CIT2'")
+        Mock.gameTimer = Mock.gameTimer + 10000
+        assert_eq(offer().error, 'The prisoner has served the sentence')
+        assert_eq(bank(PAYER), 5000)
     end)
     it('a payer who cannot pay keeps their money and the prisoner stays', function()
         jailCitizen()

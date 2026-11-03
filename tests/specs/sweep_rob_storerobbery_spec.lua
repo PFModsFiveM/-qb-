@@ -1,10 +1,27 @@
--- pfm-storerobbery: a keypad safe's code is never handed out through the padlock callback, and a
--- police alert must come from the store it names.
+-- pfm-storerobbery: a keypad safe cannot be opened through the padlock path, a padlock safe pays
+-- only for a dial challenge the server judged passed, and a police alert must come from the store
+-- it names.
 load_resource('tests/lua/fivem_mocks.lua')
 Inv = {}
 Mock.exportsByResource['pfm-inventory'] = {
     AddItem = function(_, src, item, n) Inv[item] = (Inv[item] or 0) + (n or 1) return true end,
     RemoveItem = function() return true end,
+}
+-- pfm-minigames: the spec decides each challenge's verdict
+Challenges, Issued = {}, {}
+Mock.exportsByResource['pfm-minigames'] = {
+    IssueChallenge = function(_, src, kind, opts)
+        local id = 'ch' .. (#Issued + 1)
+        Challenges[id] = { src = src, kind = kind, opts = opts }
+        Issued[#Issued + 1] = id
+        return { id = id, kind = kind, puzzle = {}, expiresIn = 30000 }
+    end,
+    Verify = function(_, src, id)
+        local c = Challenges[id]
+        Challenges[id] = nil
+        return c ~= nil and c.src == src and c.passed == true, 0
+    end,
+    Cancel = function(_, _, id) Challenges[id] = nil return true end,
 }
 setmetatable(QBCoreMock.Shared.Items, { __index = function(_, k) return { name = k, label = k } end })
 -- run each thread up to its first Wait, so the safe codes get generated
@@ -32,19 +49,23 @@ BeforeEach = function()
 end
 
 describe('store safes', function()
-    it('the padlock callback gives nothing for a keypad safe, so it cannot be opened without the code', function()
+    it('the padlock path gives nothing for a keypad safe, so it cannot be opened without the code', function()
         local safe = firstSafe('keypad')
         at(R, Config.Safes[safe][1])
-        assert_eq(Mock.callCallback('qb-storerobbery:server:getPadlockCombination', R, safe), nil)
+        assert_eq(Mock.callCallback('qb-storerobbery:server:startPadlock', R, safe), nil)
         Mock.clock = Mock.clock + 30
         Mock.fireNet('qb-storerobbery:server:SafeReward', R, safe)
         assert_eq(Inv.markedbills, nil)
         assert_false(Config.Safes[safe].robbed)
     end)
-    it('a padlock safe still gives its combination and pays after the dial time', function()
+    it('a padlock safe sends a dial challenge, never its combination, and pays once it was passed', function()
         local safe = firstSafe('padlock')
         at(R, Config.Safes[safe][1])
-        assert_true(type(Mock.callCallback('qb-storerobbery:server:getPadlockCombination', R, safe)) == 'table')
+        assert_eq(Mock.netHandlers['qb-storerobbery:server:getPadlockCombination'], nil)
+        local ch = Mock.callCallback('qb-storerobbery:server:startPadlock', R, safe)
+        assert_eq(ch.kind, 'keys')
+        assert_eq(ch.puzzle.combination, nil)
+        Challenges[ch.id].passed = true
         Mock.clock = Mock.clock + 25
         Mock.fireNet('qb-storerobbery:server:SafeReward', R, safe)
         assert_true((Inv.markedbills or 0) > 0)
