@@ -1,5 +1,5 @@
 -- pfm-policejob fine records on a real database (batch 14: X-7, 13B-POLICE): the migration creates
--- pfm_police_fines (rerun-safe); /fine charges the player straight to the department in one ledger
+-- pfm_police_fines (rerun-safe; the list lives in server/schema.lua since batch 15); /fine charges the player straight to the department in one ledger
 -- transfer; the sweep picks due rows with the real SQL, finishes an unclear charge under the same key
 -- once the ledger settles it (and never charges again meanwhile), charges a 'retry' row under the
 -- next numbered key, and the state moves are compare-and-set (a stale copy of a row does nothing).
@@ -39,6 +39,7 @@ Config = nil
 load_resource('pfm-banking/payouts.lua')
 load_resource('pfm-policejob/config.lua')
 load_resource('pfm-policejob/server/main.lua')
+load_resource('pfm-policejob/server/schema.lua') -- owns the migration key since batch 15 (v1 moved here unchanged)
 load_resource('pfm-policejob/server/fines.lua')
 load_resource('pfm-policejob/server/commands.lua')
 for k, v in pairs(bankingConfig) do if Config[k] == nil then Config[k] = v end end
@@ -76,8 +77,10 @@ describe('the fine table', function()
         for _, c in ipairs({ 'id', 'citizenid', 'society', 'amount', 'state', 'attempt', 'checks', 'next_at', 'invoice_id' }) do
             assert_true(have[c], c)
         end
-        local applied = tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob'"))
+        -- v1 is the fine table (applied once), v2 the evidence tables of batch 15
+        local applied = tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob' AND version = 1 AND name = 'police fine records'"))
         assert_eq(applied, 1)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob'")), 2)
     end)
 end)
 

@@ -26,35 +26,8 @@ F.HOLD_SECONDS = 120          -- a new row is left to the command for this long 
 F.MAX_ATTEMPTS = 10           -- numbered charge attempts of one fine
 F.REASON = 'Police fine'
 
-F.Migrations = {
-    {
-        version = 1,
-        name = 'police fine records',
-        up = {
-            [[CREATE TABLE IF NOT EXISTS `pfm_police_fines` (
-                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-                `citizenid` VARCHAR(50) NOT NULL,
-                `society` VARCHAR(50) NOT NULL,
-                `amount` INT UNSIGNED NOT NULL,
-                `officer_citizenid` VARCHAR(50) NULL,
-                `officer_name` VARCHAR(100) NULL,
-                `reason` VARCHAR(128) NOT NULL DEFAULT 'Police fine',
-                `state` VARCHAR(16) NOT NULL DEFAULT 'charging',
-                `attempt` INT UNSIGNED NOT NULL DEFAULT 1,
-                `checks` INT UNSIGNED NOT NULL DEFAULT 0,
-                `paid_from` VARCHAR(8) NULL,
-                `invoice_id` INT NULL,
-                `last_error` VARCHAR(64) NULL,
-                `next_at` INT UNSIGNED NOT NULL DEFAULT 0,
-                `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                PRIMARY KEY (`id`),
-                KEY `idx_due` (`state`, `next_at`),
-                KEY `idx_citizen` (`citizenid`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
-        },
-    },
-}
+-- The table is created by server/schema.lua (migration key = resource name, v1 'police fine records',
+-- moved there unchanged); this module waits for it.
 
 F.SQL = {
     insert = [[INSERT INTO pfm_police_fines (citizenid, society, amount, officer_citizenid, officer_name, reason, state, attempt, next_at)
@@ -225,17 +198,20 @@ function F.Sweep()
     return done
 end
 
+--- Kept for callers of the old name: applies (or waits for) the resource schema.
 function F.Migrate()
-    local ok, res, err = pcall(function() return exports['pfm-core']:RunMigrations(GetCurrentResourceName(), F.Migrations) end)
-    if not ok or res == false then
-        print(('^1[pfm-policejob]^7 fine table migration failed: %s'):format(tostring(ok and err or res)))
+    if not PFPoliceSchema then
+        print('^1[pfm-policejob]^7 server/schema.lua is not loaded: the fine table cannot be created')
         return false
     end
-    return true
+    return PFPoliceSchema.Run()
 end
 
 CreateThread(function()
-    if not F.Migrate() then return end
+    if not PFPoliceSchema or not PFPoliceSchema.WaitReady() then
+        print('^1[pfm-policejob]^7 fine sweep not started: the schema is not ready')
+        return
+    end
     -- the ledger recovers interrupted transfers when it starts: wait for it (at most ~5 minutes)
     for _ = 1, 60 do
         local ok, ready = pcall(function() return exports['pfm-banking']:IsLedgerReady() end)
