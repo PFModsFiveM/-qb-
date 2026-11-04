@@ -232,11 +232,15 @@ end
 local aliasCache = {}
 
 local function resolveAlias(name)
-	if aliasCache[name] ~= nil and Config.DoorList[aliasCache[name]] then return aliasCache[name] end
 	local at = (Config.DoorAliases or {})[name]
 	if type(at) ~= 'table' and type(at) ~= 'vector3' then return nil end
 	local target = vector3(at.x, at.y, at.z)
 	local radius = tonumber(Config.DoorAliasRadius) or 1.0
+	-- the cached key counts only while the door there is still the one at the alias coordinates
+	local cached = aliasCache[name]
+	local cachedDoor = cached ~= nil and Config.DoorList[cached] or nil
+	local cachedAt = cachedDoor and doorCoords(cachedDoor)
+	if cachedAt and #(cachedAt - target) <= radius then return cached end
 	local best, bestDist
 	for key, door in pairs(Config.DoorList) do
 		local c = doorCoords(door)

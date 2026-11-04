@@ -456,3 +456,45 @@ describe('rework: bail follows its custody on MariaDB', function()
         for _, b in ipairs(due) do assert_true(tonumber(b.id) ~= o.bailId, 'not due any more') end
     end)
 end)
+
+describe('round 3: bail facts read from the real tables', function()
+    it('an order bail vacates the real order with its own reason, read back from the order events', function()
+        cop()
+        local p = Mock.newPlayer(8, 'ORDB8')
+        p.PlayerData.items = {}
+        local res = J.API.CreateOrder({ cid = 'ORDB8', kind = 'jail', minutes = 10 }, { key = 'spec:r3:jail:1' })
+        assert_eq(res.ok, true, tostring(res.error) .. ' ' .. tostring(res.message))
+        Mock.coords[OFFICER] = DESK
+        local o = J.Bail.Offer({ orderId = res.orderId }, { amount = 50 }, { actor = { src = OFFICER } })
+        assert_eq(o.ok, true, tostring(o.error))
+        local payer = Mock.newPlayer(PAYER, 'PAY1')
+        payer.PlayerData.money.bank = 500
+        Mock.coords[PAYER] = DESK
+        Mock.clock = Mock.clock + 10
+        local a = J.Bail.Accept(o.bailId, PAYER, {})
+        assert_eq(a.ok, true, tostring(a.error) .. ' ' .. tostring(a.message))
+        assert_eq(one('SELECT state FROM pf_justice_orders WHERE id = ?', { res.orderId }).state, 'vacated')
+        assert_eq(J.Bail.Store.orderVacateReason(res.orderId), 'bail:' .. o.bailId)
+        assert_eq(J.Bail.Release(J.Bail.Store.get(o.bailId)), 'done', 'recognised as this bail\'s release')
+    end)
+
+    it('a holding-cell jail is found through the custody log; its custody bail is closed', function()
+        cop()
+        local s = Mock.newPlayer(9, 'HOLD9')
+        s.PlayerData.items = {}
+        Mock.coords[OFFICER], Mock.coords[9] = DESK, DESK
+        local id = J.Custody.Open(9, { reason = 'Holding', actor = { src = OFFICER } }).custodyId
+        local o = J.Bail.Offer({ custodyId = id }, { amount = 50 }, { actor = { src = OFFICER } })
+        J.Custody.OnOrderCreated({ id = 777, cid = 'HOLD9', kind = 'jail', state = 'active', facility = 'mrpd_holding' })
+        assert_eq(J.Custody.LinkedOrder(id), 777)
+        assert_eq(one('SELECT state FROM pf_justice_bail WHERE id = ?', { o.bailId }).state, 'expired')
+        assert_eq((J.Bail.RefStatus(J.Bail.Store.get(o.bailId))), 'closed')
+    end)
+
+    it('the sweep pages by id: a cursor skips rows already seen', function()
+        local all = J.Bail.Store.due(Mock.clock + 100000, 0)
+        local maxId = 0
+        for _, b in ipairs(all) do maxId = math.max(maxId, tonumber(b.id)) end
+        assert_eq(#J.Bail.Store.due(Mock.clock + 100000, maxId), 0)
+    end)
+end)

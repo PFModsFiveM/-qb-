@@ -49,7 +49,8 @@ J.Custody.Store = {
     byKey = function() end, latestOf = function() end,
     insert = function(row) local r = copy(row) r.id = nextId() DB.custody[r.id] = r return r.id end,
     cas = function(id, from, fields) local r = DB.custody[id] if not r or r.state ~= from or r.closed_at then return false end apply(r, fields) return true end,
-    log = function(cid, kind) DB.log[#DB.log + 1] = { custody_id = cid, kind = kind } return #DB.log end,
+    log = function(cid, kind, data, actor, at) DB.log[#DB.log + 1] = { id = #DB.log + 1, custody_id = cid, kind = kind, data = data, at = at } return #DB.log end,
+    lastLogOf = function(cid, kind) for i = #DB.log, 1, -1 do local l = DB.log[i] if l.custody_id == cid and l.kind == kind then return l end end end,
     listLog = function() return {} end, dueHolds = function() return {} end, openAllOf = function() return {} end,
 }
 J.Property.Store = {
@@ -62,17 +63,23 @@ J.Bail.Store = {
     get = function(id) return DB.bail[id] and copy(DB.bail[id]) end,
     openFor = function(field, id) for _, b in pairs(DB.bail) do if b[field] == id and inSet(b.state, OPEN) then return copy(b) end end end,
     latestOf = function(cid) local best for _, b in pairs(DB.bail) do if b.citizenid == cid and (not best or b.id > best.id) then best = b end end return best and copy(best) end,
-    due = function(now)
+    orderVacateReason = function(orderId)
+        for i = #setStates, 1, -1 do if setStates[i].id == orderId and setStates[i].to == 'vacated' then return setStates[i].reason end end
+    end,
+    due = function(now, afterId)
         local out = {}
         for _, b in pairs(DB.bail) do
             local refOpen = (b.custody_id and DB.custody[b.custody_id] and not DB.custody[b.custody_id].closed_at)
                 or (b.order_id and orders[b.order_id] and (orders[b.order_id].state == 'active' or orders[b.order_id].state == 'pending'))
             if b.state == 'accepted' or b.state == 'payment_pending' or (b.state == 'exonerated' and b.pay_key)
                 or (b.state == 'offered' and b.expires_at < now) or (b.state == 'posted' and refOpen) then
+                if b.id <= (afterId or 0) then goto skip end
                 out[#out + 1] = copy(b)
             end
+            ::skip::
         end
         table.sort(out, function(a, b) return a.id < b.id end)
+        while #out > 50 do table.remove(out) end
         return out
     end,
     openOfCitizen = function() return {} end,
@@ -218,7 +225,7 @@ describe('posting bail', function()
         assert_eq(B.Accept(o.bailId, PAYER, {}).ok, true)
         assert_eq(setStates[1].id, 71)
         assert_eq(setStates[1].to, 'vacated')
-        assert_eq(setStates[1].reason, 'bail')
+        assert_eq(setStates[1].reason, 'bail:' .. o.bailId, 'the vacate names this bail')
         -- a shadow of a jail the MDT still runs gets no pf-justice bail in batch 15
         orders[73] = { id = 73, cid = 'PRI2', kind = 'jail', state = 'active', legacyRef = 'mdt_jail:5' }
         assert_eq(B.Offer({ orderId = 73 }, { amount = 250 }, { actor = { src = COP } }).error, 'invalid_state')
@@ -426,5 +433,143 @@ describe('rework: bail only while the citizen is still held (checker P1, P2, ret
         assert_eq(DB.bail[o.bailId].state, 'refunded')
         assert_eq(bank(PAYER), 1000)
         assert_eq(DB.custody[custodyId].release_reason, 'no_charges')
+    end)
+end)
+
+describe('round 3: a sentence, a court vacate or a remand voids a bail still settling', function()
+    local function pend(bailId)
+        local real = Mock.exportsByResource['pfm-banking'].Transfer
+        Mock.exportsByResource['pfm-banking'].Transfer = function(_, opts) real(opts) error('connection lost') end
+        local res = B.Accept(bailId, PAYER, {})
+        Mock.exportsByResource['pfm-banking'].Transfer = real
+        assert_eq(DB.bail[bailId].state, 'payment_pending')
+        return res
+    end
+    local function settle()
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock + Config.Bail.PaymentHoldSeconds + 1)
+    end
+
+    it('a holding-cell jail at the custody facility ends the custody bail offer (P9)', function()
+        local o, cust = offer()
+        orders[95] = { id = 95, cid = 'PRI2', kind = 'jail', state = 'active', facility = 'mrpd_holding' }
+        J.Custody.OnOrderCreated(orders[95])
+        assert_eq(DB.bail[o.bailId].state, 'expired')
+        assert_eq(B.Accept(o.bailId, PAYER, {}).ok, false)
+        assert_eq(bank(PAYER), 1000)
+        assert_eq(DB.custody[cust].closed_at, nil, 'the custody stays for the jail')
+        assert_eq(orders[95].state, 'active')
+        -- a new custody bail cannot be paid either
+        local o2 = B.Offer({ custodyId = cust }, { amount = 100 }, { actor = { src = COP } })
+        Mock.clock = Mock.clock + 6
+        assert_eq(B.Accept(o2.bailId, PAYER, {}).error, 'invalid_state')
+    end)
+
+    it('a payment pending when the holding-cell jail starts is refunded, not a release from the sentence', function()
+        local o, cust = offer()
+        pend(o.bailId)
+        orders[96] = { id = 96, cid = 'PRI2', kind = 'jail', state = 'active', facility = 'mrpd_holding' }
+        J.Custody.OnOrderCreated(orders[96])
+        settle()
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(DB.bail[o.bailId].pay_key, ('pf-justice:bail:%d:refund'):format(o.bailId))
+        assert_eq(bank(PAYER), 1000)
+        assert_eq(DB.custody[cust].closed_at, nil)
+        assert_eq(orders[96].state, 'active')
+    end)
+
+    it('an order bail that settles after a court vacated the order is refunded (P5)', function()
+        orders[91] = { id = 91, cid = 'PRI2', kind = 'jail', state = 'active' }
+        local o = B.Offer({ orderId = 91 }, { amount = 300 }, { actor = { src = COP } })
+        pend(o.bailId)
+        J.Orders.SetState(91, 'vacated', { reason = 'appeal granted' })
+        settle()
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000)
+        assert_eq(doj(), 0)
+    end)
+
+    it('a remand while a payment is pending stops the release; a court offer after the remand still works (P8)', function()
+        local o, cust = offer()
+        DB.custody[cust].state = 'booked'
+        pend(o.bailId)
+        assert_eq(J.Custody.SetState(cust, 'remanded', { actor = { src = JUDGE } }).ok, true)
+        settle()
+        assert_eq(DB.custody[cust].state, 'remanded', 'still remanded')
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000)
+        Mock.clock = Mock.clock + 6
+        local o2 = B.Offer({ custodyId = cust }, { amount = 200 }, { actor = { src = JUDGE } })
+        assert_eq(o2.ok, true)
+        Mock.coords[PAYER] = DESK
+        assert_eq(B.Accept(o2.bailId, PAYER, {}).ok, true)
+        assert_eq(DB.custody[cust].state, 'released')
+    end)
+end)
+
+describe('round 3: the sweep reaches every row; refused automatic refunds are retried', function()
+    it('rows the sweep must leave never hide newer ones; expired legacy offers are closed', function()
+        for i = 1, 60 do
+            local id = nextId()
+            DB.bail[id] = { id = id, citizenid = 'L' .. i, state = 'payment_pending', amount = 10, pay_key = 'pf-policemdt:bail:' .. i .. ':1',
+                legacy_ref = 'mdt_bail:' .. i, offered_at = Mock.clock, expires_at = Mock.clock + 100000 }
+        end
+        local lid = nextId()
+        DB.bail[lid] = { id = lid, citizenid = 'L0', state = 'offered', amount = 10, legacy_ref = 'mdt_bail:999', offered_at = Mock.clock, expires_at = Mock.clock - 1 }
+        local o = offer()
+        DB.bail[o.bailId].expires_at = Mock.clock - 1
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock)
+        assert_eq(DB.bail[o.bailId].state, 'expired', 'reached past 60 rows it leaves alone')
+        assert_eq(DB.bail[lid].state, 'expired', 'an expired legacy offer is closed')
+        assert_eq(DB.bail[lid - 1].state, 'payment_pending', 'live MDT payments stay with the MDT')
+    end)
+
+    it('a refused automatic refund is retried under the next numbered key after a pause, up to the cap', function()
+        local o, cust = offer()
+        local real = Mock.exportsByResource['pfm-banking'].Transfer
+        Mock.exportsByResource['pfm-banking'].Transfer = function(_, opts) real(opts) error('connection lost') end
+        B.Accept(o.bailId, PAYER, {})
+        Mock.exportsByResource['pfm-banking'].Transfer = real
+        J.Custody.Release(cust, 'no_charges', { actor = { src = COP } })
+        FakeDB.bank_accounts['doj'].account_balance = 0
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock + Config.Bail.PaymentHoldSeconds + 1)
+        assert_eq(DB.bail[o.bailId].state, 'exonerated', 'the refund was refused')
+        assert_eq(bank(PAYER), 600)
+        B.Tick(Mock.clock + 1)
+        assert_eq(DB.bail[o.bailId].pay_key, ('pf-justice:bail:%d:refund'):format(o.bailId), 'no new key before the pause')
+        FakeDB.bank_accounts['doj'].account_balance = 400
+        Mock.clock = Mock.clock + (Config.Bail.RefundRetrySeconds or 600) + 1
+        B.Tick(Mock.clock)
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_true(paid(('pf-justice:bail:%d:refund:2'):format(o.bailId)), 'paid under the second key')
+        assert_eq(bank(PAYER), 1000)
+    end)
+
+    it('after MaxRefundAttempts refused keys the bail is audited as stuck and waits for a court', function()
+        Config.Bail.MaxRefundAttempts = 2
+        local o, cust = offer()
+        local real = Mock.exportsByResource['pfm-banking'].Transfer
+        Mock.exportsByResource['pfm-banking'].Transfer = function(_, opts) real(opts) error('connection lost') end
+        B.Accept(o.bailId, PAYER, {})
+        Mock.exportsByResource['pfm-banking'].Transfer = real
+        J.Custody.Release(cust, 'no_charges', { actor = { src = COP } })
+        FakeDB.bank_accounts['doj'].account_balance = 0
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock + Config.Bail.PaymentHoldSeconds + 1)
+        for _ = 1, 4 do
+            Mock.clock = Mock.clock + 700
+            B.Tick(Mock.clock)
+        end
+        Config.Bail.MaxRefundAttempts = nil
+        assert_eq(DB.bail[o.bailId].pay_key, ('pf-justice:bail:%d:refund:2'):format(o.bailId), 'capped at two keys')
+        local stuck = 0
+        for _, l in ipairs(DB.log) do if l.kind == 'bail_refund_stuck' then stuck = stuck + 1 end end
+        assert_eq(stuck, 1, 'audited once')
+        FakeDB.bank_accounts['doj'].account_balance = 400
+        local res = B.Exonerate(o.bailId, { actor = { src = JUDGE } })
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(bank(PAYER), 1000)
     end)
 end)

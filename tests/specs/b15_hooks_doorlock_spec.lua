@@ -9,7 +9,6 @@ function GetCurrentResourceName() return 'pfm-doorlock' end
 local timers = {}
 function SetTimeout(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
 local printed = {}
-local realPrint = print
 print = function(...)
     local parts = {}
     for i = 1, select('#', ...) do parts[#parts + 1] = tostring((select(i, ...))) end
@@ -21,12 +20,12 @@ load_resource('pfm-doorlock/config.lua')
 Config.DoorStates = Config.DoorStates or {}
 local realDoors = Config.DoorList
 load_resource('pfm-doorlock/server/main.lua')
-print = realPrint
+-- print stays captured: the refusal lines are asserted on
 
 local SetDoorState = Mock.selfExport('SetDoorState')
 local GetDoorState = Mock.selfExport('GetDoorState')
-local api = exports['pfm-doorlock']
 Mock.exportsByResource['pfm-doorlock'] = Mock.exportsByResource['__self']
+local api = exports['pfm-doorlock']
 
 local DOOR = vector3(10.0, 0.0, 0.0)
 
@@ -191,7 +190,6 @@ describe('door aliases on the shipped config', function()
         end
         assert_eq(PFDoorlock.ResolveDoorId('no_such_alias'), nil)
         -- pfm-prison's gate keys (its Config.Gates) are these doors
-        Config = Config
         local doorConfig = Config
         Config = nil
         load_resource('pfm-prison/config.lua')
