@@ -197,6 +197,21 @@ describe('generator', function()
         assert_eq(rows[1].source_id, '9001')
         assert_eq(rows[1].idem_key, 'pf-government:wo:event:9001')
         assert_true(math.abs(num(rows[1].x) - -46.0) < 0.01, 'at the event')
+        -- severe weather is city-wide (no position): storm debris goes to a district site
+        TriggerEvent('pf-services:cityEvent', { id = 9100, kind = 'weather.severe', title = 'Thunderstorm warning' })
+        TriggerEvent('pf-services:cityEvent', { id = 9100, kind = 'weather.severe', title = 'Thunderstorm warning' })
+        local storm = MySQL.query.await("SELECT * FROM pf_gov_work_orders WHERE source_id = '9100'")
+        assert_eq(#storm, 1, 'one order per weather event')
+        assert_eq(storm[1].kind, 'litter')
+        local placed = false
+        for _, site in ipairs(Config.WorkOrders.Sites[storm[1].district] or {}) do
+            if math.abs(num(storm[1].x) - site.x) < 0.01 and math.abs(num(storm[1].y) - site.y) < 0.01 then placed = true end
+        end
+        assert_true(placed, 'at a site of ' .. tostring(storm[1].district))
+        assert_true(storm[1].district ~= 'residential', 'not the district that already has an open order')
+        TriggerEvent('pf-services:cityEvent', { id = 9101, kind = 'weather.severe', district = 'industrial' })
+        assert_eq(MySQL.single.await("SELECT district FROM pf_gov_work_orders WHERE source_id = '9101'").district, 'industrial')
+        MySQL.query.await("DELETE FROM pf_gov_work_orders WHERE source_id IN ('9100', '9101')")
         -- kinds not configured, events without coords or without an id: nothing
         TriggerEvent('pf-services:cityEvent', { id = 9002, kind = 'gov.tax.changed', coords = vector3(0, 0, 0) })
         TriggerEvent('pf-services:cityEvent', { id = 9003, kind = 'crime.robbery.store' })

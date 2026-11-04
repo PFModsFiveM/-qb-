@@ -1477,6 +1477,110 @@ QBCore.Functions.CreateCallback('qb-phone:server:DeclineInvoice', function(sourc
     cb(DeclineInvoice(source, invoiceId) == true)
 end)
 
+-- ── cancelling an invoice (batch 15H, server only) ──────────────────────────────────────────────
+-- CancelInvoice(idOrRef, opts) lets the resource that issued an invoice withdraw it (a waived court
+-- fine, a vacated order, a corrected bill). idOrRef: a number is an invoice id, a string is the
+-- CreateInvoice ref. opts = { citizenid (optional guard: only this payer's invoice), reason }.
+-- An invoice being paid ('paying', or a charge the ledger has not settled) is refused with 'busy';
+-- one whose payer was already charged is finished as paid instead (invalid_state), exactly like a
+-- decline. The row is removed by one DELETE that also requires pay_state IS NULL, so a payment that
+-- marks it 'paying' first always wins. The request that removed the row raises
+-- pfm-phone:server:invoiceSettled(invoice, 'cancelled') once. Callers: Config.InvoiceCancelCallers
+-- (default below). Returns { ok = true, id, ref } or { ok = false, error, message }.
+local DEFAULT_CANCEL_CALLERS = { ['pf-justice'] = true, ['pf-government'] = true, ['pfm-policejob'] = true }
+local cancelWarnedAt = {} -- [resource] = GetGameTimer() of its last refusal line
+
+local function CancelFail(code, message) return { ok = false, error = code, message = message } end
+
+local function CancelCallerAllowed()
+    local invoker = GetInvokingResource()
+    if invoker == nil or invoker == '' or invoker == GetCurrentResourceName() then return true end
+    local list = type(Config.InvoiceCancelCallers) == 'table' and Config.InvoiceCancelCallers or DEFAULT_CANCEL_CALLERS
+    if list[invoker] == true then return true end
+    local now = GetGameTimer()
+    if not cancelWarnedAt[invoker] or now - cancelWarnedAt[invoker] > 60000 then
+        cancelWarnedAt[invoker] = now
+        print(('^3[pfm-phone]^7 CancelInvoice refused for resource %s (not in its caller list)'):format(tostring(invoker)))
+    end
+    return false
+end
+
+--- The invoice row for an id or a ref, or nil; false when the database could not be read.
+local function FindInvoice(idOrRef)
+    local ok, rows
+    if type(idOrRef) == 'number' then
+        local id = InvoiceIdOf(idOrRef)
+        if not id then return nil end
+        ok, rows = pcall(MySQL.query.await, 'SELECT * FROM phone_invoices WHERE id = ? LIMIT 1', { id })
+    else
+        if not Columns.ref then return false end
+        ok, rows = pcall(MySQL.query.await, 'SELECT * FROM phone_invoices WHERE ref = ? LIMIT 1', { idOrRef })
+    end
+    if not ok then return false end
+    return type(rows) == 'table' and rows[1] or nil
+end
+
+local function CancelInvoice(idOrRef, opts)
+    if not CancelCallerAllowed() then return CancelFail('not_allowed', 'This resource may not cancel invoices') end
+    if not (type(idOrRef) == 'number' and InvoiceIdOf(idOrRef)) and not ValidRef(idOrRef) then
+        return CancelFail('bad_args', 'An invoice id or ref is required')
+    end
+    if opts ~= nil and type(opts) ~= 'table' then return CancelFail('bad_args', 'opts must be a table') end
+    opts = opts or {}
+    if opts.citizenid ~= nil and (type(opts.citizenid) ~= 'string' or opts.citizenid == '' or #opts.citizenid > 50) then
+        return CancelFail('bad_args', 'opts.citizenid is invalid')
+    end
+    EnsureInvoiceColumns()
+    local found = FindInvoice(idOrRef)
+    if found == false then return CancelFail('db_unavailable', 'The invoices could not be read') end
+    if not found or (opts.citizenid and found.citizenid ~= opts.citizenid) then return CancelFail('not_found', 'No such invoice') end
+    local invoiceId, cid = InvoiceIdOf(found.id), tostring(found.citizenid)
+    if not invoiceId then return CancelFail('not_found', 'No such invoice') end
+    -- the payer's lock (the same one payments, declines and the sweep take): the citizen id is only
+    -- known after the first read, so everything is read again under it and the DELETE re-checks it
+    local lockKey = cid .. ':' .. invoiceId
+    if InvoiceLocks[lockKey] then return CancelFail('busy', 'The invoice is being paid') end
+    InvoiceLocks[lockKey] = true
+    local ok, res = pcall(function()
+        local invoice = LoadInvoice(invoiceId, cid)
+        if not invoice or (type(idOrRef) == 'string' and invoice.ref ~= idOrRef) then return CancelFail('not_found', 'No such invoice') end
+        if invoice.pay_state == 'paying' then return CancelFail('busy', 'The invoice is being paid') end
+        local amount = IsValidAmount(invoice.amount)
+        if amount then
+            local base, byId = InvoiceKeyBase(invoice)
+            local step = WalkStep('charge|' .. base, ChargeKeys(base), IdKeyMatch(byId, 'from_account', PayerAccount(invoice), amount))
+            if step == 'error' then return CancelFail('bank_unavailable', 'The bank cannot be read') end
+            if step == 'wait' then
+                MarkPaying(invoice)
+                return CancelFail('busy', 'The invoice is being paid')
+            end
+            if step == 'done' then
+                -- the payer was charged: the business gets the money, the invoice is paid, not cancelled
+                MarkPaying(invoice)
+                SettleInvoice(invoice, base, byId, true, PayerOf(cid))
+                return CancelFail('invalid_state', 'The invoice was already paid')
+            end
+        end
+        local sql = 'DELETE FROM phone_invoices WHERE id = ? AND citizenid = ?'
+        if Columns.payState then sql = sql .. ' AND pay_state IS NULL' end
+        if Affected(MySQL.update.await(sql, { invoiceId, cid })) < 1 then return CancelFail('busy', 'The invoice changed meanwhile') end
+        local reason = type(opts.reason) == 'string' and opts.reason:gsub('%c', ' '):sub(1, 128) or nil
+        print(('[pfm-phone] invoice %d cancelled by %s%s'):format(invoiceId, GetInvokingResource() or GetCurrentResourceName(),
+            reason and (' (' .. reason .. ')') or ''))
+        TriggerEvent('pfm-phone:server:invoiceSettled', PublicInvoice(invoice), 'cancelled')
+        local Ply = exports['pfm-core']:GetPlayerByCitizenId(cid)
+        if Ply then TriggerClientEvent('qb-phone:RefreshPhone', Ply.PlayerData.source) end
+        return { ok = true, id = invoiceId, ref = invoice.ref }
+    end)
+    InvoiceLocks[lockKey] = nil
+    if not ok then
+        print(('^1[pfm-phone]^7 cancelling invoice %d failed: %s'):format(invoiceId, tostring(res)))
+        return CancelFail('db_unavailable', 'The invoice could not be cancelled')
+    end
+    return res
+end
+exports('CancelInvoice', CancelInvoice)
+
 -- The sweep: finishes 'paying' invoices left by a crash, a payout the ledger had not settled, or a
 -- business account that could not take the money (see the header). An invoice that has to wait is
 -- tried again later, sooner first (2, 4, 8 ... up to 30 minutes). It takes each invoice's lock, so
