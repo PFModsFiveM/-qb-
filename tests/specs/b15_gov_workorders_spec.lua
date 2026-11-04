@@ -389,6 +389,19 @@ describe('config contract (15I and pf-justice read these)', function()
         end
         assert_true(D.Callers.GrantQualification['pf-emsmdt'])
     end)
+    it('implied qualifications follow the job grades (pfm-core shared/jobs.lua)', function()
+        local I = Config.Departments.Implied
+        local function has(list, q) for _, x in ipairs(list or {}) do if x == q then return true end end return false end
+        assert_true(has(I.ambulance[1], 'paramedic') and has(I.ambulance[1], 'emr'), 'grade 1 is Paramedic')
+        assert_false(has(I.corrections[0], 'corrections_officer'), 'a cadet is in training')
+        for g = 1, 5 do assert_true(has(I.corrections[g], 'corrections_officer'), 'corrections ' .. g) end
+        for g = 0, 4 do assert_true(has(I.government[g], 'cs_supervisor'), 'government ' .. g) end
+        assert_false(has(I.doj[4], 'prosecutor') and has(I.doj[4], 'public_defender'), 'never both sides')
+        assert_true(has(I.police[3], 'lab_tech'))
+        assert_eq(Config.Departments.MaxShiftHours, 16)
+        assert_eq(Config.Departments.KeyWindowDays, 30)
+        for job in pairs(Config.Departments.Jobs) do assert_true(job ~= 'dot', 'no dot job exists') end
+    end)
     it('every generator rule and event rule names valid kinds, fields and paying departments', function()
         local W = Config.WorkOrders
         local fields = { pothole_density = true, road_condition = true, street_light_health = true, traffic_light_health = true, maintenance_backlog = true }

@@ -956,9 +956,13 @@ end)
 
 -- ── second round (adversarial check of 15B) ─────────────────────────────────────────────────────
 local function invoicedFine(amount)
+    local prev = Mock.invokingResource
+    as('pf-policemdt-DEV')
+    J.Rate.Forget('')
     local f = fine(amount or 5000)
     local res = api:PayOrder(f.orderId, { payerSrc = SUSPECT, account = 'bank', key = 'inv:' .. f.orderId })
     assert_eq(res.state, 'invoiced')
+    as(prev)
     return f.orderId, res.invoiceId
 end
 local function phoneSettles(orderId, invoiceId, outcome, amount)
@@ -1366,6 +1370,7 @@ describe('invoice settlements that find a lock held or the database failing', fu
         assert_eq(#events(id, 'invoice_paid_late'), 1)
         assert_eq(money(SUSPECT).bank, 5000)
         -- the log failing after the refund started: the retry only adds the log
+        Mock.players[SUSPECT].PlayerData.money.bank = 0
         local id2, inv2 = invoicedFine(3000)
         DB.orders[id2].state = 'waived'
         FakeDB.bank_accounts.police.account_balance = 3000
@@ -1377,11 +1382,13 @@ describe('invoice settlements that find a lock held or the database failing', fu
             return real(params)
         end
         phoneSettles(id2, inv2, 'paid', 3000)
-        assert_eq(DB.orders[id2].refund_state, 'due')
+        assert_eq(DB.orders[id2].refund_state, 'done', 'the started refund goes on')
+        assert_eq(#events(id2, 'invoice_paid_late'), 0)
+        assert_true(next(J.Orders.settleQueue) ~= nil, 'the missing log is queued')
         J.Orders.Sweep(Mock.clock + 600)
         assert_eq(#events(id2, 'invoice_paid_late'), 1)
         assert_eq(DB.orders[id2].refund_state, 'done')
-        assert_eq(money(SUSPECT).bank, 8000, 'each refunded once')
+        assert_eq(money(SUSPECT).bank, 3000, 'refunded once')
     end)
 
     it('an admin waiver cancels the phone invoice (CancelInvoice) and waives at once; the phone report changes nothing more', function()

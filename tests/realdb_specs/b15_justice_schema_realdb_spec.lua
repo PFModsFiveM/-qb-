@@ -449,3 +449,46 @@ describe('second round on the real database', function()
         assert_eq(events(a, 'record_done'), 1)
     end)
 end)
+
+describe('third round on the real database', function()
+    it('a settlement that found the lock held is queued, reloaded and applied once', function()
+        local f = api:CreateOrder({ cid = 'SUSPECTCID', kind = 'fine', amount = 40000, sourceRef = { type = 'mdt_sentence', id = 'q1' } },
+            { key = key(), actor = { src = COP } }).orderId
+        local inv = api:PayOrder(f, { payerSrc = SUSPECT, key = key('pay') }).invoiceId
+        J.Locks.Take('cid:SUSPECTCID')
+        Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = inv, ref = 'pf-justice:order:' .. f, amount = 40000,
+            citizenid = 'SUSPECTCID', society = 'police' }, 'paid')
+        J.Locks.Free('cid:SUSPECTCID')
+        assert_eq(row(f).state, 'invoiced')
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_order_events WHERE order_id = ? AND action = 'settle_queued'", { f }), 1)
+        for k in pairs(J.Orders.settleQueue) do J.Orders.settleQueue[k] = nil end
+        J.Orders.LoadQueues()
+        assert_true(next(J.Orders.settleQueue) ~= nil)
+        J.Orders.RetryQueued()
+        assert_eq(row(f).state, 'paid')
+        assert_eq(tonumber(row(f).paid_amount), 40000)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_order_events WHERE order_id = ? AND action = 'settle_done'", { f }), 1)
+        J.Orders.LoadQueues()
+        assert_eq(next(J.Orders.settleQueue), nil)
+    end)
+
+    it('a character deletion that found the lock held is queued as an audit row, reloaded and finished', function()
+        Mock.newPlayer(7, 'GONE3')
+        local f = api:CreateOrder({ cid = 'GONE3', kind = 'fine', amount = 10, sourceRef = { type = 'mdt_sentence', id = 'd3' } },
+            { key = key(), actor = { src = COP } }).orderId
+        Mock.players[7] = nil
+        J.Locks.Take('cid:GONE3')
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'GONE3')
+        J.Locks.Free('cid:GONE3')
+        assert_eq(row(f).state, 'issued')
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_audit WHERE entity = 'character' AND entity_id = 'GONE3' AND action = 'delete_queued'"), 1)
+        J.Orders.deleteQueue.GONE3 = nil
+        J.Orders.LoadQueues()
+        assert_true(J.Orders.deleteQueue.GONE3)
+        J.Orders.RetryQueued()
+        assert_eq(row(f).state, 'waived')
+        assert_eq(row(f).citizenid:sub(1, 5), 'anon-')
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_audit WHERE entity_id = 'GONE3'"), 0)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_audit WHERE entity = 'character' AND action = 'delete_done' AND entity_id = ?", { row(f).citizenid }), 1)
+    end)
+end)

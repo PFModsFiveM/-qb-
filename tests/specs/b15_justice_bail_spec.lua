@@ -508,7 +508,7 @@ describe('round 3: a sentence, a court vacate or a remand voids a bail still set
 end)
 
 describe('round 3: the sweep reaches every row; refused automatic refunds are retried', function()
-    it('rows the sweep must leave never hide newer ones; expired legacy offers are closed', function()
+    it('rows the sweep must leave never hide newer ones; MDT offers stay the MDT\'s until the hand-over', function()
         for i = 1, 60 do
             local id = nextId()
             DB.bail[id] = { id = id, citizenid = 'L' .. i, state = 'payment_pending', amount = 10, pay_key = 'pf-policemdt:bail:' .. i .. ':1',
@@ -521,8 +521,12 @@ describe('round 3: the sweep reaches every row; refused automatic refunds are re
         B.Tick(Mock.clock)
         B.Tick(Mock.clock)
         assert_eq(DB.bail[o.bailId].state, 'expired', 'reached past 60 rows it leaves alone')
-        assert_eq(DB.bail[lid].state, 'expired', 'an expired legacy offer is closed')
+        assert_eq(DB.bail[lid].state, 'offered', 'the MDT still owns its offer')
         assert_eq(DB.bail[lid - 1].state, 'payment_pending', 'live MDT payments stay with the MDT')
+        Config.Compat = { LegacyRuntimes = { mdt = false } }
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock)
+        assert_eq(DB.bail[lid].state, 'expired', 'after the hand-over the expired offer is closed')
     end)
 
     it('a refused automatic refund is retried under the next numbered key after a pause, up to the cap', function()
@@ -570,6 +574,83 @@ describe('round 3: the sweep reaches every row; refused automatic refunds are re
         FakeDB.bank_accounts['doj'].account_balance = 400
         local res = B.Exonerate(o.bailId, { actor = { src = JUDGE } })
         assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(bank(PAYER), 1000)
+    end)
+end)
+
+describe('round 4: remand, hospital, escape and a vacate in between', function()
+    local function pend(bailId)
+        local real = Mock.exportsByResource['pfm-banking'].Transfer
+        Mock.exportsByResource['pfm-banking'].Transfer = function(_, opts) real(opts) error('connection lost') end
+        B.Accept(bailId, PAYER, {})
+        Mock.exportsByResource['pfm-banking'].Transfer = real
+        assert_eq(DB.bail[bailId].state, 'payment_pending')
+    end
+    local function settle()
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock + Config.Bail.PaymentHoldSeconds + 1)
+    end
+
+    it('a remand still voids an earlier bail after the citizen went to hospital (Q1)', function()
+        local o, cust = offer()
+        DB.custody[cust].state = 'booked'
+        pend(o.bailId)
+        Mock.clock = Mock.clock + 2
+        assert_eq(J.Custody.SetState(cust, 'remanded', { actor = { src = JUDGE } }).ok, true)
+        DB.custody[cust].prev_state, DB.custody[cust].state = 'remanded', 'hospital'
+        settle()
+        assert_eq(DB.custody[cust].state, 'hospital', 'not released')
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000)
+    end)
+
+    it('a bail settling while the citizen is in hospital waits and releases after the return, never from hospital', function()
+        local o, cust = offer()
+        pend(o.bailId)
+        DB.custody[cust].prev_state, DB.custody[cust].state = 'held', 'hospital'
+        settle()
+        assert_eq(DB.bail[o.bailId].state, 'posted')
+        assert_eq(DB.custody[cust].state, 'hospital', 'not released from hospital')
+        B.Tick(Mock.clock + 500)
+        assert_eq(DB.custody[cust].state, 'hospital')
+        DB.custody[cust].state = 'held'
+        B.Tick(Mock.clock + 600)
+        assert_eq(DB.custody[cust].state, 'released')
+        assert_eq(DB.custody[cust].release_reason, 'bailed')
+        assert_eq(bank(PAYER), 600, 'paid once')
+    end)
+
+    it('an escape is never forgiven: an order bail settling after the escape is refunded (Q2)', function()
+        orders[97] = { id = 97, cid = 'PRI2', kind = 'jail', state = 'active' }
+        local o = B.Offer({ orderId = 97 }, { amount = 250 }, { actor = { src = COP } })
+        pend(o.bailId)
+        orders[97].state = 'suspended'
+        settle()
+        assert_eq(orders[97].state, 'suspended')
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000)
+        -- an open offer dies with the escape
+        orders[98] = { id = 98, cid = 'PRI2', kind = 'jail', state = 'active' }
+        local o2 = B.Offer({ orderId = 98 }, { amount = 250 }, { actor = { src = COP } })
+        orders[98].state = 'suspended'
+        B.OnOrderChanged(orders[98])
+        assert_eq(DB.bail[o2.bailId].state, 'expired')
+    end)
+
+    it('a vacate by a court between the check and the bail\'s own vacate is not counted as the bail\'s (c)', function()
+        orders[99] = { id = 99, cid = 'PRI2', kind = 'jail', state = 'active' }
+        local o = B.Offer({ orderId = 99 }, { amount = 250 }, { actor = { src = COP } })
+        local realSet = J.Orders.SetState
+        J.Orders.SetState = function(id, to, opts)
+            -- the court got there first: 15B answers a repeated vacate as a duplicate
+            setStates[#setStates + 1] = { id = id, to = 'vacated', reason = 'court release' }
+            orders[id].state = 'vacated'
+            return { ok = true, duplicate = true }
+        end
+        local res = B.Accept(o.bailId, PAYER, {})
+        J.Orders.SetState = realSet
+        assert_eq(res.ok, false)
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
         assert_eq(bank(PAYER), 1000)
     end)
 end)
