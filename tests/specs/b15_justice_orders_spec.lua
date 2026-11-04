@@ -284,6 +284,9 @@ BeforeEach = function()
     for k in pairs(J.Clock.srcOf) do J.Clock.srcOf[k] = nil end
     J.Rate.Forget('')
     PFJustice.LegacyImport = nil
+    for k in pairs(PhoneInvoices) do PhoneInvoices[k] = nil end
+    for k in pairs(J.Records.queue) do J.Records.queue[k] = nil end
+    J.Orders.cursor.payments, J.Orders.cursor.refunds = 0, 0
     FakeDB.society('police', 0, 'job')
     FakeDB.society('doj', 0, 'job')
     local cop = Mock.newPlayer(COP, 'COPCID')
@@ -924,5 +927,319 @@ describe('reads', function()
         assert_eq(act.remainingSeconds, 1800)
         assert_eq(act.facility, 'bolingbroke')
         assert_eq(api:GetActiveIncarceration('NOBODY').remainingSeconds, 0)
+    end)
+end)
+
+-- ── second round (adversarial check of 15B) ─────────────────────────────────────────────────────
+local function invoicedFine(amount)
+    local f = fine(amount or 5000)
+    local res = api:PayOrder(f.orderId, { payerSrc = SUSPECT, account = 'bank', key = 'inv:' .. f.orderId })
+    assert_eq(res.state, 'invoiced')
+    return f.orderId, res.invoiceId
+end
+local function phoneSettles(orderId, invoiceId, outcome, amount)
+    Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = invoiceId, ref = 'pf-justice:order:' .. orderId, amount = amount or 5000,
+        citizenid = 'SUSPECTCID', society = 'police' }, outcome)
+end
+local function refundKey(id, n) return 'pf-justice:order:' .. id .. ':invoice_refund' .. (n and n > 1 and (':' .. n) or '') end
+
+describe('invoiced fines are not closed while the phone invoice is live', function()
+    it('a waiver is refused (conflict), recorded once, and applied when the invoice is declined', function()
+        local id = invoicedFine()
+        as('pfm-adminmenu')
+        local w = api:SetOrderState(id, 'waived', { actor = { kind = 'admin', src = ADMIN }, reason = 'court mercy' })
+        assert_eq(w.ok, false)
+        assert_eq(w.error, 'conflict')
+        assert_true(w.waiverPending)
+        assert_eq(DB.orders[id].state, 'invoiced', 'the order still waits for its invoice')
+        assert_eq(api:SetOrderState(id, 'waived', { actor = { kind = 'admin', src = ADMIN } }).error, 'conflict')
+        assert_eq(#events(id, 'waive_pending'), 1, 'recorded once')
+        -- no internal path closes it either
+        local ok, err = J.Orders.MoveLocked(J.Orders.Row(id), 'waived', 'x', nil)
+        assert_false(ok)
+        assert_eq(err.error, 'conflict')
+        phoneSettles(id, DB.orders[id].invoice_id, 'declined')
+        assert_eq(DB.orders[id].state, 'waived', 'the recorded waiver applies')
+        assert_eq(#events(id, 'waived'), 1)
+    end)
+
+    it('a waiver pending when the invoice is paid: the order is waived and the payment refunded under the stable key', function()
+        local id, invoiceId = invoicedFine()
+        as('pfm-adminmenu')
+        api:SetOrderState(id, 'waived', { actor = { kind = 'admin', src = ADMIN } })
+        FakeDB.bank_accounts.police.account_balance = 5000 -- the phone moved the money into society:police
+        Mock.players[SUSPECT].PlayerData.money.bank = 0
+        phoneSettles(id, invoiceId, 'paid')
+        local o = DB.orders[id]
+        assert_eq(o.state, 'waived')
+        assert_eq(o.paid_amount, 0, 'nothing is recorded as paid on a waived order')
+        assert_eq(o.refund_state, 'done')
+        assert_eq(FakeDB.byKey[refundKey(id)].state, 'completed')
+        assert_eq(money(SUSPECT).bank, 5000, 'refunded to the payer')
+        assert_eq(FakeDB.bank_accounts.police.account_balance, 0)
+        assert_eq(#events(id, 'invoice_paid_late'), 1)
+        assert_eq(#events(id, 'refunded'), 1)
+        assert_eq(#where(DB.records, function(r) return r.kind == 'conviction' end), 0, 'a waived fine is no conviction')
+        local settled = emitted('paymentSettled')
+        assert_eq(settled[#settled][2], 'refunded')
+    end)
+
+    it('a paid settlement for an order no longer invoiced is logged and refunded: numbered after a clear refusal, held while unclear', function()
+        local id, invoiceId = invoicedFine()
+        DB.orders[id].state = 'waived' -- closed some other way while the invoice stayed live
+        Mock.players[SUSPECT].PlayerData.money.bank = 0
+        phoneSettles(id, invoiceId, 'paid') -- society:police is empty: the refund is clearly refused
+        assert_eq(#events(id, 'invoice_paid_late'), 1, 'never silently ignored')
+        assert_eq(DB.orders[id].refund_state, 'due')
+        assert_eq(FakeDB.byKey[refundKey(id)].state, 'failed')
+        phoneSettles(id, invoiceId, 'paid') -- the same report again
+        assert_eq(#events(id, 'invoice_paid_late'), 1, 'one log per invoice')
+        assert_eq(FakeDB.byKey[refundKey(id, 2)], nil, 'no second attempt from a repeated report')
+        -- the sweep retries under the next numbered key (a failed key stays failed)
+        Mock.clock = Mock.clock + 300
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(FakeDB.byKey[refundKey(id, 2)].state, 'failed')
+        -- an unclear attempt is held: looked up, never paid again under a new key
+        FakeDB.bank_accounts.police.account_balance = 5000
+        local realTransfer = PFPayout.Transfer
+        PFPayout.Transfer = function() return { ok = false, state = 'debited', unclear = true } end
+        Mock.clock = Mock.clock + 300
+        J.Orders.Sweep(Mock.clock)
+        PFPayout.Transfer = realTransfer
+        assert_eq(DB.orders[id].refund_state, 'unclear')
+        assert_eq(DB.orders[id].refund_attempt, 3)
+        local banking = Mock.exportsByResource['pfm-banking']
+        local realGet = banking.GetTransaction
+        banking.GetTransaction = function(_, k) if k == refundKey(id, 3) then return { state = 'debited' } end return realGet(_, k) end
+        Mock.clock = Mock.clock + 300
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(DB.orders[id].refund_state, 'unclear', 'waits while the ledger is unclear')
+        assert_eq(FakeDB.byKey[refundKey(id, 4)], nil)
+        banking.GetTransaction = realGet -- attempt 3 never reached the ledger: nothing moved, the next key pays
+        Mock.clock = Mock.clock + 300
+        J.Orders.Sweep(Mock.clock)
+        Mock.clock = Mock.clock + 300
+        local out = J.Orders.Sweep(Mock.clock)
+        assert_eq(out.refunds, 1)
+        assert_eq(DB.orders[id].refund_state, 'done')
+        assert_eq(FakeDB.byKey[refundKey(id, 4)].state, 'completed')
+        assert_eq(money(SUSPECT).bank, 5000, 'refunded once')
+    end)
+
+    it('a repeated paid report for an invoice that settled the order refunds nothing', function()
+        local id, invoiceId = invoicedFine()
+        phoneSettles(id, invoiceId, 'paid')
+        assert_eq(DB.orders[id].state, 'paid')
+        assert_eq(DB.orders[id].paid_amount, 5000)
+        phoneSettles(id, invoiceId, 'paid')
+        assert_eq(#events(id, 'invoice_paid_late'), 0)
+        assert_eq(DB.orders[id].refund_state, nil)
+    end)
+
+    it('a deleted character: a gone invoice is waived; one still being paid keeps the waiver and settles paid', function()
+        local gone, goneInvoice = invoicedFine(5000)
+        Mock.clock = Mock.clock + 10
+        local paying, payingInvoice = invoicedFine(6000)
+        PhoneInvoices[payingInvoice] = true -- pfm-core keeps a 'paying' invoice of a deleted character
+        assert_true(goneInvoice ~= payingInvoice)
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'SUSPECTCID')
+        assert_eq(DB.orders[gone].state, 'waived')
+        assert_eq(DB.orders[paying].state, 'invoiced', 'still being paid on the phone')
+        assert_eq(#events(paying, 'waive_pending'), 1)
+        Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = payingInvoice, ref = 'pf-justice:order:' .. paying, amount = 6000,
+            citizenid = 'SUSPECTCID', society = 'police' }, 'paid')
+        assert_eq(DB.orders[paying].state, 'paid', 'paid before the deletion; nobody to refund')
+        assert_eq(DB.orders[paying].refund_state, nil)
+    end)
+end)
+
+describe('payments keep their amount and their state', function()
+    it('modify is refused while a payment is pending or invoiced; paid_amount is what the ledger moved', function()
+        local f = fine(400)
+        FakeDB.failNext.creditSociety = true
+        assert_eq(api:PayOrder(f.orderId, { payerSrc = SUSPECT, key = 'u1' }).error, 'payment_unclear')
+        as('pfm-adminmenu')
+        local a = api:AdjustOrder(f.orderId, { kind = 'modify', amount = 900 }, { actor = { kind = 'admin', src = ADMIN } })
+        assert_eq(a.error, 'conflict')
+        assert_eq(DB.orders[f.orderId].amount, 400)
+        -- even if the row's amount changed some other way, the paid amount is the ledger's
+        DB.orders[f.orderId].amount = 900
+        Mock.clock = Mock.clock + 300
+        PFLedger.Recover()
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(DB.orders[f.orderId].state, 'paid')
+        assert_eq(DB.orders[f.orderId].paid_amount, 400)
+        as('pf-policemdt-DEV')
+        local id = invoicedFine(5000)
+        as('pfm-adminmenu')
+        assert_eq(api:AdjustOrder(id, { kind = 'modify', amount = 100 }, { actor = { kind = 'admin', src = ADMIN } }).error, 'conflict')
+    end)
+
+    it('a clearly refused payment returns referred, overdue and upheld orders to that state', function()
+        Mock.players[OTHER].PlayerData.money.bank = 10
+        for _, st in ipairs({ 'referred', 'overdue' }) do
+            local f = fine(5000, 'k:' .. st)
+            DB.orders[f.orderId].state = st
+            J.Rate.Forget('')
+            local res = api:PayOrder(f.orderId, { payerSrc = OTHER, account = 'bank', key = 'p:' .. st })
+            assert_eq(res.error, 'insufficient_funds')
+            assert_eq(DB.orders[f.orderId].state, st, st .. ' is kept')
+        end
+        as('pfm-policejob')
+        local c = api:IssueCitation({ cid = 'SUSPECTCID', amount = 5000, violation = 'Speeding', officerSrc = COP }, { key = 'cit:up' })
+        DB.orders[c.orderId].state = 'upheld'
+        as('pf-policemdt-DEV')
+        J.Rate.Forget('')
+        assert_eq(api:PayOrder(c.orderId, { payerSrc = OTHER, key = 'p:up' }).error, 'insufficient_funds')
+        assert_eq(DB.orders[c.orderId].state, 'upheld')
+        -- the sweep too: a refusal the ledger settles later returns to pay_from
+        local f = fine(300, 'k:sweep')
+        DB.orders[f.orderId].state = 'referred'
+        J.Rate.Forget('')
+        FakeDB.failNext.creditSociety = true
+        Mock.players[OTHER].PlayerData.money.bank = 1000
+        assert_eq(api:PayOrder(f.orderId, { payerSrc = OTHER, key = 'p:sw' }).error, 'payment_unclear')
+        local banking = Mock.exportsByResource['pfm-banking']
+        local realGet = banking.GetTransaction
+        banking.GetTransaction = function() return { state = 'failed', error = 'insufficient_funds' } end
+        Mock.clock = Mock.clock + 300
+        J.Orders.Sweep(Mock.clock)
+        banking.GetTransaction = realGet
+        assert_eq(DB.orders[f.orderId].state, 'referred')
+    end)
+
+    it('the payment sweep reaches newer rows while older ones keep waiting', function()
+        local ids = {}
+        for i = 1, 56 do
+            local f = fine(10 + i, 'k:many:' .. i)
+            local o = DB.orders[f.orderId]
+            o.state, o.pay_attempt, o.pay_key, o.updated_at = 'payment_pending', 1, 'pf-justice:order:' .. f.orderId .. ':pay:1', Mock.clock
+            ids[i] = f.orderId
+        end
+        local newest = ids[56]
+        local banking = Mock.exportsByResource['pfm-banking']
+        local realGet = banking.GetTransaction
+        -- the 55 older ones keep answering 'pending'; the newest never reached the ledger
+        banking.GetTransaction = function(_, k)
+            if k == 'pf-justice:order:' .. newest .. ':pay:1' then return nil end
+            return { state = 'pending' }
+        end
+        for _ = 1, 3 do
+            Mock.clock = Mock.clock + 300
+            J.Orders.Sweep(Mock.clock)
+        end
+        banking.GetTransaction = realGet
+        assert_eq(DB.orders[newest].state, 'issued', 'not starved by rows that wait')
+        assert_eq(DB.orders[ids[1]].state, 'payment_pending')
+    end)
+end)
+
+describe('keys and locks', function()
+    it('a keyed credit whose event cannot be stored (database error) is not applied; the retry applies it once', function()
+        local p = prison(60)
+        as('pfm-prison')
+        local entry
+        for _, e in ipairs(FakeDB.extraPatterns) do if e[1] == Q.insertEvent then entry = e end end
+        local real = entry[2]
+        entry[2] = function(params)
+            if params[7] == 'pfm-prison:credit:x:1' then entry[2] = real error('Lock wait timeout exceeded') end
+            return real(params)
+        end
+        local a = api:AdjustOrder(p.orderId, { kind = 'credit', seconds = 600 }, { key = 'pfm-prison:credit:x:1' })
+        assert_eq(a.error, 'db_unavailable')
+        assert_eq(DB.orders[p.orderId].credit_seconds, 0, 'nothing applied without its key')
+        local b = api:AdjustOrder(p.orderId, { kind = 'credit', seconds = 600 }, { key = 'pfm-prison:credit:x:1' })
+        assert_true(b.ok)
+        local c = api:AdjustOrder(p.orderId, { kind = 'credit', seconds = 600 }, { key = 'pfm-prison:credit:x:1' })
+        assert_true(c.duplicate)
+        assert_eq(DB.orders[p.orderId].credit_seconds, 600, 'credited once')
+        -- suspend with a key: same rule
+        entry[2] = function(params)
+            if params[7] == 'esc:x' then entry[2] = real error('Lock wait timeout exceeded') end
+            return real(params)
+        end
+        assert_eq(api:AdjustOrder(p.orderId, { kind = 'suspend' }, { key = 'esc:x' }).error, 'db_unavailable')
+        assert_eq(DB.orders[p.orderId].state, 'active')
+    end)
+
+    it('a conviction skipped while the record lock is busy is queued and written later, also after a restart', function()
+        local p = prison(30)
+        J.Locks.Take('record:SUSPECTCID')
+        as('pfm-prison')
+        assert_true(api:SetOrderState(p.orderId, 'completed', {}).ok)
+        J.Locks.Free('record:SUSPECTCID')
+        local function convictions() return #where(DB.records, function(r) return r.kind == 'conviction' and r.ref_id == tostring(p.orderId) end) end
+        assert_eq(convictions(), 0)
+        assert_true(J.Records.queue[p.orderId])
+        -- a restart loses the memory queue; the queued event brings it back
+        J.Records.queue[p.orderId] = nil
+        assert_true(J.Records.LoadQueue())
+        assert_true(J.Records.queue[p.orderId])
+        assert_eq(J.Records.RetryQueued(), 1)
+        assert_eq(convictions(), 1)
+        assert_eq(J.Records.queue[p.orderId], nil)
+        J.Records.LoadQueue()
+        assert_eq(J.Records.queue[p.orderId], nil, 'done entries are not reloaded')
+        J.Records.queue[p.orderId] = true
+        J.Records.RetryQueued()
+        assert_eq(convictions(), 1, 'never twice')
+    end)
+
+    it('pfm-adminmenu creates orders only with an admin actor', function()
+        as('pfm-adminmenu')
+        local spec = { cid = 'SUSPECTCID', kind = 'fine', amount = 10, sourceRef = { type = 'admin', id = 'a1' } }
+        assert_eq(api:CreateOrder(spec, { key = 'adm:f1' }).error, 'no_permission')
+        assert_eq(api:CreateOrder(spec, { key = 'adm:f1', actor = { src = COP } }).error, 'no_permission')
+        assert_true(api:CreateOrder(spec, { key = 'adm:f1', actor = { kind = 'admin', src = ADMIN } }).ok)
+    end)
+
+    it('two IssueCitation calls racing with one key: the second is a duplicate', function()
+        as('pfm-policejob')
+        local entry
+        for _, e in ipairs(FakeDB.extraPatterns) do if e[1] == Q.insertCitation then entry = e end end
+        local real = entry[2]
+        -- the racing call stores its row between our check and our insert
+        entry[2] = function(params) entry[2] = real real(params) error('Duplicate entry for key uq_cit_uid') end
+        local res = api:IssueCitation({ cid = 'SUSPECTCID', amount = 50, violation = 'Speeding', officerSrc = COP }, { key = 'cit:race' })
+        assert_true(res.ok)
+        assert_true(res.duplicate)
+        assert_eq(DB.n.c, 1)
+        assert_eq(res.citationId, 1)
+    end)
+end)
+
+describe('deleted characters (second round)', function()
+    it('a contested citation is dismissed; ids in events, payer details, audit rows, created_by and expunged_by are anonymised', function()
+        as('pfm-policejob')
+        local c = api:IssueCitation({ cid = 'SUSPECTCID', amount = 100, violation = 'Speeding', officerSrc = COP }, { key = 'cit:d1' })
+        as('pf-policemdt-DEV')
+        assert_true(api:ContestCitation(c.orderId, { actor = { src = SUSPECT } }).ok)
+        local f = fine(50, 'k:payer')
+        assert_true(api:PayOrder(f.orderId, { payerSrc = SUSPECT, key = 'pp:1' }).ok)
+        -- the suspect pays someone else's fine too (payer only)
+        local other = api:CreateOrder({ cid = 'OTHERCID', kind = 'fine', amount = 20 }, { key = 'k:other', actor = { src = COP } })
+        J.Rate.Forget('')
+        assert_true(api:PayOrder(other.orderId, { payerSrc = SUSPECT, key = 'pp:2' }).ok)
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'SUSPECTCID')
+        assert_eq(DB.orders[c.orderId].state, 'dismissed', 'closed, not left open under the token')
+        for _, e in pairs(DB.events) do
+            assert_true(e.actor_cid ~= 'SUSPECTCID', 'event actor')
+            assert_true(not (e.detail or ''):find('SUSPECTCID', 1, true), 'event detail ' .. tostring(e.detail))
+        end
+        assert_eq(DB.orders[other.orderId].citizenid, 'OTHERCID', 'other people keep their orders')
+        -- an officer and a judge deleted: created_by, citation officer, audit actor and expunged_by
+        local e1 = api:AddRecordEntry('OTHERCID', { kind = 'note', summary = 'n' }, {}).entryId
+        as('pf-government')
+        assert_true(api:Expunge('OTHERCID', { e1 }, { actor = { src = JUDGE } }).ok)
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'COPCID')
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'JUDGECID')
+        for _, o in pairs(DB.orders) do assert_true(o.created_by ~= 'COPCID', 'created_by') end
+        for _, ci in pairs(DB.citations) do assert_true(ci.officer_cid ~= 'COPCID', 'officer') end
+        for _, a in pairs(DB.audit) do
+            assert_true(a.actor_cid ~= 'JUDGECID' and a.actor_cid ~= 'SUSPECTCID', 'audit actor')
+            assert_true(a.entity_id ~= 'SUSPECTCID', 'audit entity')
+        end
+        assert_true(DB.records[e1].expunged_by ~= 'JUDGECID', 'expunged_by')
+        assert_true(DB.records[e1].expunged_by:sub(1, 5) == 'anon-')
     end)
 end)

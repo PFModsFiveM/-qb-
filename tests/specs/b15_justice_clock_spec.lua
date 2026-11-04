@@ -591,3 +591,35 @@ describe('orders imported by the legacy import (15C)', function()
         assert_eq(order(id).served_seconds, 15)
     end)
 end)
+
+describe('hybrid clock across a restart (second round)', function()
+    local function restart()
+        for k in pairs(C.inmates) do C.inmates[k] = nil end
+        for k in pairs(C.srcOf) do C.srcOf[k] = nil end
+        Mock.clock = Mock.clock + 5
+        J.Boot()
+    end
+
+    it('an hour online outside, then a restart: the hour is not counted as offline time', function()
+        prisonStarted = false
+        local id = jail(600, { clock = 'hybrid' })
+        Mock.coords[INMATE] = at(5000) -- far outside the fallback radius
+        tick(240)
+        assert_eq(order(id).served_seconds, 0)
+        assert_eq(order(id).last_tick_at, Mock.clock, 'saved on every tick')
+        restart()
+        assert_true(order(id).served_seconds <= 2, 'only the restart gap at OfflineRate, got ' .. order(id).served_seconds)
+    end)
+
+    it('an escaped (suspended) chain gains no offline time at the next load', function()
+        local a = jail(60, { clock = 'hybrid' }, 'k:a')
+        local b = jail(120, { clock = 'hybrid' }, 'k:b') -- concurrent, running beside a
+        Mock.invokingResource = 'pfm-prison'
+        assert_true(api:AdjustOrder(a, { kind = 'suspend' }, { key = 'esc:1' }).ok)
+        goOffline()
+        Mock.clock = Mock.clock + 4 * 3600
+        comeBack()
+        assert_eq(order(b).served_seconds, 0, 'nothing counts while the chain is suspended')
+        assert_eq(order(b).last_tick_at, Mock.clock)
+    end)
+end)
