@@ -983,31 +983,38 @@ end
 -- Without ledger_token new invoices use id keys (as before); without pay_state a half-paid invoice
 -- stays listed and is finished when it is paid again, not by the sweep. A failed check is retried
 -- at most once a minute, not on every invoice.
+--   4. ref (batch 15H), NULL on every row, and its unique index uq_phone_invoices_ref: the caller's
+--      idempotency reference (CreateInvoice data.ref). Without both, an invoice asked for with a
+--      ref is refused (it could not be kept from being created twice); invoices without one work.
 local COLUMNS_SQL = [[SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS def FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND COLUMN_NAME IN ('ledger_token', 'pay_state')]]
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND COLUMN_NAME IN ('ledger_token', 'pay_state', 'ref')]]
+local REF_INDEX_SQL = [[SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'phone_invoices' AND INDEX_NAME = 'uq_phone_invoices_ref' AND NON_UNIQUE = 0]]
 local COLUMN_RETRY_MS = 60000
-local Columns = { token = false, payState = false, checking = false, failedAt = nil }
+local Columns = { token = false, payState = false, ref = false, checking = false, failedAt = nil }
 
---- hasToken, tokenHasUuidDefault, hasPayState
+--- hasToken, tokenHasUuidDefault, hasPayState, hasRef, hasRefIndex
 local function ReadColumns()
     local found = {}
     for _, r in ipairs(MySQL.query.await(COLUMNS_SQL) or {}) do found[tostring(r.name)] = r end
     local tok = found.ledger_token
-    return tok ~= nil, tok ~= nil and tostring(tok.def or ''):lower():find('uuid', 1, true) ~= nil, found.pay_state ~= nil
+    local refIndex = found.ref ~= nil and (tonumber(MySQL.scalar.await(REF_INDEX_SQL)) or 0) > 0
+    return tok ~= nil, tok ~= nil and tostring(tok.def or ''):lower():find('uuid', 1, true) ~= nil, found.pay_state ~= nil,
+        found.ref ~= nil, refIndex
 end
 
 local function EnsureInvoiceColumns()
-    if Columns.token and Columns.payState then return end
+    if Columns.token and Columns.payState and Columns.ref then return end
     for _ = 1, 100 do -- another caller is checking: wait for its answer (at most ~5 s)
         if not Columns.checking then break end
         Wait(50)
     end
-    if (Columns.token and Columns.payState) or Columns.checking then return end
+    if (Columns.token and Columns.payState and Columns.ref) or Columns.checking then return end
     if Columns.failedAt and GetGameTimer() - Columns.failedAt < COLUMN_RETRY_MS then return end
     Columns.checking = true
     local problem
-    local okRead, token, uuidDefault, payState = pcall(ReadColumns)
-    if okRead and not (token and payState) then
+    local okRead, token, uuidDefault, payState, ref, refIndex = pcall(ReadColumns)
+    if okRead and not (token and payState and ref and refIndex) then
         if not token then
             local ok, err = pcall(MySQL.query.await, 'ALTER TABLE `phone_invoices` ADD COLUMN `ledger_token` VARCHAR(40) NULL DEFAULT NULL')
             if not ok then problem = tostring(err) end
@@ -1016,12 +1023,21 @@ local function EnsureInvoiceColumns()
             local ok, err = pcall(MySQL.query.await, 'ALTER TABLE `phone_invoices` ADD COLUMN `pay_state` VARCHAR(16) NULL DEFAULT NULL')
             if not ok then problem = tostring(err) end
         end
+        if not ref then
+            local ok, err = pcall(MySQL.query.await, 'ALTER TABLE phone_invoices ADD COLUMN ref VARCHAR(128) NULL DEFAULT NULL')
+            if not ok then problem = tostring(err) end
+        end
+        if not refIndex then
+            -- NULLs never collide, so the rows already there (all NULL) cannot block the index
+            local ok, err = pcall(MySQL.query.await, 'CREATE UNIQUE INDEX uq_phone_invoices_ref ON phone_invoices (ref)')
+            if not ok then problem = tostring(err) end
+        end
         -- read again either way: another server sharing the database may have added them meanwhile
-        okRead, token, uuidDefault, payState = pcall(ReadColumns)
+        okRead, token, uuidDefault, payState, ref, refIndex = pcall(ReadColumns)
     end
     if not okRead then
         problem = tostring(token)
-        token, uuidDefault, payState = false, false, false
+        token, uuidDefault, payState, ref, refIndex = false, false, false, false, false
     end
     if token and not uuidDefault then
         local ok, err = pcall(MySQL.query.await, 'ALTER TABLE `phone_invoices` ALTER COLUMN `ledger_token` SET DEFAULT (UUID())')
@@ -1030,13 +1046,18 @@ local function EnsureInvoiceColumns()
         end
     end
     Columns.token, Columns.payState, Columns.checking = token == true, payState == true, false
-    Columns.failedAt = not (Columns.token and Columns.payState) and GetGameTimer() or nil
+    Columns.ref = ref == true and refIndex == true
+    Columns.failedAt = not (Columns.token and Columns.payState and Columns.ref) and GetGameTimer() or nil
     if not Columns.token then
         print(('^1[pfm-phone]^7 phone_invoices.ledger_token is missing and could not be added (%s): invoices use id-based ledger keys; add the column from qb-phone.sql')
             :format(problem or 'not listed after ALTER'))
     end
     if not Columns.payState then
         print(('^1[pfm-phone]^7 phone_invoices.pay_state is missing and could not be added (%s): half-paid invoices are finished only when paid again; add the column from qb-phone.sql')
+            :format(problem or 'not listed after ALTER'))
+    end
+    if not Columns.ref then
+        print(('^1[pfm-phone]^7 phone_invoices.ref or its unique index uq_phone_invoices_ref is missing and could not be added (%s): invoices asked for with a ref are refused; add them from qb-phone.sql')
             :format(problem or 'not listed after ALTER'))
     end
 end
@@ -1097,9 +1118,37 @@ local function CharacterExists(cid)
 end
 
 --- Stores a new invoice with its own ledger token. Every invoice pfm-phone creates goes through here.
---- data: { citizenid, amount, society, sender, sendercitizenid, candecline (optional, default 1), reason (optional) }
+--- data: { citizenid, amount, society, sender, sendercitizenid, candecline (optional, default 1), reason (optional),
+---        ref (optional, 1..128 of [A-Za-z0-9-_:.]) }
 --- Returns the invoice id, or nil and an error code. A society the bank says cannot hold money
 --- (not a job, gang or existing account) is refused: its invoices could be charged but never settled.
+---
+--- ref is the caller's idempotency reference (e.g. 'pf-justice:order:12'): while an invoice with that
+--- ref exists, a second call returns its id and 'duplicate' instead of creating another (also when
+--- two calls race: the unique index uq_phone_invoices_ref lets one insert win). The same ref with a
+--- different citizen, society or amount returns nil, 'key_reused'. A paid or declined invoice is
+--- deleted as before, so its ref is free again afterwards: the caller learns the outcome from
+--- pfm-phone:server:invoiceSettled (the invoice it carries includes the ref) and must not ask again.
+local REF_COLUMNS = 'id, citizenid, amount, society'
+
+local function ValidRef(ref)
+    return type(ref) == 'string' and #ref >= 1 and #ref <= 128 and not ref:find('[^%w%-_:%.]')
+end
+
+local function InvoiceByRef(ref)
+    local ok, rows = pcall(MySQL.query.await, 'SELECT ' .. REF_COLUMNS .. ' FROM phone_invoices WHERE ref = ? LIMIT 1', { ref })
+    if not ok then return nil, false end
+    return type(rows) == 'table' and rows[1] or nil, true
+end
+
+--- The answer for an invoice found under the ref: its id and 'duplicate', or nil, 'key_reused'.
+local function SameRefAnswer(found, cid, amount, society)
+    if found.citizenid == cid and tostring(found.society) == society and tonumber(found.amount) == amount then
+        return InvoiceIdOf(found.id), 'duplicate'
+    end
+    return nil, 'key_reused'
+end
+
 local function CreateInvoice(data)
     if type(data) ~= 'table' then return nil, 'bad_request' end
     local cid, amount, society = data.citizenid, IsValidAmount(data.amount), data.society
@@ -1107,20 +1156,34 @@ local function CreateInvoice(data)
         or type(society) ~= 'string' or society == '' or #society > 50 then
         return nil, 'bad_request'
     end
+    local ref = data.ref
+    if ref ~= nil and not ValidRef(ref) then return nil, 'bad_request' end
+    EnsureInvoiceColumns()
+    if ref then
+        -- without the column and its unique index a ref cannot be honoured: refused, not ignored
+        if not Columns.ref then return nil, 'db_unavailable' end
+        local found, okRead = InvoiceByRef(ref)
+        if not okRead then return nil, 'db_error' end
+        if found then return SameRefAnswer(found, cid, amount, society) end
+    end
     if not SocietyKnown(society) then return nil, 'unknown_society' end
     local candecline = (data.candecline == 0 or data.candecline == false) and 0 or 1
     local reason = data.reason ~= nil and tostring(data.reason):sub(1, 256) or nil
     local sender = data.sender ~= nil and tostring(data.sender):sub(1, 50) or nil
     local senderCid = data.sendercitizenid ~= nil and tostring(data.sendercitizenid):sub(1, 50) or nil
-    EnsureInvoiceColumns()
-    local id
-    if Columns.token then
-        id = MySQL.insert.await('INSERT INTO phone_invoices (citizenid, amount, society, sender, sendercitizenid, candecline, reason, ledger_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            { cid, amount, society, sender, senderCid, candecline, reason, PFPayout.NewId() })
-    else
-        id = MySQL.insert.await('INSERT INTO phone_invoices (citizenid, amount, society, sender, sendercitizenid, candecline, reason) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            { cid, amount, society, sender, senderCid, candecline, reason })
+    local cols, values = { 'citizenid', 'amount', 'society', 'sender', 'sendercitizenid', 'candecline', 'reason' },
+        { cid, amount, society, sender, senderCid, candecline, reason }
+    if Columns.token then cols[#cols + 1], values[#values + 1] = 'ledger_token', PFPayout.NewId() end
+    if ref then cols[#cols + 1], values[#values + 1] = 'ref', ref end
+    local sql = ('INSERT INTO phone_invoices (%s) VALUES (%s)'):format(table.concat(cols, ', '), ('?, '):rep(#cols):sub(1, -3))
+    local okInsert, res = pcall(MySQL.insert.await, sql, values)
+    local id = okInsert and InvoiceIdOf(res) or nil
+    if not id and ref then
+        -- another call with this ref inserted first (unique index): answer with its invoice
+        local found = InvoiceByRef(ref)
+        if found then return SameRefAnswer(found, cid, amount, society) end
     end
+    if not okInsert then print(('^1[pfm-phone]^7 creating an invoice failed: %s'):format(tostring(res))) end
     if not id then return nil, 'db_error' end
     return id
 end

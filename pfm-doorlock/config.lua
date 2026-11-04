@@ -29,6 +29,26 @@ Config.LockpickMaxSeconds = 60                             -- an attempt open lo
 Config.LockpickCooldownSeconds = 2                         -- between two lockpick attempts of one player
 Config.LockpickBreakChance = { lockpick = 100, advancedlockpick = 17 } -- % chance the pick breaks when an attempt fails
 
+-- Server scripts that set door states without a player (exports SetDoorState / GetDoorState). Only the
+-- resources listed in StateCallers may lock or unlock doors this way; StateReaders = '*' lets any
+-- server resource read a state (every client already receives every door state).
+Config.StateCallers = { ['pfm-prison'] = true, ['pf-justice'] = true }
+Config.StateReaders = '*'
+-- Stable names for doors other resources lock and unlock (pf-justice holding cells, pfm-prison gates).
+-- A name points at the door's coordinates, not its list position, so adding or moving doors in
+-- Config.DoorList never makes a name open a different door. Matched within DoorAliasRadius metres
+-- of the door's objCoords (the first door's for a double door).
+Config.DoorAliasRadius = 1.0
+Config.DoorAliases = {
+	bolingbroke_gate_1 = vec3(1844.9, 2604.8, 44.6),
+	bolingbroke_gate_2 = vec3(1818.5, 2604.8, 44.6),
+	bolingbroke_gate_3 = vec3(1799.237, 2616.303, 44.6),
+	mrpd_cells_main    = vec3(463.45, -992.6, 25.10),
+	mrpd_cell_1        = vec3(461.89, -993.31, 25.13),
+	mrpd_cell_2        = vec3(461.89, -998.81, 25.13),
+	mrpd_cell_3        = vec3(461.89, -1002.44, 25.13),
+}
+
 --[[ -- Configuration Options
 Config.DoorList['configname-identifier'] = {
 	fixText = false, -- Adjusts guess of center of door
@@ -188,7 +208,7 @@ Config.DoorList = {
 		objName        = 'prop_gate_prison_01',
 		objCoords      = vec3(1844.9, 2604.8, 44.6),
 		textCoords     = vec3(1844.9, 2608.5, 48.0),
-		authorizedJobs = { 'police' },
+		authorizedJobs = { police = 0, corrections = 0 }, -- corrections: Bolingbroke staff (batch 15H)
 		locked         = true,
 		pickable       = false,
 		distance       = 13
@@ -198,7 +218,7 @@ Config.DoorList = {
 		objName        = 'prop_gate_prison_01',
 		objCoords      = vec3(1818.5, 2604.8, 44.6),
 		textCoords     = vec3(1818.5, 2608.4, 48.0),
-		authorizedJobs = { 'police' },
+		authorizedJobs = { police = 0, corrections = 0 }, -- corrections: Bolingbroke staff (batch 15H)
 		locked         = true,
 		pickable       = false,
 		distance       = 13
@@ -208,7 +228,7 @@ Config.DoorList = {
 		objName = 'prop_gate_prison_01',
 		objCoords = vec3(1799.237, 2616.303, 44.6),
 		textCoords = vec3(1795.941, 2616.969, 48.0),
-		authorizedJobs = { 'police' },
+		authorizedJobs = { police = 0, corrections = 0 }, -- corrections: Bolingbroke staff (batch 15H)
 		locked = true,
 		pickable = false,
 		distance = 10

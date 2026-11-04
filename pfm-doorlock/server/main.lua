@@ -205,6 +205,111 @@ local function setDoorState(playerId, doorID, locked, src, enableSounds, enableA
 	end)
 end
 
+-- ── server-only door state (batch 15H) ──────────────────────────────────────────────────────────
+-- SetDoorState / GetDoorState let server resources lock and unlock doors without an online player
+-- (updateState's server path needs one as sentSource, so a gate could not be relocked with nobody
+-- online). Only resources in Config.StateCallers may set a state; reads follow Config.StateReaders.
+-- A door is named by its Config.DoorList key or by a Config.DoorAliases name.
+
+local MAX_REASON = 128
+local callerWarnedAt = {} -- [resource] = GetGameTimer() of its last refusal line
+
+local function callerAllowed(list, invoker)
+	if invoker == nil or invoker == '' or invoker == GetCurrentResourceName() then return true end
+	if list == '*' then return true end
+	return type(list) == 'table' and list[invoker] == true
+end
+
+local function refuseCaller(exportName, invoker)
+	local now = GetGameTimer()
+	local last = callerWarnedAt[invoker]
+	if last and now - last < 60000 then return end
+	callerWarnedAt[invoker] = now
+	print(('^3[pfm-doorlock]^7 %s refused for resource %s (not in its caller list)'):format(exportName, tostring(invoker)))
+end
+
+-- [alias] = door key, resolved once from the alias coordinates (see Config.DoorAliases)
+local aliasCache = {}
+
+local function resolveAlias(name)
+	if aliasCache[name] ~= nil and Config.DoorList[aliasCache[name]] then return aliasCache[name] end
+	local at = (Config.DoorAliases or {})[name]
+	if type(at) ~= 'table' and type(at) ~= 'vector3' then return nil end
+	local target = vector3(at.x, at.y, at.z)
+	local radius = tonumber(Config.DoorAliasRadius) or 1.0
+	local best, bestDist
+	for key, door in pairs(Config.DoorList) do
+		local c = doorCoords(door)
+		if c then
+			local d = #(c - target)
+			if d <= radius and (not bestDist or d < bestDist) then best, bestDist = key, d end
+		end
+	end
+	aliasCache[name] = best
+	return best
+end
+
+--- The Config.DoorList key for a door id, a numeric string of one, or an alias; nil when unknown.
+local function resolveDoorId(doorId)
+	if type(doorId) == 'number' then
+		if doorId ~= doorId or doorId == math.huge or doorId == -math.huge then return nil end
+		return Config.DoorList[doorId] ~= nil and doorId or nil
+	end
+	if type(doorId) ~= 'string' or doorId == '' or #doorId > 64 then return nil end
+	if Config.DoorList[doorId] ~= nil then return doorId end
+	local n = math.tointeger(tonumber(doorId))
+	if n and Config.DoorList[n] ~= nil then return n end
+	return resolveAlias(doorId)
+end
+
+local function cleanReason(reason)
+	if type(reason) ~= 'string' then return nil end
+	reason = reason:gsub('%c', ' '):match('^%s*(.-)%s*$')
+	if reason == '' then return nil end
+	return reason:sub(1, MAX_REASON)
+end
+
+--- Locks or unlocks a door for everyone. opts = { reason, sound = false to play no sound }.
+--- Returns { ok = true, doorId, locked, changed } or { ok = false, error, message }.
+local function SetDoorState(doorId, locked, opts)
+	local invoker = GetInvokingResource()
+	if not callerAllowed(Config.StateCallers, invoker) then
+		refuseCaller('SetDoorState', invoker)
+		return { ok = false, error = 'not_allowed', message = 'This resource may not set door states' }
+	end
+	if type(locked) ~= 'boolean' then
+		return { ok = false, error = 'bad_args', message = 'locked must be true or false' }
+	end
+	opts = type(opts) == 'table' and opts or {}
+	local id = resolveDoorId(doorId)
+	if id == nil then return { ok = false, error = 'not_found', message = 'No such door' } end
+	local door = Config.DoorList[id]
+	if (door.locked == true) == locked then
+		return { ok = true, doorId = id, locked = locked, changed = false }
+	end
+	-- no player: server id 0 plays no animation on anyone; the door itself plays its sound
+	setDoorState(0, id, locked, false, opts.sound ~= false, false)
+	print(('[pfm-doorlock] %s %s door %s%s'):format(invoker or GetCurrentResourceName(), locked and 'locked' or 'unlocked',
+		tostring(id), cleanReason(opts.reason) and (' (' .. cleanReason(opts.reason) .. ')') or ''))
+	return { ok = true, doorId = id, locked = locked, changed = true }
+end
+exports('SetDoorState', SetDoorState)
+
+--- True (locked), false (unlocked) or nil (unknown door, or a caller not allowed to read).
+local function GetDoorState(doorId)
+	local invoker = GetInvokingResource()
+	if not callerAllowed(Config.StateReaders, invoker) then
+		refuseCaller('GetDoorState', invoker)
+		return nil
+	end
+	local id = resolveDoorId(doorId)
+	if id == nil then return nil end
+	return Config.DoorList[id].locked == true
+end
+exports('GetDoorState', GetDoorState)
+
+PFDoorlock = { SetDoorState = SetDoorState, GetDoorState = GetDoorState, ResolveDoorId = resolveDoorId }
+
 RegisterNetEvent('qb-doorlock:server:updateState', function(doorID, locked, src, usedLockpick, unlockAnyway, enableSounds, enableAnimation, sentSource)
 	local fromClient = tonumber(source) ~= nil and tonumber(source) > 0
 	-- A client acts only as itself, from beside the door. `unlockAnyway` from a client needs a grant from

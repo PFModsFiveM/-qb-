@@ -13,6 +13,7 @@ function GetResourceState() return 'started' end
 -- the bank
 RealDB.exec('pfm-core/qbcore.sql')
 RealDB.exec('pfm-banking/banking.sql')
+RealDB.exec('pfm-phone/qb-phone.sql') -- phone_invoices: read (only) at a character deletion
 function GetCurrentResourceName() return 'pfm-banking' end
 Config = nil
 load_resource('pfm-banking/config.lua')
@@ -322,5 +323,129 @@ describe('orders on the real database', function()
         assert_eq(MySQL.single.await('SELECT citizenid FROM pf_justice_records WHERE id = ?', { e }).citizenid, token)
         assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_orders WHERE citizenid = 'GONECID'"), 0)
         assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_audit WHERE entity = 'character' AND entity_id = ?", { token }), 1)
+    end)
+end)
+
+describe('second round on the real database', function()
+    local function events(id, action)
+        return scalar('SELECT COUNT(*) FROM pf_justice_order_events WHERE order_id = ? AND action = ?', { id, action })
+    end
+    local function fund(soc, amount)
+        MySQL.update.await('UPDATE bank_accounts SET account_balance = ? WHERE account_name = ?', { amount, soc })
+    end
+
+    it('v1 has the refund and pay_from columns', function()
+        for _, c in ipairs({ 'pay_from', 'refund_state', 'refund_attempt', 'refund_amount', 'refund_cid', 'refund_society', 'refund_invoice' }) do
+            assert_eq(scalar([[SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'pf_justice_orders' AND COLUMN_NAME = ?]], { c }), 1, c)
+        end
+    end)
+
+    it('a waiver of an invoiced fine is recorded; the late payment is refunded on the real ledger, numbered after a refusal', function()
+        local f = api:CreateOrder({ cid = 'SUSPECTCID', kind = 'fine', amount = 50000, sourceRef = { type = 'court_decision', id = 'w1' } },
+            { key = key(), actor = { src = COP } }).orderId
+        local inv = api:PayOrder(f, { payerSrc = SUSPECT, key = key('pay') }).invoiceId
+        as(nil)
+        local w = api:SetOrderState(f, 'waived', { reason = 'court mercy' })
+        assert_eq(w.error, 'conflict')
+        assert_eq(row(f).state, 'invoiced')
+        assert_eq(events(f, 'waive_pending'), 1)
+        fund('doj', 0)
+        Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = inv, ref = 'pf-justice:order:' .. f, amount = 50000,
+            citizenid = 'SUSPECTCID', society = 'doj' }, 'paid')
+        local r = row(f)
+        assert_eq(r.state, 'waived')
+        assert_eq(r.refund_state, 'due', 'society:doj is empty: clearly refused')
+        assert_eq(tonumber(r.refund_attempt), 1)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = ? AND state = 'failed'",
+            { 'pf-justice:order:' .. f .. ':invoice_refund' }), 1)
+        fund('doj', 50000)
+        MySQL.update.await('UPDATE pf_ledger_baselines SET balance = 50000 WHERE account = ?', { 'society:doj' })
+        Mock.clock = Mock.clock + 300
+        local out = J.Orders.Sweep(Mock.clock)
+        assert_eq(out.refunds, 1)
+        r = row(f)
+        assert_eq(r.refund_state, 'done')
+        assert_eq(tonumber(r.refund_attempt), 2)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_transactions WHERE idempotency_key = ? AND state = 'completed'",
+            { 'pf-justice:order:' .. f .. ':invoice_refund:2' }), 1)
+        assert_eq(Mock.players[SUSPECT].PlayerData.money.bank, 1000 + 50000)
+        assert_eq(events(f, 'invoice_paid_late'), 1)
+        assert_eq(events(f, 'refunded'), 1)
+        -- the report matched by invoice id alone finds the order in any state (and is logged once)
+        Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = inv, amount = 50000, citizenid = 'SUSPECTCID', society = 'doj' }, 'paid')
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_justice_order_events WHERE order_id = ? AND action = ?', { f, 'invoice_paid_late' }), 1)
+    end)
+
+    it('a refused payment returns to pay_from; paid_amount is the amount of the ledger row', function()
+        local f = api:CreateOrder({ cid = 'SUSPECTCID', kind = 'fine', amount = 5000, sourceRef = { type = 'mdt_sentence', id = 'pf1' } },
+            { key = key(), actor = { src = COP } }).orderId
+        MySQL.update.await("UPDATE pf_justice_orders SET state = 'referred' WHERE id = ?", { f })
+        local res = api:PayOrder(f, { payerSrc = SUSPECT, key = key('pay') })
+        assert_eq(res.error, 'insufficient_funds')
+        assert_eq(row(f).state, 'referred')
+        assert_eq(row(f).pay_from, 'referred')
+        -- crash after the money moved: the sweep records what the ledger moved
+        local g = api:CreateOrder({ cid = 'SUSPECTCID', kind = 'fine', amount = 120, sourceRef = { type = 'mdt_sentence', id = 'pf2' } },
+            { key = key(), actor = { src = COP } }).orderId
+        local k = 'pf-justice:order:' .. g .. ':pay:1'
+        assert_true(PFPayout.Transfer({ from = 'player:SUSPECTCID:bank', to = 'society:police', amount = 120, key = k }).ok)
+        MySQL.update.await("UPDATE pf_justice_orders SET state = 'payment_pending', pay_attempt = 1, pay_key = ?, pay_from = 'overdue', amount = 900, updated_at = 0 WHERE id = ?", { k, g })
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(row(g).state, 'paid')
+        assert_eq(tonumber(row(g).paid_amount), 120)
+        -- the cursor query pages by id
+        assert_eq(type(MySQL.query.await(J.SQL.duePayments, { Mock.clock, g })), 'table')
+    end)
+
+    it('a deleted character: phone invoice gone -> waived, still in phone_invoices -> waiver kept; ids anonymised everywhere', function()
+        Mock.newPlayer(9, 'GONE2').PlayerData.money = { cash = 0, bank = 10 }
+        local function invoiced(amount)
+            local id = api:CreateOrder({ cid = 'GONE2', kind = 'fine', amount = amount, sourceRef = { type = 'mdt_sentence', id = 'g' .. amount } },
+                { key = key(), actor = { src = COP } }).orderId
+            J.Rate.Forget('')
+            local res = api:PayOrder(id, { payerSrc = 9, key = key('pay') })
+            assert_eq(res.state, 'invoiced')
+            return id, res.invoiceId
+        end
+        local gone = invoiced(500)
+        local paying, payingInvoice = invoiced(600)
+        MySQL.insert.await("INSERT INTO phone_invoices (id, citizenid, amount, society, candecline, pay_state) VALUES (?, 'GONE2', 600, 'police', 0, 'paying')",
+            { payingInvoice })
+        local e = api:AddRecordEntry('GONE2', { kind = 'note', summary = 'n' }, { actor = { src = 9 } }).entryId
+        Mock.players[9] = nil
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'GONE2')
+        assert_eq(row(gone).state, 'waived')
+        assert_eq(row(paying).state, 'invoiced')
+        assert_eq(events(paying, 'waive_pending'), 1)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_order_events WHERE actor_cid = 'GONE2' OR detail LIKE '%\"GONE2\"%'"), 0)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_audit WHERE actor_cid = 'GONE2' OR entity_id = 'GONE2'"), 0)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_justice_records WHERE id = ? AND citizenid LIKE 'anon-%'", { e }), 1)
+        -- an officer deleted: created_by and the citation officer
+        Mock.newPlayer(8, 'COP2').PlayerData.job = { name = 'police', type = 'leo', onduty = true }
+        local c = api:CreateOrder({ cid = 'SUSPECTCID', kind = 'fine', amount = 5, sourceRef = { type = 'mdt_sentence', id = 'c2' } },
+            { key = key(), actor = { src = 8 } }).orderId
+        assert_eq(row(c).created_by, 'COP2')
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'COP2')
+        assert_eq(row(c).created_by:sub(1, 5), 'anon-')
+        assert_eq(row(c).citizenid, 'SUSPECTCID')
+    end)
+
+    it('a conviction queued while the record lock is busy survives a restart and is written once', function()
+        local a = api:CreateOrder({ cid = 'SUSPECTCID', kind = 'jail', minutes = 5 }, { key = key(), actor = { src = COP } }).orderId
+        J.Locks.Take('record:SUSPECTCID')
+        as('pfm-prison')
+        assert_true(api:SetOrderState(a, 'completed', {}).ok)
+        J.Locks.Free('record:SUSPECTCID')
+        local function n() return scalar("SELECT COUNT(*) FROM pf_justice_records WHERE kind = 'conviction' AND ref_type = 'order' AND ref_id = ?", { tostring(a) }) end
+        assert_eq(n(), 0)
+        J.Records.queue[a] = nil
+        assert_true(J.Records.LoadQueue())
+        assert_true(J.Records.queue[a])
+        J.Records.RetryQueued()
+        assert_eq(n(), 1)
+        J.Records.LoadQueue()
+        assert_eq(J.Records.queue[a], nil)
+        assert_eq(events(a, 'record_done'), 1)
     end)
 end)

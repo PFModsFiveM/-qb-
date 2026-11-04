@@ -1034,6 +1034,15 @@ describe('invoiced fines are not closed while the phone invoice is live', functi
         phoneSettles(id, invoiceId, 'paid')
         assert_eq(#events(id, 'invoice_paid_late'), 0)
         assert_eq(DB.orders[id].refund_state, nil)
+        -- pfm-phone reuses invoice ids: a report matched by id alone (no ref) for an order that no
+        -- longer waits is logged for an admin, never refunded automatically
+        local w = fine(70, 'k:w')
+        DB.orders[w.orderId].invoice_id, DB.orders[w.orderId].state = 777, 'waived'
+        Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = 777, amount = 70, citizenid = 'SUSPECTCID', society = 'police' }, 'paid')
+        local late = events(w.orderId, 'invoice_paid_late')
+        assert_eq(#late, 1)
+        assert_true(late[1].detail:find('manual_unverified', 1, true) ~= nil)
+        assert_eq(DB.orders[w.orderId].refund_state, nil)
     end)
 
     it('a deleted character: a gone invoice is waived; one still being paid keeps the waiver and settles paid', function()
