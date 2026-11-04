@@ -36,6 +36,7 @@ Config = nil
 load_resource('[pfscripts]/pf-policemdt-DEV/shared/framework.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/config.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/access.lua')
+load_resource('[pfscripts]/pf-policemdt-DEV/server/schema.lua') -- the resource's migrations (batch 15)
 load_resource('[pfscripts]/pf-policemdt-DEV/server/main.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/sentencing.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/roster.lua')

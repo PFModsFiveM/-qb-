@@ -52,11 +52,26 @@ Mock.exportsByResource['pfm-inventory'] = {
         return false
     end,
 }
+-- pfm-policejob's real evidence config (15D): CreateEvidence refuses methods and kinds it does not list
+local RealEvidence
+do
+    local saved = Config
+    Config = {}
+    load_resource('pfm-policejob/config_evidence.lua')
+    RealEvidence = Config.Evidence
+    Config = saved
+end
 local evidence, evidenceFails = {}, false
 Mock.exportsByResource['pfm-policejob'] = {
     IsCuffed = function() return false end, SetCuffed = function() return true end,
     CreateEvidence = function(_, spec, opts)
         if evidenceFails then return { ok = false, error = 'db_unavailable' } end
+        -- the checks pfm-policejob server/evidence/api.lua BuildSpec makes with that config
+        if not RealEvidence.Methods[spec.method == nil and 'manual' or spec.method] then return { ok = false, error = 'bad_args', message = 'unknown method' } end
+        local def = RealEvidence.Kinds[spec.kind]
+        if not def then return { ok = false, error = 'bad_args', message = 'unknown kind' } end
+        if def.physical and opts.giveTo == nil and spec.collectedBy == nil then return { ok = false, error = 'bad_args', message = 'physical evidence needs giveTo' } end
+        if not (opts and opts.key) then return { ok = false, error = 'bad_args', message = 'opts.key is required' } end
         evidence[#evidence + 1] = { spec = spec, opts = opts }
         return { ok = true, evidenceId = 900 + #evidence, tag = 'EV-' .. #evidence }
     end,
@@ -375,5 +390,43 @@ describe('visibility, callers, deleted characters, legacy helpers', function()
         assert_eq(#list, 1)
         assert_eq(list[1].name, 'phone')
         assert_eq(#J.LegacyImport.Items('[{"name":"lockpick","amount":2}]'), 1)
+    end)
+end)
+
+describe('rework: forfeiture against the real evidence config; return needs an officer', function()
+    it("uses a method pfm-policejob's config lists, and each kind's own attrs", function()
+        assert_true(RealEvidence.Methods[J.Property.EVIDENCE_METHOD] == true, 'method listed in config_evidence.lua')
+        local id = seize().receiptId
+        local rows = J.Property.Store.items(id)
+        local res = P.Forfeit(id, { { id = rows[2].id }, { id = rows[3].id } }, { actor = { src = COP } })
+        assert_eq(res.ok, true, tostring(res.error) .. ' ' .. tostring(res.message))
+        for _, e in ipairs(evidence) do
+            assert_eq(e.spec.method, 'seizure')
+            for field in pairs(e.spec.attrs) do
+                assert_true(RealEvidence.Kinds[e.spec.kind].attrs[field] ~= nil, e.spec.kind .. ' attr ' .. field)
+            end
+        end
+    end)
+
+    it('a system caller (pfm-prison) must name where the evidence goes', function()
+        local id = seize().receiptId
+        local rows = J.Property.Store.items(id)
+        assert_eq(P.Forfeit(id, { { id = rows[2].id } }, {}).error, 'bad_args')
+        assert_eq(lockerOf(id).lockpick, 3)
+        local res = P.Forfeit(id, { { id = rows[2].id } }, { giveTo = 'stash:prison_evidence' })
+        assert_eq(res.ok, true, tostring(res.message))
+        assert_eq(evidence[1].opts.giveTo, 'stash:prison_evidence')
+    end)
+
+    it('ReturnProperty refuses a player actor who is not an on-duty officer', function()
+        local id = seize().receiptId
+        Mock.newPlayer(OTHER, 'OTH3')
+        assert_eq(P.Return(id, { actor = { src = OTHER } }).error, 'no_permission')
+        Mock.players[COP].PlayerData.job.onduty = false
+        assert_eq(P.Return(id, { actor = { src = COP } }).error, 'not_on_duty')
+        assert_eq(DB.property[id].state, 'held')
+        Mock.players[COP].PlayerData.job.onduty = true
+        assert_eq(P.Return(id, { actor = { src = COP }, toSrc = SUSPECT }).ok, true)
+        assert_eq(DB.property[id].state, 'returned')
     end)
 end)

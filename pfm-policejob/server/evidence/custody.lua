@@ -328,6 +328,46 @@ local function reachable(actor, row)
     return true
 end
 
+-- ── labs and courts (server positions) ────────────────────────────────────────────────────────
+local function placeCoords(place)
+    if type(place) ~= 'table' then return nil end
+    local c = place.coords or place
+    if type(c) ~= 'table' and type(c) ~= 'vector3' then return nil end
+    return c
+end
+
+--- The configured lab, or nil when the id is not one.
+function C.Lab(labId)
+    return (E.Cfg().Labs or {})[labId]
+end
+
+--- True when a player actor stands at the lab (system and admin callers always are).
+function C.AtLab(actor, labId)
+    if actor.kind ~= 'player' or actor.admin then return true end
+    local lab = C.Lab(labId)
+    local c = placeCoords(lab)
+    return c ~= nil and E.Dist(E.Pos(actor.src), c) <= (lab.radius or 15.0)
+end
+
+function C.AtCourt(actor)
+    if actor.kind ~= 'player' or actor.admin then return true end
+    local here = E.Pos(actor.src)
+    for _, court in pairs(E.Cfg().Courts or {}) do
+        local c = placeCoords(court)
+        if c and E.Dist(here, c) <= (court.radius or 40.0) then return true end
+    end
+    return false
+end
+
+--- The lab role (pf-government qualification) lets a lab tech open lab evidence from anywhere.
+function C.HasLabRole(actor)
+    if actor.kind ~= 'player' or not actor.cid then return false end
+    local role = E.Cfg().LabRole
+    if not role or GetResourceState('pf-government') ~= 'started' then return false end
+    local ok, has = pcall(function() return exports['pf-government']:HasQualification(actor.cid, role) end)
+    return ok and has == true
+end
+
 local function withRow(id, fn)
     id = E.Int(id, 1)
     if not id then return E.Err('bad_args', 'Unknown evidence id') end
@@ -381,11 +421,14 @@ function C.Transfer(id, to, opts, actor)
         end
     elseif to.kind == 'lab' then
         local labId = E.Ref(to.labId or 'main', 32)
-        if not labId then return E.Err('bad_args', 'Bad lab id') end
+        if not labId or not C.Lab(labId) then return E.Err('bad_args', 'Unknown lab') end
+        -- evidence is handed in at the lab, not sent from the field
+        if not C.AtLab(actor, labId) then return E.Err('too_far', 'Take it to the lab') end
         dest = { kind = 'lab', ref = 'lab:' .. labId, state = 'at_lab', event = 'submitted_lab' }
     elseif to.kind == 'court' then
         local caseId = E.Ref(to.caseId, 48)
         if not caseId then return E.Err('bad_args', 'Bad court case id') end
+        if not C.AtCourt(actor) then return E.Err('too_far', 'Take it to the court') end
         dest = { kind = 'court', ref = 'court:' .. caseId, state = 'in_court', event = 'presented_court' }
     elseif to.kind ~= 'locker' then
         return E.Err('bad_args', 'Unknown destination')
@@ -481,8 +524,17 @@ function C.BreakSeal(id, reason, opts, actor)
     return withRow(id, function(row)
         if Store.IsTerminal(row.state) then return E.Err('invalid_state', 'Evidence is ' .. row.state) end
         if not row.sealed then return E.Err('invalid_state', 'The seal is already broken') end
-        if not mayHandle(actor, row) and row.holder_kind ~= 'lab' and row.holder_kind ~= 'court' then
-            return E.Err('no_permission', 'You do not hold this evidence')
+        if row.holder_kind == 'lab' then
+            -- free of integrity cost, so only at that lab or by a lab tech
+            local labId = tostring(row.holder_ref or ''):match('^lab:(.+)$')
+            if not C.AtLab(actor, labId) and not C.HasLabRole(actor) then
+                return E.Err('too_far', 'Lab evidence is opened at the lab')
+            end
+        elseif row.holder_kind == 'court' then
+            if not C.AtCourt(actor) then return E.Err('too_far', 'Court evidence is opened in court') end
+        else
+            if not mayHandle(actor, row) then return E.Err('no_permission', 'You do not hold this evidence') end
+            if not reachable(actor, row) then return E.Err('too_far', 'You are not where the evidence is') end
         end
         local res = Store.Query('update', Store.SQL.setSeal, { 0, row.state, row.id, row.state, 1 })
         if Store.Affected(res) ~= 1 then return E.Err('busy', 'The evidence changed meanwhile') end

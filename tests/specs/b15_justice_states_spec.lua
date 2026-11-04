@@ -33,6 +33,8 @@ local EXPECTED = {
         { 'issued', 'invoiced' }, { 'invoiced', 'paid' }, { 'issued', 'overdue' }, { 'overdue', 'referred' }, { 'issued', 'waived' },
         { 'overdue', 'payment_pending' }, { 'overdue', 'paid' }, { 'overdue', 'invoiced' }, { 'overdue', 'waived' },
         { 'invoiced', 'issued' }, { 'invoiced', 'waived' }, { 'referred', 'paid' }, { 'referred', 'payment_pending' }, { 'referred', 'waived' },
+        -- a clearly refused payment returns to where it was paid from
+        { 'payment_pending', 'overdue' }, { 'payment_pending', 'referred' },
     },
     citation = {
         { nil, 'issued' },
@@ -42,6 +44,7 @@ local EXPECTED = {
         { 'invoiced', 'issued' }, { 'invoiced', 'waived' }, { 'referred', 'paid' }, { 'referred', 'payment_pending' }, { 'referred', 'waived' },
         { 'issued', 'contested' }, { 'contested', 'upheld' }, { 'contested', 'dismissed' },
         { 'upheld', 'paid' }, { 'upheld', 'payment_pending' }, { 'upheld', 'invoiced' }, { 'upheld', 'overdue' }, { 'upheld', 'waived' },
+        { 'payment_pending', 'overdue' }, { 'payment_pending', 'referred' }, { 'payment_pending', 'upheld' },
     },
     community_service = {
         { nil, 'assigned' },
@@ -71,6 +74,7 @@ local REFUSED = {
     { 'fine', 'paid', 'issued' }, { 'fine', 'waived', 'paid' }, { 'fine', 'payment_pending', 'invoiced' },
     { 'fine', 'payment_pending', 'waived' }, { 'fine', 'issued', 'contested' }, { 'fine', nil, 'paid' },
     { 'citation', 'dismissed', 'paid' }, { 'citation', 'contested', 'paid' }, { 'citation', 'upheld', 'contested' },
+    { 'fine', 'payment_pending', 'upheld' }, { 'fine', 'payment_pending', 'contested' },
     { 'community_service', 'completed', 'active' }, { 'community_service', 'overdue', 'active' },
     { 'community_service', 'assigned', 'completed' },
     { 'bail', 'posted', 'refunded' }, { 'bail', 'forfeited', 'refunded' }, { 'bail', 'declined', 'accepted' },

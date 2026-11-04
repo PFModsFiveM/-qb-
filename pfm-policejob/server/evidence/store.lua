@@ -544,22 +544,24 @@ function Store.DrawerPatterns()
     if Store.drawerPatterns then return Store.drawerPatterns end
     local list = {}
     for _, p in ipairs(E.Cfg().DrawerPatterns or {}) do
-        if type(p) == 'string' then list[#list + 1] = p end
+        if type(p) == 'string' then list[#list + 1] = { pattern = p } end
     end
     local ok, phrase = pcall(function() return Lang:t('info.current_evidence', { value = 'XSTATIONX', value2 = 'XDRAWERX' }) end)
     if ok and type(phrase) == 'string' and phrase:find('XSTATIONX', 1, true) and phrase:find('XDRAWERX', 1, true) then
         local pat = escapePattern(phrase):gsub('XSTATIONX', '(%%d+)'):gsub('XDRAWERX', '(%%d+)')
-        list[#list + 1] = '^' .. pat .. '$'
+        -- a locale may put the drawer number before the station index
+        list[#list + 1] = { pattern = '^' .. pat .. '$', swap = phrase:find('XDRAWERX', 1, true) < phrase:find('XSTATIONX', 1, true) }
     end
-    list[#list + 1] = '^(%d+) | Drawer (%d+)$' -- the English phrase, for stashes made before a locale change
+    list[#list + 1] = { pattern = '^(%d+) | Drawer (%d+)$' } -- the English phrase, for stashes made before a locale change
     Store.drawerPatterns = list
     return list
 end
 
 function Store.DrawerOf(stashId)
     if type(stashId) ~= 'string' or #stashId > 64 then return nil end
-    for _, pat in ipairs(Store.DrawerPatterns()) do
-        local station, drawer = stashId:match(pat)
+    for _, p in ipairs(Store.DrawerPatterns()) do
+        local station, drawer = stashId:match(p.pattern)
+        if p.swap then station, drawer = drawer, station end
         station, drawer = tonumber(station), tonumber(drawer)
         if station and drawer and Config.Locations and Config.Locations['evidence'] and Config.Locations['evidence'][station] then
             return station, drawer
@@ -570,7 +572,7 @@ end
 
 --- Remembers the stash id of every locker row (after the schema is ready).
 function Store.LoadLockers()
-    local rows = q('query', 'SELECT stash_id FROM pf_evidence_lockers', {})
+    local rows = Store.Query('query', 'SELECT stash_id FROM pf_evidence_lockers', {})
     E.lockerStashes = E.lockerStashes or {}
     for _, r in ipairs(type(rows) == 'table' and rows or {}) do
         if type(r.stash_id) == 'string' then E.lockerStashes[r.stash_id] = true end

@@ -153,6 +153,22 @@ describe('persistence', function()
         assert_eq(tonumber(row.can_respawn_at), tonumber(row.dead_at) + 300)
     end)
 
+    it('a held down state is stored (hold_until) and survives a restart and relog', function()
+        assert_true(restart())
+        Mock.players = {}
+        online(12, 'HOLD1')
+        assert_true(PFMed.Engine.SetConsciousness('HOLD1', 'unconscious', 'report', 'gta_health', { holdSeconds = 600 }))
+        Mock.fireEvent('playerDropped', 12)
+        local held = tonumber(MySQL.scalar.await("SELECT hold_until FROM pf_med_patients WHERE citizenid = 'HOLD1'"))
+        assert_eq(held, os.time() + 600)
+        Mock.clock = Mock.clock + 60
+        assert_true(restart())
+        online(12, 'HOLD1')
+        tick(60)
+        assert_eq(PFMed.Store.Peek('HOLD1').consciousness, 'unconscious', 'still held after the relog')
+        Mock.fireEvent('playerDropped', 12)
+    end)
+
     it('the write-behind writes many patients and their injuries in one statement each', function()
         assert_true(restart())
         Mock.players = {}

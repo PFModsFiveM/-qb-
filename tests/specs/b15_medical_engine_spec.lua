@@ -388,6 +388,112 @@ end)
 
 -- ── exports ───────────────────────────────────────────────────────────────────────────────────
 
+-- ── checker follow-up (15A): keys at the cap, atomic updates, forced levels, holds, offline, loads ─
+
+describe('engine follow-up', function()
+    local BRUISE = { mechanism = 'blunt', type = 'bruising', region = 'chest_l', severity = 2 }
+
+    it('at the open-injury cap a keyed request is refused, never merged (a retry cannot merge twice)', function()
+        online(1)
+        Config.Medical.MaxOpenInjuries = 1
+        local first = Engine.AddInjury('CID1', BRUISE, {})
+        local _, c1 = Engine.AddInjury('CID1', BRUISE, { key = 'cap-1' })
+        local _, c2 = Engine.AddInjury('CID1', BRUISE, { key = 'cap-1' })
+        local keyless = Engine.AddInjury('CID1', BRUISE, {})
+        Config.Medical.MaxOpenInjuries = 40
+        assert_eq(c1, 'conflict'); assert_eq(c2, 'conflict')
+        assert_eq(keyless.id, first.id, 'a keyless request merges')
+        assert_eq(patient().injuries[first.id].severity, 3, 'merged once only')
+    end)
+
+    it('the key fingerprint covers attrs and note: other arguments under one key are key_reused', function()
+        online(1)
+        local spec = { mechanism = 'firearm', type = 'gunshot', region = 'thigh_l', severity = 2, attrs = { caliber = '9mm' }, note = 'yard' }
+        assert_true(Engine.AddInjury('CID1', spec, { key = 'fp-1' }))
+        local _, _, dup = Engine.AddInjury('CID1', spec, { key = 'fp-1' })
+        assert_true(dup)
+        local other = { mechanism = 'firearm', type = 'gunshot', region = 'thigh_l', severity = 2, attrs = { caliber = '.45' }, note = 'yard' }
+        local _, code = Engine.AddInjury('CID1', other, { key = 'fp-1' })
+        assert_eq(code, 'key_reused')
+        local noted = { mechanism = 'firearm', type = 'gunshot', region = 'thigh_l', severity = 2, attrs = { caliber = '9mm' }, note = 'cell' }
+        _, code = Engine.AddInjury('CID1', noted, { key = 'fp-1' })
+        assert_eq(code, 'key_reused')
+    end)
+
+    it('UpdateInjury validates the whole patch before changing anything', function()
+        online(1)
+        local inj = Engine.AddInjury('CID1', BRUISE, {})
+        local r, code = Engine.UpdateInjury('CID1', inj.id, { stage = 'stabilized', severity = 9, treatments = { pressure = true } })
+        assert_eq(r, nil); assert_eq(code, 'bad_args')
+        local now = patient().injuries[inj.id]
+        assert_eq(now.stage, 'injured'); assert_eq(now.severity, 2); assert_eq(now.treatments.pressure, nil)
+        _, code = Engine.UpdateInjury('CID1', inj.id, { stage = 'stabilized', treatments = 'x' })
+        assert_eq(code, 'bad_args')
+        assert_eq(patient().injuries[inj.id].stage, 'injured')
+    end)
+
+    it('a forced unconscious level shows consistent vitals at once and after a tick', function()
+        online(1)
+        assert_true(Engine.SetConsciousness('CID1', 'unconscious', 'report', 'gta_health', { holdSeconds = 60 }))
+        local v = Engine.Vitals(patient(), os.time())
+        assert_true(v.gcs <= 8, 'GCS ' .. v.gcs)
+        assert_true(v.spo2 < 98, 'unprotected airway')
+        tick(5)
+        v = Engine.Vitals(patient(), os.time())
+        assert_true(v.gcs <= 8, 'after a tick: GCS ' .. v.gcs)
+        local s = as('pf-emsmdt', function() return aj():GetPatientSummary(1) end)
+        assert_true(s.down and s.vitals.gcs <= 8)
+    end)
+
+    it('a held down state survives a relog; an unheld report still wakes after 10 s', function()
+        online(1)
+        Engine.SetConsciousness('CID1', 'unconscious', 'report', 'gta_health', { holdSeconds = 600 })
+        Mock.fireEvent('playerDropped', 1)
+        assert_true(DB.patients.CID1.hold_until ~= nil, 'the hold is stored')
+        Mock.clock = Mock.clock + 30
+        online(1)
+        tick(60)
+        assert_eq(patient().consciousness, 'unconscious', 'still held after the relog')
+        online(2)
+        Engine.SetConsciousness('CID2', 'unconscious', 'report', 'gta_health')
+        tick(15)
+        assert_eq(patient('CID2').consciousness, 'altered')
+    end)
+
+    it('an offline cached patient is never ticked; their time passes through the catch-up', function()
+        DB.patients.CID5 = { citizenid = 'CID5', consciousness = 'alert', stage = 'healthy', blood_ml = 5000, hgb_factor = 1, airway = 'clear',
+            breathing = 1, pain = 0, temp_c = 37, last_tick_at = os.time(), updated_at = os.time() }
+        as('pf-emsmdt', function() return aj():GetPatientSummary('CID5') end)
+        assert_true(Engine.AddInjury('CID5', ARTERIAL, {}))
+        assert_true(Engine.SetConsciousness('CID5', 'unconscious', 'report', 'test'))
+        assert_false(Engine.IsActive('CID5'))
+        assert_false(Engine.Activate('CID5'))
+        assert_eq(tick(30), 0)
+        assert_eq(patient('CID5').blood_ml, 5000)
+    end)
+
+    it('a PlayerLoaded during another load of the same citizen still attaches and catches up', function()
+        DB.patients.CID1 = { citizenid = 'CID1', consciousness = 'alert', stage = 'healthy', blood_ml = 5000, hgb_factor = 1, airway = 'clear',
+            breathing = 1, pain = 0, temp_c = 37, toxins = json.encode({ ethanol = 0.1 }), last_tick_at = os.time() - 3600, updated_at = os.time() - 3600 }
+        local real = PFMed.SQL.LoadPatient
+        local fired = false
+        PFMed.SQL.LoadPatient = function(cid)
+            if not fired then
+                fired = true -- the character comes online while the summary lookup waits on the database
+                Mock.fireEvent('QBCore:Server:PlayerLoaded', nil, Mock.newPlayer(1))
+            end
+            return real(cid)
+        end
+        as('pf-emsmdt', function() return aj():GetPatientSummary('CID1') end)
+        PFMed.SQL.LoadPatient = real
+        assert_eq(Store.CidOf(1), 'CID1')
+        assert_eq(Store.SourceOf('CID1'), 1, 'attached')
+        assert_near(patient().toxins.ethanol, 0.085, 0.0001, 'offline catch-up ran')
+        assert_true(Engine.IsActive('CID1'))
+    end)
+end)
+
+
 describe('exports', function()
     it('refuse resources that are not on Config.Medical.Callers', function()
         online(1)

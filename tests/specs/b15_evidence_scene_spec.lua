@@ -65,6 +65,8 @@ BeforeEach = function()
     added, removed, seenWeapon = {}, {}, 0
     resetScene()
     Config.Evidence.Scene.MaxPerCell = 200
+    Config.Evidence.Scene.MaxPerPlayer = 50
+    S.owned, S.ownedCount = {}, {}
     cop(COP, 'COPCID', true, vector3(0, 0, 0))
     cop(FARCOP, 'FARCID', true, vector3(400, 0, 0))
     cop(OFFCOP, 'OFFCID', false, vector3(1, 0, 0))
@@ -147,6 +149,41 @@ describe('limits', function()
         local drop, why = S.Report(CIV, 'blood', { coords = vector3(2, 0, 0) })
         assert_eq(drop, nil)
         assert_eq(why, 'conflict')
+    end)
+    it('one player at their own cap replaces their oldest drop of that kind, never anyone else\'s', function()
+        Config.Evidence.Scene.MaxPerPlayer = 3
+        local other = Mock.newPlayer(9, 'OTHERCID')
+        other.PlayerData.metadata.fingerprint = 'FP-O'
+        Mock.coords[9] = vector3(3, 0, 0)
+        local theirs = S.Report(9, 'fingerprint', { coords = vector3(3, 0, 0) })
+        local mine = {}
+        for i = 1, 3 do mine[i] = S.Report(CIV, 'fingerprint', { coords = vector3(2, 0, 0) }) end
+        S.Flush()
+        Mock.reset()
+        Mock.gameTimer = Mock.gameTimer + 10000
+        local newest = S.Report(CIV, 'fingerprint', { coords = vector3(2, 0, 0) })
+        assert_true(newest ~= nil, 'the new drop is kept')
+        assert_eq(S.drops[mine[1].id], nil, 'the oldest of theirs is gone')
+        assert_true(S.drops[mine[2].id] ~= nil and S.drops[mine[3].id] ~= nil)
+        assert_true(S.drops[theirs.id] ~= nil, 'another player\'s drop is untouched')
+        assert_eq(S.ownedCount['CIVCID:fingerprint'], 3)
+        local upd = sqlCalls("SET state = 'unrecoverable' WHERE id = ?")
+        assert_eq(#upd, 1)
+        assert_eq(upd[1].params[1], mine[1].id, 'kept as an unrecoverable row')
+        assert_eq(targetsOf('evidence:client:RemoveFingerprint')[COP], 1)
+        -- another kind has its own budget
+        assert_true(S.Report(CIV, 'blood', { coords = vector3(2, 0, 0) }) ~= nil)
+        assert_eq(S.ownedCount['CIVCID:fingerprint'], 3)
+    end)
+    it('a drop not written yet is simply forgotten when replaced', function()
+        Config.Evidence.Scene.MaxPerPlayer = 1
+        local first = S.Report(CIV, 'blood', { coords = vector3(2, 0, 0) })
+        Mock.reset()
+        local second = S.Report(CIV, 'blood', { coords = vector3(2, 0, 0) })
+        assert_eq(#S.pending, 1)
+        assert_eq(S.pending[1], second)
+        assert_eq(S.drops[first.id], nil)
+        assert_eq(#sqlCalls('UPDATE'), 0)
     end)
     it('the position is the server\'s: far hints are refused, near ones snap to the ped', function()
         local drop, why = S.Report(CIV, 'blood', { coords = vector3(40, 0, 0) })

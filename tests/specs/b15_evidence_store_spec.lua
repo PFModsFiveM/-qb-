@@ -127,6 +127,47 @@ describe('the bag', function()
     end)
 end)
 
+describe('evidence drawers', function()
+    it('are recognised from the locale\'s drawer phrase, not only the English one', function()
+        local realLang = Lang
+        Lang = { t = function(_, key, p)
+            if key == 'info.current_evidence' then return ('%s | Lade %s'):format(p.value, p.value2) end
+            return key
+        end }
+        Store.drawerPatterns = nil
+        local station, drawer = Store.DrawerOf('2 | Lade 14')
+        assert_eq(station, 2)
+        assert_eq(drawer, 14)
+        assert_eq(Store.DrawerOf('1 | Drawer 3'), 1, 'English ids made before a locale change still count')
+        assert_eq(Store.DrawerOf('9 | Lade 1'), nil, 'no such station')
+        assert_eq(Store.DrawerOf('policestash_ABC'), nil)
+        assert_true(Store.IsLockerStash('3 | Lade 2'))
+        local at = Store.LockerLocation('3 | Lade 2')
+        assert_eq(at.x, Config.Locations['evidence'][3].x)
+        Lang = { t = function(_, key, p)
+            if key == 'info.current_evidence' then return ('Gaveta (%s) %s'):format(p.value2, p.value) end
+            return key
+        end }
+        Store.drawerPatterns = nil
+        assert_eq(Store.DrawerOf('Gaveta (5) 1'), 1, 'any order and pattern characters')
+        Config.Evidence.DrawerPatterns = { '^evlocker_(%d+)_(%d+)$' }
+        Store.drawerPatterns = nil
+        assert_eq(Store.DrawerOf('evlocker_2_8'), 2, 'operator patterns')
+        Config.Evidence.DrawerPatterns = {}
+        Lang = realLang
+        Store.drawerPatterns = nil
+    end)
+    it('any stash with a locker row counts as a locker after start', function()
+        E.lockerStashes = {}
+        assert_false(Store.IsLockerStash('case_locker_12'))
+        local realQuery = Store.Query
+        Store.Query = function() return { { stash_id = 'case_locker_12' } }, true end
+        Store.LoadLockers()
+        Store.Query = realQuery
+        assert_true(Store.IsLockerStash('case_locker_12'))
+    end)
+end)
+
 describe('actors', function()
     it('job, grade and duty come from the server, not from opts.actor', function()
         local a = E.Actor({ src = CIV, job = 'police', leo = true, supervisor = true })

@@ -21,10 +21,15 @@ function GetResourceState(name) return started[name] and 'started' or 'missing' 
 function GetCurrentResourceName() return 'pf-justice' end
 
 -- ── stubs of other resources ──────────────────────────────────────────────────────────────────
-local cuffs, cuffCalls = {}, {}
+local cuffs, cuffCalls, cuffResult, samples = {}, {}, true, {}
 Mock.exportsByResource['pfm-policejob'] = {
-    SetCuffed = function(_, src, on, reason) cuffs[src] = on cuffCalls[#cuffCalls + 1] = { src = src, on = on, reason = reason } return true end,
+    SetCuffed = function(_, src, on, reason)
+        cuffCalls[#cuffCalls + 1] = { src = src, on = on, reason = reason }
+        if cuffResult then cuffs[src] = on end
+        return cuffResult
+    end,
     IsCuffed = function(_, src) return cuffs[src] == true end,
+    RegisterReferenceSample = function(_, cid, kind, source, opts) samples[#samples + 1] = { cid = cid, kind = kind, source = source, opts = opts } return { ok = true } end,
 }
 local Stashes = {}
 Mock.exportsByResource['pfm-inventory'] = {
@@ -154,6 +159,7 @@ BeforeEach = function()
     DB = newDb()
     J.Custody.bySrc, J.Custody.srcByCid, J.Custody.flagged = {}, {}, {}
     cuffs, cuffCalls, teleports, records, jailMinutes, hospitalFlags, orderStates, Stashes = {}, {}, {}, {}, {}, {}, {}, {}
+    cuffResult, samples = true, {}
     summary = nil
     started['pf-ambulancejob'] = nil
     Config.Compat = nil
@@ -453,5 +459,104 @@ describe('metadata mirrors (compat.lua)', function()
         records[#records].entry.at = Mock.clock - 31 * 86400
         J.Compat.Refresh('SUS2', { record = true })
         assert_eq(Mock.players[SUSPECT].PlayerData.metadata.criminalrecord.hasRecord, false, 'expired')
+    end)
+end)
+
+describe('rework: transfers follow the machine; medics never release (checker P3, P4)', function()
+    local MED = 4
+    local function medic()
+        local m = Mock.newPlayer(MED, 'EMS4')
+        m.PlayerData.job = { name = 'ambulance', type = 'ems', grade = { level = 1 }, onduty = true }
+    end
+    local function bookAndSeize()
+        local id = open().custodyId
+        Mock.coords[COP], Mock.coords[SUSPECT] = DESK, DESK
+        local b = J.Booking.Book(id, {}, { actor = { src = COP } })
+        assert_eq(b.ok, true)
+        return id, b.receiptId
+    end
+
+    it('a medic cannot release a prisoner with any reason, but moves them to and from hospital', function()
+        medic()
+        local id = open().custodyId
+        assert_eq(J.Custody.Transfer(id, { kind = 'hospital', id = 'pillbox' }, { actor = { src = MED } }).ok, true)
+        for _, reason in ipairs({ 'transferred', 'no_charges', 'sentence_complete' }) do
+            local res = J.Custody.Release(id, reason, { actor = { src = MED } })
+            assert_eq(res.ok, false, reason)
+            assert_eq(res.error, 'no_permission', reason)
+        end
+        assert_eq(DB.custody[id].state, 'hospital')
+        assert_eq(DB.custody[id].closed_at, nil)
+        assert_eq(J.Custody.Return(id, { actor = { src = MED } }).ok, true)
+        assert_eq(DB.custody[id].state, 'arrested')
+    end)
+
+    it('a prison transfer from arrested / in transport / booking / detained / hospital is refused, nothing released', function()
+        for _, state in ipairs({ 'arrested', 'in_transport', 'booking', 'detained', 'hospital' }) do
+            DB = newDb()
+            J.Custody.bySrc, J.Custody.srcByCid = {}, {}
+            cuffs[SUSPECT], cuffCalls = true, {}
+            Mock.players[SUSPECT].PlayerData.items = { { name = 'lockpick', amount = 2, slot = 1 } }
+            local id = open().custodyId
+            local rid = J.Property.Seize(SUSPECT, { custodyId = id, actor = { src = COP } }).receiptId
+            DB.custody[id].state, DB.custody[id].prev_state = state, 'arrested'
+            local res = J.Custody.Transfer(id, { kind = 'prison', id = 'bolingbroke' }, { actor = { src = COP } })
+            assert_eq(res.error, 'invalid_state', state)
+            assert_eq(DB.custody[id].state, state, state .. ' unchanged')
+            assert_eq(DB.custody[id].closed_at, nil, state)
+            assert_eq(#cuffCalls, 0, state .. ': cuffs untouched')
+            assert_eq(DB.property[rid].state, 'held', state .. ': property kept')
+            assert_eq(J.Custody.Release(id, 'transferred', { actor = { src = COP } }).error, 'invalid_state', state)
+        end
+    end)
+
+    it('from held the transfer closes as transferred and keeps the property for prison', function()
+        local id, rid = bookAndSeize()
+        Mock.coords[SUSPECT] = CELL.center
+        assert_eq(J.Custody.AssignCell(id, CELL.id, {}).ok, true)
+        cuffs[SUSPECT], cuffCalls = true, {}
+        assert_eq(J.Custody.Transfer(id, { kind = 'prison', id = 'bolingbroke' }, { actor = { src = COP } }).ok, true)
+        assert_eq(DB.custody[id].state, 'transferred')
+        assert_eq(DB.property[rid].state, 'held')
+        assert_eq(#cuffCalls, 0)
+    end)
+
+    it('an order that takes a citizen straight from arrest closes the custody without release effects', function()
+        local id = open().custodyId
+        local rid = J.Property.Seize(SUSPECT, { custodyId = id, actor = { src = COP } }).receiptId
+        cuffs[SUSPECT], cuffCalls = true, {}
+        J.Custody.OnOrderCreated({ id = 31, cid = 'SUS2', kind = 'jail', state = 'active', facility = 'bolingbroke' })
+        assert_true(DB.custody[id].closed_at ~= nil, 'closed')
+        assert_eq(DB.custody[id].release_reason, 'transferred')
+        assert_eq(DB.property[rid].state, 'held', 'property follows the order')
+        assert_eq(DB.property[rid].order_id, 31)
+        assert_eq(#cuffCalls, 0, 'cuffs are the jail owner\'s business')
+    end)
+end)
+
+describe('rework: reconnect cuff flag and the lab reference sample', function()
+    it('the reconnect log says cuffed only when SetCuffed did it', function()
+        local id = open({ facility = 'mrpd_holding' }).custodyId
+        cuffResult = false
+        J.Custody.bySrc, J.Custody.srcByCid = {}, {}
+        Mock.fireEvent('QBCore:Server:PlayerLoaded', nil, { PlayerData = { source = SUSPECT, citizenid = 'SUS2' } })
+        local data
+        for _, l in ipairs(DB.log) do if l.custody_id == id and l.kind == 'reconnect' then data = json.decode(l.data) end end
+        assert_eq(data.cuffed, false)
+        cuffResult = true
+        J.Custody.bySrc, J.Custody.srcByCid = {}, {}
+        Mock.fireEvent('QBCore:Server:PlayerLoaded', nil, { PlayerData = { source = SUSPECT, citizenid = 'SUS2' } })
+        for _, l in ipairs(DB.log) do if l.custody_id == id and l.kind == 'reconnect' then data = json.decode(l.data) end end
+        assert_eq(data.cuffed, true)
+    end)
+
+    it('booking hands the random DNA token to the lab registration', function()
+        local id = open().custodyId
+        Mock.coords[COP], Mock.coords[SUSPECT] = DESK, DESK
+        local res = J.Booking.Book(id, { seize = false }, { actor = { src = COP } })
+        assert_eq(#samples, 1)
+        assert_eq(samples[1].kind, 'dna')
+        assert_eq(samples[1].source.sampleRef, J.Booking.Get(id).booking.dnaSampleRef)
+        assert_eq(samples[1].source.bookingNo, res.bookingNo)
     end)
 end)

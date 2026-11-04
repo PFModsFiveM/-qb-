@@ -22,6 +22,8 @@ S.cellCount = S.cellCount or {}
 S.live = S.live or 0
 S.pending = S.pending or {}   -- drops not written yet
 S.lastCell = S.lastCell or {} -- [officer src] = cell of the last snapshot
+S.owned = S.owned or {}       -- ['<cid>:<kind>'] = { [id] = true } live drops each player left
+S.ownedCount = S.ownedCount or {}
 S.loaded = S.loaded or false
 S.nextId = S.nextId or 0
 
@@ -47,8 +49,19 @@ local function minutesFor(tbl, kind, default)
 end
 
 -- ── memory index ──────────────────────────────────────────────────────────────────────────────
+local function ownerKey(drop)
+    return drop.sourceCid and (drop.sourceCid .. ':' .. drop.kind) or nil
+end
+
 local function index(drop)
     S.drops[drop.id] = drop
+    local key = ownerKey(drop)
+    if key then
+        drop.ownerKey = key
+        S.owned[key] = S.owned[key] or {}
+        S.owned[key][drop.id] = true
+        S.ownedCount[key] = (S.ownedCount[key] or 0) + 1
+    end
     S.cells[drop.cell] = S.cells[drop.cell] or {}
     S.cells[drop.cell][drop.id] = true
     S.cellCount[drop.cell] = (S.cellCount[drop.cell] or 0) + 1
@@ -58,6 +71,12 @@ end
 local function unindex(drop)
     if not S.drops[drop.id] then return end
     S.drops[drop.id] = nil
+    local key = drop.ownerKey
+    if key and S.owned[key] and S.owned[key][drop.id] then
+        S.owned[key][drop.id] = nil
+        S.ownedCount[key] = (S.ownedCount[key] or 1) - 1
+        if S.ownedCount[key] <= 0 then S.owned[key], S.ownedCount[key] = nil, nil end
+    end
     local cell = S.cells[drop.cell]
     if cell then
         cell[drop.id] = nil
@@ -173,6 +192,28 @@ function S.SyncTick()
     end
 end
 
+--- A player at their own live cap for a kind loses their oldest drop of that kind (never anyone
+--- else's), so one client cannot fill the server's or a cell's capacity. The row is kept as
+--- 'unrecoverable' (a drop not yet written is simply forgotten).
+function S.EvictOldest(key)
+    local oldest
+    for id in pairs(S.owned[key] or {}) do
+        if not oldest or id < oldest then oldest = id end
+    end
+    local drop = oldest and S.drops[oldest]
+    if not drop then return false end
+    if drop.persisted then
+        Store.Query('update', "UPDATE pf_evidence_scene_drops SET state = 'unrecoverable' WHERE id = ? AND state = 'present'", { drop.id })
+    else
+        for i = #S.pending, 1, -1 do
+            if S.pending[i] == drop then table.remove(S.pending, i) end
+        end
+    end
+    unindex(drop)
+    sendRemove({ drop })
+    return true
+end
+
 -- ── reports ───────────────────────────────────────────────────────────────────────────────────
 local function weaponDef(hash)
     hash = E.Int(hash)
@@ -220,7 +261,9 @@ function S.Report(src, kind, data)
     local pos = dropPosition(src, data.coords)
     if not pos then return nil, 'too_far' end
     local cell = S.Cell(pos.x, pos.y)
+    local key = P.PlayerData.citizenid .. ':' .. kind
     if (S.cellCount[cell] or 0) >= sc('MaxPerCell', 200) or S.live >= sc('MaxLive', 6000) then return nil, 'conflict' end
+    if (S.ownedCount[key] or 0) >= sc('MaxPerPlayer', 50) then S.EvictOldest(key) end
 
     local attrs = { clientReported = true }
     if kind == 'blood' then
@@ -447,6 +490,17 @@ function S.Clear(src, kind, ids)
     for _, d in ipairs(cleared) do unindex(d) end
     sendRemove(cleared)
     return #cleared
+end
+
+function S.ForgetCitizen(citizenid)
+    for _, kind in ipairs({ 'blood', 'fingerprint', 'casing' }) do
+        local key = citizenid .. ':' .. kind
+        for id in pairs(S.owned[key] or {}) do
+            local d = S.drops[id]
+            if d then d.ownerKey, d.sourceCid = nil, nil end
+        end
+        S.owned[key], S.ownedCount[key] = nil, nil
+    end
 end
 
 function S.ForgetSource(src)

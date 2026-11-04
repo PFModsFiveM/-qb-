@@ -12,6 +12,19 @@ Config.Evidence = {
     BagItems = { evidence_bag = true, filled_evidence_bag = true },
 
     TagPrefix = 'EV',
+    -- Labs and courts: evidence is handed in, and opened without integrity cost, only by someone
+    -- standing there (server position). A lab tech (pf-government qualification LabRole) may open lab
+    -- evidence from anywhere. Ids are what TransferEvidence { kind = 'lab', labId } names.
+    Labs = {
+        main = { label = 'Mission Row forensics', coords = vector3(442.17, -996.07, 30.69), radius = 15.0 },
+    },
+    Courts = {
+        { label = 'Courthouse', coords = vector3(-544.85, -204.40, 38.22), radius = 40.0 },
+    },
+    LabRole = 'lab_tech',
+    -- extra stash-id patterns for evidence drawers (two captures: station index, drawer number); the
+    -- locale's 'info.current_evidence' phrase is recognised without this
+    DrawerPatterns = {},
     SupervisorGrade = 3,          -- leo grade that may move, release or destroy evidence someone else holds
     HandoverReach = 2.5,          -- officer to officer handover (touch rule, architecture 6.4)
     LockerReach = 3.0,            -- the officer must stand at the evidence locker
@@ -59,6 +72,8 @@ Config.Evidence = {
         CellSize = 100,           -- metres per grid cell
         MaxPerCell = 200,         -- live drops per cell; more are refused
         MaxLive = 6000,           -- live drops kept in memory on the whole server
+        MaxPerPlayer = 50,        -- live drops of one kind one player left; the next replaces their oldest
+                                  -- (3 kinds x 50 < MaxPerCell, so one player cannot fill a cell or the server)
         RatePerSecond = 5,        -- per player and per drop type (architecture 6.3)
         RateBurst = 5,
         HintRadius = 10.0,        -- a client position further than this from the server position is refused

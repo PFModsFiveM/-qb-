@@ -197,6 +197,9 @@ describe('integrity rules (architecture 4.9)', function()
         { name = 'short time on the ground', events = { { event = 'moved', to_ref = 'drop:d1', at = T0 }, { event = 'moved', to_ref = 'player:A', at = T0 + 600 } }, score = 100 },
         { name = 'long time on the ground', events = { { event = 'moved', to_ref = 'drop:d1', at = T0 }, { event = 'moved', to_ref = 'player:A', at = T0 + 3600 } }, score = 80, flags = 'gap' },
         { name = 'still missing past the gap', events = { { event = 'flagged_missing', to_ref = 'unknown', at = T0 } }, holder = 'unknown', now = T0 + 3600, score = 80, flags = 'gap,missing' },
+        { name = 'short time with a civilian', events = { { event = 'moved', to_ref = 'player:CIV', note = 'not on-duty police', at = T0 }, { event = 'moved', to_ref = 'player:A', at = T0 + 600 } }, score = 100 },
+        { name = 'long time with a civilian', events = { { event = 'moved', to_ref = 'player:CIV', note = 'not on-duty police; by some-script', at = T0 }, { event = 'moved', to_ref = 'player:A', at = T0 + 3600 } }, score = 80, flags = 'gap' },
+        { name = 'still with a civilian past the gap', events = { { event = 'moved', to_ref = 'player:CIV', note = 'not on-duty police', at = T0 } }, score = 80, flags = 'gap' },
         { name = 'no gloves on a print', kind = 'fingerprint', rowFlags = 'contaminated', events = {}, score = 90, flags = 'contaminated' },
         { name = 'no gloves on a casing costs nothing', kind = 'casing', rowFlags = 'contaminated', events = {}, score = 100 },
         { name = 'never below zero', events = (function()

@@ -28,7 +28,11 @@ local B = J.Bail
 local orders, setStates = {}, {}
 J.API = { GetOrder = function(id) return orders[id] and { ok = true, order = orders[id] } or { ok = false, error = 'not_found' } end }
 J.Orders = {
-    SetState = function(id, to, opts) setStates[#setStates + 1] = { id = id, to = to, reason = opts and opts.reason } return { ok = true } end,
+    SetState = function(id, to, opts)
+        setStates[#setStates + 1] = { id = id, to = to, reason = opts and opts.reason }
+        if orders[id] then orders[id].state = to end
+        return { ok = true }
+    end,
     Event = function() return true end,
 }
 J.Clock = { SetHospitalCustody = function() end }
@@ -61,7 +65,10 @@ J.Bail.Store = {
     due = function(now)
         local out = {}
         for _, b in pairs(DB.bail) do
-            if b.state == 'accepted' or b.state == 'payment_pending' or (b.state == 'exonerated' and b.pay_key) or (b.state == 'offered' and b.expires_at < now) then
+            local refOpen = (b.custody_id and DB.custody[b.custody_id] and not DB.custody[b.custody_id].closed_at)
+                or (b.order_id and orders[b.order_id] and (orders[b.order_id].state == 'active' or orders[b.order_id].state == 'pending'))
+            if b.state == 'accepted' or b.state == 'payment_pending' or (b.state == 'exonerated' and b.pay_key)
+                or (b.state == 'offered' and b.expires_at < now) or (b.state == 'posted' and refOpen) then
                 out[#out + 1] = copy(b)
             end
         end
@@ -318,5 +325,106 @@ describe('exoneration and forfeiture', function()
         assert_eq(bank(PAYER), 600)
         assert_eq(B.Exonerate(id, {}).error, 'invalid_state')
         assert_eq(DB.bail[id].state, 'forfeited')
+    end)
+end)
+
+describe('rework: bail only while the citizen is still held (checker P1, P2, retries)', function()
+    it('a custody released before payment: the offer is dead, nobody is charged', function()
+        local o, custodyId = offer()
+        assert_eq(J.Custody.Release(custodyId, 'no_charges', { actor = { src = COP } }).ok, true)
+        assert_eq(DB.bail[o.bailId].state, 'expired', 'closing the custody ended the offer')
+        local res = B.Accept(o.bailId, PAYER, {})
+        assert_eq(res.ok, false)
+        assert_eq(bank(PAYER), 1000)
+        assert_eq(doj(), 0)
+    end)
+
+    it('an offer still open when its custody ended is refused and expired under the lock', function()
+        local o, custodyId = offer()
+        -- closed without the bail hook (as a crash between the two would leave it)
+        DB.custody[custodyId].closed_at, DB.custody[custodyId].state = Mock.clock, 'released'
+        local res = B.Accept(o.bailId, PAYER, {})
+        assert_eq(res.error, 'invalid_state')
+        assert_eq(DB.bail[o.bailId].state, 'expired')
+        assert_eq(bank(PAYER), 1000)
+    end)
+
+    it('remand ends earlier offers; an order that ends ends its offer', function()
+        local o, custodyId = offer()
+        DB.custody[custodyId].state = 'booked'
+        assert_eq(J.Custody.SetState(custodyId, 'remanded', { actor = { src = JUDGE } }).ok, true)
+        assert_eq(DB.bail[o.bailId].state, 'expired')
+        orders[81] = { id = 81, cid = 'PRI2', kind = 'jail', state = 'active' }
+        local o2 = B.Offer({ orderId = 81 }, { amount = 100 }, { actor = { src = COP } })
+        orders[81].state = 'completed'
+        B.OnOrderChanged(orders[81])
+        assert_eq(DB.bail[o2.bailId].state, 'expired')
+        assert_eq(B.Accept(o2.bailId, PAYER, {}).error, 'invalid_state')
+    end)
+
+    it('the refund key is written with exonerated: a failed later write never marks an unpaid refund done', function()
+        local o = offer()
+        assert_eq(B.Accept(o.bailId, PAYER, {}).ok, true)
+        local realCas = J.Bail.Store.cas
+        local failOnce = true
+        J.Bail.Store.cas = function(id, from, fields)
+            if failOnce and from == 'exonerated' and fields.pay_key then failOnce = false return false end
+            return realCas(id, from, fields)
+        end
+        local res = B.Exonerate(o.bailId, { actor = { src = JUDGE } })
+        B.Tick(Mock.clock + 1)
+        J.Bail.Store.cas = realCas
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_true(DB.bail[o.bailId].pay_key:find(':refund', 1, true) ~= nil, 'the refund key went in with exonerated')
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000, 'refunded for real')
+    end)
+
+    it('an exoneration interrupted before the transfer is paid by the sweep under its own refund key', function()
+        local o = offer()
+        assert_eq(B.Accept(o.bailId, PAYER, {}).ok, true)
+        -- what a crash right after the compare-and-set leaves behind
+        DB.bail[o.bailId].state, DB.bail[o.bailId].pay_key = 'exonerated', ('pf-justice:bail:%d:refund'):format(o.bailId)
+        B.Tick(Mock.clock + 1)
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000)
+        -- a payment key never settles a refund (an older row): it gets a refund key first
+        local o2 = offer()
+        Mock.clock = Mock.clock + 6
+        assert_eq(B.Accept(o2.bailId, PAYER, {}).ok, true)
+        DB.bail[o2.bailId].state = 'exonerated'
+        B.Tick(Mock.clock + 2)
+        assert_true(paid(('pf-justice:bail:%d:refund'):format(o2.bailId)), 'paid under a refund key')
+        assert_eq(bank(PAYER), 1000)
+    end)
+
+    it('a posted bail whose release failed is released by the sweep', function()
+        local o, custodyId = offer()
+        local realRelease = J.Custody.Release
+        J.Custody.Release = function() return { ok = false, error = 'busy' } end
+        local res = B.Accept(o.bailId, PAYER, {})
+        J.Custody.Release = realRelease
+        assert_eq(res.ok, true)
+        assert_eq(DB.custody[custodyId].closed_at, nil, 'not released yet')
+        B.Tick(Mock.clock + 1)
+        assert_eq(DB.custody[custodyId].state, 'released')
+        assert_eq(DB.custody[custodyId].release_reason, 'bailed')
+        assert_eq(bank(PAYER), 600, 'paid once')
+    end)
+
+    it('a payment that settles after the custody ended some other way goes back to the payer', function()
+        local o, custodyId = offer()
+        local real = Mock.exportsByResource['pfm-banking'].Transfer
+        Mock.exportsByResource['pfm-banking'].Transfer = function(_, opts) real(opts) error('connection lost') end
+        B.Accept(o.bailId, PAYER, {})
+        Mock.exportsByResource['pfm-banking'].Transfer = real
+        assert_eq(DB.bail[o.bailId].state, 'payment_pending')
+        DB.custody[custodyId].state = 'booked'
+        J.Custody.Release(custodyId, 'no_charges', { actor = { src = COP } })
+        B.Tick(Mock.clock)
+        B.Tick(Mock.clock + Config.Bail.PaymentHoldSeconds + 1)
+        assert_eq(DB.bail[o.bailId].state, 'refunded')
+        assert_eq(bank(PAYER), 1000)
+        assert_eq(DB.custody[custodyId].release_reason, 'no_charges')
     end)
 end)

@@ -381,7 +381,5 @@ AddEventHandler('playerDropped', function() A.OnPlayerDropped(source) end)
 AddEventHandler('pfm-core:server:characterDeleted', function(citizenid)
     if type(citizenid) ~= 'string' or not E.DbReady() then return end
     Store.Query('update', 'UPDATE pf_evidence_scene_drops SET source_cid = NULL WHERE source_cid = ?', { citizenid })
-    for _, d in pairs(S.drops) do
-        if d.sourceCid == citizenid then d.sourceCid = nil end
-    end
+    S.ForgetCitizen(citizenid)
 end)

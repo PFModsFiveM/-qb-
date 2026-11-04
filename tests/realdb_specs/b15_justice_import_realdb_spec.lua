@@ -412,3 +412,47 @@ describe('custody, booking, property and bail SQL', function()
         assert_eq(one('SELECT state FROM pf_justice_bail WHERE id = ?', { offer.bailId }).state, 'refunded')
     end)
 end)
+
+describe('rework: bail follows its custody on MariaDB', function()
+    local function fresh(cid, src)
+        cop()
+        local s = Mock.newPlayer(src, cid)
+        s.PlayerData.items = {}
+        Mock.coords[OFFICER], Mock.coords[src] = DESK, DESK
+        local id = J.Custody.Open(src, { reason = 'Rework', actor = { src = OFFICER } }).custodyId
+        assert_true(id ~= nil, 'custody')
+        assert_eq(J.Booking.Book(id, { seize = false }, { actor = { src = OFFICER } }).ok, true)
+        return id
+    end
+
+    it('closing a custody expires its open offer (payable no more)', function()
+        local id = fresh('REW1', 6)
+        local o = J.Bail.Offer({ custodyId = id }, { amount = 100 }, { actor = { src = OFFICER } })
+        assert_eq(o.ok, true, tostring(o.error))
+        assert_eq(J.Custody.Release(id, 'no_charges', { actor = { src = OFFICER } }).ok, true)
+        assert_eq(one('SELECT state FROM pf_justice_bail WHERE id = ?', { o.bailId }).state, 'expired')
+    end)
+
+    it('a posted bail whose release hit a busy custody is released by the sweep (due query joins the custody)', function()
+        local id = fresh('REW2', 7)
+        local o = J.Bail.Offer({ custodyId = id }, { amount = 100 }, { actor = { src = OFFICER } })
+        local payer = Mock.newPlayer(PAYER, 'PAY1')
+        payer.PlayerData.money.bank = 500
+        Mock.coords[PAYER] = DESK
+        Mock.clock = Mock.clock + 10
+        assert_true(J.Locks.Take('custody:' .. id), 'hold the custody lock')
+        local res = J.Bail.Accept(o.bailId, PAYER, {})
+        J.Locks.Free('custody:' .. id)
+        assert_eq(res.ok, true, tostring(res.error))
+        assert_eq(one('SELECT closed_at FROM pf_justice_custody WHERE id = ?', { id }).closed_at, nil)
+        assert_true(#q("SELECT id FROM pf_justice_bail WHERE id = ? AND state = 'posted'", { o.bailId }) == 1)
+        J.Bail.Tick(Mock.clock + 1)
+        local c = one('SELECT * FROM pf_justice_custody WHERE id = ?', { id })
+        assert_eq(c.state, 'released')
+        assert_eq(c.release_reason, 'bailed')
+        assert_eq(Mock.players[PAYER].PlayerData.money.bank, 400, 'paid once')
+        -- released now: the sweep no longer picks it up
+        local due = J.Bail.Store.due(Mock.clock + 2)
+        for _, b in ipairs(due) do assert_true(tonumber(b.id) ~= o.bailId, 'not due any more') end
+    end)
+end)

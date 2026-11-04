@@ -55,6 +55,7 @@ Config = nil
 load_resource('[pfscripts]/pf-policemdt-DEV/shared/framework.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/config.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/access.lua')
+load_resource('[pfscripts]/pf-policemdt-DEV/server/schema.lua') -- the resource's migrations (batch 15)
 load_resource('[pfscripts]/pf-policemdt-DEV/server/main.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/sentencing.lua')
 local S = PFMdtSentencing
@@ -128,14 +129,16 @@ end
 
 describe('MDT database', function()
     it('the migrations made the tables and can run again', function()
-        assert_eq(RunMigrations('pf-policemdt-DEV', S.Migrations), true)
+        assert_eq(RunMigrations('pf-policemdt-DEV', PFMdtSchema.Migrations), true)
         assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_mdt_active_jails' AND COLUMN_NAME = 'released_why'")), 1)
         for _, t in ipairs({ 'pf_mdt_active_jails', 'pf_mdt_sentences', 'pf_mdt_license_actions', 'pf_mdt_charge_audit', 'pf_mdt_roster_backup' }) do
             assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', { t })), 1, t)
         end
         -- the steps themselves are rerun-safe (an interrupted migration starts again from its first step)
-        for _, m in ipairs(S.Migrations) do
-            for _, sql in ipairs(m.up) do MySQL.query.await(sql) end
+        for _, m in ipairs(PFMdtSchema.Migrations) do
+            if type(m.up) == 'function' then m.up() else
+                for _, sql in ipairs(m.up) do MySQL.query.await(sql) end
+            end
         end
         assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_mdt_sentences' AND COLUMN_NAME = 'fine_key'")), 1)
     end)

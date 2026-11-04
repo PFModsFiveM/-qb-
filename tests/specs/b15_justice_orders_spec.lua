@@ -68,7 +68,7 @@ H[Q.insertOrder] = function(p)
     local id = DB.n.o
     DB.orders[id] = { id = id, citizenid = p[1], kind = p[2], state = p[3], facility = p[4], clock = p[5], required_seconds = p[6],
         served_seconds = 0, credit_seconds = 0, forfeit_seconds = 0, last_tick_at = p[20], amount = p[7], paid_amount = 0,
-        pay_attempt = 0, victim_cid = p[8], units = p[9], units_done = 0, days = p[10], conditions = p[11], charges = p[12],
+        pay_attempt = 0, refund_attempt = 0, victim_cid = p[8], units = p[9], units_done = 0, days = p[10], conditions = p[11], charges = p[12],
         source_type = p[13], source_id = p[14], custody_id = p[15], parent_order_id = p[16], starts_at = p[17], due_at = p[18],
         ends_at = p[19], idem_key = p[21], legacy_ref = p[22], created_by = p[23], created_at = p[24], updated_at = p[25] }
     return id
@@ -104,15 +104,34 @@ H[Q.adjust] = function(p)
     end)
 end
 H[Q.payBegin] = function(p)
-    local o = DB.orders[tonumber(p[4])]
-    if not o or o.state ~= p[5] or o.pay_attempt ~= p[6] then return 0 end
-    o.state, o.pay_attempt, o.pay_key, o.updated_at = 'payment_pending', p[1], p[2], p[3]
+    local o = DB.orders[tonumber(p[5])]
+    if not o or o.state ~= p[6] or o.pay_attempt ~= p[7] then return 0 end
+    o.state, o.pay_attempt, o.pay_key, o.pay_from, o.updated_at = 'payment_pending', p[1], p[2], p[3], p[4]
     return 1
 end
-H[Q.paid] = function(p) return cas(p[3], p[4], function(o) o.state, o.paid_amount, o.ends_at, o.updated_at = 'paid', o.amount, p[1], p[2] end) end
+H[Q.paid] = function(p) return cas(p[4], p[5], function(o) o.state, o.paid_amount, o.ends_at, o.updated_at = 'paid', p[1], p[2], p[3] end) end
 H[Q.setInvoice] = function(p) return cas(p[4], p[5], function(o) o.state, o.invoice_id, o.updated_at = p[1], p[2], p[3] end) end
-H[Q.byInvoice] = function(p) return where(DB.orders, function(o) return o.invoice_id == p[1] and o.state == 'invoiced' end)[1] end
-H[Q.duePayments] = function(p) return where(DB.orders, function(o) return o.state == 'payment_pending' and o.updated_at <= p[1] end, false, 50) end
+H[Q.byInvoice] = function(p) return where(DB.orders, function(o) return o.invoice_id == p[1] end, true)[1] end
+H[Q.duePayments] = function(p)
+    return where(DB.orders, function(o) return o.state == 'payment_pending' and o.updated_at <= p[1] and o.id > p[2] end, false, 50)
+end
+H[Q.dueRefunds] = function(p)
+    return where(DB.orders, function(o) return (o.refund_state == 'due' or o.refund_state == 'unclear') and o.updated_at <= p[1] and o.id > p[2] end, false, 50)
+end
+H[Q.refundBegin] = function(p)
+    local o = DB.orders[tonumber(p[6])]
+    if not o or o.refund_state ~= nil then return 0 end
+    o.refund_state, o.refund_attempt, o.refund_amount, o.refund_cid, o.refund_society, o.refund_invoice, o.updated_at = 'due', 0, p[1], p[2], p[3], p[4], p[5]
+    return 1
+end
+H[Q.refundStep] = function(p)
+    local o = DB.orders[tonumber(p[4])]
+    if not o or o.refund_state ~= p[5] or o.refund_attempt ~= p[6] then return 0 end
+    o.refund_state, o.refund_attempt, o.updated_at = p[1], p[2], p[3]
+    return 1
+end
+PhoneInvoices = {} -- [invoice id] = true while pfm-phone still holds the row
+H[Q.phoneInvoice] = function(p) return PhoneInvoices[p[1]] and { id = p[1] } or nil end
 H[Q.dueDeadlines] = function(p)
     return where(DB.orders, function(o)
         return has(o.kind, { 'fine', 'citation', 'restitution', 'community_service' }) and has(o.state, { 'issued', 'upheld', 'assigned', 'active' })
@@ -129,6 +148,46 @@ local function rename(tbl, col, p)
 end
 H[Q.anonOrders] = function(p) return rename(DB.orders, 'citizenid', p) end
 H[Q.anonVictim] = function(p) return rename(DB.orders, 'victim_cid', p) end
+H[Q.anonCreatedBy] = function(p) return rename(DB.orders, 'created_by', p) end
+H[Q.anonRefundCid] = function(p) return rename(DB.orders, 'refund_cid', p) end
+H[Q.anonEventActor] = function(p) return rename(DB.events, 'actor_cid', p) end
+H[Q.anonAuditActor] = function(p) return rename(DB.audit, 'actor_cid', p) end
+H[Q.anonAuditEntity] = function(p)
+    local n = 0
+    for _, a in pairs(DB.audit) do if a.entity == 'record' and a.entity_id == p[2] then a.entity_id = p[1] n = n + 1 end end
+    return n
+end
+H[Q.anonExpungedBy] = function(p) return rename(DB.records, 'expunged_by', p) end
+local function replaceIn(tbl, p)
+    local n = 0
+    for _, r in pairs(tbl) do
+        if type(r.detail) == 'string' and r.detail:find(p[1], 1, true) then
+            local out, i = {}, 1
+            while true do
+                local a, b = r.detail:find(p[1], i, true)
+                if not a then out[#out + 1] = r.detail:sub(i) break end
+                out[#out + 1] = r.detail:sub(i, a - 1) .. p[2]
+                i = b + 1
+            end
+            r.detail = table.concat(out)
+            n = n + 1
+        end
+    end
+    return n
+end
+H[Q.anonEventDetail] = function(p) return replaceIn(DB.events, p) end
+H[Q.anonAuditDetail] = function(p) return replaceIn(DB.audit, p) end
+H[Q.recordQueued] = function()
+    local seen, out = {}, {}
+    for _, e in ipairs(list(DB.events, true)) do
+        if e.action == 'record_queued' and not seen[e.order_id] then seen[e.order_id] = true out[#out + 1] = { order_id = e.order_id } end
+    end
+    return out
+end
+H[Q.recordQueueDone] = function(p)
+    for _, e in pairs(DB.events) do if e.idem_key == p[1] then e.action = 'record_done' return 1 end end
+    return 0
+end
 H[Q.anonOfficer] = function(p) return rename(DB.citations, 'officer_cid', p) end
 H[Q.anonRecords] = function(p) return rename(DB.records, 'citizenid', p) end
 H[Q.insertEvent] = function(p)
@@ -183,7 +242,7 @@ H[Q.sweepOrderEvents] = function(p)
     for id, e in pairs(DB.events) do if e.at < p[1] then DB.events[id] = nil n = n + 1 end end
     return n
 end
-FakeDB.extraPatterns = { { 'CREATE UNIQUE INDEX IF NOT EXISTS', function() return 0 end } }
+FakeDB.extraPatterns = { { 'CREATE UNIQUE INDEX IF NOT EXISTS', function() return 0 end }, { 'CREATE INDEX IF NOT EXISTS', function() return 0 end } }
 for sql, fn in pairs(H) do table.insert(FakeDB.extraPatterns, { sql, fn }) end
 
 -- ── helpers ─────────────────────────────────────────────────────────────────────────────────────
