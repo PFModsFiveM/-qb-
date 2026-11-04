@@ -87,6 +87,11 @@ local function installBudgetDb()
         return { id = 1, department = p[1], month_key = p[2], linked_society_name = p[1], approved_monthly_budget = 1000, spent_this_month = 0 }
     end)
     on('SELECT * FROM pf_gov_budget_transactions WHERE idem_key = ?', function(p) return budgetRows[p[1]] end)
+    on("WHERE state = 'pending' AND idem_key IS NOT NULL", function()
+        local out = {}
+        for _, r in pairs(budgetRows) do if r.state == 'pending' then out[#out + 1] = r end end
+        return out
+    end)
     on('INSERT IGNORE INTO pf_gov_budget_transactions', function(p, kind)
         local key = p[11]
         if budgetRows[key] then return 0 end
@@ -105,7 +110,9 @@ local function installBudgetDb()
                     if r.state ~= 'pending' then return 0 end
                     r.state = 'failed'
                 elseif q:find("state = 'pending', ledger_key = ?, society_before", 1, true) then
-                    if r.state ~= 'failed' then return 0 end
+                    -- the WHERE clause of the statement decides which states it may change
+                    local allowed = q:find("state IN ('failed', 'pending')", 1, true) and { failed = true, pending = true } or { failed = true }
+                    if not allowed[r.state] then return 0 end
                     r.state, r.ledger_key = 'pending', p[1]
                 elseif q:find('SET ledger_key = ?', 1, true) then
                     r.ledger_key = p[1]
@@ -296,6 +303,30 @@ describe('keyed budget moves (ledger answers)', function()
         assert_eq(dup, 'duplicate')
         assert_eq(#bank.calls, 2)
         assert_eq(#logged('spent_this_month = spent_this_month + ?'), 1, 'booked once')
+    end)
+    it('a retry of a pending row writes the new attempt key, so the reconcile follows the right attempt', function()
+        installBudgetDb()
+        local key = 'pf-government:dept:police:equipment:3'
+        -- attempt 1 was refused by the ledger, but the row was never marked failed (a crash in between)
+        budgetRows[key] = { id = 9001, department = 'police', month_key = os.date('%Y-%m'), transaction_type = 'society_spend',
+            category = 'equipment', amount = 500, idem_key = key, state = 'pending', ledger_key = key .. ':1', attempt_at = os.time() }
+        bank.tx[key .. ':1'] = { tx_id = 'TXF1', state = 'failed', error = 'insufficient_funds' }
+        -- attempt 2 comes back unclear
+        bank.script = function() return { ok = false, state = 'debited', error = 'state_conflict', txId = 'TXU2' } end
+        local ok, err = SpendFromDepartmentSociety('police', 500, 'equipment', 'CID', 'Chief', 'Vests', key)
+        assert_false(ok)
+        assert_eq(err, 'payment_unclear')
+        assert_eq(bank.calls[1].key, key .. ':2')
+        assert_eq(budgetRows[key].ledger_key, key .. ':2', 'the row follows the attempt that may have moved money')
+        ReconcileBudgetMoves(os.time())
+        assert_eq(budgetRows[key].state, 'pending', 'held while attempt 2 is unknown (not failed from attempt 1)')
+    end)
+    it('keyed funding of the treasury department itself is refused before any move', function()
+        installBudgetDb()
+        local ok, err = AddFundsToDepartmentSociety('government', 100, 'CID', 'Mayor', 'Self', 'pf-government:dept:government:funding:2')
+        assert_false(ok)
+        assert_eq(err, 'same_account')
+        assert_eq(#bank.calls, 0)
     end)
     it('keyed funding is one transfer from the treasury account to the department society', function()
         installBudgetDb()
