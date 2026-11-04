@@ -53,6 +53,13 @@ local function run(kind, q, p)
         end
         return 0
     end
+    if has(q, 'UPDATE pf_gov_dept_qualifications SET idem_key = ? WHERE id = ?') then
+        for _, r in ipairs(DB.quals) do
+            if r.idem_key == p[1] and r.id ~= p[2] then error('Duplicate entry') end
+        end
+        for _, r in ipairs(DB.quals) do if r.id == p[2] then r.idem_key = p[1] return 1 end end
+        return 0
+    end
     if has(q, 'DELETE FROM pf_gov_dept_qualifications WHERE citizenid = ?') then
         local keep, n = {}, 0
         for _, r in ipairs(DB.quals) do if r.citizenid == p[1] then n = n + 1 else keep[#keep + 1] = r end end
@@ -445,6 +452,51 @@ describe('15I qualifications', function()
         assert_eq(#auditOf('qual_grant'), 1)
     end)
 
+    it('callers: a write export with no Callers entry is closed to other resources; * opens it', function()
+        local saved = Config.Departments.Callers.GrantQualification
+        Config.Departments.Callers.GrantQualification = nil
+        Mock.invokingResource = 'random-script'
+        assert_eq(gov:GrantQualification('COP1', 'swat', { actor = { src = LT } }).error, 'not_allowed')
+        Config.Departments.Callers.GrantQualification = '*'
+        assert_true(gov:GrantQualification('COP1', 'swat', { actor = { src = LT } }).ok)
+        Config.Departments.Callers.GrantQualification = saved
+        Mock.invokingResource = nil
+        assert_true(gov:RevokeQualification('COP1', 'swat', { actor = { src = LT } }).ok, 'pf-government itself always passes')
+        local savedList = Config.Departments.Callers.ListShifts
+        Config.Departments.Callers.ListShifts = nil
+        Mock.invokingResource = 'random-script'
+        assert_eq(gov:ListShifts('police', {}).error, 'not_allowed')
+        Config.Departments.Callers.ListShifts = savedList
+    end)
+
+    it('an unchanged result still remembers its key: a replay after a later change is a duplicate', function()
+        local a = { src = LT }
+        assert_true(gov:GrantQualification('COP1', 'swat', { actor = a }).ok)
+        local r = gov:GrantQualification('COP1', 'swat', { actor = a, key = 'u:1' })
+        assert_true(r.unchanged)
+        assert_true(gov:RevokeQualification('COP1', 'swat', { actor = a, key = 'u:2' }).ok)
+        r = gov:GrantQualification('COP1', 'swat', { actor = a, key = 'u:1' })
+        assert_true(r.duplicate, 'the replay does not grant again')
+        assert_false((gov:HasQualification('COP1', 'swat')))
+        assert_eq(gov:RevokeQualification('COP1', 'k9', { actor = a, key = 'u:1' }).error, 'key_reused')
+    end)
+
+    it('a grant counts only in its own department; a former member can still be stripped', function()
+        assert_true(gov:GrantQualification('COP1', 'swat', { actor = { src = LT } }).ok)
+        Mock.players[COP].PlayerData.job = { name = 'ambulance', grade = { level = 0 } }
+        assert_false((gov:HasQualification('COP1', 'swat')), 'a rehire into EMS does not revive a police grant')
+        local entry
+        for _, e in ipairs(gov:ListQualifications('COP1').list) do if e.qual == 'swat' then entry = e end end
+        assert_eq(entry.reason, 'other_department')
+        assert_eq(gov:GrantQualification('COP1', 'k9', { actor = { src = LT } }).error, 'invalid_state', 'no police grant to an EMS employee')
+        Mock.players[COP].PlayerData.job = { name = 'unemployed', grade = { level = 0 } }
+        local r = gov:RevokeQualification('COP1', 'swat', { actor = { src = LT }, reason = 'Fired' })
+        assert_true(r.ok, 'a police manager strips a fired officer')
+        Mock.players[COP].PlayerData.job = { name = 'police', grade = { level = 0 } }
+        assert_false((gov:HasQualification('COP1', 'swat')), 'nothing comes back with a rehire')
+        assert_eq(gov:RevokeQualification('COP1', 'swat', { actor = { src = MEDIC } }).error, 'no_permission')
+    end)
+
     it('a change that changes nothing writes nothing', function()
         assert_true(gov:GrantQualification('COP1', 'swat', { actor = { src = LT } }).ok)
         local r = gov:GrantQualification('COP1', 'swat', { actor = { src = LT } })
@@ -567,6 +619,25 @@ describe('15I shifts', function()
         assert_eq(shiftsOf('COP1')[1].end_reason, 'duty_off')
     end)
 
+    it('the minute tick ends a shift past MaxShiftHours: duty off, max_length, audited', function()
+        setDuty(COP, true)
+        setDuty(MEDIC, true)
+        Mock.clock = Mock.clock + 16 * 3600 - 1
+        S.Tick()
+        assert_true(S.open[COP] ~= nil, 'not yet')
+        Mock.clock = Mock.clock + 1
+        Mock.players[MEDIC].PlayerData.job.onduty = false
+        S.Tick()
+        assert_false(Mock.players[COP].PlayerData.job.onduty)
+        local s = shiftsOf('COP1')
+        assert_eq(#s, 1, 'no new shift is opened behind it')
+        assert_eq(s[1].end_reason, 'max_length')
+        assert_eq(s[1].ended_at - s[1].started_at, 16 * 3600)
+        assert_eq(#auditOf('shift_capped'), 2, 'also the medic, who went off duty unseen')
+        setDuty(COP, true)
+        assert_eq(#shiftsOf('COP1'), 2, 'clocking in again starts a new shift')
+    end)
+
     it('disabled departments record nothing', function()
         Config.Departments.Enabled = false
         setDuty(COP, true)
@@ -643,6 +714,16 @@ describe('15I incarcerated employees (D1)', function()
         local before = justiceCalls.deep
         S.Tick()
         assert_eq(justiceCalls.deep, before, 'the minute tick uses the in-memory answer for open shifts')
+    end)
+
+    it('login with default duty while escaped: forced off, no shift', function()
+        held.CO1 = { id = 12, cid = 'CO1', kind = 'jail', state = 'suspended' }
+        Mock.players[CO].PlayerData.job.onduty = true -- ForceJobDefaultDutyAtLogin: defaultDuty = true
+        TriggerEvent('QBCore:Server:PlayerLoaded', Mock.players[CO])
+        assert_false(Mock.players[CO].PlayerData.job.onduty)
+        assert_eq(#shiftsOf('CO1'), 0)
+        assert_eq(S.open[CO], nil)
+        assert_eq(#auditOf('duty_forced_off'), 1)
     end)
 
     it('without pf-justice running, or with the option off, duty is allowed', function()

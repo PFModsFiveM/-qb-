@@ -161,6 +161,24 @@ describe('15I qualifications (real DB)', function()
         assert_eq(num(scalar("SELECT COUNT(*) FROM pf_gov_dept_audit WHERE target = ? AND action = 'qual_grant'", { C.cop })), 1)
     end)
 
+    it('an unchanged keyed change keeps its key; a former member can be stripped and stays stripped', function()
+        local u1, u2 = 'it:u1:' .. seq, 'it:u2:' .. seq
+        assert_true(gov:GrantQualification(C.cop, 'swat', { actor = { src = LT } }).ok)
+        assert_true(gov:GrantQualification(C.cop, 'swat', { actor = { src = LT }, key = u1 }).unchanged)
+        assert_eq(scalar('SELECT idem_key FROM pf_gov_dept_qualifications WHERE citizenid = ? AND qual = ?', { C.cop, 'swat' }), u1)
+        assert_true(gov:RevokeQualification(C.cop, 'swat', { actor = { src = LT }, key = u2 }).ok)
+        assert_true(gov:GrantQualification(C.cop, 'swat', { actor = { src = LT }, key = u1 }).duplicate, 'found in the audit')
+        assert_eq(scalar('SELECT state FROM pf_gov_dept_qualifications WHERE citizenid = ? AND qual = ?', { C.cop, 'swat' }), 'revoked')
+        -- a fired officer, offline: the saved job is read, the revocation is allowed
+        assert_true(gov:GrantQualification(C.cop, 'k9', { actor = { src = LT } }).ok)
+        Mock.players[COP] = nil
+        savePlayer(C.cop, { name = 'unemployed', grade = { level = 0 } })
+        assert_true(gov:RevokeQualification(C.cop, 'k9', { actor = { src = LT } }).ok)
+        savePlayer(C.cop, { name = 'ambulance', grade = { level = 0 } })
+        assert_eq(gov:GrantQualification(C.cop, 'k9', { actor = { src = LT } }).error, 'invalid_state')
+        assert_false((gov:HasQualification(C.cop, 'k9')))
+    end)
+
     it('a deleted character loses its rows', function()
         assert_true(gov:GrantQualification(C.cop, 'k9', { actor = { src = LT } }).ok)
         setDuty(COP, true)
