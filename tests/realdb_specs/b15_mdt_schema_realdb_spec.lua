@@ -293,3 +293,38 @@ describe('tables from older releases', function()
         assert_eq(MySQL.scalar.await("SELECT status FROM pf_mdt_reports WHERE reportId = 'R-2'"), 'pending')
     end)
 end)
+
+-- ── defaults the staff removed on purpose ──────────────────────────────────
+
+describe('defaults are written only into tables v7 creates', function()
+    it('an emptied template table stays empty', function()
+        dropAll()
+        RealDB.exec(HAND_SQL)
+        RealDB.exec(HAND_TEMPLATES)
+        MySQL.query.await('DELETE FROM pf_mdt_templates')
+        assert_true(run(), tostring(Schema.lastError))
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_mdt_templates'), 0)
+    end)
+
+    it('deleted seed cameras stay deleted when other cameras are kept', function()
+        dropAll()
+        RealDB.exec(HAND_SQL)
+        MySQL.query.await('DELETE FROM pf_mdt_cctv_cameras')
+        MySQL.query.await("INSERT INTO pf_mdt_cctv_cameras (camera_key, model_hash, x, y, z, heading) VALUES ('123:1:2:3', 123, 1, 2, 3, 0)")
+        assert_true(run(), tostring(Schema.lastError))
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_mdt_cctv_cameras'), 1)
+    end)
+
+    it('an empty old charges table with snake_case money columns migrates and stays empty', function()
+        dropAll()
+        MySQL.query.await([[CREATE TABLE pf_mdt_charges (id INT NOT NULL AUTO_INCREMENT, code VARCHAR(16) NOT NULL UNIQUE, name VARCHAR(128) NOT NULL,
+            fine_amount INT NOT NULL DEFAULT 0, bail_amount INT NOT NULL DEFAULT 0, jail_time INT NOT NULL DEFAULT 0, category VARCHAR(64) NULL,
+            PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]])
+        assert_true(run(), tostring(Schema.lastError))
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_mdt_charges'), 0)
+        assert_false(columnsOf('pf_mdt_charges').fineAmount)
+        -- the tables v7 did create still get their defaults
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_mdt_templates'), 1)
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_mdt_cctv_cameras'), 124)
+    end)
+end)

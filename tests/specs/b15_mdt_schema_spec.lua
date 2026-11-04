@@ -40,7 +40,7 @@ Mock.exportsByResource['pfm-core'].RunMigrations = function(_, key, list)
 end
 
 -- MySQL global used by v7's function step: a scripted information_schema and a statement log
-local fake = { columns = {}, indexes = {}, counts = {}, log = {} }
+local fake = { columns = {}, indexes = {}, tables = {}, log = {} }
 local function mysqlRun(kind, sql, params)
     fake.log[#fake.log + 1] = sql
     if sql:find('information_schema.COLUMNS', 1, true) then
@@ -53,9 +53,10 @@ local function mysqlRun(kind, sql, params)
         for t, idx in pairs(fake.indexes) do for i in pairs(idx) do out[#out + 1] = { t = t, i = i } end end
         return out
     end
-    if sql:find('^SELECT COUNT%(%*%) FROM `') then
-        local t = sql:match('FROM `([%w_]+)`')
-        return fake.counts[t] or 0
+    if sql:find('information_schema.TABLES', 1, true) then
+        local out = {}
+        for t in pairs(fake.tables) do out[#out + 1] = { t = t } end
+        return out
     end
     if kind == 'scalar' then return 0 end
     if kind == 'single' then return nil end
@@ -196,8 +197,11 @@ describe('MDT schema: every table the code uses is created', function()
 end)
 
 describe('MDT schema: v7 on an existing database', function()
-    local function v7(columns, indexes, counts)
-        fake.columns, fake.indexes, fake.counts, fake.log = columns or {}, indexes or {}, counts or {}, {}
+    -- `tables`: the tables that exist before v7 runs (as a set, or a list of names)
+    local function v7(columns, indexes, tables)
+        local set = {}
+        for k, v in pairs(tables or {}) do if type(k) == 'number' then set[v] = true else set[k] = v end end
+        fake.columns, fake.indexes, fake.tables, fake.log = columns or {}, indexes or {}, set, {}
         Schema.Migrations[7].up()
     end
 
@@ -220,7 +224,7 @@ describe('MDT schema: v7 on an existing database', function()
         full.pf_mdt_charges = { id = true, code = true, name = true, description = true, fine_amount = true, bail_amount = true, jail_time = true }
         full.pf_mdt_roster = { id = true, citizenid = true }
         local idx = { pf_mdt_officer_mgmt_profiles = { PRIMARY = true, idx_status = true }, pf_mdt_roster = { idx_citizenid = true } }
-        v7(full, idx, { pf_mdt_charges = 3, pf_mdt_templates = 1, pf_mdt_cctv_cameras = 124 })
+        v7(full, idx, { 'pf_mdt_charges', 'pf_mdt_templates', 'pf_mdt_cctv_cameras' })
         assert_eq(logged('ADD COLUMN'), 2)
         assert_eq(logged('ALTER TABLE `pf_mdt_officer_mgmt_profiles` ADD COLUMN `terminated`'), 1)
         assert_eq(logged('ALTER TABLE `pf_mdt_officer_mgmt_profiles` ADD COLUMN `is_supervisor`'), 1)
@@ -228,8 +232,16 @@ describe('MDT schema: v7 on an existing database', function()
         assert_eq(logged('ADD INDEX'), 2)
         assert_eq(logged('ADD INDEX `idx_officer_terminated`'), 1)
         assert_eq(logged('ADD INDEX `idx_terminated_status`'), 1)
-        assert_eq(logged('INSERT IGNORE'), 0, 'tables with rows are not seeded')
-        assert_eq(logged("`camera_key` LIKE 'seed%'"), 1, 'cameras check only the seeded keys')
+        assert_eq(logged('INSERT IGNORE'), 0, 'tables that were already there are not seeded')
+    end)
+
+    it('seeds only the tables it creates itself, also when an existing one is empty', function()
+        -- templates and cameras were imported by hand and emptied by staff; charges is new
+        v7(nil, nil, { 'pf_mdt_templates', 'pf_mdt_cctv_cameras' })
+        assert_eq(logged('INSERT IGNORE INTO `pf_mdt_charges`'), 1)
+        assert_eq(logged('INSERT IGNORE INTO `pf_mdt_templates`'), 0)
+        assert_eq(logged('INSERT IGNORE INTO `pf_mdt_cctv_cameras`'), 0)
+        assert_true(fake.log[1]:find('information_schema.TABLES', 1, true) ~= nil, 'existing tables are read before any CREATE')
     end)
 
     it('renames the old SOP column once, and a report status column starts as its approval state', function()
@@ -237,13 +249,13 @@ describe('MDT schema: v7 on an existing database', function()
         for _, c in ipairs(Schema.Columns) do cols[c[1]] = cols[c[1]] or {} cols[c[1]][c[2]] = true end
         cols.pf_mdt_sops = { id = true, ['procedure'] = true }
         cols.pf_mdt_reports.status = nil
-        v7(cols, {}, { pf_mdt_charges = 1, pf_mdt_templates = 1, pf_mdt_cctv_cameras = 1 })
+        v7(cols, {}, { 'pf_mdt_charges', 'pf_mdt_templates', 'pf_mdt_cctv_cameras' })
         assert_eq(logged('ALTER TABLE `pf_mdt_sops` CHANGE `procedure` `procedure_text` TEXT NOT NULL'), 1)
         assert_eq(logged('ALTER TABLE `pf_mdt_reports` ADD COLUMN `status`'), 1)
         assert_eq(logged('UPDATE `pf_mdt_reports` SET `status` = `approvalStatus`'), 1)
         cols.pf_mdt_sops = { id = true, procedure_text = true }
         cols.pf_mdt_reports.status = true
-        v7(cols, {}, { pf_mdt_charges = 1, pf_mdt_templates = 1, pf_mdt_cctv_cameras = 1 })
+        v7(cols, {}, { 'pf_mdt_charges', 'pf_mdt_templates', 'pf_mdt_cctv_cameras' })
         assert_eq(logged('CHANGE `procedure`'), 0)
         assert_eq(logged('UPDATE `pf_mdt_reports`'), 0, 'an existing status column is not rewritten')
     end)
