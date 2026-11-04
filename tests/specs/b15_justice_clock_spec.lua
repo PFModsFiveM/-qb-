@@ -185,6 +185,27 @@ local function replaceIn(tbl, p)
 end
 H[Q.anonEventDetail] = function(p) return replaceIn(DB.events, p) end
 H[Q.anonAuditDetail] = function(p) return replaceIn(DB.audit, p) end
+H[Q.settleQueued] = function()
+    local out = {}
+    for _, e in ipairs(list(DB.events)) do if e.action == 'settle_queued' then out[#out + 1] = copy(e) end end
+    return out
+end
+H[Q.settleDone] = function(p)
+    for _, e in pairs(DB.events) do if e.idem_key == p[1] then e.action = 'settle_done' return 1 end end
+    return 0
+end
+H[Q.deleteQueued] = function()
+    local out = {}
+    for _, a in ipairs(list(DB.audit)) do if a.entity == 'character' and a.action == 'delete_queued' then out[#out + 1] = { entity_id = a.entity_id } end end
+    return out
+end
+H[Q.deleteDone] = function(p)
+    local n = 0
+    for _, a in pairs(DB.audit) do
+        if a.entity == 'character' and a.entity_id == p[2] and a.action == 'delete_queued' then a.action, a.entity_id = 'delete_done', p[1] n = n + 1 end
+    end
+    return n
+end
 H[Q.recordQueued] = function()
     local seen, out = {}, {}
     for _, e in ipairs(list(DB.events, true)) do

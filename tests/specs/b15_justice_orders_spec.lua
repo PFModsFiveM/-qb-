@@ -177,6 +177,27 @@ local function replaceIn(tbl, p)
 end
 H[Q.anonEventDetail] = function(p) return replaceIn(DB.events, p) end
 H[Q.anonAuditDetail] = function(p) return replaceIn(DB.audit, p) end
+H[Q.settleQueued] = function()
+    local out = {}
+    for _, e in ipairs(list(DB.events)) do if e.action == 'settle_queued' then out[#out + 1] = copy(e) end end
+    return out
+end
+H[Q.settleDone] = function(p)
+    for _, e in pairs(DB.events) do if e.idem_key == p[1] then e.action = 'settle_done' return 1 end end
+    return 0
+end
+H[Q.deleteQueued] = function()
+    local out = {}
+    for _, a in ipairs(list(DB.audit)) do if a.entity == 'character' and a.action == 'delete_queued' then out[#out + 1] = { entity_id = a.entity_id } end end
+    return out
+end
+H[Q.deleteDone] = function(p)
+    local n = 0
+    for _, a in pairs(DB.audit) do
+        if a.entity == 'character' and a.entity_id == p[2] and a.action == 'delete_queued' then a.action, a.entity_id = 'delete_done', p[1] n = n + 1 end
+    end
+    return n
+end
 H[Q.recordQueued] = function()
     local seen, out = {}, {}
     for _, e in ipairs(list(DB.events, true)) do
@@ -287,6 +308,9 @@ BeforeEach = function()
     for k in pairs(PhoneInvoices) do PhoneInvoices[k] = nil end
     for k in pairs(J.Records.queue) do J.Records.queue[k] = nil end
     J.Orders.cursor.payments, J.Orders.cursor.refunds = 0, 0
+    for k in pairs(J.Orders.settleQueue) do J.Orders.settleQueue[k] = nil end
+    for k in pairs(J.Orders.deleteQueue) do J.Orders.deleteQueue[k] = nil end
+    Mock.exportsByResource['pfm-phone'].CancelInvoice = nil
     FakeDB.society('police', 0, 'job')
     FakeDB.society('doj', 0, 'job')
     local cop = Mock.newPlayer(COP, 'COPCID')
@@ -1250,5 +1274,175 @@ describe('deleted characters (second round)', function()
         end
         assert_true(DB.records[e1].expunged_by ~= 'JUDGECID', 'expunged_by')
         assert_true(DB.records[e1].expunged_by:sub(1, 5) == 'anon-')
+    end)
+end)
+
+-- ── third round: settlements and deletions are never dropped ────────────────────────────────────
+local function failOnce(sql, message)
+    for _, e in ipairs(FakeDB.extraPatterns) do
+        if e[1] == sql then
+            local real = e[2]
+            e[2] = function() e[2] = real error(message or 'Lock wait timeout exceeded') end
+            return
+        end
+    end
+    error('no pattern for ' .. sql)
+end
+
+describe('invoice settlements that find a lock held or the database failing', function()
+    it('paid while the citizen lock is held (clock tick, sweep, another order): queued, applied once by the sweep, also after a restart', function()
+        local id, inv = invoicedFine()
+        J.Locks.Take('cid:SUSPECTCID')
+        phoneSettles(id, inv, 'paid')
+        J.Locks.Free('cid:SUSPECTCID')
+        assert_eq(DB.orders[id].state, 'invoiced', 'not applied while the lock is held')
+        assert_eq(#events(id, 'settle_queued'), 1, 'queued with a keyed event')
+        -- a restart loses the memory queue: Boot reloads it from the event
+        for k in pairs(J.Orders.settleQueue) do J.Orders.settleQueue[k] = nil end
+        J.Orders.LoadQueues()
+        assert_true(next(J.Orders.settleQueue) ~= nil)
+        Mock.clock = Mock.clock + 60
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(DB.orders[id].state, 'paid')
+        assert_eq(DB.orders[id].paid_amount, 5000)
+        assert_eq(next(J.Orders.settleQueue), nil)
+        assert_eq(#events(id, 'settle_done'), 1)
+        J.Orders.LoadQueues()
+        assert_eq(next(J.Orders.settleQueue), nil, 'a done settlement is not reloaded')
+        -- the queue entry once more by hand: applied once only
+        J.Orders.settleQueue['x'] = { invoice = { id = inv, ref = 'pf-justice:order:' .. id, amount = 5000, citizenid = 'SUSPECTCID', society = 'police' }, outcome = 'paid' }
+        J.Orders.RetryQueued()
+        local paid = 0
+        for _, e in ipairs(emitted('paymentSettled')) do if e[2] == 'paid' then paid = paid + 1 end end
+        assert_eq(paid, 1, 'settled once')
+        assert_eq(#events(id, 'invoice_paid_late'), 0)
+    end)
+
+    it('paid with a waiver pending while the order lock is held: waived and refunded once after the retry', function()
+        local id, inv = invoicedFine()
+        as('pfm-adminmenu')
+        api:SetOrderState(id, 'waived', { actor = { kind = 'admin', src = ADMIN } })
+        FakeDB.bank_accounts.police.account_balance = 5000
+        Mock.players[SUSPECT].PlayerData.money.bank = 0
+        J.Locks.Take('order:' .. id)
+        phoneSettles(id, inv, 'paid')
+        J.Locks.Free('order:' .. id)
+        assert_eq(DB.orders[id].state, 'invoiced')
+        J.Orders.RetryQueued()
+        assert_eq(DB.orders[id].state, 'waived')
+        assert_eq(DB.orders[id].refund_state, 'done')
+        J.Orders.RetryQueued()
+        assert_eq(money(SUSPECT).bank, 5000, 'refunded once')
+    end)
+
+    it('a database error while settling queues the settlement; the retry applies it', function()
+        local id, inv = invoicedFine()
+        failOnce(Q.paid)
+        phoneSettles(id, inv, 'paid')
+        assert_eq(DB.orders[id].state, 'invoiced')
+        J.Orders.RetryQueued()
+        assert_eq(DB.orders[id].state, 'paid')
+        -- the order lookup by invoice id failing (no ref) is queued too
+        local id2, inv2 = invoicedFine(6000)
+        failOnce(Q.byInvoice)
+        Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = inv2, amount = 6000, citizenid = 'SUSPECTCID', society = 'police' }, 'paid')
+        assert_eq(DB.orders[id2].state, 'invoiced')
+        J.Orders.RetryQueued()
+        assert_eq(DB.orders[id2].state, 'paid')
+    end)
+
+    it('the refund start failing after the late payment is seen: the refund still starts and pays once', function()
+        local id, inv = invoicedFine()
+        DB.orders[id].state = 'waived'
+        FakeDB.bank_accounts.police.account_balance = 5000
+        Mock.players[SUSPECT].PlayerData.money.bank = 0
+        failOnce(Q.refundBegin)
+        phoneSettles(id, inv, 'paid')
+        assert_eq(DB.orders[id].refund_state, nil)
+        assert_eq(#events(id, 'invoice_paid_late'), 0, 'nothing is logged as due before the refund is started')
+        Mock.clock = Mock.clock + 600
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(DB.orders[id].refund_state, 'done')
+        assert_eq(#events(id, 'invoice_paid_late'), 1)
+        assert_eq(money(SUSPECT).bank, 5000)
+        -- the log failing after the refund started: the retry only adds the log
+        local id2, inv2 = invoicedFine(3000)
+        DB.orders[id2].state = 'waived'
+        FakeDB.bank_accounts.police.account_balance = 3000
+        local entry
+        for _, e in ipairs(FakeDB.extraPatterns) do if e[1] == Q.insertEvent then entry = e end end
+        local real = entry[2]
+        entry[2] = function(params)
+            if params[2] == 'invoice_paid_late' then entry[2] = real error('Lock wait timeout exceeded') end
+            return real(params)
+        end
+        phoneSettles(id2, inv2, 'paid', 3000)
+        assert_eq(DB.orders[id2].refund_state, 'due')
+        J.Orders.Sweep(Mock.clock + 600)
+        assert_eq(#events(id2, 'invoice_paid_late'), 1)
+        assert_eq(DB.orders[id2].refund_state, 'done')
+        assert_eq(money(SUSPECT).bank, 8000, 'each refunded once')
+    end)
+
+    it('an admin waiver cancels the phone invoice (CancelInvoice) and waives at once; the phone report changes nothing more', function()
+        local id, inv = invoicedFine()
+        local asked
+        Mock.exportsByResource['pfm-phone'].CancelInvoice = function(_, ref, opts)
+            asked = { ref = ref, cid = opts.citizenid }
+            -- pfm-phone raises the event from inside the call, while pf-justice holds the locks
+            Mock.fireEvent('pfm-phone:server:invoiceSettled', nil, { id = inv, ref = ref, amount = 5000, citizenid = 'SUSPECTCID', society = 'police' }, 'cancelled')
+            return { ok = true, id = inv, ref = ref }
+        end
+        as('pfm-adminmenu')
+        local w = api:SetOrderState(id, 'waived', { actor = { kind = 'admin', src = ADMIN }, reason = 'mercy' })
+        assert_true(w.ok)
+        assert_true(w.invoiceCancelled)
+        assert_eq(asked.ref, 'pf-justice:order:' .. id, 'cancelled by our ref, never by a reusable id')
+        assert_eq(asked.cid, 'SUSPECTCID')
+        assert_eq(DB.orders[id].state, 'waived')
+        J.Orders.RetryQueued()
+        assert_eq(DB.orders[id].state, 'waived')
+        assert_eq(next(J.Orders.settleQueue), nil)
+        assert_eq(#events(id, 'waived'), 1)
+        -- an invoice being paid cannot be cancelled: the recorded waiver applies later
+        local id2 = invoicedFine(6000)
+        Mock.exportsByResource['pfm-phone'].CancelInvoice = function() return { ok = false, error = 'busy' } end
+        local w2 = api:SetOrderState(id2, 'waived', { actor = { kind = 'admin', src = ADMIN } })
+        assert_eq(w2.error, 'conflict')
+        assert_true(w2.waiverPending)
+        assert_eq(DB.orders[id2].state, 'invoiced')
+    end)
+end)
+
+describe('deleted characters with a busy lock', function()
+    it('characterDeleted while the citizen lock is held is queued, retried and reloaded after a restart', function()
+        local f = fine(100)
+        J.Locks.Take('cid:SUSPECTCID')
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'SUSPECTCID')
+        J.Locks.Free('cid:SUSPECTCID')
+        assert_eq(DB.orders[f.orderId].state, 'issued')
+        assert_true(J.Orders.deleteQueue['SUSPECTCID'])
+        assert_eq(#where(DB.audit, function(a) return a.entity == 'character' and a.action == 'delete_queued' end), 1)
+        J.Orders.deleteQueue['SUSPECTCID'] = nil -- restart
+        J.Orders.LoadQueues()
+        assert_true(J.Orders.deleteQueue['SUSPECTCID'])
+        Mock.clock = Mock.clock + 60
+        J.Orders.Sweep(Mock.clock)
+        assert_eq(DB.orders[f.orderId].state, 'waived')
+        assert_eq(DB.orders[f.orderId].citizenid:sub(1, 5), 'anon-')
+        assert_eq(J.Orders.deleteQueue['SUSPECTCID'], nil)
+        assert_eq(#where(DB.audit, function(a) return a.entity_id == 'SUSPECTCID' end), 0, 'the queued row no longer names the id')
+        J.Orders.LoadQueues()
+        assert_eq(J.Orders.deleteQueue['SUSPECTCID'], nil)
+    end)
+
+    it('a database error reading the orders queues the deletion instead of anonymising half of it', function()
+        local f = fine(100)
+        failOnce(Q.ordersByCid)
+        Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'SUSPECTCID')
+        assert_eq(DB.orders[f.orderId].citizenid, 'SUSPECTCID')
+        assert_true(J.Orders.deleteQueue['SUSPECTCID'])
+        J.Orders.RetryQueued()
+        assert_eq(DB.orders[f.orderId].state, 'waived')
     end)
 end)

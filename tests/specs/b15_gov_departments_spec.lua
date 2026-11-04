@@ -162,12 +162,35 @@ for _, f in ipairs({ 'server/core.lua', 'server/schema.lua', 'server/departments
     load_resource('[pfscripts]/pf-government/' .. f)
 end
 GovSchema.Ensure = function() return true end
+-- a fixed grade table, so these specs do not depend on the shipped Config.Departments grade sets
+local function fixedDepartments()
+    local d = Config.Departments
+    d.Implied = {
+        police = { [0] = { 'patrol' }, [1] = { 'patrol', 'traffic' }, [2] = { 'patrol', 'traffic', 'fto' },
+            [3] = { 'patrol', 'traffic', 'fto', 'detective' }, [4] = { 'patrol', 'traffic', 'fto', 'detective' } },
+        ambulance = { [0] = { 'emr' }, [1] = { 'emr', 'emt' }, [4] = { 'emr', 'emt', 'paramedic' } },
+        corrections = { [0] = { 'corrections_officer' } },
+    }
+    d.ManagerGrade = { police = 3, ambulance = 3, corrections = 4, doj = 4, judge = 2, government = 3 }
+    d.MaxShiftHours, d.KeyWindowDays = 16, 30
+end
+fixedDepartments()
 Mock.exportsByResource['pf-government'] = Mock.exportsByResource['__self']
 Mock.exportsByResource['__self'] = nil
 local gov = exports['pf-government']
 
-local jailed = {}
-Mock.exportsByResource['pf-justice'] = { IsIncarcerated = function(_, cid) return jailed[cid] == true end }
+local jailed, held = {}, {}
+local justiceCalls = { deep = 0 }
+Mock.exportsByResource['pf-justice'] = {
+    IsIncarcerated = function(_, cid) return jailed[cid] == true end,
+    -- like pf-justice: the active order, else a suspended or pending one; held[cid] = order
+    GetActiveIncarceration = function(_, cid)
+        justiceCalls.deep = justiceCalls.deep + 1
+        if held[cid] == 'down' then return { ok = false, error = 'db_unavailable' } end
+        if held[cid] then return { ok = true, order = held[cid], remainingSeconds = 600, facility = held[cid].facility } end
+        return { ok = true, remainingSeconds = 0 }
+    end,
+}
 
 local D, Q, S = GovDept, GovDept.Q, GovDept.S
 
@@ -210,6 +233,8 @@ BeforeEach = function()
     Mock.invokingResource = nil
     DB.quals, DB.shifts, DB.audit, DB.players, DB.failNext, DB.onInsertShift = {}, {}, {}, {}, nil, nil
     for k in pairs(jailed) do jailed[k] = nil end
+    for k in pairs(held) do held[k] = nil end
+    justiceCalls.deep = 0
     for k in pairs(Q.cache) do Q.cache[k] = nil end
     for k in pairs(S.open) do S.open[k] = nil end
     for k in pairs(S.closing) do S.closing[k] = nil end
@@ -587,6 +612,37 @@ describe('15I incarcerated employees (D1)', function()
         S.Tick()
         assert_false(Mock.players[MEDIC].PlayerData.job.onduty)
         assert_eq(shiftsOf('MED1')[1].end_reason, 'incarcerated')
+    end)
+
+    it('an escaped employee (order suspended) cannot go on duty either', function()
+        held.CO1 = { id = 9, cid = 'CO1', kind = 'prison', state = 'suspended', facility = 'bolingbroke' }
+        setDuty(CO, true)
+        assert_false(Mock.players[CO].PlayerData.job.onduty, 'duty refused while escaped')
+        assert_eq(Mock.players[CO].PlayerData.job.name, 'corrections', 'the job is kept')
+        assert_eq(#shiftsOf('CO1'), 0)
+        assert_eq(#auditOf('duty_forced_off'), 1)
+    end)
+
+    it('an order turning suspended (escape) takes an employee on duty off duty', function()
+        setDuty(COP, true)
+        TriggerEvent('pf-justice:server:orderChanged', { id = 8, cid = 'COP1', kind = 'jail', state = 'suspended' }, { kind = 'suspend' })
+        assert_false(Mock.players[COP].PlayerData.job.onduty)
+        assert_eq(shiftsOf('COP1')[1].end_reason, 'incarcerated')
+    end)
+
+    it('pending orders, other kinds and a justice outage do not block duty; running shifts are not re-read', function()
+        held.COP1 = { id = 10, cid = 'COP1', kind = 'prison', state = 'pending' }
+        held.MED1 = { id = 11, cid = 'MED1', kind = 'probation', state = 'suspended' }
+        held.LT1 = 'down'
+        setDuty(COP, true)
+        setDuty(MEDIC, true)
+        setDuty(LT, true)
+        assert_true(Mock.players[COP].PlayerData.job.onduty)
+        assert_true(Mock.players[MEDIC].PlayerData.job.onduty)
+        assert_true(Mock.players[LT].PlayerData.job.onduty)
+        local before = justiceCalls.deep
+        S.Tick()
+        assert_eq(justiceCalls.deep, before, 'the minute tick uses the in-memory answer for open shifts')
     end)
 
     it('without pf-justice running, or with the option off, duty is allowed', function()

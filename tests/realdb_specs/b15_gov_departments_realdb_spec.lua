@@ -39,6 +39,19 @@ for _, f in ipairs({ 'config.lua', 'server/core.lua', 'server/schema.lua', 'serv
     load_resource('[pfscripts]/pf-government/' .. f)
 end
 Mock.exportsByResource['pf-government'] = Mock.exportsByResource['__self']
+-- a fixed grade table, so these specs do not depend on the shipped Config.Departments grade sets
+local function fixedDepartments()
+    local d = Config.Departments
+    d.Implied = {
+        police = { [0] = { 'patrol' }, [1] = { 'patrol', 'traffic' }, [2] = { 'patrol', 'traffic', 'fto' },
+            [3] = { 'patrol', 'traffic', 'fto', 'detective' }, [4] = { 'patrol', 'traffic', 'fto', 'detective' } },
+        ambulance = { [0] = { 'emr' }, [1] = { 'emr', 'emt' }, [4] = { 'emr', 'emt', 'paramedic' } },
+        corrections = { [0] = { 'corrections_officer' } },
+    }
+    d.ManagerGrade = { police = 3, ambulance = 3, corrections = 4, doj = 4, judge = 2, government = 3 }
+    d.MaxShiftHours, d.KeyWindowDays = 16, 30
+end
+fixedDepartments()
 Mock.exportsByResource['__self'] = nil
 local gov = exports['pf-government']
 local jailed = {}
