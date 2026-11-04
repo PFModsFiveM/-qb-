@@ -363,6 +363,10 @@ QBCore.Shared.Items = {
     police_stormram              = { name = 'police_stormram', label = 'Stormram', weight = 18000, type = 'item', image = 'police_stormram.png', unique = false, useable = true, shouldClose = true, description = 'A nice tool to break into doors' },
     empty_evidence_bag           = { name = 'empty_evidence_bag', label = 'Empty Evidence Bag', weight = 0, type = 'item', image = 'evidence.png', unique = false, useable = false, shouldClose = false, description = 'Used a lot to keep DNA from blood, bullet shells and more' },
     filled_evidence_bag          = { name = 'filled_evidence_bag', label = 'Evidence Bag', weight = 200, type = 'item', image = 'evidence.png', unique = true, useable = false, shouldClose = false, description = 'A filled evidence bag to see who committed the crime >:(' },
+    -- batch 15H: the evidence store's bag (unique; pfm-policejob writes info.evidenceId and records every move)
+    -- and the gloves the evidence glove rule checks (prints/DNA collected without them are contaminated)
+    evidence_bag                 = { name = 'evidence_bag', label = 'Evidence Bag', weight = 200, type = 'item', image = 'evidence.png', unique = true, useable = false, shouldClose = false, description = 'A sealed, tagged evidence bag. Its chain of custody is kept by the police evidence system' },
+    nitrile_gloves               = { name = 'nitrile_gloves', label = 'Nitrile Gloves', weight = 50, type = 'item', image = 'nitrile_gloves.png', unique = false, useable = false, shouldClose = false, description = 'Disposable gloves. Prints or DNA collected without them are marked as contaminated' },
 
     -- Firework Tools
     firework1                    = { name = 'firework1', label = '2Brothers', weight = 1000, type = 'item', image = 'firework1.png', unique = false, useable = true, shouldClose = true, description = 'Fireworks' },

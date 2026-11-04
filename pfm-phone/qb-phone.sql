@@ -25,8 +25,12 @@ CREATE TABLE IF NOT EXISTS `phone_invoices` (
   -- NULL: open; 'paying': being charged, or charged and waiting for the business to be credited
   -- (finished by pfm-phone's sweep). pfm-phone adds it on start to tables created before it.
   `pay_state` varchar(16) default null,
+  -- the creating resource's idempotency reference (CreateInvoice data.ref, e.g. pf-justice:order:12):
+  -- one live invoice per ref. pfm-phone adds the column and the index on start to older tables.
+  `ref` varchar(128) default null,
   PRIMARY KEY (`id`),
-  KEY `citizenid` (`citizenid`)
+  KEY `citizenid` (`citizenid`),
+  UNIQUE KEY `uq_phone_invoices_ref` (`ref`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `phone_messages` (

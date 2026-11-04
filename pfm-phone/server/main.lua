@@ -716,7 +716,7 @@ QBCore.Functions.CreateCallback('qb-phone:server:GetInvoices', function(source, 
                 end
             end
         end
-        for _, v in pairs(invoices) do v.ledger_token, v.pay_state = nil, nil end -- server-side bookkeeping only
+        for _, v in pairs(invoices) do v.ledger_token, v.pay_state, v.ref = nil, nil, nil end -- server-side bookkeeping only
         cb(invoices)
         return
     end
@@ -1171,10 +1171,14 @@ local function CreateInvoice(data)
     local reason = data.reason ~= nil and tostring(data.reason):sub(1, 256) or nil
     local sender = data.sender ~= nil and tostring(data.sender):sub(1, 50) or nil
     local senderCid = data.sendercitizenid ~= nil and tostring(data.sendercitizenid):sub(1, 50) or nil
-    local cols, values = { 'citizenid', 'amount', 'society', 'sender', 'sendercitizenid', 'candecline', 'reason' },
-        { cid, amount, society, sender, senderCid, candecline, reason }
-    if Columns.token then cols[#cols + 1], values[#values + 1] = 'ledger_token', PFPayout.NewId() end
-    if ref then cols[#cols + 1], values[#values + 1] = 'ref', ref end
+    -- values may hold nils (sender, reason): positions are counted from cols, never with #values
+    local cols = { 'citizenid', 'amount', 'society', 'sender', 'sendercitizenid', 'candecline', 'reason' }
+    local values = { cid, amount, society, sender, senderCid, candecline, reason }
+    if Columns.token then cols[8], values[8] = 'ledger_token', PFPayout.NewId() end
+    if ref then
+        local n = #cols + 1
+        cols[n], values[n] = 'ref', ref
+    end
     local sql = ('INSERT INTO phone_invoices (%s) VALUES (%s)'):format(table.concat(cols, ', '), ('?, '):rep(#cols):sub(1, -3))
     local okInsert, res = pcall(MySQL.insert.await, sql, values)
     local id = okInsert and InvoiceIdOf(res) or nil

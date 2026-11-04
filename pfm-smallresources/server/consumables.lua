@@ -94,6 +94,26 @@ local function applyGrant(src, Player, need)
     return value
 end
 
+----------- / consumed event (batch 15H)
+-- pfm-smallresources:server:consumed(src, itemName, kind, info) is raised (server-only) after the
+-- server removed the item, never before and never when the removal failed. kind: food, drink,
+-- alcohol or custom. info = { poisoned = the server's own illness roll for this use (food, drink,
+-- alcohol), quality = the dish's server-set quality 0-100 when it has one }. pf-ambulancejob turns
+-- alcohol into ethanol and a poisoned dish into food poisoning.
+
+local function itemQuality(item)
+    local info = type(item) == 'table' and type(item.info) == 'table' and item.info or nil
+    local q = info and tonumber(info.quality)
+    if not q or q ~= q then return nil end
+    return math.max(0, math.min(100, math.floor(q + 0.5)))
+end
+
+local function consumed(src, itemName, kind, grant, quality)
+    local info = { quality = quality }
+    if kind ~= 'custom' then info.poisoned = type(grant) == 'table' and grant.ill == true end
+    TriggerEvent('pfm-smallresources:server:consumed', src, itemName, kind, info)
+end
+
 ----------- / alcohol
 
 for k, _ in pairs(Config.Consumables.alcohol) do
@@ -101,7 +121,7 @@ for k, _ in pairs(Config.Consumables.alcohol) do
         -- the bottle is removed when the client finishes drinking (drinkAlcohol); the thirst
         -- grant only becomes valid once that removal succeeds
         needGrants[source] = needGrants[source] or {}
-        needGrants[source].alcohol = { item = item.name, expires = os.time() + GRANT_SECONDS, grant = buildGrant(source, Config.Consumables.alcohol[item.name], item) }
+        needGrants[source].alcohol = { item = item.name, expires = os.time() + GRANT_SECONDS, grant = buildGrant(source, Config.Consumables.alcohol[item.name], item), quality = itemQuality(item) }
         TriggerClientEvent('consumables:client:DrinkAlcohol', source, item.name)
     end)
 end
@@ -113,6 +133,7 @@ for k, _ in pairs(Config.Consumables.eat) do
         local grant = buildGrant(source, Config.Consumables.eat[item.name], item)
         if not exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-smallresources:consumables:eat') then return end
         issueGrant(source, 'hunger', grant)
+        consumed(source, item.name, 'food', grant, itemQuality(item))
         TriggerClientEvent('consumables:client:Eat', source, item.name)
     end)
 end
@@ -123,6 +144,7 @@ for k, _ in pairs(Config.Consumables.drink) do
         local grant = buildGrant(source, Config.Consumables.drink[item.name], item)
         if not exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-smallresources:consumables:drink') then return end
         issueGrant(source, 'thirst', grant)
+        consumed(source, item.name, 'drink', grant, itemQuality(item))
         TriggerClientEvent('consumables:client:Drink', source, item.name)
     end)
 end
@@ -131,6 +153,7 @@ end
 for k, _ in pairs(Config.Consumables.custom) do
     QBCore.Functions.CreateUseableItem(k, function(source, item)
         if not exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-smallresources:consumables:custom') then return end
+        consumed(source, item.name, 'custom', nil, itemQuality(item))
         TriggerClientEvent('consumables:client:Custom', source, item.name)
     end)
 end
@@ -139,12 +162,13 @@ end
 -- the configured ones: before, they were used up but gave no hunger or thirst, because only the
 -- configured items issued the server grant the client's addHunger/addThirst needs.
 local GRANT_GROUP = { Eat = { group = 'eat', need = 'hunger' }, Drink = { group = 'drink', need = 'thirst' } }
+local CONSUMED_KIND = { Eat = 'food', Drink = 'drink', Custom = 'custom' }
 local function createItem(name, type)
     QBCore.Functions.CreateUseableItem(name, function(source, item)
         if type == 'DrinkAlcohol' then
             -- as above: the bottle is removed when the client finishes drinking
             needGrants[source] = needGrants[source] or {}
-            needGrants[source].alcohol = { item = item.name, expires = os.time() + GRANT_SECONDS, grant = buildGrant(source, Config.Consumables.alcohol[item.name], item) }
+            needGrants[source].alcohol = { item = item.name, expires = os.time() + GRANT_SECONDS, grant = buildGrant(source, Config.Consumables.alcohol[item.name], item), quality = itemQuality(item) }
             TriggerClientEvent('consumables:client:DrinkAlcohol', source, item.name)
             return
         end
@@ -152,6 +176,7 @@ local function createItem(name, type)
         local grant = g and buildGrant(source, Config.Consumables[g.group][item.name], item) or nil
         if not exports['pfm-inventory']:RemoveItem(source, item.name, 1, item.slot, 'qb-smallresources:consumables:createItem') then return end
         if grant then issueGrant(source, g.need, grant) end
+        if CONSUMED_KIND[type] then consumed(source, item.name, CONSUMED_KIND[type], grant, itemQuality(item)) end
         TriggerClientEvent('consumables:client:' .. type, source, item.name)
     end)
 end
@@ -329,6 +354,7 @@ RegisterNetEvent('consumables:server:drinkAlcohol', function(item)
     needGrants[source].alcohol = nil
     if exports['pfm-inventory']:RemoveItem(source, foundItem, 1, false, 'consumables:server:drinkAlcohol') then
         issueGrant(source, 'thirst', pending.grant)
+        consumed(source, foundItem, 'alcohol', pending.grant, pending.quality)
     end
 end)
 
