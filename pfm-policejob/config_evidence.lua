@@ -20,7 +20,8 @@ Config.Evidence = {
     MaxCaseLinks = 20,
     CaseRefTypes = { incident = true, report = true, case = true, warrant = true, custody = true, booking = true, court_case = true, order = true },
     Methods = { scene = true, search = true, seizure = true, booking = true, surgery = true, prison_search = true, swab = true, manual = true, registered = true },
-    -- custody gap: the holder is unknown (on the ground, removed, with a civilian) longer than this
+    -- custody gap: the bag is outside police custody longer than this: holder unknown (removed,
+    -- missing), on the ground, or with someone who is not on-duty police (a civilian)
     GapMinutes = 30,
     -- a bag removed from an inventory that turns up nowhere within this many seconds is flagged missing
     MissingAfterSeconds = 10,

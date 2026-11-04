@@ -456,6 +456,13 @@ local function unknownRef(ref)
 end
 Store.UnknownRef = unknownRef
 
+-- custody.lua writes this note when a bag reaches someone who is not on-duty police (a civilian):
+-- the chain cannot vouch for it there either, so that time counts towards a gap like an unknown holder
+Store.CIVILIAN_NOTE = 'not on-duty police'
+local function outsideCustody(ev)
+    return unknownRef(ev.to_ref) or (type(ev.note) == 'string' and ev.note:sub(1, #Store.CIVILIAN_NOTE) == Store.CIVILIAN_NOTE)
+end
+
 local CUSTODY_HOLDER_EVENTS = {
     collected = true, moved = true, handed_over = true, stored = true, checked_out = true, checked_in = true,
     submitted_lab = true, presented_court = true, released = true, destroyed = true, flagged_missing = true,
@@ -479,7 +486,7 @@ function Store.ComputeIntegrity(row, events, now)
             end
         elseif CUSTODY_HOLDER_EVENTS[ev.event] then
             local at = tonumber(ev.at) or 0
-            if unknownRef(ev.to_ref) and ev.event ~= 'released' and ev.event ~= 'destroyed' then
+            if outsideCustody(ev) and ev.event ~= 'released' and ev.event ~= 'destroyed' then
                 unknownSince = unknownSince or at
             else
                 if unknownSince and at - unknownSince > gapSeconds then gaps = gaps + 1 end
@@ -525,13 +532,49 @@ function Store.Move(row, holderKind, holderRef, state)
 end
 
 -- ── lockers ───────────────────────────────────────────────────────────────────────────────────
--- The station evidence drawers ("<locker> | Drawer <n>", server/main.lua) count as lockers; a drawer
--- gets a pf_evidence_lockers row the first time evidence is checked into it.
+-- The station evidence drawers (server/main.lua opens them as Lang 'info.current_evidence' with the
+-- station index and drawer number) count as lockers. Their stash id depends on the server's locale
+-- ("1 | Drawer 4", "1 | Lade 4"...), so the pattern is built from that same phrase; operators can add
+-- their own patterns in Config.Evidence.DrawerPatterns (two captures: station, drawer). A drawer gets
+-- a pf_evidence_lockers row the first time evidence is checked into it; every locker row's stash id
+-- is known after start (Store.LoadLockers).
+local function escapePattern(s) return (s:gsub('[%^%$%(%)%%%.%[%]%*%+%-%?]', '%%%0')) end
+
+function Store.DrawerPatterns()
+    if Store.drawerPatterns then return Store.drawerPatterns end
+    local list = {}
+    for _, p in ipairs(E.Cfg().DrawerPatterns or {}) do
+        if type(p) == 'string' then list[#list + 1] = p end
+    end
+    local ok, phrase = pcall(function() return Lang:t('info.current_evidence', { value = 'XSTATIONX', value2 = 'XDRAWERX' }) end)
+    if ok and type(phrase) == 'string' and phrase:find('XSTATIONX', 1, true) and phrase:find('XDRAWERX', 1, true) then
+        local pat = escapePattern(phrase):gsub('XSTATIONX', '(%%d+)'):gsub('XDRAWERX', '(%%d+)')
+        list[#list + 1] = '^' .. pat .. '$'
+    end
+    list[#list + 1] = '^(%d+) | Drawer (%d+)$' -- the English phrase, for stashes made before a locale change
+    Store.drawerPatterns = list
+    return list
+end
+
 function Store.DrawerOf(stashId)
-    if type(stashId) ~= 'string' then return nil end
-    local station, drawer = stashId:match('^(%d+) | Drawer (%d+)$')
-    if not station then return nil end
-    return tonumber(station), tonumber(drawer)
+    if type(stashId) ~= 'string' or #stashId > 64 then return nil end
+    for _, pat in ipairs(Store.DrawerPatterns()) do
+        local station, drawer = stashId:match(pat)
+        station, drawer = tonumber(station), tonumber(drawer)
+        if station and drawer and Config.Locations and Config.Locations['evidence'] and Config.Locations['evidence'][station] then
+            return station, drawer
+        end
+    end
+    return nil
+end
+
+--- Remembers the stash id of every locker row (after the schema is ready).
+function Store.LoadLockers()
+    local rows = q('query', 'SELECT stash_id FROM pf_evidence_lockers', {})
+    E.lockerStashes = E.lockerStashes or {}
+    for _, r in ipairs(type(rows) == 'table' and rows or {}) do
+        if type(r.stash_id) == 'string' then E.lockerStashes[r.stash_id] = true end
+    end
 end
 
 function Store.IsLockerStash(stashId)

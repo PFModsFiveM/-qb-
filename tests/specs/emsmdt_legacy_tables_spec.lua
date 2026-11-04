@@ -1,5 +1,6 @@
 -- pf-emsmdt start-up with the police MDT's pf_mdt_* tables present: nothing is copied out of them and
--- they are not altered (unless Config.MigrateLegacyPoliceTables is turned on).
+-- they are not altered (unless Config.MigrateLegacyPoliceTables is turned on, and even then the police
+-- tables are only read). Since batch 15 the start-up work waits for server/schema.lua.
 load_resource('tests/lua/fivem_mocks.lua')
 function IsDuplicityVersion() return true end
 function GetConvar(_, default) return default end
@@ -31,6 +32,8 @@ Mock.exportsByResource['oxmysql'] = {
     fetch = function(_, sql, params, cb) if type(params) == 'function' then cb = params end respond(sql, cb, {}) end,
 }
 
+Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
+
 function GetCurrentResourceName() return 'pf-emsmdt' end
 Config = nil
 load_resource('[pfscripts]/pf-emsmdt/config.lua')
@@ -38,10 +41,17 @@ load_resource('[pfscripts]/pf-emsmdt/shared/framework.lua')
 
 local function startUp()
     log = {}
+    PFEmsSchema = nil
+    load_resource('[pfscripts]/pf-emsmdt/server/schema.lua')
     load_resource('[pfscripts]/pf-emsmdt/server/officers.lua')
     load_resource('[pfscripts]/pf-emsmdt/server/roster.lua')
     load_resource('[pfscripts]/pf-emsmdt/server/sop.lua')
     TriggerEvent('onResourceStart', 'pf-emsmdt')
+end
+local function altered()
+    local n = 0
+    for _, sql in ipairs(log) do if sql:find('ALTER TABLE `pf_mdt_', 1, true) then n = n + 1 end end
+    return n
 end
 local function touched()
     local n = 0
@@ -55,6 +65,7 @@ describe('pf-emsmdt start-up beside the police MDT', function()
     it('copies nothing from the police tables and does not alter them', function()
         Config.MigrateLegacyPoliceTables = false
         startUp()
+        assert_true(PFEmsSchema.Ready(), 'schema applied')
         assert_true(#log > 0, 'start-up ran')
         assert_eq(touched(), 0)
     end)
@@ -62,6 +73,7 @@ describe('pf-emsmdt start-up beside the police MDT', function()
         Config.MigrateLegacyPoliceTables = true
         startUp()
         assert_true(touched() > 0)
+        assert_eq(altered(), 0, 'the police SOP table is read, never renamed')
         Config.MigrateLegacyPoliceTables = false
     end)
 end)

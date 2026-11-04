@@ -161,7 +161,7 @@ function C.Observe(obs)
             elseif fromKind == 'locker' and obs.kind == 'officer' and Store.CanMove(row.state, 'in_transit') then
                 event, state = 'checked_out', 'in_transit'
             end
-            if obs.kind == 'civilian' then note = 'not on-duty police'
+            if obs.kind == 'civilian' then note = Store.CIVILIAN_NOTE
             elseif obs.kind == 'ground' then note = 'left on the ground'
             end
             if Store.IsTerminal(row.state) then note = 'bag moved after ' .. row.state end

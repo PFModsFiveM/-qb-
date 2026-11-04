@@ -1,5 +1,5 @@
 -- pf-emsmdt roster and staff statements on the real database (batch 14, EMS-01): the backup table
--- migration, the reset (backup first, held lines kept, defaults back), and firing that changes a
+-- migration (server/schema.lua since batch 15), the reset (backup first, held lines kept, defaults back), and firing that changes a
 -- players row only while it still holds the EMS job.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
@@ -29,19 +29,15 @@ function GetCurrentResourceName() return 'pf-emsmdt' end
 Config = nil
 load_resource('[pfscripts]/pf-emsmdt/config.lua')
 load_resource('[pfscripts]/pf-emsmdt/shared/framework.lua')
+load_resource('[pfscripts]/pf-emsmdt/server/schema.lua')
 load_resource('[pfscripts]/pf-emsmdt/server/main.lua')
 load_resource('[pfscripts]/pf-emsmdt/server/officers.lua')
 load_resource('[pfscripts]/pf-emsmdt/server/roster.lua')
 SetTimeout = function() end
 
--- the roster table as server/roster.lua creates it on start (its thread does not run here)
-MySQL.query.await([[CREATE TABLE IF NOT EXISTS `pf_emsmdt_roster` (
-  `id` INT NOT NULL AUTO_INCREMENT, `callsign` VARCHAR(32) NOT NULL, `rank` VARCHAR(64) NOT NULL,
-  `officer_name` VARCHAR(128) NOT NULL DEFAULT '', `citizenid` VARCHAR(64) NULL, `unit_type` VARCHAR(64) NOT NULL DEFAULT '',
-  `training_status` VARCHAR(16) NOT NULL DEFAULT 'NONE', `notes` TEXT NULL,
-  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`), UNIQUE KEY `uniq_callsign` (`callsign`), KEY `idx_citizenid` (`citizenid`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]])
-assert_eq(RunMigrations('pf-emsmdt', PFEmsRosterMigrations), true)
+-- the roster and backup tables come from the schema (batch 15: v1 backups, v2 the roster); its start
+-- thread does not run here
+assert_eq(PFEmsSchema.Apply(), true)
 
 local CHIEF = 1
 local function playerRow(cid, job)
@@ -66,8 +62,8 @@ end
 
 describe('EMS roster on the real database', function()
     it('the backup migration can run again', function()
-        assert_eq(RunMigrations('pf-emsmdt', PFEmsRosterMigrations), true)
-        for _, sql in ipairs(PFEmsRosterMigrations[1].up) do MySQL.query.await(sql) end
+        assert_eq(RunMigrations('pf-emsmdt', PFEmsSchema.Migrations), true)
+        for _, sql in ipairs(PFEmsSchema.Migrations[1].up) do MySQL.query.await(sql) end
     end)
     it('the reset copies every line, keeps the held one and seeds the defaults', function()
         MySQL.insert.await("INSERT INTO pf_emsmdt_roster (callsign, `rank`, officer_name, citizenid, unit_type) VALUES ('M-77', 'Paramedic', 'Medic Two', 'MEDIC2', 'Ambulance'), ('V-1', 'Paramedic', '', NULL, 'Ambulance')")

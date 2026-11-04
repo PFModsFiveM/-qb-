@@ -305,6 +305,7 @@ function A.Start()
         print('^1[pfm-policejob]^7 evidence not started: the schema is not ready')
         return false
     end
+    Store.LoadLockers()
     S.Load()
     C.Process()
     return true
