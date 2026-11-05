@@ -8,6 +8,10 @@ the pfm-banking ledger).
   `PF_INTEGRATION_MATRIX.md`, `PF_IMPLEMENTATION_PROGRESS.md`, `PF_TEST_REPORT.md`, `PF_REMAINING_WORK.md`.
 - Written 2026-11-03 after the read-only audits and research. Nothing in this plan is implemented yet except what
   `PF_IMPLEMENTATION_PROGRESS.md` marks as existing (mostly batch 14 and earlier).
+- **2026-11-04: batch 15 is done** (built, checked, reworked; all nine units passed; the lead's final run and commit
+  pending). Section 6 keeps the unit specs as written and adds an "As built" line per unit; the contracts as built are
+  in `PF_ARCHITECTURE.md` section 12 and the versions in `PF_DATABASE_MIGRATIONS.md` section 2a. Batches 16-22 are
+  adjusted where batch 15 changed what they start from (16A, 16C, 16D, 17C). Next: batch 16.
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -108,7 +112,7 @@ crews (AI care stays in the hospital so EMS keeps its role), fire department (no
 
 | Batch | Theme | Units | Depends on |
 |---|---|---|---|
-| 15 | Foundations I: owners, storage, core contracts | 15A medical engine core, 15B justice core, 15C custody/booking/property/bail, 15D evidence core, 15E government work orders + budget keys, 15F police MDT migrations, 15G EMS MDT migrations, 15H platform hooks, 15I department core | batch 14 committed |
+| 15 (**done 2026-11-04**) | Foundations I: owners, storage, core contracts | 15A medical engine core, 15B justice core, 15C custody/booking/property/bail, 15D evidence core, 15E government work orders + budget keys, 15F police MDT migrations, 15G EMS MDT migrations, 15H platform hooks, 15I department core | batch 14 committed |
 | 16 | Foundations II: switch runtimes to the owners | 16A server-owned down/death, 16B damage ingestion, 16C prison driven by justice, 16D MDT jail + police jail through justice | 15 |
 | 17 | Medical, EMS and hospital features | 17A diagnosis/exam, 17B treatment/items, 17C recovery/effects, 17D EMS equipment, 17E hospital core | 16 |
 | 18 | Police field, traffic, equipment, evidence lab, MDT records | 18A custody field flow, 18B traffic/ALPR/impound, 18C equipment/telemetry, 18D evidence lab, 18E cases, 18F warrants/BOLO/gate | 16 (18D also 17 for projectiles) |
@@ -125,6 +129,13 @@ Unit size target: 1-3k changed lines, one strong agent, one session.
 
 Goal: every new owner exists with its tables, internal API and exports, tested, while the old runtimes still run.
 Nothing a player does changes yet except the hooks in 15H and the MDT table creation in 15F/15G.
+
+**Status: done (2026-11-04).** All nine units passed their adversarial checks (15B after 3 rounds, 15C after 4, 15F
+after 1 fix; 15A, 15D, 15E, 15I took follow-ups after passing). Latest unit full runs: mocked 2942/0 (272 files),
+real DB 806/0 (81 files). Ownership held except two lead-requested edits (15F also changed `server/cctv.lua` and
+`server/roster.lua` of pf-policemdt-DEV for the start-up wait) and the lead's own fixes (pf-justice `config.lua`
+caller lists, pf-emsmdt `Config.SOP.ForceSeed = false`, pf-citizen `cancelled` bills outcome). Open items:
+`PF_REMAINING_WORK.md` section 6; hand-over steps for batch 16+: section 7.
 
 ### 15A Medical engine core (pf-ambulancejob)
 **Manifest owner and schema owner for pf-ambulancejob in batch 15.**
@@ -163,6 +174,7 @@ Acceptance:
 7. Exports enforce `Config.Medical.Callers`; `GetPatientSummary` filters fields per caller.
 8. `pfm-core:server:characterDeleted` deletes the character's `pf_med_*` rows.
 Size: ~2.5k lines. Depends on: nothing in this batch.
+**As built:** done. Findings/diagnoses tables in v3 (not 17C's v5) and `pf_med_patients.hold_until`; added internal `SetConsciousness` with a persisted hold; keyed `AddInjury` refused at the 40-injury cap; RR 14 + 3 x (class - 1).
 
 ### 15B pf-justice core: orders, clock, records (new resource)
 **Manifest owner, config owner and schema owner for pf-justice in batch 15** (schema v1 holds every table of 15B
@@ -197,6 +209,7 @@ Acceptance:
 7. Real-DB: v1 tables created, rerun-safe; unique `idem_key` enforced.
 8. `pfm-core:server:characterDeleted`: open orders vacated, records kept anonymised (court history is shared).
 Size: ~2.5k lines. Depends on: nothing in this batch (15C builds on its internal API by contract).
+**As built:** done after 3 rounds. Extra exports `ContestCitation`, `DecideCitation`; `PayOrder` uses `PFPayout.Transfer`; waiving an invoiced fine goes through pfm-phone `CancelInvoice` (`waiverPending` / `invoiceCancelled`, refund `paymentSettled 'refunded'`); settlement and deletion queues survive a busy lock or a restart; v1 has `pay_from`, `refund_*` and `pf_justice_audit`.
 
 ### 15C pf-justice custody, booking, property, bail, legacy import
 Owns:
@@ -227,6 +240,7 @@ Acceptance:
    items JSON) become orders + property receipts, once (rerun imports nothing); offline `players.metadata.injail > 0`
    become `online`-clock orders with `legacy_ref = 'meta_injail:<cid>:<jailid>'`; `jailitems` become a receipt.
 Size: ~2.5k lines. Depends on: 15B (contract), 15A/15D (contract).
+**As built:** done after 4 rounds. Extra export `GetBooking`; property state `legacy` while the old runtimes run; `AcceptBail` unclear -> `ok = false, payment_unclear`; `BookCustody` steps to booking at a desk; offers expire when custody/order ends; forfeits use evidence method `seizure`.
 
 ### 15D Evidence chain-of-custody core (pfm-policejob)
 **Manifest owner and schema owner for pfm-policejob in batch 15.**
@@ -257,6 +271,7 @@ Acceptance:
 Note: identifying a DNA sample needs the lab (18D). Until then the MDT shows "awaiting lab"; fingerprints keep the
 existing station scanner flow.
 Size: ~2.5k lines. Depends on: 15H item (contract).
+**As built:** done. Per-player drop cap (50 per kind), drawers recognised in any locale, lab/court presence rules (`Config.Evidence.Labs`/`Courts`, placeholder coordinates), a civilian holder counts as a gap. Open: `TransferEvidence` release path, `ClearInventory` not recorded.
 
 ### 15E pf-government work orders, keyed budget moves, CreateBill passthrough
 **Manifest owner, config owner and schema owner for pf-government in batch 15** (v5 work orders, v6 department core
@@ -284,6 +299,7 @@ Acceptance:
 5. Budget moves with a key are idempotent (real-DB: the same key twice moves money once); without a key unchanged.
 6. `CreateBill` export with `recurring` dedupes (real-DB).
 Size: ~1.5k lines. Depends on: nothing.
+**As built:** done. v5 adds `pf_gov_work_payments`; v6 adds `state`, `ledger_key`, `attempt_at`, `next_check_at` to budget rows; new error `too_soon`; `weather.severe` orders at a district site; only pf-justice may claim (paid non-CS work has no caller yet).
 
 ### 15F Police MDT tables by migrations (pf-policemdt-DEV)
 **Manifest owner and schema owner for pf-policemdt-DEV in batch 15.**
@@ -306,6 +322,7 @@ Acceptance:
 3. Existing versions v1-v6 keep their numbers and are not re-applied on an existing install.
 4. Seeds (CCTV cameras, templates) use `INSERT IGNORE`.
 Size: ~1.5k lines (mostly the port). Depends on: nothing.
+**As built:** done after 1 fix (seeds only for tables v7 created). v7 is a function step with `information_schema` checks; `sql_init.lua` deleted; roster and CCTV start-up wait for the schema (lead-requested follow-up).
 
 ### 15G EMS MDT tables by migrations (pf-emsmdt)
 **Manifest owner and schema owner for pf-emsmdt in batch 15.**
@@ -320,6 +337,7 @@ Owns:
 Acceptance: as 15F for the EMS tables; the configurable roster table name is created by a function step reading
 the config; the patient profile callback always answers (no SQL error on a missing PCR table).
 Size: ~800 lines. Depends on: nothing.
+**As built:** done. No roster-table setting exists, so the table name is fixed (`pf_emsmdt_roster`) inside the v2 function step; legacy police tables are never altered; lead set `Config.SOP.ForceSeed = false`.
 
 ### 15H Platform hooks (doorlock, phone, consumables, job garages, jobs, items)
 Owns:
@@ -340,6 +358,7 @@ column check, plus `qb-phone.sql`); event
 Acceptance: each export allowlisted and tested; a duplicate invoice `ref` returns the first id (real-DB); the
 consumed event fires only after the server removed the item; job garages' existing flows unchanged (spec).
 Size: ~1.2k lines. Depends on: nothing.
+**As built:** done. Added (lead request) pfm-phone `CancelInvoice`; door aliases by coordinates; fleet event `serviceStateChanged`; only three Bolingbroke doors exist in the config. Open: `nitrile_gloves.png` missing, grade pay to set.
 
 ### 15I Department core (pf-government)
 Owns:
@@ -353,6 +372,7 @@ by contract). Manifest lines and v6 tables come from 15E.
 Acceptance: implied quals work with no rows; a granted revocation overrides; shifts open/close on duty changes and
 drops; audit rows written; allowlists.
 Size: ~1k lines. Depends on: 15E (manifest, schema), 15B (contract).
+**As built:** done. Follow-ups: escaped (suspended order) employees cannot go on duty; write exports fail closed; `unchanged` stores the key; grants count only in the owning department; `MaxShiftHours` enforced every minute (`max_length`).
 
 **Batch 15 manifest lines** (added by each resource's manifest owner):
 - pf-ambulancejob (15A): `shared_scripts` + `config_medical.lua`, `shared/medical/anatomy.lua`, `shared/medical/injuries.lua`,
@@ -396,6 +416,9 @@ Provides: `PFMed.Down` (the only writer of `isdead`/`inlaststand`/`pf:down`), re
 `Kill`; server events `patientDown`, `patientRevived`, `respawned`, `patientDied`; every legacy row of architecture
 section 9 marked batch 16.
 Consumes: 15A engine; `PFEmsRequests` (existing in `server/main.lua`).
+**From batch 15:** use `PFMed.Engine.SetConsciousness(cid, to, cause, opts)` (causes `report`, `rosc`, `revive`,
+`respawn`) and pass `opts.holdSeconds` for a reported down (persisted in `hold_until`), otherwise the engine wakes the
+patient to `altered` after 10 s; call internal engine functions only for online patients.
 Acceptance:
 1. A client can no longer clear its own down state (`SetDeathStatus(false)`, `SetLaststandStatus(false)` ignored).
 2. `ReportDown` accepted only with server health at or below the threshold (or engine already down); the client
@@ -451,6 +474,11 @@ release on `releaseOrdered`; `JailPlayer`/`ReleasePlayer`/`GetJailTime` forwarde
 `pf-justice`); work credits through `AdjustOrder` (key `pfm-prison:credit:<orderId>:<ticket>`); escape suspends the
 order (no item forfeiture: the property stays in the JU locker); `JobDone` speed/teleport check (lead carry-over c);
 `Config.Prison.KeepJob` (default true: off duty instead of unemployed; owner decision pending).
+**From batch 15 (hand-over):** set pf-justice `Config.Compat.LegacyRuntimes.prison = false` in the same change that
+turns off pfm-prison's own `jailitems` restore on load (`server/main.lua` ~668), or the items come back twice; intake
+uses `SetOrderState(id, 'active')`; gates through pfm-doorlock `SetDoorState` with the `bolingbroke_gate_1..3`
+aliases; pfm-prison is already on the JU caller lists. Batch 16 has no pf-justice unit, so the lead assigns the
+pf-justice `config.lua` edit (one owner for the 16C and 16D flags).
 Acceptance: an MDT- or field-created order puts an online player in the prison and the JU clock counts only inside;
 release happens once from the JU event, also for an offline completion at load; escape path unchanged for honest
 gate hacks; every old test scenario still passes in its new form.
@@ -472,6 +500,10 @@ shows the JU countdown only; BailOffer prompt, bail toast `resp.message`, `allow
 rework leftovers). PJ `police:server:JailPlayer` requires cuffs or a booking zone, opens custody and creates a `jail`
 order (`pfm-policejob:jail:<custodyId>`); one `/unjail` (PJ) -> `ReleaseNow`; PJ's uncuff-on-respawn listens to
 `pf-ambulancejob:server:respawned` instead of the client net event (lead carry-over a).
+**From batch 15 (hand-over):** set `Config.Compat.LegacyRuntimes.mdt = false` and `policejob = false` (the same
+pf-justice `config.lua` owner as 16C), relay MDT bail to JU bail, stop the MDT offering imported bails (JU expires
+legacy `offered` rows after `LegacyOfferSeconds`), run `LI.Reconcile` so shadow orders become real, and decide where
+legacy MDT bail money already in `society:police` is refunded from on exoneration.
 Acceptance: no path jails without a JU order; one player cannot hold two incarcerations; an MDT jail survives a
 restart through JU; bail pays once; old MDT payment_pending rows still settle.
 Size: ~2k lines. Depends on: 15B, 15C, 16A (event name by contract).
@@ -512,8 +544,9 @@ shockable cause; dedupe by `req`; legacy `applyTreatment` keys still work from t
 Size: ~2.5k. Depends on: 15A, 16A, 15I (`HasQualification`, implied fallback).
 
 ### 17C Recovery, restrictions and functional effects (pf-ambulancejob)
-**Manifest owner and schema owner for pf-ambulancejob in batch 17** (v5: findings, diagnoses, treatments,
-restrictions, hospital core tables of 17E).
+**Manifest owner and schema owner for pf-ambulancejob in batch 17** (v5: treatments, restrictions, hospital core
+tables of 17E; **findings and diagnoses already exist from 15A's v3**, so v5 leaves them out or keeps their DDL
+byte-for-byte).
 Owns: `[pfscripts]/pf-ambulancejob/fxmanifest.lua`, `config_medical.lua`, `server/medical/schema.lua`,
 `server/medical/recovery.lua` (new), `server/medical/effects.lua`, `client/effects.lua` (new), `client/wounding.lua`
 (legacy loop retired); `[qb]/tests/specs/b17_medical_recovery_spec.lua`, `b17_medical_effects_spec.lua` (new),

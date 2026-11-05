@@ -2710,3 +2710,44 @@ park and take-out, lap races.
 The PF Ultimate overhaul blueprint (Police, EMS, Medical, Justice, Jail, Prison, Corrections, Community Service) is
 in `docs/pf_ultimate/` (plan, architecture, migrations, integration matrix, progress tracker, test report, remaining
 work). Implementation starts with batch 15.
+
+## Batch 15 — 2026-11-04: PF Ultimate foundations I
+
+The first batch of the PF Ultimate overhaul (`docs/pf_ultimate/`). It builds every new owner with its tables,
+internal API and exports while the old runtimes keep running: the medical engine, pf-justice (orders, one sentence
+clock, records, custody, booking, property, bail, legacy import), evidence chain of custody, government work orders,
+keyed budget moves and department core, the two MDT schemas, and the platform hooks the later batches need. Players
+see almost nothing new yet; the switch-over is batch 16. Nine units ran in two waves, each followed by an adversarial
+checker that read the diff, wrote probe specs against the code and mutation-tested the new specs. 15B needed three
+rounds, 15C four, 15F one fix; 15A, 15D, 15E and 15I took follow-ups after passing. Every unit passed. Work paused on
+2026-11-03 at a usage limit and resumed on 2026-11-04 from the same agents.
+
+| Unit | What changed (short) |
+|---|---|
+| 15A medical engine (pf-ambulancejob) | `shared/medical/{anatomy,injuries,physiology_model,effects_model}.lua` and `server/medical/{schema,store,engine,effects,api}.lua`: 61 structures, 25 regions, a bone map for every configured bone, 19 injury types; a pure physiology model (loss classes, pneumothorax, airway, opioid overdose, consciousness); effects combined by maximum per channel. The engine ticks only active patients, persists with write-behind every 10 s, catches up offline time on load and keeps a held down state across a relog (`hold_until`). Exports `GetPatientSummary` (fields filtered per caller), `IsDown`, `ApplyInjury` (keyed, online only), `AddToxin`; events `consciousnessChanged`, `injuryAdded`; listens to the new consumed event. Migrations v1 moved unchanged, v2 patients/injuries, v3 events + findings/diagnoses + `hold_until`. Writes no metadata yet (16A). |
+| 15B pf-justice core (new resource) | State machines as data; `CreateOrder` with keys and caller allowlists; one active incarceration per citizen; the one clock (online/hybrid/realtime, presence provider or fallback radius, hospital custody counts); fines paid on numbered ledger keys, a clearly refused payment becomes a phone invoice that cannot be declined, an unclear one is held and settled later; waiving an invoiced fine cancels the invoice or refunds a late payment once; citations with a contest window; records with one conviction per finished order and a soft, audited expunge; character deletion closes and anonymises. Migrations v1 (all tables) and v2 (legacy import step). |
+| 15C custody, booking, property, bail, legacy import | Custody machine with compare-and-set moves and a log; reconnect puts an arrested player back at the station, cuffed; booking numbers, server fingerprints and a random DNA token, client-supplied mugshots flagged, medical screening; property into a locker stash with rollback, returned without clearing current items; bail paid near the officer or at a desk on keyed transfers to `society:doj`, refunded once on exoneration, offers expire when custody ends; legacy MDT jails, offline `injail`, `jailitems` and record flags imported once as shadows that close when the old jail releases. |
+| 15D evidence (pfm-policejob) | Scene drops rate-limited and capped (also per player), positions and identity from the server, stored in the DB (survive restarts, decay), sent only to on-duty police within 150 m; bagging gives an `evidence_bag` with an evidence id and a random blood sample id; every move of a bag between inventories is a custody row; integrity score; lab/court presence rules; paged `ListEvidence`; nine allowlisted exports. `/fine` migration moved unchanged to `server/schema.lua` (v1), evidence tables v2. |
+| 15E government work orders and keyed budgets | Work orders generated from district thresholds and city events, claimed one unit at a time, proven by server position and time on site, improving and saving the district; paid workers on numbered keys with retry limits; keyed `SpendFromDepartmentSociety`/`AddFundsToDepartmentSociety` (pending/applied/failed, reconciled every 60 s); `corrections` and `doj` departments; `CreateBill` export passes `issuedBy`, `issuedByName`, `recurring`. Migrations v5, v6. |
+| 15F police MDT schema (pf-policemdt-DEV) | `server/schema.lua` owns the key: v1-v6 moved unchanged, v7 creates every table of the SQL files on a fresh DB, adds missing columns and indexes, seeds only tables it created; every start-up DB path (sentencing, officers, SOP, roster, CCTV, chat wipe) waits for it; the SQL file can no longer drop tables; CCTV saves camera keys; `server/sql_init.lua` deleted. |
+| 15G EMS MDT schema (pf-emsmdt) | `server/schema.lua`: v1 moved unchanged, v2 creates the nine tables the code used to create ad hoc; legacy police tables never altered; start-up jobs wait for the schema; the patient profile always answers once. |
+| 15H platform hooks | pfm-doorlock `SetDoorState`/`GetDoorState` without a player, door aliases for Bolingbroke gates and MRPD cells, corrections access to the prison doors; pfm-phone `CreateInvoice` `ref` (unique, duplicate returns the first id) and `CancelInvoice`; `pfm-smallresources:server:consumed` after a server-side removal; pf-jobgarages migration v1 with fleet service state and exports; jobs `corrections`, `doj`, `judge`, `lawyer` grades; items `evidence_bag`, `nitrile_gloves`. |
+| 15I department core (pf-government) | Qualifications implied by job grade, granted or revoked by department managers (keyed, audited, only in the owning department); shifts recorded from duty events with the live job deciding, closed on drop, job change, restart and after 16 h; employees with an active or suspended sentence forced off duty (owner decision D1); audit with a 180-day sweep; write exports fail closed without a caller entry. |
+
+Lead fixes during integration: pf-justice caller lists (`GetBooking` added, `GetPropertyReceipt` narrowed) and the
+legacy-runtime flag for pfm-policejob; pf-emsmdt `Config.SOP.ForceSeed` set to `false` (it wiped SOP edits on every
+start); pf-citizen bills keep the `cancelled` outcome of `CancelInvoice` instead of showing it as paid (real-DB spec
+fails without it); the `sweep_pol_policejob_spec` patch for the evidence forwarders.
+
+Tests: latest unit full runs mocked 2942 passed, 0 failed (272 files); real DB 806 passed, 0 failed (81 files) at
+15H's run. Lead's final integration run: TO BE FILLED BY THE LEAD (mocked / real DB / JS / `ledger_parallel` /
+`sql_install_check`). Not tested in game.
+
+Open (details in `docs/pf_ultimate/PF_REMAINING_WORK.md` sections 6-7): lab and court coordinates are placeholders;
+`nitrile_gloves.png` is missing; pay for the new job grades is not set; work-site coordinates need checking in game;
+paid non-CS work orders have no caller yet; `TransferEvidence` release from the MDT reaches disposal without the court
+check; `ClearInventory` writes no evidence custody row; `society:dot` may not exist (no job). Hand-over steps for batch
+16: flip `Config.Compat.LegacyRuntimes` (16C/16D), turn off pfm-prison's own `jailitems` restore in the same change,
+relay MDT bail to pf-justice, pass a hold when reporting a player down (16A).
+
+In-game checks: `docs/pf_ultimate/PF_TEST_REPORT.md` section 5.10 (B15-L1..L19).

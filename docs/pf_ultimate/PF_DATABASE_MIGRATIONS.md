@@ -3,6 +3,10 @@
 Every new table, grouped by owning resource, with its migration key and version. Read with
 `PF_ARCHITECTURE.md` (owners) and `PF_ULTIMATE_SYSTEM_PLAN.md` (which unit writes which version).
 
+**Batch 15 is built (2026-11-04).** Section 2a lists the versions as they exist in the code, and each resource
+section below has an "As built" note with every deviation from the original plan. Where a note and an older DDL
+block disagree, the note (and the code) wins. The DDL blocks for later batches (16-20) are still the plan.
+
 ## 1. Rules
 
 - Tables are created only by `exports['pfm-core']:RunMigrations(key, list)` (or the included
@@ -31,15 +35,46 @@ Every new table, grouped by owning resource, with its migration key and version.
 
 | Resource | Key | Existing versions (where today) | New versions |
 |---|---|---|---|
-| pf-ambulancejob | `pf-ambulancejob` | v1 `injury records, treatment log, health snapshots` (`server/injury_database.lua`) | v2 medical core, v3 medical events (15A); v4 legacy import (16B); v5 clinical + hospital core (17C); v6 custody care (19G); v7 hospital services, morgue, supplies (20A) |
-| pf-emsmdt | `pf-emsmdt` (resource name) | v1 `roster reset backups` (`server/roster.lua`) | v2 tables created ad hoc today (15G); v3 PCR, handover, units (20D) |
-| pfm-policejob | `pfm-policejob` (resource name) | v1 `/fine` records (`server/fines.lua`) | v2 evidence core (15D); v3 traffic, impound, telemetry, lab (18B) |
-| pf-policemdt-DEV | `pf-policemdt-DEV` (resource name; `GetCurrentResourceName()`) | v1-v6 (`server/sentencing.lua`): active jails, sentences, licence actions, charge audit, roster backups, `released_why` | v7 SQL-file tables (15F); v8 cases, BOLOs, record audit, warrant columns (18E); v9 personnel, UoF, pursuits, IA (20F) |
-| pf-justice | `pf-justice` | none (new resource) | v1 core (15B); v2 legacy import (15B step, 15C code); v3 courts, v4 supervision, v5 community service (19A) |
+| pf-ambulancejob | `pf-ambulancejob` | v1 `injury records, treatment log, health snapshots` (`server/injury_database.lua`) | v2 medical core, v3 medical events + diagnosis layers + `hold_until` (15A, built); v4 legacy import (16B); v5 clinical + hospital core without findings/diagnoses (17C); v6 custody care (19G); v7 hospital services, morgue, supplies (20A) |
+| pf-emsmdt | `pf-emsmdt` (resource name) | v1 `roster reset backups` (`server/roster.lua`) | v2 tables created ad hoc before (15G, built); v3 PCR, handover, units (20D) |
+| pfm-policejob | `pfm-policejob` (resource name) | v1 `/fine` records (`server/fines.lua`) | v2 evidence core (15D, built); v3 traffic, impound, telemetry, lab (18B) |
+| pf-policemdt-DEV | `pf-policemdt-DEV` (resource name; `GetCurrentResourceName()`) | v1-v6 (`server/sentencing.lua`): active jails, sentences, licence actions, charge audit, roster backups, `released_why` | v7 SQL-file tables (15F, built); v8 cases, BOLOs, record audit, warrant columns (18E); v9 personnel, UoF, pursuits, IA (20F) |
+| pf-justice | `pf-justice` | none (new resource) | v1 core (15B, built); v2 legacy import (15B step, 15C code, built); v3 courts, v4 supervision, v5 community service (19A) |
 | pfm-prison | `pfm-prison` | none (metadata only today) | v1 inmates and events (16C); v2 facility, v3 economy, v4 security (19D) |
-| pf-government | `pf-government` | v1-v4 (`server/schema.lua`): zones/requests/districts/notes, recurring bills, late fees, bill payment attempts | v5 work orders, v6 department core (15E); v7 department management (20E) |
-| pf-jobgarages | `pf-jobgarages` | none (SQL file `sql/pf_jobgarages.sql`) | v1 tables from the SQL file + fleet service columns (15H) |
-| pfm-phone | (no key) | column checks in `EnsureInvoiceColumns` (`server/main.lua`) | `ref` column + unique index through the same check (15H) |
+| pf-government | `pf-government` | v1-v4 (`server/schema.lua`): zones/requests/districts/notes, recurring bills, late fees, bill payment attempts | v5 work orders, v6 department core + keyed budget columns (15E, built); v7 department management (20E) |
+| pf-jobgarages | `pf-jobgarages` | none (SQL file `sql/pf_jobgarages.sql`) | v1 tables from the SQL file + fleet service columns (15H, built) |
+| pfm-phone | (no key) | column checks in `EnsureInvoiceColumns` (`server/main.lua`) | `ref` column + unique index through the same check (15H, built) |
+
+### 2a. Versions as built in batch 15 (code on disk, 2026-11-04)
+
+| Key | Versions | Owner file | Notes |
+|---|---|---|---|
+| `pf-ambulancejob` | v1 moved byte-for-byte; **v2** `medical core: patients and injuries`; **v3** `medical events and diagnosis layers` (`pf_med_events`, `pf_med_findings`, `pf_med_diagnoses`, `pf_med_patients.hold_until`) | `server/medical/schema.lua` | findings/diagnoses moved forward from 17C's v5; `hold_until` added by a 15A follow-up |
+| `pf-justice` | **v1** `justice core: orders, clock, records, custody, booking, property, bail` (all 15B + 15C tables, `pf_justice_audit`, plus `pay_from` and `refund_*` columns on orders); **v2** `justice legacy import` (function step `Schema.LegacyImportStep` -> `PFJustice.LegacyImport.Run()`) | `server/schema.lua` | migrations through `exports['pfm-core']:RunMigrations('pf-justice', ...)` |
+| `pfm-policejob` | v1 `police fine records` (moved unchanged from `server/fines.lua`); **v2** `evidence core` | `server/schema.lua` | `fines.lua` waits on `PFPoliceSchema.WaitReady()` |
+| `pf-government` | v1-v4 unchanged; **v5** `municipal work orders, unit claims and worker payouts`; **v6** `department core (qualifications, shifts, audit); keyed budget moves` | `server/schema.lua` | v5 adds `pf_gov_work_payments`; v6 adds `state`, `ledger_key`, `attempt_at`, `next_check_at` besides `idem_key` |
+| `pf-policemdt-DEV` | v1-v6 moved byte-for-byte from `server/sentencing.lua`; **v7** `MDT tables from the SQL files` (function step `Schema.ApplyV7`) | `server/schema.lua` | `server/sql_init.lua` deleted |
+| `pf-emsmdt` | v1 `roster reset backups` (moved byte-for-byte from `server/roster.lua`); **v2** `EMS MDT tables (moved from start-up code)` (function step `S.ApplyV2`) | `server/schema.lua` | |
+| `pf-jobgarages` | **v1** `job garage tables and fleet service state` | `server/main.lua` (`MIGRATION_KEY`) | before the migration has run, the old SQL is used unchanged |
+| pfm-phone | no key: `EnsureInvoiceColumns` checks `ref` and `uq_phone_invoices_ref` with the other invoice columns | `server/main.lua`, `qb-phone.sql` | without both, an invoice asked for **with** a ref is refused (`db_unavailable`); invoices without a ref work |
+
+Deviations from the plan, in one list (details in each section):
+1. AJ: `pf_med_findings` and `pf_med_diagnoses` are created in **v3**, not 17C's v5, with exactly the DDL this file
+   lists under v5. 17C's v5 must leave them out or keep that DDL byte-for-byte (a `CREATE TABLE IF NOT EXISTS` with a
+   different shape would silently keep the v3 shape). v3 also adds `pf_med_patients.hold_until`.
+2. JU v1: extra columns on `pf_justice_orders` (`pay_from`, `refund_state`, `refund_attempt`, `refund_amount`,
+   `refund_cid`, `refund_society`, `refund_invoice`) and extra indexes; `pf_justice_order_events.idem_key` with a
+   unique index; a new table `pf_justice_audit`. The columns are created in the CREATE and also by guarded ALTERs, so a
+   development database from the first draft gets them.
+3. JU v2 is a function step that **raises** when `PFJustice.LegacyImport.Run` is missing or fails, so it stays
+   unapplied and runs again at the next start.
+4. GOV v5 adds `pf_gov_work_payments` (one payout row per worker and order) and `site_label`; v6 adds four columns to
+   `pf_gov_budget_transactions` besides `idem_key`, plus the index `idx_gov_budget_tx_state`.
+5. PMDT v7 uses `information_schema` checks instead of `ADD COLUMN IF NOT EXISTS` (MySQL 8 friendly) and seeds only
+   tables v7 created itself; it also creates `pf_mdt_esx_license_suspensions` (was ad hoc in `server/main.lua`).
+6. EMDT v2: the roster table name is fixed (`pf_emsmdt_roster`): no config setting for it exists, so the planned
+   "table named by config" does not apply.
+7. pf-jobgarages: no separate audit table; service changes are logged in `job_garage_logs`.
 
 Note on pf-policemdt-DEV: its key is the folder name. If an operator renames the folder (e.g. to `pf-policemdt`),
 every version re-applies; all steps are rerun-safe, so this is harmless but noisy. Do not change the key.
@@ -107,7 +142,14 @@ CREATE TABLE IF NOT EXISTS `pf_med_injuries` (
 Bound: at most `Config.Medical.MaxOpenInjuries` (default 40) open rows per citizen; recovered rows older than
 `HistoryDays` (default 60) are swept.
 
-### v3 medical events (15A)
+### v3 medical events and diagnosis layers (15A, as built)
+As built, v3 holds `pf_med_events` (below) **and** `pf_med_findings` + `pf_med_diagnoses` (the DDL listed under v5,
+byte-for-byte), plus:
+```sql
+ALTER TABLE `pf_med_patients` ADD COLUMN IF NOT EXISTS `hold_until` BIGINT NULL;   -- a forced down state held against the automatic wake-up; survives a relog
+```
+`cpr_last_at` and the consciousness machine timers live in memory only (by design; a relog keeps the hold through
+`hold_until`).
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_med_events` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
@@ -132,6 +174,8 @@ blast_injury->burn + bruising; severity minor/moderate/severe/critical -> 1/2/4/
 `mechanism = 'legacy'`). `INSERT IGNORE` on `legacy_id` makes it run once.
 
 ### v5 clinical and hospital core (17C, tables of 17A/17B/17C/17E)
+**Changed by batch 15:** `pf_med_findings` and `pf_med_diagnoses` already exist from v3. 17C's v5 leaves them out
+(or keeps the DDL below byte-for-byte); the other tables are unchanged.
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_med_findings` (
   `id` BIGINT NOT NULL AUTO_INCREMENT, `citizenid` VARCHAR(64) NOT NULL, `injury_id` INT NULL,
@@ -259,6 +303,18 @@ CREATE TABLE IF NOT EXISTS `pf_hosp_supply_usage` (
   reading `Config`), `pf_emsmdt_sops` (`server/sop.lua` ~68), `pf_emsmdt_staff_mgmt_profiles`,
   `pf_emsmdt_staff_discipline`, `pf_emsmdt_staff_audit` (`server/officers.lua` ~185-229), plus every
   `ALTER TABLE ... ADD COLUMN` those files run today, as `ADD COLUMN IF NOT EXISTS`.
+- **As built (15G):** v1 is byte-identical to the batch-14 `BACKUP_MIGRATIONS` and keeps the key `pf-emsmdt`. v2
+  is a function step (`S.ApplyV2`) that creates the 9 tables the code uses (`pf_emsmdt_patient_notes`,
+  `pf_emsmdt_user_profiles`, `pf_emsmdt_bulletins`, `pf_emsmdt_roster` (fixed name, `S.ROSTER_TABLE`; there is no
+  roster-table setting), `pf_emsmdt_roster_backup` already from v1, `pf_emsmdt_sops`, `pf_emsmdt_staff_mgmt_profiles`,
+  `pf_emsmdt_staff_discipline`, `pf_emsmdt_staff_audit`), adds the 5 staff columns through `information_schema`
+  checks and renames `procedure` -> `procedure_text` only when `procedure` exists and `procedure_text` does not. It
+  never alters the legacy police `pf_mdt_*` tables (the SOP copy selects `procedure` as the source column). Seeds:
+  roster defaults only when the table is empty (`INSERT IGNORE` on the unique callsign), SOP defaults only when
+  empty. A failed run retries 5 times 10 s apart; start-up jobs wait on `PFEmsSchema.OnReady`. `sql/pf-emsmdt-qb.sql`
+  holds the same 9 `CREATE TABLE IF NOT EXISTS`. Real-DB: fresh, hand-imported SQL, batch-14 install, rerun.
+  Note: the rename uses `TEXT NOT NULL`, so a nullable `procedure` column holding NULLs would fail under strict
+  `sql_mode` (no EMS code ever created that shape).
 - v3 (20D):
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_emsmdt_pcr` (
@@ -285,8 +341,11 @@ CREATE TABLE IF NOT EXISTS `pf_emsmdt_units` (
 
 ## 5. pfm-policejob (key `pfm-policejob`)
 
-- v1 (existing, moved unchanged from `server/fines.lua` to `server/schema.lua`): `pfm_police_fines`.
-- v2 evidence core (15D):
+- v1 (existing, moved unchanged from `server/fines.lua` to `server/schema.lua`): `pfm_police_fines`. **As built
+  (15D):** same version, name and SQL under the key `pfm-policejob`; a real-DB spec loads the batch-14 `fines.lua`
+  on a fresh DB, inserts fines, then the new schema: v1 is not re-applied, rows are kept, only v2 runs.
+  `fines.lua` waits on `PFPoliceSchema.WaitReady()`; `F.Migrate` forwards to the schema.
+- v2 evidence core (15D; built as below, plus the index `idx_drop_src`):
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_evidence_items` (
   `id` INT NOT NULL AUTO_INCREMENT,
@@ -324,7 +383,8 @@ CREATE TABLE IF NOT EXISTS `pf_evidence_scene_drops` (
   `source_cid` VARCHAR(64) NULL,                  -- who left it (server-known); never sent to clients
   `state` VARCHAR(14) NOT NULL DEFAULT 'present', -- present|collected|unrecoverable|cleared
   `created_at` BIGINT NOT NULL, `decay_at` BIGINT NOT NULL, `collected_evidence_id` INT NULL,
-  PRIMARY KEY (`id`), KEY `idx_drop_cell` (`cell`, `state`), KEY `idx_drop_decay` (`state`, `decay_at`)
+  PRIMARY KEY (`id`), KEY `idx_drop_cell` (`cell`, `state`), KEY `idx_drop_decay` (`state`, `decay_at`),
+  KEY `idx_drop_src` (`source_cid`)                -- added in the build (per-player caps, character delete)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS `pf_evidence_lockers` (
   `id` INT NOT NULL AUTO_INCREMENT, `station` VARCHAR(32) NOT NULL, `label` VARCHAR(64) NOT NULL,
@@ -417,6 +477,20 @@ The retention sweep skips rows covered by a hold.
   `server/officers.lua` and the `procedure -> procedure_text` rename in `server/sop.lua` as guarded steps
   (`MigrationColumnExists`). `pf_mdt_fto_reports_legacy` is not created; the code that reads it checks the table
   exists first (15F).
+- **As built (15F):** v1-v6 moved byte-for-byte (143 lines diffed), key still `GetCurrentResourceName()`. v7
+  (`MDT tables from the SQL files`) is a function step `Schema.ApplyV7`: it reads `information_schema.TABLES` once to
+  record which tables already exist, runs every `CREATE TABLE IF NOT EXISTS` of `pf-policemdt-qb.sql` and
+  `pf-policemdt-templates.sql` (30 tables) plus `pf_mdt_esx_license_suspensions` (was created by `server/main.lua`),
+  adds missing columns and indexes after one read each of `information_schema.COLUMNS`/`STATISTICS` (plain
+  `ADD COLUMN`/`ADD INDEX`, so it runs on MySQL 8 as well), renames SOP `procedure` -> `procedure_text`, backfills
+  `reports.status` from `approvalStatus`, and seeds **only tables v7 created itself** (64 charges, 124 cameras,
+  1 template; `INSERT IGNORE`), so a hand-imported database whose staff emptied a table is not refilled.
+  `pf_mdt_fto_reports_legacy` is not created. `sql/pf-policemdt-qb.sql` no longer drops tables (`DROP+CREATE` ->
+  `CREATE TABLE IF NOT EXISTS`, cameras `INSERT IGNORE`, SOP seed guarded) and its header says no import is needed.
+  Exposed as `PFMdtSchema.Run/WaitReady/Ready/ApplyV7/Migrations/lastError`; event `pf_mdt:server:schemaReady`
+  (server only). Real-DB: fresh DB, hand-imported SQL with staff edits (no data change), batch-14 install at v6
+  (only v7 runs). MySQL note: v2 (kept byte-identical) still uses MariaDB-only `ADD COLUMN IF NOT EXISTS`, so on a
+  fresh MySQL 8 server v2 fails and v7 never runs (the project targets MariaDB).
 - v8 cases, BOLOs, record audit, warrant columns (18E, tables of 18E/18F):
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_mdt_cases` (
@@ -496,6 +570,22 @@ CREATE TABLE IF NOT EXISTS `pf_mdt_reviews` (
 ## 7. pf-justice (key `pf-justice`)
 
 ### v1 core (15B; tables used by 15B and 15C)
+**As built:** the DDL below plus these differences (all in the code's `Schema.V1`):
+- `pf_justice_orders` gains `pay_from VARCHAR(16)` (the state a payment returns to on a clear refusal, so a refused
+  payment keeps `overdue`/`referred`/`upheld`), and the refund columns for a phone invoice paid after its order
+  stopped waiting for it: `refund_state VARCHAR(12)`, `refund_attempt INT NOT NULL DEFAULT 0`, `refund_amount INT`,
+  `refund_cid VARCHAR(64)`, `refund_society VARCHAR(50)`, `refund_invoice INT`; extra indexes `idx_jo_invoice`,
+  `idx_jo_victim`, `idx_jo_refund`. Guarded `ALTER ... ADD COLUMN IF NOT EXISTS` lines repeat them for a database
+  built from the first draft.
+- `pf_justice_order_events` gains `idem_key VARCHAR(128)` with `UNIQUE KEY uq_joe_key` (keyed credits, waivers,
+  queued settlements) and `KEY idx_joe_at (at)`.
+- `pf_justice_citations` gains `KEY idx_cit_officer`; `pf_justice_records` gains `KEY idx_jr_ref (ref_type, ref_id)`.
+- New table `pf_justice_audit (id, entity, entity_id, action, actor_cid, actor_kind, actor_resource, detail, at)` with
+  `idx_ja_entity (entity, entity_id, at)` and `idx_ja_at`: expunges, character deletion (`delete_queued` /
+  `delete_done`). (A bail refund stuck after the retry limit is logged as `bail_refund_stuck` in the custody log / order events, not here.)
+- Value deviations (no DDL change): property `state` may be `legacy` (imported receipts while the old runtimes run);
+  custody `release_reason` may be `char_deleted`; custody log kind `remanded`; orders vacated by the shadow sync use
+  the reason `legacy_released`.
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_justice_orders` (
   `id` INT NOT NULL AUTO_INCREMENT,
@@ -616,6 +706,17 @@ CREATE TABLE IF NOT EXISTS `pf_justice_bail` (
 3. `$.criminalrecord.hasRecord = true` -> `pf_justice_records` `kind = 'legacy_flag'` once per citizen.
 4. Online players are handled at `QBCore:Server:PlayerLoaded` by the same functions (same `legacy_ref`).
 `INSERT IGNORE` on `legacy_ref` makes every step run once. The import never deletes or edits the legacy rows.
+
+**As built (15C `server/legacy_import.lua`, `server/compat.lua`):** refs are `mdt_jail:<id>`,
+`mdt_jail_items:<id>`, `mdt_bail:<id>` (open MDT bail; expires after `Config.Bail.LegacyOfferSeconds`, 7 days),
+`meta_injail:<cid>:<jailid|none>` and `meta_jailitems:<cid>:<jailid|none>`. Imported receipts are state `legacy`
+(listed, no locker filled) while `Config.Compat.LegacyRuntimes` (`mdt`, `prison`, `policejob`, all `true` in batch 15)
+says the old runtimes still run; `LI.SyncTick` (60 s) closes a shadow order as `vacated`/`legacy_released` when the
+MDT row is gone or `injail` is 0, and settles its receipt as `returned`. `compat.lua` never writes `injail` while the
+prison runtime is on; `hasRecord` is never turned false. Players online when pf-justice starts are imported at their
+next login (`LI.ForPlayer`). After the 16C/16D flip, `LI.Reconcile`/`ForPlayer` fill the lockers, close the shadows,
+move `jailitems` and expire MDT offers. Real-DB spec `b15_justice_import_realdb_spec` (run once, rerun idempotent,
+legacy rows untouched, hand-over passes).
 
 ### v3 courts (19A)
 ```sql
@@ -786,6 +887,22 @@ CREATE TABLE IF NOT EXISTS `pf_prison_escapes` (
 ## 9. pf-government (key `pf-government`)
 
 ### v5 work orders (15E)
+**As built:** v5 `municipal work orders, unit claims and worker payouts`. `pf_gov_work_orders` also has
+`site_label VARCHAR(64) NULL`. A third table holds the payouts (one row per non-CS worker and order; the ledger moves
+it under numbered attempt keys `<base_key>:<n>`; `owed -> paid | failed`):
+```sql
+CREATE TABLE IF NOT EXISTS `pf_gov_work_payments` (
+  `id` INT NOT NULL AUTO_INCREMENT, `work_order_id` INT NOT NULL, `citizenid` VARCHAR(64) NOT NULL,
+  `units` TINYINT NOT NULL, `amount` INT NOT NULL, `pay_dept` VARCHAR(32) NOT NULL,
+  `base_key` VARCHAR(128) NOT NULL,                 -- pf-government:wo:<id>:pay:<cid>
+  `ledger_key` VARCHAR(128) NULL, `state` VARCHAR(8) NOT NULL DEFAULT 'owed',
+  `attempts` INT NOT NULL DEFAULT 0, `next_try_at` BIGINT NOT NULL DEFAULT 0,
+  `created_at` BIGINT NOT NULL, `settled_at` BIGINT NULL,
+  PRIMARY KEY (`id`), UNIQUE KEY `uq_wp_key` (`base_key`),
+  KEY `idx_wp_state` (`state`, `next_try_at`), KEY `idx_wp_cid` (`citizenid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+Planned DDL (kept for reference; the code matches it apart from `site_label`):
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_gov_work_orders` (
   `id` INT NOT NULL AUTO_INCREMENT, `kind` VARCHAR(16) NOT NULL, `district` VARCHAR(60) NOT NULL,
@@ -836,6 +953,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS `uq_gov_budget_tx_key` ON `pf_gov_budget_trans
 Open shifts at start-up are closed with `end_reason = 'restart'`. A keyed budget move inserts its audit row with the
 key first (`INSERT ... idem_key`); a duplicate key means the move already happened, so no money moves again.
 
+**As built (15E for 15I):** v6 `department core (qualifications, shifts, audit); keyed budget moves`. The three
+department tables are as above. `pf_gov_budget_transactions` is first created in v6 with the same definition as
+`server/budgets.lua` (so the ALTERs always have a table), then:
+```sql
+ALTER TABLE `pf_gov_budget_transactions` ADD COLUMN IF NOT EXISTS `idem_key` VARCHAR(128) NULL;
+ALTER TABLE `pf_gov_budget_transactions` ADD COLUMN IF NOT EXISTS `state` VARCHAR(10) NULL;        -- pending|failed|applied (NULL on unkeyed rows)
+ALTER TABLE `pf_gov_budget_transactions` ADD COLUMN IF NOT EXISTS `ledger_key` VARCHAR(128) NULL;  -- the numbered ledger key of the current attempt
+ALTER TABLE `pf_gov_budget_transactions` ADD COLUMN IF NOT EXISTS `attempt_at` BIGINT NULL;        -- a pending attempt that never reached the ledger fails after a grace period
+ALTER TABLE `pf_gov_budget_transactions` ADD COLUMN IF NOT EXISTS `next_check_at` BIGINT NULL;     -- when ReconcileBudgetMoves looks at the row again
+CREATE UNIQUE INDEX IF NOT EXISTS `uq_gov_budget_tx_key` ON `pf_gov_budget_transactions` (`idem_key`);
+CREATE INDEX IF NOT EXISTS `idx_gov_budget_tx_state` ON `pf_gov_budget_transactions` (`state`, `next_check_at`);
+```
+The keyed move does not rely on a duplicate insert alone: the row is written `pending` with its ledger key before the
+move, booked once (`UPDATE ... SET state = 'applied' WHERE state IN ('pending','failed')`), `failed` on a clear
+refusal (the retry uses the next numbered ledger key), and an unclear result stays `pending` until the ledger answers.
+`pf_gov_dept_shifts.end_reason` values as built: `duty_off`, `dropped`, `job_change`, `incarcerated`, `restart`,
+`max_length` (a shift longer than `MaxShiftHours` closed by the minute tick, with a `shift_capped` audit row).
+
 ### v7 department management (20E)
 ```sql
 CREATE TABLE IF NOT EXISTS `pf_gov_dept_training` (
@@ -876,9 +1011,17 @@ CREATE TABLE IF NOT EXISTS `pf_gov_dept_procurements` (
   ALTER TABLE `job_garage_vehicles` ADD COLUMN IF NOT EXISTS `last_body` SMALLINT NULL;
   ALTER TABLE `job_garage_vehicles` ADD COLUMN IF NOT EXISTS `last_engine` SMALLINT NULL;
   ```
+  **As built:** migration key `pf-jobgarages` v1 `job garage tables and fleet service state`, exactly the three
+  tables and five columns above (rerun-safe, versioned). Service changes are logged in `job_garage_logs` (no separate
+  audit table). Before the migration has applied (`SchemaReady` false) the old SQL paths are used unchanged; once
+  applied, `takeVehicle` refuses `in_service`/`out_of_service` in the pre-check and in its UPDATE. Real-DB spec over
+  tables imported from the SQL file.
 - **pfm-phone** (15H): through `EnsureInvoiceColumns` (the file's existing pattern; it also reads the columns back):
   `ALTER TABLE phone_invoices ADD COLUMN ref VARCHAR(128) NULL` and `CREATE UNIQUE INDEX uq_phone_invoices_ref ON phone_invoices (ref)`;
-  the same column in `qb-phone.sql`.
+  the same column in `qb-phone.sql`. **As built:** as planned; the column and the index are added once, read back,
+  and both must exist before an invoice **with** a ref is accepted (otherwise `db_unavailable`); `GetInvoices` strips
+  `ref` from what clients see. A paid or declined invoice row is deleted, which frees its ref, so callers keep their
+  own state (pf-justice does).
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -902,7 +1045,8 @@ CREATE TABLE IF NOT EXISTS `pf_gov_dept_procurements` (
 ## 12. Data migration order (per install)
 
 1. Batch 15 deploy: PMDT v7 and EMDT v2 create the missing tables (no data change on installs that imported the SQL
-   files by hand). JU v1 tables and v2 import run: legacy MDT jails, offline `injail` sentences and criminal-record
+   files by hand; v7 seeds only tables it created). AJ v2/v3, PJ v2, GOV v5/v6 and pf-jobgarages v1 add their tables;
+   pfm-phone adds `ref`. JU v1 tables and v2 import run: legacy MDT jails, offline `injail` sentences and criminal-record
    flags become JU rows. **The old runtimes still run in batch 15**, so the import's `legacy_ref` makes a second
    import pass at batch 16 deploy pick up anything sentenced in between (run the v2 functions again on 16D start:
    they are idempotent).
@@ -913,6 +1057,8 @@ CREATE TABLE IF NOT EXISTS `pf_gov_dept_procurements` (
 ## 13. Verification queries (run on a copy of live after each deploy)
 
 ```sql
+-- expected after batch 15: pf-ambulancejob 1-3, pf-emsmdt 1-2, pfm-policejob 1-2, pf-policemdt-DEV 1-7,
+-- pf-justice 1-2, pf-government 1-6, pf-jobgarages 1
 SELECT resource, version, name, applied_at FROM pf_schema_migrations
  WHERE resource IN ('pf-ambulancejob','pf-emsmdt','pfm-policejob','pf-policemdt-DEV','pf-justice','pfm-prison','pf-government','pf-jobgarages')
  ORDER BY resource, version;

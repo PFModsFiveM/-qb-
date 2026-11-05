@@ -3,6 +3,10 @@
 How the public-safety domains connect to the rest of the city. "Existing" names were checked in the code on
 2026-11-03; "(new)" names are defined in `PF_ARCHITECTURE.md` and built by the batch shown.
 
+**Batch 15 is built (2026-11-04).** Links marked **built 15X** exist in the code with automated specs (not tested in
+game); the exact contracts and deviations are in `PF_ARCHITECTURE.md` section 12. Most of them have no live caller
+yet: the old runtimes keep running until batch 16.
+
 Domains: **MED** medical engine, **EMS** EMS operations, **HOSP** hospitals, **POL** police field/traffic,
 **EVI** evidence, **MDT** police/EMS records, **CUS** custody/booking, **PRI** prison/corrections, **CS** community
 service, **CRT** courts/probation/parole, **DEP** department management.
@@ -40,15 +44,15 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 ### 2.1 pf-government
 | Domain | Direction | Existing interface | New interface | Batch |
 |---|---|---|---|---|
-| DEP / budgets | GOV -> departments | `GetDepartmentSocietyBalance`, `SpendFromDepartmentSociety`, `AddFundsToDepartmentSociety`, `GetAllBudgetDetails`, `Config.Budgets.LinkedSocietyAccounts` (police, ems->ambulance) | `key` argument on the two society moves; `corrections` and `doj` departments | 15E |
-| DEP / qualifications, shifts, audit | departments -> GOV | `HasPermission` (gov staff only) | `GetDepartmentOf`, `HasQualification`, `GrantQualification`, `GetShift`, `LogDepartmentAudit` | 15I |
+| DEP / budgets | GOV -> departments | `GetDepartmentSocietyBalance`, `SpendFromDepartmentSociety`, `AddFundsToDepartmentSociety`, `GetAllBudgetDetails`, `Config.Budgets.LinkedSocietyAccounts` (police, ems->ambulance) | `key` argument on the two society moves; `corrections` and `doj` departments | 15E **built** (pending/applied/failed rows, `ReconcileBudgetMoves`) |
+| DEP / qualifications, shifts, audit | departments -> GOV | `HasPermission` (gov staff only) | `GetDepartmentOf`, `HasQualification`, `ListQualifications`, `GrantQualification`, `RevokeQualification`, `GetShift`, `ListShifts`, `LogDepartmentAudit` | 15I **built** (callers: the two MDTs; PJ, AJ, PR, JU for audit/shifts) |
 | DEP / training, assets, procurement, payroll reports, admin app | | | `RecordTraining`, `IssueAsset`, `ReturnAsset`, `ListAssets`, `CreateProcurement`; app `department` | 20E, 21G |
-| CS / municipal work | JU -> GOV | infrastructure simulation (`server/infrastructure.lua`), read-only exports | `ListWorkOrders`, `ClaimWorkOrder`, `ReportWorkUnit`, `ReleaseWorkClaim`; event `workOrderCompleted` | 15E, 19C |
+| CS / municipal work | JU -> GOV | infrastructure simulation (`server/infrastructure.lua`), read-only exports | `ListWorkOrders`, `ClaimWorkOrder`, `ReportWorkUnit`, `ReleaseWorkClaim`; event `workOrderCompleted` | 15E **built** (claim/report allowlist: pf-justice only), 19C uses it. Paid non-CS work has no caller yet (20E/21G) |
 | PRI / prison maintenance | PR -> GOV | | work orders with `district` = the prison district, `csEligible = false`, claimant kind `job` (inmates) | 19E |
 | MDT / laws | GOV -> PMDT | `SyncLawsWithMDT` -> PMDT `SyncLaws` (read-only SOP entries); `GetLawsForMDT` | none (penal code stays PMDT-owned; aligning laws to charges is an open decision) | - |
 | CRT / expungement | GOV -> JU | GOV hard-deletes `pf_mdt_sentences`/`pf_mdt_incidents` (`server/callbacks.lua` ~2043-2105, unaudited) | JU `Expunge` (audited, soft delete) | 19A |
-| CRT / city fines | GOV <-> JU | `IssueFineAs`, `IssueFineImmediate`, `PayBillFromPlayer`, `pf_gov_bills` | JU `PayOrder` at the City Hall desk (`pf-government` on the caller list) | 15B |
-| HOSP / medical debt | AJ -> GOV | `CreateBill` export (6 args) | `CreateBill` passes `issuedBy, issuedByName, recurring` (used only if the owner prefers GOV bills over phone invoices for medical debt) | 15E |
+| CRT / city fines | GOV <-> JU | `IssueFineAs`, `IssueFineImmediate`, `PayBillFromPlayer`, `pf_gov_bills` | JU `PayOrder` at the City Hall desk (`pf-government` on the caller list) | 15B **built** (GOV desk call not wired yet) |
+| HOSP / medical debt | AJ -> GOV | `CreateBill` export (6 args) | `CreateBill` passes `issuedBy, issuedByName, recurring` (used only if the owner prefers GOV bills over phone invoices for medical debt) | 15E **built** (recurring duplicate -> `false, 'duplicate', firstId`) |
 | licences | MDT/CRT -> GOV | `HasLicense`; `SuspendLicense`/`RevokeLicense` exist but are **not exported** | export `SetLicenseStatus(cid, type, status, opts)` so courts can suspend licences (open item, `PF_REMAINING_WORK.md`) | 19A (request) |
 | permissions on devices | | pf-devices `access.gov` -> `HasPermission` | | - |
 
@@ -56,12 +60,13 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 | Domain | Use | Interface | Key |
 |---|---|---|---|
 | HOSP | bills | `PFPayout.Charge(cid, {'bank'}, total, { key, to = 'society:ambulance', kind = 'medical' })`; unclear -> `exports['pfm-banking']:GetTransaction(key)` | `pf-ambulancejob:bill:<billId>:<n>` |
-| CRT | fines, citations | `PFPayout.Charge` -> `society:<Config.Fines.Account>` | `pf-justice:order:<orderId>:pay:<n>` |
-| CUS | bail | `exports['pfm-banking']:Transfer({ from = 'player:<cid>:bank', to = 'society:<bail account>', key })` | `pf-justice:bail:<bailId>:<n>`, refund `...:refund` |
+| CRT | fines, citations | built 15B as `PFPayout.Transfer` (not `Charge`, so the contract key is the ledger key) -> `society:<Config.Fines.Accounts[source]>` (police sources `police`, court `doj`); a clear refusal -> phone invoice ref `pf-justice:order:<id>`; a late paid invoice for a waived order is refunded | `pf-justice:order:<orderId>:pay:<n>` |
+| CUS | bail | `exports['pfm-banking']:Transfer({ from = 'player:<cid>:bank', to = 'society:<bail account>', key })` (built 15C, account `doj`) | `pf-justice:bail:<bailId>:<n>`, refund `...:refund`, then `...:refund:<n>` after a clear failure |
 | CRT | restitution | `Transfer` to `player:<victim>:bank` | `pf-justice:restitution:<orderId>:<n>` |
 | PRI | inmate trust | `Transfer` player <-> `system:pfm-prison-trust` (pf-services escrow pattern) | `pfm-prison:trust:<cid>:<txId>` |
 | PRI | wages | `PFPayout.Pay` from `society:corrections` into the trust | same |
-| CS / work orders | paid (non-CS) workers | `PFPayout.Pay(cid, 'bank', amount, { key, from = 'society:<dept>' })` | `pf-government:wo:<id>:pay:<cid>` |
+| CS / work orders | paid (non-CS) workers | `PFPayout.Pay(cid, 'bank', amount, { key, from = 'society:<dept>' })` (built 15E, rows in `pf_gov_work_payments`) | `pf-government:wo:<id>:pay:<cid>` as the base, numbered `:<n>` per attempt |
+| DEP | keyed budget moves | `SpendFromDepartmentSociety`/`AddFundsToDepartmentSociety` with `key` (built 15E); funding = one `Transfer` `society:government -> society:<dept>` | caller key, numbered `:<n>` per ledger attempt |
 | DEP | procurement | pf-stores supply orders charge the buyer account (`society:<linked>`) with their own keys | `supply:<id>:charge` (existing) |
 | existing kept | `/fine` (`pfm_police_fines`), police bill menu, MDT sentence fines in `payment_pending` | unchanged until drained | existing keys |
 
@@ -69,8 +74,8 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 | Domain | Use | Interface |
 |---|---|---|
 | MED/EMS | consume medical items before effects; medbag and rig stashes | `RemoveItem`, `HasItem`, `CreateInventory`, `OpenInventory` (existing) |
-| EVI | evidence bags; chain of custody recorded from item moves | `AddItem` with `info.evidenceId`; `AddListener('ItemMoved', fn)` (existing, already used by PJ for drug seizures) |
-| CUS | property seizure into a locker stash with receipt; return without clearing | `GetInventory`, `ClearInventory`, `AddItem(stashId, ...)`, `RemoveItem` (existing; rollback pattern from pfm-prison `StoreItems`) |
+| EVI | evidence bags; chain of custody recorded from item moves | `AddItem` with `info.evidenceId`; built 15D with listeners `ItemMoved`, `ItemAdded`, `ItemRemoved`, `ItemDropped`, `InventoryOpened` (queue only); remove + add = one move; nowhere within 10 s = flagged missing. Gap: `ClearInventory` fires no listener |
+| CUS | property seizure into a locker stash with receipt; return without clearing | `GetInventory`, `ClearInventory`, `CreateInventory`, `AddItem(stashId, ...)`, `RemoveItem` (existing; rollback pattern from pfm-prison `StoreItems`). Built 15C: receipt first, inventory re-read until it matches, moves with no wait in between |
 | POL | frisk (weapons only), search with reach | `GetItemsByName`, `OpenInventoryById(src, target, { reach })` (existing) |
 | PRI | contraband searches, commissary, uniforms | existing exports |
 | DEP | armory checkout | existing `AddItem`/`RemoveItem` + GOV asset register (new) |
@@ -79,7 +84,7 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 ### 2.4 pfm-core (jobs, duty, metadata)
 | Use | Interface |
 |---|---|
-| Jobs | `shared/jobs.lua`: police (`leo`), ambulance (`ems`), judge, lawyer (existing stubs); new `corrections`, `doj` + grades (15H) |
+| Jobs | `shared/jobs.lua`: police (`leo`), ambulance (`ems`); built 15H: `corrections` (0-5), `doj` (0-4), `judge` (0-2, Judiciary), `lawyer` (0-3). Pay per grade to be set by the owner. pfm-banking creates a job account for every shared job at start, so `corrections` and `doj` accounts should appear (check in game, B15-L13); `dot` has no job |
 | Duty points | `exports['pfm-core']:RegisterDutyPoints({ job, points, radius })`, `IsAtDutyPoint` (existing; PJ and AJ use them) |
 | Duty events | `QBCore:Server:SetDuty`, `QBCore:Server:OnJobUpdate`, `QBCore:Server:PlayerLoaded`, `QBCore:Server:OnPlayerUnload` (existing) -> GOV shifts, JU reconnect, AJ load |
 | Counts | `QBCore.Functions.GetDutyCount(job)`, `GetPlayersByJob(job, onDuty)` (existing) -> AI care threshold, CO on duty |
@@ -96,7 +101,7 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 | POL | impound tow | `tow.impound` + PJ `FinalizeImpound` (existing, batch 10) |
 | PRI | escape | city event `crime.prison.escape` (existing) |
 | CRT | sentences, warrants | city events `police.sentenced`, `police.warrant` (existing, news leads) |
-| CS | graffiti/litter sources | listen to `pf-services:cityEvent` (existing) for configured kinds -> GOV `CreateWorkOrder` |
+| CS | graffiti/litter sources | listen to `pf-services:cityEvent` (existing) for configured kinds -> GOV work orders (built 15E: `crime.robbery.store`, `race.finished`, and `weather.severe` at a district site because it carries no position) |
 | DEP / fleet | rig/police/corrections vehicle service | new request kind `mechanic.fleet` registered with `RegisterRequestKind` by the fleet owner; mechanic proves completion through `RegisterRequestHandler` (`canComplete` = pf-jobgarages service state + server vehicle health) (20C) |
 | new event kinds | registered at runtime with `RegisterEventKind` (no catalog edit): `justice.verdict` (news lead), `prison.lockdown` (news auto), `ems.mci` (news lead) | 19A, 19F, 20D |
 
@@ -105,7 +110,7 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 |---|---|---|
 | Inmate meals are cooked by the prison kitchen job from facility stock (no restaurant needed at low population) | PR `server/work.lua` + facility stash | 19E |
 | Optional catering contract: a player restaurant supplies meals when the kitchen has no workers | pf-services request kind `restaurant.catering` (new) paid by `society:corrections`; restaurants prove delivery at the prison dock | not scheduled (open, `PF_REMAINING_WORK.md`) |
-| Food poisoning from a bad dish | `pfm-smallresources:server:consumed` with `info.poisoned` (new, 15H) -> AJ illness | 15A/15H |
+| Food poisoning from a bad dish | `pfm-smallresources:server:consumed` with `info.poisoned` -> AJ toxin `food_poisoning` | built 15A/15H |
 
 ### 2.7 pf-stores and pf-trucking (supplies)
 | Use | Interface | Batch |
@@ -117,7 +122,7 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 ### 2.8 Mechanics and fleet
 | Use | Interface | Batch |
 |---|---|---|
-| Fleet list and service state | pf-jobgarages `GetFleetVehicle`, `ListFleet`, `SetServiceState` (new) on `job_garage_vehicles` | 15H |
+| Fleet list and service state | pf-jobgarages `GetFleetVehicle`, `ListFleet`, `SetServiceState` on `job_garage_vehicles`; event `pf-jobgarages:server:serviceStateChanged`; take-out refused while `in_service`/`out_of_service` | built 15H |
 | Maintenance work | pf-services `mechanic.fleet` request; existing mechanic register bills the department society | 20C |
 | Vehicle health proof | server `GetVehicleBodyHealth`, `GetVehicleEngineHealth` | 20C |
 
@@ -146,7 +151,7 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 ### 2.12 Phone and pf-citizen
 | Use | Interface | Batch |
 |---|---|---|
-| Unpaid bills/fines as invoices (cannot be declined) | `exports['pfm-phone']:CreateInvoice({ ..., candecline = 0, ref })` (`ref` new, 15H); settlement event `pfm-phone:server:invoiceSettled` (existing) | 15B, 17E |
+| Unpaid bills/fines as invoices (cannot be declined) | `exports['pfm-phone']:CreateInvoice({ ..., candecline = 0, ref })` (`ref` built 15H); `CancelInvoice(idOrRef, opts)` (built 15H, used by JU waivers); settlement event `pfm-phone:server:invoiceSettled` with outcomes `paid`, `declined`, `cancelled` (pf-citizen bills history keeps `cancelled`) | 15B (built), 17E |
 | Court dates, hearing notices, follow-up appointments | `exports['pf-citizen']:AddCalendarEvent(scope, owner, data, byName)`, `SendMail(cid, {...})` (existing) | 17E, 19A, 19B |
 | Discharge papers, citations, property receipts as documents | `exports['pf-citizen']:CreateDocument(cid, { title, body })` (existing) | 15C, 17E, 18B |
 | Lawyers list | `qb-phone:server:GetCurrentLawyers` (existing, pfm-phone) | 19A |
@@ -166,10 +171,10 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 ### 2.14 pfm-doorlock
 | Use | Interface | Batch |
 |---|---|---|
-| Prison gates and cell blocks, lockdown | `SetDoorState`, `GetDoorState` (new, allowlisted) | 15H, 19F |
+| Prison gates and cell blocks, lockdown | `SetDoorState`, `GetDoorState` (allowlisted; door ids or aliases `bolingbroke_gate_1..3`) | built 15H; used from 16C, 19F |
 | Gate hacks (existing) | `GrantDoorAccess` + server `qb-doorlock:server:updateState` (existing) | kept |
-| Corrections access | `authorizedJobs` adds `corrections = 0` on Bolingbroke doors | 15H |
-| Holding cells at stations | doors per cell in config; JU locks/unlocks through `SetDoorState` when assigning/releasing | 15H config, 18A use |
+| Corrections access | `authorizedJobs = { police = 0, corrections = 0 }` on the three Bolingbroke doors (the only prison doors in the config) | built 15H |
+| Holding cells at stations | aliases `mrpd_cells_main`, `mrpd_cell_1..3` on the existing MRPD cell doors; JU locks/unlocks through `SetDoorState` when assigning/releasing | aliases built 15H, use 18A |
 
 ### 2.15 Dispatch
 | Use | Interface |
@@ -183,7 +188,7 @@ service, **CRT** courts/probation/parole, **DEP** department management.
 ### 2.16 Other resources
 | Resource | Use | Interface | Batch |
 |---|---|---|---|
-| pfm-smallresources | alcohol and food -> toxins/illness | `pfm-smallresources:server:consumed` (new) | 15H/15A |
+| pfm-smallresources | alcohol and food -> toxins/illness | `pfm-smallresources:server:consumed` | built 15H/15A |
 | pfm-drugs | drug use -> toxins | `exports['pf-ambulancejob']:AddToxin` (new) called from pfm-drugs **(change in pfm-drugs not scheduled; open item)** | - |
 | pfm-weapons / pfm-inventory | weapon serial `info.serie` (existing) -> casings, projectiles, ballistics | server reads the attacker's equipped weapon item | 16B, 18D |
 | pfm-adminmenu | revive, kill, jail | AJ `Revive`/`Kill` (16A), PR `JailPlayer` forwarder (16C) | 16 |

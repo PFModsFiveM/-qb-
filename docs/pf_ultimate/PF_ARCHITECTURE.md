@@ -8,6 +8,9 @@ and the contracts in this file and builds it without guessing.
   research notes and the lead's owner decisions. Every **existing** export, event or table named here was checked
   against the code on disk that day (batch-14 working tree). Line numbers drift, so re-grep before you edit.
 - **New** interfaces are marked **(new)**. They do not exist yet; the unit named next to them builds them.
+- **Batch 15 is built (2026-11-04).** Its interfaces exist in the working trees; section 12 lists them as built, with
+  every deviation from sections 3-5 (new error codes, result flags, keys, extra exports and events). Where section 12
+  and an earlier section disagree, section 12 (and the code) wins.
 - Paths: `[qb]` = `/home/user/-qb-`, `[pfscripts]` = `/home/user/-pfscripts-` (the test harness resolves both).
 - Short names: **AJ** `[pfscripts]/pf-ambulancejob`, **EMDT** `[pfscripts]/pf-emsmdt`, **PJ** `[qb]/pfm-policejob`,
   **PMDT** `[pfscripts]/pf-policemdt-DEV`, **PR** `[qb]/pfm-prison`, **JU** `[pfscripts]/pf-justice` (new resource),
@@ -25,6 +28,7 @@ Contents
 9. Compatibility plan (legacy names)
 10. Honest limits
 11. Clinical and injury models (anatomy, injuries, physiology, effects, mechanisms, diagnosis, treatment, recovery)
+12. As built: batch 15 (contract changes and deviations)
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -247,6 +251,14 @@ Legacy exports keep their legacy shape (`ok, err` for pfm-prison, `id | nil, err
 | `payment_unclear` | the ledger outcome is unknown; the record is held as `payment_pending` and settled later |
 | `insufficient_funds` | a clear ledger refusal |
 | `offline` | the action needs the target online |
+| `too_soon` | (added in batch 15, GOV `ReportWorkUnit`) the worker has not been on site long enough; the result carries `remaining` seconds |
+| `db_error` | (pfm-phone legacy shape only, batch 15) the invoice insert raised; nothing was created |
+
+Result flags added in batch 15 (on an `ok = false` or `ok = true` table, not error codes): `waiverPending` (JU: a waiver
+of an invoiced fine is recorded and applies when the phone invoice settles), `invoiceCancelled` (JU: the phone invoice
+was withdrawn and the order moved), `unchanged` (GOV qualifications: the state was already the asked one; the key is
+still stored), `changed = false` (doorlock: the door was already in that state). `paymentSettled` gained the state
+`'refunded'` (section 12).
 
 ### 3.3 Idempotency keys
 - Every mutating export that a caller could retry takes `opts.key` (string, 1..128 chars, `[%w%-_:%.]` only).
@@ -273,6 +285,14 @@ Legacy exports keep their legacy shape (`ok, err` for pfm-prison, `id | nil, err
 | Evidence from surgery | `pf-ambulancejob:projectile:<injuryId>` |
 | Evidence from prison search | `pfm-prison:contraband:<searchId>:<n>` |
 | Department spend | `pf-government:dept:<dept>:<purpose>:<id>` (new optional `key` argument, batch 15) |
+| Fine as a phone invoice (built 15B) | ref `pf-justice:order:<orderId>` (pfm-phone `ref`); waiver event key `pf-justice:order:<orderId>:waive` |
+| Bail refund retry (built 15C) | `pf-justice:bail:<bailId>:refund:<n>` after a clear failure of `:refund` |
+| Seized property forfeited to evidence (built 15C) | `pf-justice:property:<receiptId>:<row>` |
+| Bagged scene drop (built 15D) | `pfm-policejob:drop:<dropId>` |
+| Work order from a city event (built 15E) | `pf-government:wo:event:<eventId>` |
+| Work-unit report default (built 15E) | `pf-government:wo:<claimId>:1` |
+| Work-order payout ledger attempts (built 15E) | `pf-government:wo:<id>:pay:<cid>:<n>` (numbered on the base key) |
+| Keyed budget move ledger attempts (built 15E) | `<caller key>:<n>` (numbered, `GovAttemptKey`) |
 
 - Ledger rule (from the batch-14 brief, binding): a failed key stays failed, so a retry uses a **new numbered** key;
   an **unclear** ledger result is never treated as failed: hold the record as `payment_pending`, look it up later
@@ -289,6 +309,10 @@ Config.Callers = {
 ```
 `nil` invoker (the owner itself) always passes. An unknown invoker gets `not_allowed` and one console line per
 minute per resource. This copies the working pattern of `Config.JailResourceAllowlist` in pfm-prison.
+A write (or private read) export whose list entry is missing denies every other resource (fail closed); `'*'` is the
+only way to open one. Built that way in batch 15 for the department exports (15I hardening) and doorlock
+`StateCallers` (missing list = everyone refused); pfm-phone `InvoiceCancelCallers` and pf-jobgarages `FleetCallers`
+fall back to a default list in code when the config key is absent.
 
 ### 3.5 Actor
 Callers pass who acts in `opts.actor`:
@@ -1218,3 +1242,194 @@ duration, requires = { findings? / states? }, apply = '<handler key>' }`.
 discharge orders persist in `pf_med_restrictions` and are re-pushed at load. A follow-up appointment goes to the
 patient's calendar (`pf-citizen` `AddCalendarEvent`), and an earlier follow-up visit can shorten `recover_at` by
 `FollowUpBonus`.
+
+---------------------------------------------------------------------------------------------------------------------
+
+## 12. As built: batch 15 (contract changes and deviations)
+
+Batch 15 (2026-11-04) built the owners of sections 4.1, 4.7.1-4.7.6, 4.9, 4.11 (schemas), 4.12 and 4.13. Everything
+below is in the code and covered by automated specs; nothing is tested in game. The old runtimes still run (the
+switch-over is batch 16), so no player path calls most of these yet. Names marked **(added)** were not in the plan.
+
+### 12.1 Medical engine (AJ, 15A)
+- Exports as planned: `GetPatientSummary(who)`, `IsDown(who)`, `ApplyInjury(who, spec, opts)`, `AddToxin(who, toxin,
+  amount, opts)` in `server/medical/api.lua`, checked against `Config.Medical.Callers` per call (nil/self passes).
+  `Config.Medical.SummaryFields`: pf-emsmdt gets every field; pf-justice gets the safe set plus `triage`; pfm-prison,
+  pf-policemdt-DEV and unknown callers get only `cid`, `online`, `down`, `consciousness`, `stage`, `restrictions`
+  (restriction reasons are the generic `injury`).
+- `ApplyInjury` needs `opts.key` (else `bad_args`) and an **online** patient; the actor is read from pfm-core, admin
+  needs the ACE. `AddToxin` also needs the patient online.
+- Server-only events built now (planned for 15A): `pf-ambulancejob:server:consciousnessChanged`,
+  `pf-ambulancejob:server:injuryAdded`. AJ listens to `pfm-smallresources:server:consumed` (ethanol from alcohol,
+  food poisoning from `info.poisoned`).
+- Internal API (as built): `PFMed.Engine.AddInjury` validates, fingerprints the key (same key + same fields ->
+  `duplicate`, different -> `key_reused`; `attrs`/`note` are not in the fingerprint). At `MaxOpenInjuries` (40) a
+  keyless request merges into the worst open injury, a **keyed** one is refused with `conflict` (a merge leaves no row
+  to hold the key). `UpdateInjury` validates the whole patch before changing anything. **(added)**
+  `PFMed.Engine.SetConsciousness(cid, to, cause, opts)` with causes `report`, `rosc`, `revive`, `respawn` and
+  `opts.holdSeconds`: it evaluates at once, caps GCS at 8 for a forced unconscious/arrest, and persists the hold in
+  `pf_med_patients.hold_until` so a relog does not wake the patient (16A must pass a hold). CPR pauses
+  arrest-to-death. `Activate` only ticks online patients. `Store.Load` returns `busy` while another load of the same
+  cid waits on the DB; the waiting `PlayerLoaded` attaches when that load finishes. **(added)**
+  `PFMed.Store.AddFinding/ListFindings/SetDiagnosis/ListDiagnoses` (only `imaging`, `lab`, `surgery` sources may
+  confirm a diagnosis).
+- Deviations: consciousness moves one level per evaluation (`alert -> altered -> unconscious -> arrest`, no
+  skipping); RR = 14 + 3 x (class - 1) so a healthy patient reads 14; `cpr_last_at` and machine timers are memory
+  only; the engine writes no metadata and pushes nothing to clients until 16A/17C.
+- `pfm-core:server:characterDeleted` (AddEventHandler only, player source ignored) deletes `pf_med_*` and the legacy
+  rows.
+
+### 12.2 pf-justice (JU, 15B and 15C)
+- Exports as built (all through `Config.Callers` at the export boundary; pf-justice has no net events, callbacks or
+  commands): orders `CreateOrder`, `GetOrder`, `GetOrders`, `GetActiveIncarceration`, `IsIncarcerated`,
+  `GetJailMinutes`, `AdjustOrder`, `SetOrderState`, `ReleaseNow`, `IssueCitation`, **(added)** `ContestCitation`,
+  **(added)** `DecideCitation`, `PayOrder`; records `GetRecord`, `AddRecordEntry`, `Expunge`; custody `OpenCustody`,
+  `GetCustody`, `SetCustodyState`, `BookCustody`, `AssignHoldingCell`, `AddCustodyLog`, `TransferCustody`,
+  `ReturnCustody`, `ReleaseFromCustody`, `IsInHoldingCell`, **(added)** `GetBooking`; property `SeizeProperty`,
+  `GetPropertyReceipt` (callers narrowed to pf-policemdt-DEV, pfm-policejob, pfm-prison, pf-citizen; the owner and
+  officers only), `ReturnProperty` (actor check), `ForfeitPropertyItems`; bail `OfferBail`, `AcceptBail`,
+  `DeclineBail`, `GetBail`, `ExonerateBail`, `ForfeitBail`.
+- Server-only events: `orderCreated(order)`, `orderChanged(order, change)`, `releaseOrdered(cid, orderId, reason)`,
+  `paymentSettled(order, state)` with state `'paid'`, `'failed'` (an unclear payment settled as refused) or
+  **(added)** `'refunded'` (a phone invoice paid after its order stopped waiting for it was paid back), **(added)**
+  `recordChanged(cid, change)`, `custodyChanged`, `custodyHoldExpired`, `bailChanged`, `legacyImported`. Client
+  event **(added)** `pf-justice:client:Sentence(summary | nil)` to the inmate on each whole-minute change.
+- State machines (section 5) are data in `shared/states.lua`. Extra edges as built: custody `in_transport -> arrested`;
+  incarceration `pending -> vacated`, `suspended -> vacated`; fines `overdue`/`referred` payable,
+  `invoiced -> issued` on a declined invoice; a citation machine with `issued -> contested -> upheld | dismissed`;
+  bail `accepted -> offered` after a clear refusal; CS `overdue -> completed`. `SetOrderState` also accepts `active`
+  from pfm-prison (intake of a pending order).
+- One active incarceration per citizen; a second order is `pending`, linked by `parent_order_id` (concurrent counts
+  alongside, consecutive waits). Credits and forfeits need `opts.key`; pfm-prison is capped by
+  `Config.Credits.MaxShare`/`MaxSecondsPerCall`; pfm-adminmenu needs an admin actor for every write.
+- Fines: `PayOrder` uses `PFPayout.Transfer` (not `Charge`) so the contract key `pf-justice:order:<id>:pay:<n>` is
+  the ledger key; the attempt is written before the transfer; a clear refusal returns the order to the state it
+  was paid from (`pay_from`) and, for the citizen's own fine, creates a phone invoice with ref
+  `pf-justice:order:<id>` (`candecline = 0`); an unclear result is `payment_unclear` / `payment_pending` and is
+  settled by the sweep through `GetTransaction`.
+- Waiving or vacating an **invoiced** fine (deviation): the waiver is recorded first (event key
+  `pf-justice:order:<id>:waive`), then pfm-phone `CancelInvoice` is asked by ref. Invoice gone ->
+  `{ ok = true, invoiceCancelled = true }`. Otherwise -> `{ ok = false, error = 'conflict', waiverPending = true }`
+  and the waiver applies when the phone reports the invoice: declined/cancelled -> waived; paid -> waived and the
+  money refunded once (`paymentSettled 'refunded'`). Settlements that cannot apply at once (lock held, DB error) are
+  queued as keyed `settle_queued` events, retried every tick and in the sweep, and reloaded at start.
+- Custody: `SetCustodyState` only to `arrested`, `in_transport`, `booking`, `remanded` (the others have their own
+  exports); `remanded` only by a court actor (on-duty judge); booking needs the citizen in a booking zone with the
+  officer (server positions); `BookCustody` steps an `arrested`/`in_transport` custody to `booking` at a desk;
+  `transferred` only from `booked`/`held`/`remanded` (otherwise `invalid_state`, never a release); a medic cannot
+  release; `TransferCustody(kind = 'prison')` is refused from the early states; a hospital transfer stores
+  `prev_state` and `ReturnCustody` restores it; `MaxHoldSeconds` raises `custodyHoldExpired` once and releases
+  nobody. A sentence order at another facility closes the custody `transferred` (property follows); at the same
+  facility the custody stays open until `releaseOrdered`.
+- Bail: `AcceptBail` with an unclear ledger result returns `{ ok = false, error = 'payment_unclear', state =
+  'payment_pending' }` (the plan had `ok = true`). Payer within `PayerDistance` of the offering officer, in a desk
+  zone, or the prisoner; a named payer is enforced; 1 try per 5 s. Offers expire when the custody or order ends
+  (`Bail.ExpireFor`); a payment that settles after that is void and refunded; refunds use `:refund`, then `:refund:<n>`
+  only after a clear failure, stop after `MaxRefundAttempts` (5) with a `bail_refund_stuck` row in the custody log / order events for an admin. Money goes to
+  `society:doj` (D4). Legacy MDT bails are refused here until 16D.
+- Property: forfeits go to PJ `CreateEvidence` with method `seizure` and key `pf-justice:property:<rid>:<row>`
+  (corrections staff are refused there because CreateEvidence needs on-duty police; the item stays in the locker).
+- Compatibility: `Config.Compat.LegacyRuntimes = { mdt = true, prison = true, policejob = true }` and
+  `RecordExpiryDays = 30`; while true, imported orders are shadows and imported receipts are `legacy` (section 9 and
+  `PF_DATABASE_MIGRATIONS.md` JU v2).
+
+### 12.3 Evidence (PJ, 15D)
+- Exports as planned (`CreateEvidence`, `GetEvidence`, `ListEvidence`, `TransferEvidence`, `SealEvidence`,
+  `BreakSeal`, `LinkEvidence`, `UnlinkEvidence`, `DisposeEvidence`), all checked against `Config.Evidence.Callers`.
+  `SubmitToLab`, `GetLabJob`, `RegisterReferenceSample` are still 18D (pf-justice calls the last one only if it
+  exists). `DisposeEvidence` needs `opts.courtOrderId` and a supervisor (grade >= `SupervisorGrade` 3) or the system
+  actor; callers pf-justice only.
+- **(added)** presence rules: `TransferEvidence` to `lab`/`court` needs the actor at a `Config.Evidence.Labs` /
+  `Courts` entry (`too_far`); lab evidence is opened without integrity cost only at the lab or by a holder of the
+  `lab_tech` qualification (pf-government `HasQualification`), court evidence only at the court.
+- Server-only events `pfm-policejob:server:evidenceCreated(item)`, `pfm-policejob:server:evidenceCustody(item, event)`.
+  Client event `evidence:client:SceneSnapshot` only to on-duty police within 150 m (no `-1` broadcast left).
+- The legacy net events `CreateBloodDrop`/`CreateFingerDrop`/`CreateCasing` forward to `server/evidence/scene.lua`.
+  When `evidence_bag` is missing from the shared items, new bags fall back to `filled_evidence_bag` with
+  `info.evidenceId`.
+- Integrity as section 4.9, with two decisions: a bag held by someone who is not on-duty police (a civilian) counts as
+  a gap; seal breaks at a lab/court cost nothing only when the actor is really there.
+- Known deviation: `TransferEvidence { kind = 'release' }` (allowed for pf-policemdt-DEV) reaches the disposal path
+  without `DisposeEvidence`'s pf-justice-only list, and any `courtOrderId` string is accepted because pf-justice has
+  no `IsCourtOrderValid` yet; the call passes `(order, 'evidence_<mode>', evidenceId)`, which does not match the
+  `IsCourtOrderValid(ref, purpose, cid)` shape planned for 19A. Fix in 18D/19A (`PF_REMAINING_WORK.md`).
+
+### 12.4 MDT schemas (PMDT 15F, EMDT 15G)
+- PMDT **(added)** `PFMdtSchema.Run()`, `WaitReady()`, `Ready()`, `ApplyV7()`, `Migrations`, `lastError`; server event
+  `pf_mdt:server:schemaReady` (TriggerEvent only; no listener yet). A failed run gates every DB start-up path off
+  (`officers` answer `no_db`) until a restart. Client callbacks in `server/main.lua` do not wait for the schema.
+- EMDT **(added)** `PFEmsSchema.OnReady(fn)`, `Ready()`, `LastError()`, `Ensure()`; the patient profile callback
+  answers once: `not_ready` before the schema, `timeout` after 8 s. The broken `patient_care_reports` count is gone.
+
+### 12.5 pf-government (15E, 15I)
+- Work orders: `CreateWorkOrder`, `ListWorkOrders`, `GetWorkOrder`, `ClaimWorkOrder`, `ReportWorkUnit`,
+  `ReleaseWorkClaim`, `CancelWorkOrder` as planned. Callers as built (`Config.WorkOrders.Callers`): create
+  pf-services, pfm-adminmenu; claim/report/release **pf-justice only**; cancel pfm-adminmenu; reads open; CS claims
+  only from `CsCallers` (pf-justice). Deviation: no GOV app or net path for `staff`/`job` claimants exists yet, so paid
+  (non-CS) work orders cannot be worked in game until 20E/21G adds a caller.
+- `ReportWorkUnit(claimId, proof, opts)`: `proof.src` must be the claimant, online, out of a vehicle, within the site
+  radius + 2 m and 15 m in height (server position), on site without a break for `MinUnitSeconds[kind]` (sampled
+  every 5 s) or **(added)** `too_soon` with `remaining`. Key `opts.key`, default `pf-government:wo:<claimId>:1`.
+  `ClaimWorkOrder` returns the same claim on a retry; one active claim per citizen; `ClaimSeconds` 600.
+- City events: `pf-services:cityEvent` (AddEventHandler) kinds in `Config.WorkOrders.FromEvents`; key
+  `pf-government:wo:event:<eventId>`; an event with coordinates uses the nearest site within 1500 m;
+  **(added)** `atDistrictSite` rules (used by `weather.severe`, which pfm-weathersync sends without a position) put
+  the order at a district site.
+- Effects: `ApplyDistrictWorkEffect(district, field, delta)` accepts improvements only and saves with `saveDistrict`;
+  `pf-government:server:workOrderCompleted(order)` once.
+- Payouts: rows in `pf_gov_work_payments`; `PFPayout.Pay` from `society:<dept>` on numbered keys
+  (`GovAttemptKey`); a clear refusal retries after `PayRetrySeconds` (300); after `MaxPayAttempts` (10) clear refusals
+  the row is `failed` with an audit row (no automatic pay after that); an unclear attempt is held, never re-keyed;
+  `BudgetRecordSocietyPayout` keyed.
+- Keyed budget moves: `SpendFromDepartmentSociety(..., key)`, `AddFundsToDepartmentSociety(..., key)` return
+  `duplicate`, `key_reused`, `failed` (retry uses the next numbered ledger key) or `payment_unclear` (held; settled by
+  `ReconcileBudgetMoves` every 60 s, which re-checks a row only after `ReconcileSeconds` so stuck rows never hide the
+  others, and fails a pending attempt that never reached the ledger after a grace period). Keyed funding is one
+  ledger `Transfer` `society:government -> society:<dept>`. Note: keyed funding of the `government` department itself
+  fails as `same_account`. Without a key the old path runs unchanged.
+- `CreateBill` export passes `issuedBy, issuedByName, recurring`; without `issuedBy` it records
+  `resource:<invoker>`; a recurring duplicate returns `false, 'duplicate', firstId`.
+- Departments: `GetDepartmentOf(srcOrJob)` returns `police`, `ems`, `corrections`, `doj` (the `judge` job maps to
+  `doj`) or `government`; `dot` is a budget department with no member job. `HasQualification(cid, qual)` ->
+  `has, source ('granted' | 'implied'), expiresAt`; a corrupt saved `players.job` reads as no job; unreadable records
+  fail closed. **(changed)** A grant counts only while the holder works in the qualification's owning department
+  (`ListQualifications` reason `other_department`, or `not_employed`); granting to someone outside it is
+  `invalid_state`; managers may revoke from former members. Changes: a manager of the qualification's department
+  (grade >= `ManagerGrade`), never yourself, only lower ranks in the same department (the boss is exempt), admin ACE,
+  or the system actor (sources `training`/`import`) from pf-government only; `opts.key` gives `duplicate`/`key_reused`
+  (also found in the 30-day audit), and an `unchanged` result stores its key too. Events
+  `pf-government:server:qualificationChanged`, `pf-government:server:shiftChanged`.
+- Shifts: the live job decides on `QBCore:Server:SetDuty`/`OnJobUpdate`/`PlayerLoaded`; end reasons `duty_off`,
+  `dropped`, `job_change`, `incarcerated`, `restart`, **(added)** `max_length` (the minute tick ends a shift longer than
+  `MaxShiftHours` 16 with a `shift_capped` audit row). D1: an employee with an active or suspended JU jail/prison/remand
+  order is put off duty in the same tick (`duty_forced_off` audit) and again on `orderCreated`/`orderChanged`; when
+  pf-justice is stopped or answers `db_unavailable` duty is allowed (fails open, by design).
+- Department write/private exports (`GrantQualification`, `RevokeQualification`, `ListShifts`, `LogDepartmentAudit`)
+  fail closed without a `Config.Departments.Callers` entry. Audit rows: 4 KB detail cap, daily sweep after 180 days.
+
+### 12.6 Platform hooks (15H)
+- pfm-doorlock: `SetDoorState(doorId, locked, opts = { reason, sound })` -> `{ ok, doorId, locked, changed }`
+  (server id 0: no animation; `sound = false` mutes; auto-lock kept; no rebroadcast when unchanged);
+  `GetDoorState(doorId)` -> `true | false | nil`. **(added)** `doorId` may be a `Config.DoorList` key or a
+  `Config.DoorAliases` name resolved by coordinates within `DoorAliasRadius` 1.0 m: `bolingbroke_gate_1..3` (doors
+  13-15, the pfm-prison gate keys), `mrpd_cells_main` (23), `mrpd_cell_1..3` (24-26). `Config.StateCallers`
+  {pfm-prison, pf-justice}; `StateReaders = '*'`. The three Bolingbroke doors (the only prison doors in the config)
+  have `authorizedJobs = { police = 0, corrections = 0 }`. Legacy `qb-doorlock:server:updateState` unchanged.
+- pfm-phone: `CreateInvoice(data)` keeps the legacy `id | nil, err` shape: `data.ref` (1-128 chars `[%w-_:.]`) ->
+  a repeat returns `firstId, 'duplicate'`; a different citizen/society/amount -> `nil, 'key_reused'`; a bad ref
+  `nil, 'bad_request'`; no column/index -> `nil, 'db_unavailable'`; a failed insert `nil, 'db_error'`.
+  **(added)** `CancelInvoice(idOrRef, opts = { citizenid?, reason })` -> `{ ok, id, ref }` or `busy` (being paid or
+  an unsettled ledger charge), `invalid_state` (the payer was already charged: finished as paid), `not_allowed`
+  (`Config.InvoiceCancelCallers`, default pf-justice, pf-government, pfm-policejob); it raises
+  `pfm-phone:server:invoiceSettled(invoice, 'cancelled')` once. Every `invoiceSettled` consumer must handle
+  `'cancelled'` (pf-citizen bills fixed by the lead).
+- pfm-smallresources: `pfm-smallresources:server:consumed(src, itemName, kind, info = { poisoned, quality })` only
+  after a successful server `RemoveItem` (food, drink, custom; alcohol only inside `drinkAlcohol` after removal).
+- pf-jobgarages: `GetFleetVehicle(plate)`, `ListFleet(job)` (<= 500), `SetServiceState(plate, state, opts)`
+  (`ok, due, in_service, out_of_service`; one change per plate at a time, compare-and-set on the previous state, `ok`
+  records `last_service_at`, audit row + **(added)** server event `pf-jobgarages:server:serviceStateChanged`);
+  callers `Config.FleetCallers` (default pf-mechanicjob, pf-ambulancejob, pfm-policejob, pfm-prison, pf-government),
+  reads open. A plate in two garages: the lowest-id active row is used.
+- pfm-core jobs: `corrections` (0 Cadet .. 5 Warden, boss), `doj` (0 clerk, 1 prosecutor, 2 public defender,
+  3 probation officer, 4 chief, boss), `judge` (0 magistrate, 1 judge, 2 chief judge, label Judiciary), `lawyer`
+  (0 associate, partners 1-3). Items `evidence_bag` (unique) and `nitrile_gloves`.
