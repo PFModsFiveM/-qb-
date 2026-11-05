@@ -36,7 +36,8 @@ end
 local function StartWork()
     if isWorking or not currentJob then return end
     isWorking = true
-    QBCore.Functions.Progressbar('work_electric', Lang:t('info.working_electricity'), math.random(5000, 10000), false, true, {
+    -- at least 6 s: the server must have seen the inmate at the spot for Config.Prison.JobDwellSeconds
+    QBCore.Functions.Progressbar('work_electric', Lang:t('info.working_electricity'), math.random(6000, 10000), false, true, {
         disableMovement = true,
         disableCarMovement = true,
         disableMouse = false,

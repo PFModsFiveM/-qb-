@@ -264,6 +264,15 @@ describe('online players and batch-15 coexistence', function()
 end)
 
 describe('hand-over to pf-justice (LegacyRuntimes off)', function()
+    it('after the hand-over, pf-justice\'s own injail mirror (no jailid) is never imported as a second order', function()
+        Config.Compat = { LegacyRuntimes = { mdt = false, prison = false, policejob = false } }
+        local p = Mock.newPlayer(7, 'MIRR1')
+        p.PlayerData.metadata = { injail = 5 }
+        local c = LI.ForPlayer(7)
+        assert_eq(c.orders, 0)
+        assert_eq(n("SELECT COUNT(*) FROM pf_justice_orders WHERE citizenid = 'MIRR1'"), 0)
+        Config.Compat = { LegacyRuntimes = { mdt = true, prison = true, policejob = true } }
+    end)
     it('MDT: a jail still held gets its locker filled from the receipt rows; a released one closes', function()
         Config.Compat = { LegacyRuntimes = { mdt = false, prison = false, policejob = false } }
         -- a new MDT jail imported before the hand-over, then released offline by the MDT

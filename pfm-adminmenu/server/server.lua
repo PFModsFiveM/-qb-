@@ -98,10 +98,32 @@ RegisterNetEvent('qb-admin:server:GetPlayersForBlips', function()
     TriggerClientEvent('qb-admin:client:Show', src, players)
 end)
 
+-- Kill and revive go through pf-ambulancejob's server API (batch 16A): it checks the admin's ACE
+-- again, keeps the down state on the server, re-reads the revived ped and closes the EMS call.
+local function MedicalTarget(player)
+    local id = type(player) == 'table' and math.tointeger(tonumber(player.id)) or nil
+    if not id or id <= 0 or not exports['pfm-core']:GetPlayer(id) then return nil end
+    return id
+end
+
+local function MedicalCall(src, name, target)
+    if GetResourceState('pf-ambulancejob') ~= 'started' then
+        TriggerClientEvent('QBCore:Notify', src, 'The medical system is not running', 'error')
+        return
+    end
+    local ok, res = pcall(function()
+        return exports['pf-ambulancejob'][name](exports['pf-ambulancejob'], target, { by = src, mode = 'admin', reason = 'adminmenu' })
+    end)
+    if not ok or type(res) ~= 'table' or not res.ok then
+        TriggerClientEvent('QBCore:Notify', src, (type(res) == 'table' and res.message) or 'That did not work', 'error')
+    end
+end
+
 RegisterNetEvent('qb-admin:server:kill', function(player)
     local src = source
     if QBCore.Functions.HasPermission(src, permissions['kill']) or IsPlayerAceAllowed(src, 'command') then
-        TriggerClientEvent('hospital:client:KillPlayer', player.id)
+        local target = MedicalTarget(player)
+        if target then MedicalCall(src, 'Kill', target) end
     else
         BanPlayer(src)
     end
@@ -110,7 +132,8 @@ end)
 RegisterNetEvent('qb-admin:server:revive', function(player)
     local src = source
     if QBCore.Functions.HasPermission(src, permissions['revive']) or IsPlayerAceAllowed(src, 'command') then
-        TriggerClientEvent('hospital:client:Revive', player.id)
+        local target = MedicalTarget(player)
+        if target then MedicalCall(src, 'Revive', target) end
     else
         BanPlayer(src)
     end

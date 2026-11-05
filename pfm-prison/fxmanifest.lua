@@ -25,6 +25,9 @@ client_scripts {
 }
 
 server_scripts {
+    '@oxmysql/lib/MySQL.lua',   -- pf_prison_* tables (server/schema.lua, migrations key 'pfm-prison')
     '@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
-    'server/main.lua'
+    'server/main.lua',
+    'server/schema.lua',
+    'server/justice_bridge.lua', -- pf-justice orders: intake, release, IsInside, forwarders
 }

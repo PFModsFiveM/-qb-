@@ -158,8 +158,11 @@ RegisterNetEvent('police:client:JailPlayer', function()
                 }
             }
         })
-        if tonumber(dialog['jailtime']) > 0 then
-            TriggerServerEvent('police:server:JailPlayer', playerId, tonumber(dialog['jailtime']))
+        -- a closed dialog returns nothing; the server checks the time, custody and reach again
+        if not dialog then return end
+        local minutes = tonumber(dialog['jailtime'])
+        if minutes and minutes > 0 then
+            TriggerServerEvent('police:server:JailPlayer', playerId, math.floor(minutes))
         else
             QBCore.Functions.Notify(Lang:t('error.time_higher'), 'error')
         end

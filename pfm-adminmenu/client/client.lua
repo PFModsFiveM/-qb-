@@ -397,7 +397,8 @@ end)
 
 -- Revive Self
 menu2_admin_revive:On('select', function(_)
-    TriggerEvent('hospital:client:Revive', PlayerPedId())
+    -- the server revives (admin check there; a local revive no longer counts)
+    TriggerServerEvent('qb-admin:server:revive', { id = GetPlayerServerId(PlayerId()) })
 end)
 
 -- Invisible

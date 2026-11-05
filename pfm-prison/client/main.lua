@@ -2,6 +2,9 @@ QBCore = exports['pfm-core']:GetCoreObject({ 'Functions' })
 inJail = false
 jailTime = 0
 currentJob = nil
+-- true while the sentence is a pf-justice order: the time shown comes from pf-justice's own push
+-- (pf-justice:client:Sentence); otherwise from this prison's server (the old runtime)
+local justiceClock = false
 CellsBlip = nil
 TimeBlip = nil
 ShopBlip = nil
@@ -71,11 +74,9 @@ end
 -- Events
 
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
-	QBCore.Functions.GetPlayerData(function(PlayerData)
-		if PlayerData.metadata['injail'] > 0 then
-			TriggerEvent('prison:client:Enter', PlayerData.metadata['injail'])
-		end
-	end)
+	-- the server decides whether this character is serving here and sends the cell (metadata injail
+	-- also counts station holding cells once pf-justice owns sentences, so it is not read here)
+	TriggerServerEvent('prison:server:RequestState', true)
 
 	QBCore.Functions.TriggerCallback('prison:server:IsAlarmActive', function(active)
 		if active then
@@ -120,11 +121,7 @@ AddEventHandler('onResourceStart', function(resource)
 	if resource ~= GetCurrentResourceName() then return end
 	Wait(100)
 	if LocalPlayer.state['isLoggedIn'] then
-		QBCore.Functions.GetPlayerData(function(PlayerData)
-			if PlayerData.metadata['injail'] > 0 then
-				TriggerEvent('prison:client:Enter', PlayerData.metadata['injail'])
-			end
-		end)
+		TriggerServerEvent('prison:server:RequestState', true)
 	end
 
 	QBCore.Functions.TriggerCallback('prison:server:IsAlarmActive', function(active)
@@ -169,6 +166,7 @@ RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
 	inJail = false
 	jailTime = 0
 	currentJob = nil
+	justiceClock = false
 	RemoveBlip(currentBlip)
 end)
 
@@ -182,17 +180,20 @@ local function ClearPrisonBlips()
 	ShopBlip = nil
 end
 
--- Taken to a cell. Sent by the server (jailed, brought back), or raised on this client after a load
--- or a respawn in the prison infirmary. It only shows the sentence: the server keeps the time.
-local EnterAllowed = { ['pfm-prison'] = true, ['pfm-policejob'] = true, ['pf-ambulancejob'] = true, ['qb-policejob'] = true, ['qb-ambulancejob'] = true }
-RegisterNetEvent('prison:client:Enter', function(time, job, location, returned)
+-- Taken to a cell. Sent by the server (jailed, brought back, a login). Another resource on this
+-- client (a respawn in the prison infirmary) only asks the server, which sends the cell when the
+-- character is serving here. It only shows the sentence: the server (or pf-justice) keeps the time.
+local EnterAllowed = { ['pfm-policejob'] = true, ['pf-ambulancejob'] = true, ['qb-policejob'] = true, ['qb-ambulancejob'] = true }
+RegisterNetEvent('prison:client:Enter', function(time, job, location, returned, justice)
 	local invokingResource = GetInvokingResource()
-	if invokingResource and not EnterAllowed[invokingResource] and invokingResource ~= GetCurrentResourceName() then
+	if invokingResource and invokingResource ~= GetCurrentResourceName() then
+		if EnterAllowed[invokingResource] then TriggerServerEvent('prison:server:RequestState', true) end
 		return
 	end
 	time = tonumber(time) or 0
 	if time <= 0 then return end
 	local firstEntry = not inJail
+	justiceClock = justice == true
 
 	if not returned then
 		QBCore.Functions.Notify(Lang:t('error.injail', { Time = time }), 'error')
@@ -248,6 +249,12 @@ RegisterNetEvent('prison:client:UpdateTime', function(left)
 	if tonumber(left) then jailTime = tonumber(left) end
 end)
 
+-- pf-justice's own push to the inmate on each whole-minute change (display only)
+RegisterNetEvent('pf-justice:client:Sentence', function(summary)
+	if not inJail or not justiceClock then return end
+	if type(summary) == 'table' and tonumber(summary.minutes) then jailTime = tonumber(summary.minutes) end
+end)
+
 -- The desk: the time left is the server's; a served sentence is released by the server.
 RegisterNetEvent('prison:client:Leave', function()
 	if jailTime > 0 then
@@ -262,6 +269,7 @@ RegisterNetEvent('prison:client:Released', function()
 	jailTime = 0
 	inJail = false
 	currentJob = nil
+	justiceClock = false
 	ClearPrisonBlips()
 	TriggerEvent('chat:addMessage', {
 		color = { 3, 132, 252 },
@@ -281,13 +289,16 @@ RegisterNetEvent('prison:client:Released', function()
 	DoScreenFadeIn(1000)
 end)
 
--- The server saw a real escape (through a hacked gate): the sentence ended, the belongings are lost.
-RegisterNetEvent('prison:client:Escaped', function()
+-- The server saw a real escape (through a hacked gate). Old runtime: the sentence ended and the
+-- belongings are lost. pf-justice: the sentence is suspended and the belongings stay in the locker.
+RegisterNetEvent('prison:client:Escaped', function(info)
 	inJail = false
 	jailTime = 0
 	currentJob = nil
+	justiceClock = false
 	ClearPrisonBlips()
-	QBCore.Functions.Notify(Lang:t('error.escaped'), 'error')
+	local suspended = type(info) == 'table' and info.suspended == true
+	QBCore.Functions.Notify(Lang:t(suspended and 'error.escaped_suspended' or 'error.escaped'), 'error')
 end)
 
 -- Threads

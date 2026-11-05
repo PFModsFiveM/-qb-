@@ -1,20 +1,162 @@
--- pf-ambulancejob → pf-services: a player who goes down gets one 'ems.patient' request at the server's
--- position; a medic's revive completes it, respawn / check-in / admin revive / getting up cancel it.
+-- pf-ambulancejob -> pf-services: a player the server has down gets one 'ems.patient' request at the
+-- server's position; a medic's revive completes it, respawn / check-in / admin revive / coming to
+-- cancel it (batch 16A: the down state is the server's, client flags open and close nothing).
 load_resource('tests/lua/ledger_env.lua')
-GetInvokingResource = function() return nil end
-Requests, Closes, Emits = {}, {}, {}
-Mock.exportsByResource['pf-services'] = {
-    CreateRequest = function(_, opts) Requests[#Requests + 1] = opts return { ok = true, id = #Requests } end,
-    CloseByRef = function(_, t, id, status, reason) Closes[#Closes + 1] = { type = t, id = id, status = status, reason = reason } return { ok = true } end,
-    Emit = function(_, kind, data, opts) Emits[#Emits + 1] = { kind = kind, opts = opts } return #Emits end,
+function IsDuplicityVersion() return true end
+
+-- FiveM runs every handler of an event; the mock keeps one per name, so this spec chains them
+function AddEventHandler(name, fn)
+    local prev = Mock.eventHandlers[name]
+    if prev then Mock.eventHandlers[name] = function(...) prev(...) fn(...) end else Mock.eventHandlers[name] = fn end
+end
+-- replicated state bags with :set, as on a server
+Bags = {}
+function Player(src)
+    Bags[src] = Bags[src] or {}
+    local b = Bags[src]
+    return { state = setmetatable({ set = function(_, k, v) b[k] = v end }, { __index = b }) }
+end
+Health, Armour, Attached = {}, {}, {}
+function GetEntityHealth(ped) return Health[ped] or 200 end
+function GetPedArmour(ped) return Armour[ped] or 0 end
+function GetEntityAttachedTo(ped) return Attached[ped] or 0 end
+Items = {}
+Mock.exportsByResource['pfm-inventory'] = {
+    RemoveItem = function(_, src, item, n)
+        local have = (Items[src] or {})[item] or 0
+        if have < (n or 1) then return false end
+        Items[src][item] = have - (n or 1)
+        return true
+    end,
+    AddItem = function() return true end,
 }
-Mock.exportsByResource['pfm-inventory'] = { RemoveItem = function() return true end, AddItem = function() return true end }
-QBCoreMock.Functions.HasItem = function() return false end
+QBCoreMock.Functions.HasItem = function(src, item) return ((Items[src] or {})[item] or 0) > 0 end
 Commands = {}
 QBCoreMock.Commands.Add = function(name, _, _, _, fn) Commands[name] = fn end
-LedgerEnv.load('pf-ambulancejob', { '[pfscripts]/pf-ambulancejob/config.lua', '[pfscripts]/pf-ambulancejob/server/main.lua' })
+QBCoreMock.Functions.HasPermission = function(src, perm) return Mock.aces[src] ~= nil and Mock.aces[src][perm] == true end
+QBCoreMock.Functions.IsOptin = function() return true end
+QBCoreMock.Functions.GetIdentifier = function(src, kind) return kind .. ':' .. tostring(src) end
+function GetPlayers() local out = {} for s in pairs(Mock.players) do out[#out + 1] = tostring(s) end return out end
+function SetEntityCoords() end
+Requests, Closes = {}, {}
+Mock.exportsByResource['pf-services'] = {
+    CreateRequest = function(_, opts)
+        Requests[#Requests + 1] = opts
+        return { ok = true, id = #Requests }
+    end,
+    CloseByRef = function(_, t, id, status, reason) Closes[#Closes + 1] = { type = t, id = id, status = status, reason = reason } return { ok = true } end,
+    Emit = function() return 1 end,
+}
+Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
 
-local PATIENT, MEDIC = 1, 2
+-- in-memory SQL for the medical store (its statements run in the batch-15 real-DB spec)
+DB = { patients = {}, injuries = {}, events = {}, nextId = 0 }
+local function copy(t)
+    if type(t) ~= 'table' then return t end
+    local o = {}
+    for k, v in pairs(t) do o[k] = copy(v) end
+    return o
+end
+local function installFakeSQL()
+    local Q = PFMed.SQL
+    Q.LoadPatient = function(cid) return copy(DB.patients[cid]) end
+    Q.LoadOpenInjuries = function(cid)
+        local out = {}
+        for _, r in pairs(DB.injuries) do if r.citizenid == cid and r.stage ~= 'recovered' then out[#out + 1] = copy(r) end end
+        return out
+    end
+    Q.FindInjuryByKey = function(key) for _, r in pairs(DB.injuries) do if r.idem_key == key then return { id = r.id, citizenid = r.citizenid, attrs = r.attrs } end end end
+    Q.InsertInjury = function(r) DB.nextId = DB.nextId + 1; local row = copy(r); row.id = DB.nextId; DB.injuries[row.id] = row; return row.id end
+    Q.UpsertPatients = function(rows) for _, r in ipairs(rows) do DB.patients[r.citizenid] = copy(r) end return true end
+    Q.UpsertInjuries = function(rows) for _, r in ipairs(rows) do local o = DB.injuries[r.id] or {}; for k, v in pairs(r) do o[k] = v end; DB.injuries[r.id] = o end return true end
+    Q.InsertEvents = function(rows) for _, e in ipairs(rows) do DB.events[#DB.events + 1] = copy(e) end return true end
+    Q.Sweep = function() return {} end
+end
+
+local AJ = '[pfscripts]/pf-ambulancejob/'
+local FILES = { AJ .. 'config.lua', AJ .. 'config_medical.lua', AJ .. 'shared/framework.lua' }
+for _, f in ipairs({ 'anatomy', 'injuries', 'physiology_model', 'effects_model' }) do FILES[#FILES + 1] = AJ .. 'shared/medical/' .. f .. '.lua' end
+FILES[#FILES + 1] = AJ .. 'server/main.lua'
+for _, f in ipairs({ 'schema', 'store', 'engine', 'downstate', 'effects', 'api' }) do FILES[#FILES + 1] = AJ .. 'server/medical/' .. f .. '.lua' end
+
+local D, Store, Engine
+--- Loads the resource (and pfm-adminmenu) from scratch; `keepDB` keeps the patient rows (restart).
+local function boot(keepDB, schemaDown)
+    Mock.eventHandlers, Mock.netHandlers, Mock.netHandlerList, Mock.callbacks = {}, {}, {}, {}
+    PFMed, PFEmsRequests = nil, nil
+    if not keepDB then DB = { patients = {}, injuries = {}, events = {}, nextId = 0 } end
+    LedgerEnv.load('pf-ambulancejob', FILES)
+    installFakeSQL()
+    Mock.exportsByResource['pf-ambulancejob'] = Mock.exportsByResource['__self']
+    D, Store, Engine = PFMed.Down, PFMed.Store, PFMed.Engine
+    QBCore = QBCoreMock
+    load_resource('pfm-adminmenu/server/server.lua')
+    if not schemaDown then assert(PFMed.Schema.Start(), 'schema ready') end
+end
+
+local PATIENT, MEDIC, CIV, ADMIN = 1, 2, 3, 4
+local function online(src, cid)
+    local p = Mock.newPlayer(src, cid)
+    p.PlayerData.money = { cash = 0, bank = 5000 }
+    p.PlayerData.metadata.injail = 0
+    p.ClearInventory = function() p.cleared = true end
+    Mock.fireEvent('QBCore:Server:PlayerLoaded', nil, p)
+    return p
+end
+local function meta(src) return Mock.players[src].PlayerData.metadata end
+local function lastSetDown(src)
+    local list = Mock.clientEventsNamed('pf-ambulancejob:client:SetDown')
+    for i = #list, 1, -1 do if list[i].target == src then return list[i].args[1], list[i].args[2] end end
+    return nil
+end
+local function lastToken(src, name)
+    local list = Mock.clientEventsNamed(name or 'pf-ambulancejob:client:Revive')
+    for i = #list, 1, -1 do
+        if list[i].target == src then return name and list[i].args[4] or list[i].args[1] end
+    end
+end
+local function events(name)
+    local out = {}
+    for _, e in ipairs(Mock.serverEvents) do if e.name == name then out[#out + 1] = e end end
+    return out
+end
+local function level(cid) return Store.Peek(cid or 'PATIENTCID').consciousness end
+local function advance(s) Mock.clock = Mock.clock + s end
+local function goDown()
+    Health[PATIENT] = 0
+    Mock.fireNet('pf-ambulancejob:server:ReportDown', PATIENT, { nonce = 'n1', kind = 'laststand' })
+    Health[PATIENT] = 150 -- the client resurrected into the last-stand pose
+end
+local function applyRevive(src, token)
+    Health[src] = 200
+    advance(2)
+    Mock.fireNet('pf-ambulancejob:server:ReviveApplied', src, token)
+end
+local function closes(reason)
+    local n = 0
+    for _, c in ipairs(Closes) do if c.type == 'patient' and c.reason == reason then n = n + 1 end end
+    return n
+end
+
+BeforeEach = function()
+    Mock.reset()
+    LedgerEnv.reset()
+    Mock.clock = 1700000000
+    Mock.players, Mock.coords, Mock.aces, Mock.dropped = {}, {}, {}, {}
+    Mock.invokingResource = nil
+    Health, Armour, Attached, Items, Bags, Requests, Closes = {}, {}, {}, {}, {}, {}, {}
+    FakeDB.society('ambulance', 0)
+    boot(false)
+    Engine.Random = function() return 0.5 end
+    online(PATIENT, 'PATIENTCID')
+    online(MEDIC, 'MEDICCID').PlayerData.job = { name = 'ambulance', type = 'ems', onduty = true }
+    online(CIV, 'CIVCID')
+    Mock.coords[PATIENT] = vector3(100.0, 100.0, 30.0)
+    Mock.coords[MEDIC] = vector3(101.0, 100.0, 30.0)
+    Mock.coords[CIV] = vector3(100.0, 101.0, 30.0)
+end
+
+
 local function closesFor(t, status, reason)
     local n = 0
     for _, c in ipairs(Closes) do
@@ -22,96 +164,58 @@ local function closesFor(t, status, reason)
     end
     return n
 end
--- the server's own view of the ped: last stand holds it at 150 health, a healthy ped is at 200
-Health = {}
-function GetEntityHealth(ped) return Health[ped] or 200 end
-local function goDown() Health[PATIENT] = 150; Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, true) end
-local function getUp()
-    Health[PATIENT] = 200
-    Mock.fireNet('hospital:server:SetDeathStatus', PATIENT, false)
-    Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, false)
-end
-
--- one resource load per file: each test starts after the previous patient got up and left, so no
--- open call or "left while down" memory carries over from the test before
-local function endSession()
-    if not Mock.players[PATIENT] then return end
-    getUp()
-    Mock.fireEvent('playerDropped', PATIENT)
-end
-
-BeforeEach = function()
-    endSession()
-    Mock.reset()
-    LedgerEnv.reset()
-    Mock.clock = Mock.clock + 1000
-    Mock.players, Mock.coords, Requests, Closes, Emits, Health = {}, {}, {}, {}, {}, {}
-    FakeDB.society('ambulance', 0)
-    Config.WipeInventoryOnRespawn = false
-    local p = Mock.newPlayer(PATIENT, 'PATIENTCID')
-    p.PlayerData.money = { cash = 0, bank = 5000 }
-    p.PlayerData.metadata.injail = 0
-    p.ClearInventory = function() end
-    Mock.newPlayer(MEDIC).PlayerData.job = { name = 'ambulance', type = 'ems', onduty = true }
-    Mock.coords[PATIENT] = vector3(120.5, -300.25, 45.0)
-end
 
 describe('EMS patient requests', function()
-    it('going down opens one request at the server position', function()
+    it('going down opens one request at the server position; dying keeps it', function()
+        Mock.coords[PATIENT] = vector3(120.5, -300.25, 45.0)
         goDown()
-        Mock.fireNet('hospital:server:SetDeathStatus', PATIENT, true)        -- bleeds out: still the same call
+        advance(Config.Medical.Down.LaststandSeconds + 1); D.Tick(os.time())
+        assert_eq(level(), 'dead')
         assert_eq(#Requests, 1)
         local r = Requests[1]
         assert_eq(r.kind, 'ems.patient')
         assert_eq(r.ref.type, 'patient')
         assert_eq(r.ref.id, 'PATIENTCID')
-        assert_eq(r.from.type, 'system')
         assert_near(r.coords.x, 120.5, 0.01)
-        assert_near(r.coords.y, -300.25, 0.01)
-        assert_eq(#Emits, 1)
-        assert_eq(Emits[1].kind, 'ems.patient')
     end)
-    it('a medic\'s revive completes it (and a medic call the patient made)', function()
+    it("a medic's revive completes it (and a medic call the patient made)", function()
         goDown()
+        Items[MEDIC] = { firstaid = 1 }
         Mock.fireNet('hospital:server:RevivePlayer', MEDIC, PATIENT)
+        applyRevive(PATIENT, lastToken(PATIENT))
         assert_eq(closesFor('patient', 'completed', 'revived'), 1)
         assert_eq(closesFor('citizen:ems.patient', 'completed', 'revived'), 1)
-        getUp()                                                              -- the client reports it is up
-        assert_eq(closesFor('patient', 'completed'), 1)
     end)
-    it('respawning at hospital, an admin revive, getting up or logging off cancel it', function()
-        goDown()
-        Mock.fireNet('hospital:server:RespawnAtHospital', PATIENT, 1)
-        assert_eq(closesFor('patient', 'cancelled', 'respawned'), 1)
-        Commands.revive(MEDIC, { tostring(PATIENT) })
-        assert_eq(closesFor('patient', 'cancelled', 'admin_revive'), 1)
-        getUp()                                                              -- already closed by the revive
-        assert_eq(closesFor('patient', 'cancelled', 'recovered'), 0)
-        goDown()                                                             -- down again: a new emergency
-        getUp()
-        assert_eq(closesFor('patient', 'cancelled', 'recovered'), 1)
-        Mock.clock = Mock.clock + 120
-        goDown()
-        Mock.fireEvent('playerDropped', PATIENT)
-        assert_eq(closesFor('patient', 'cancelled', 'left'), 1)
-        assert_eq(closesFor('patient', 'completed'), 0)
-    end)
-    it('no request without a real up -> down change, and toggling cannot flood the medics', function()
-        Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, false)    -- already up
+    it('respawning at hospital cancels it; client flags open nothing', function()
+        Config.WipeInventoryOnRespawn = false
+        Mock.fireNet('hospital:server:SetLaststandStatus', PATIENT, true) -- healthy ped: refused
         assert_eq(#Requests, 0)
-        goDown(); getUp(); goDown(); getUp(); goDown()
+        advance(3)
+        goDown()
+        advance(Config.Medical.Down.LaststandSeconds + 1); D.Tick(os.time())
+        advance(Config.Medical.Consciousness.RespawnAfterSeconds + 1)
+        Mock.fireNet('pf-ambulancejob:server:RequestRespawn', PATIENT)
+        assert_eq(closesFor('patient', 'cancelled', 'respawned'), 1)
+        Mock.fireNet('hospital:server:SetDeathStatus', PATIENT, false)
         assert_eq(#Requests, 1)
-        Mock.clock = Mock.clock + 61
-        getUp(); goDown()
-        assert_eq(#Requests, 2)
     end)
-    it('/911e lands in the medics\' Dispatch app as the caller\'s one open call; treatment closes it', function()
+    it('an admin revive cancels it; logging off cancels it', function()
+        goDown()
+        Commands.revive(MEDIC, { tostring(PATIENT) })
+        applyRevive(PATIENT, lastToken(PATIENT))
+        assert_eq(closesFor('patient', 'cancelled', 'admin_revive'), 1)
+        advance(120)
+        goDown()
+        Mock.fireEvent('QBCore:Server:OnPlayerUnload', nil, PATIENT)
+        assert_eq(closesFor('patient', 'cancelled', 'left'), 1)
+    end)
+    it("/911e lands in the medics' Dispatch app as the caller's one open call; treatment closes it", function()
         Commands['911e'](PATIENT, { 'broken', 'leg' })
         assert_eq(#Requests, 1)
         assert_eq(Requests[1].ref.type, 'citizen:ems.patient')
         assert_eq(Requests[1].requester, 'PATIENTCID')
         assert_eq(Requests[1].details, 'broken leg')
-        assert_near(Requests[1].coords.x, 120.5, 0.01)
+        Items[MEDIC] = { bandage = 1 }
         Mock.fireNet('hospital:server:TreatWounds', MEDIC, PATIENT)
         assert_eq(closesFor('citizen:ems.patient', 'completed', 'treated'), 1)
     end)

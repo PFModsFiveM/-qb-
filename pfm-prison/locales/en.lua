@@ -9,6 +9,7 @@ local Translations = {
         ["injail"] = "You're in jail for %{Time} months..",
         ["item_missing"] = "You are missing an Item..",
         ["escaped"] = "You escaped... Get the hell out of here.!",
+        ["escaped_suspended"] = "You escaped. Your sentence is on hold until you are caught; your belongings stay in the property locker.",
         ["do_some_work"] = "Do some work for sentence reduction, instant job: %{currentjob} ",
         ["security_activated"] = "Highest security level is active, stay with the cell blocks!"
     },
@@ -21,6 +22,8 @@ local Translations = {
     info = {
         ["timeleft"] = "You still have to... %{JAILTIME} months",
         ["lost_job"] = "You're Unemployed",
+        ["off_duty_jailed"] = "You keep your job, but you are off duty while you serve your sentence",
+        ["no_more_credit"] = "Work done. You have already earned all the time off this sentence allows.",
         ["job_interaction"] = "[E] Electricity Work",
         ["job_interaction_target"] = "Do %{job} Work",
         ["received_property"] = "You got your property back..",

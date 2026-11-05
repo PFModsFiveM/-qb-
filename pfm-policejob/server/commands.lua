@@ -125,15 +125,44 @@ QBCore.Commands.Add('jail', Lang:t('commands.jail_player'), {}, false, function(
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
     if Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
+        local J = PoliceJustice
+        if J and J.HandedOver() and ((Config.Justice or {}).AllowFieldJail == false) then
+            TriggerClientEvent('QBCore:Notify', src, 'Field jail is turned off: sentence them through the MDT', 'error')
+            return
+        end
         TriggerClientEvent('police:client:JailPlayer', src)
     else
         TriggerClientEvent('QBCore:Notify', src, Lang:t('error.on_duty_police_only'), 'error')
     end
 end)
 
+-- After the hand-over to pf-justice this is the one /unjail (the MDT's admin /unjail is gone): it
+-- ends every open incarceration order of the player (pf-justice ReleaseNow); pf-justice and
+-- pfm-prison do the release itself. An on-duty officer of Config.Justice.UnjailGrade or an admin.
+local function justiceUnjail(src, Player, args)
+    local notify = function(msg, kind) TriggerClientEvent('QBCore:Notify', src, msg, kind or 'error') end
+    local J = PoliceJustice
+    local job = Player.PlayerData.job or {}
+    local grade = type(job.grade) == 'table' and tonumber(job.grade.level) or tonumber(job.grade) or 0
+    local officer = job.type == 'leo' and job.onduty and grade >= (tonumber((Config.Justice or {}).UnjailGrade) or 0)
+    local admin = not officer and IsPlayerAceAllowed(src, 'command')
+    if not officer and not admin then return notify(Lang:t('error.on_duty_police_only')) end
+    local targetId = tonumber(args and args[1])
+    local Target = targetId and exports['pfm-core']:GetPlayer(targetId)
+    if not Target then return notify('Usage: /unjail <id> (player not found)') end
+    if not J.Up() then return notify('The justice system is not available right now') end
+    local res = J.Call('ReleaseNow', targetId, ('unjail by %s'):format(Player.PlayerData.citizenid),
+        { actor = admin and { kind = 'admin', src = src } or { src = src } })
+    if type(res) ~= 'table' or not res.ok then return notify(J.Text(res)) end
+    if (tonumber(res.released) or 0) == 0 then return notify('They are not in jail') end
+    notify(('Released %s from jail'):format(targetId), 'success')
+end
+
 QBCore.Commands.Add('unjail', Lang:t('commands.unjail_player'), { { name = 'id', help = Lang:t('info.player_id') } }, true, function(source, args)
     local src = source
     local Player = exports['pfm-core']:GetPlayer(src)
+    if not Player then return end
+    if PoliceJustice and PoliceJustice.HandedOver() then return justiceUnjail(src, Player, args) end
     if Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
         local targetId = tonumber(args[1])
         local Target = targetId and exports['pfm-core']:GetPlayer(targetId)

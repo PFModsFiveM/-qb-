@@ -5,6 +5,9 @@ function IsDuplicityVersion() return true end
 Config = nil
 load_resource('[pfscripts]/pf-ambulancejob/config.lua')
 load_resource('[pfscripts]/pf-ambulancejob/shared/framework.lua')
+load_resource('[pfscripts]/pf-ambulancejob/shared/medical/anatomy.lua')
+load_resource('[pfscripts]/pf-ambulancejob/shared/medical/injuries.lua')
+load_resource('[pfscripts]/pf-ambulancejob/server/medical/legacy_import.lua')
 
 describe('injury helpers', function()
     it('weapons map to injury types through their class, with overrides', function()
@@ -40,5 +43,14 @@ describe('injury helpers', function()
             assert_true(Config.Treatments[name] ~= nil, 'button ' .. name)
         end
         assert_true(n > 0)
+    end)
+    it('every legacy injury type and zone has an engine mapping for the one-time import (16B)', function()
+        local LI = PFMed.LegacyImport
+        for injuryType in pairs(Config.InjuryTypes) do
+            local t = LI.TypeMap[injuryType]
+            assert_true(t ~= nil and PFMed.Injuries.Types[t[1]] ~= nil, injuryType)
+        end
+        for zone in pairs(Config.BodyZones) do assert_true(PFMed.Anatomy.IsRegion(LI.ZoneMap[zone]), zone) end
+        for _, s in ipairs(Config.InjurySeverities) do assert_true(LI.SeverityMap[s] ~= nil, s) end
     end)
 end)

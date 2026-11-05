@@ -14,6 +14,88 @@ local function CityEvent(kind, data, opts)
     return ok and id or nil
 end
 
+-- ── pf-justice (batch 16) ─────────────────────────────────────────────────
+-- Field /jail and /unjail follow pf-justice's Config.Compat.LegacyRuntimes.policejob (read from its
+-- config file, so both resources follow one setting; Config.Justice.Runtime = 'justice' or 'legacy'
+-- forces a side). Handed over (false): /jail needs the suspect cuffed or at a booking desk (the MDT's
+-- custody rule, owner decision D3), opens a pf-justice custody and creates a 'jail' order keyed
+-- pfm-policejob:jail:<custodyId>; pfm-prison takes the inmate in and pf-justice writes the record.
+-- Before that (true) pfm-prison's JailPlayer jails as it always did.
+PoliceJustice = PoliceJustice or {}
+local PJ = PoliceJustice
+local justiceFile -- nil = not read; false = unreadable; table = LegacyRuntimes
+
+local function justiceSettings() return (Config and Config.Justice) or {} end
+
+function PJ.ReadJusticeFlags()
+    if justiceFile ~= nil then return justiceFile or nil end
+    justiceFile = false
+    if LoadResourceFile == nil or load == nil then return nil end
+    local okRead, text = pcall(LoadResourceFile, 'pf-justice', 'config.lua')
+    if not okRead or type(text) ~= 'string' or text == '' then return nil end
+    -- the file only assigns Config.*; nothing else is reachable from it
+    local env = { vector3 = vector3, vector4 = vector4, vector2 = vector2, vec3 = vec3 }
+    local chunk = load(text, '@pf-justice/config.lua', 't', env)
+    if not chunk or not pcall(chunk) or type(env.Config) ~= 'table' then return nil end
+    local compat = type(env.Config.Compat) == 'table' and env.Config.Compat or {}
+    justiceFile = type(compat.LegacyRuntimes) == 'table' and compat.LegacyRuntimes or false
+    return justiceFile or nil
+end
+
+function PJ.Reset() justiceFile = nil end
+
+--- True when pf-justice owns field jail (LegacyRuntimes.policejob == false).
+function PJ.HandedOver()
+    local forced = tostring(justiceSettings().Runtime or 'auto'):lower()
+    if forced == 'justice' then return true end
+    if forced == 'legacy' then return false end
+    local flags = PJ.ReadJusticeFlags()
+    return type(flags) == 'table' and flags.policejob == false
+end
+
+function PJ.Up() return GetResourceState('pf-justice') == 'started' end
+
+--- One pf-justice export call; nil when pf-justice is not running or the call broke off.
+function PJ.Call(name, ...)
+    if not PJ.Up() then return nil end
+    local res = exports['pf-justice']
+    if not res then return nil end
+    local n, args = select('#', ...), { ... }
+    local ok, a, b, c = pcall(function() return res[name](res, table.unpack(args, 1, n)) end)
+    if not ok then
+        print(('^1[pfm-policejob]^7 pf-justice %s failed: %s'):format(name, tostring(a)))
+        return nil
+    end
+    return a, b, c
+end
+
+function PJ.Text(res, fallback)
+    if type(res) ~= 'table' then return fallback or 'The justice system did not answer; nothing was done' end
+    local msg = res.message or res.error
+    return type(msg) == 'string' and msg ~= '' and msg or (fallback or 'Refused')
+end
+
+-- Booking desks for the custody rule (Config.Justice.BookingZones; these defaults are the MDT's and
+-- pf-justice's booking zones).
+local DEFAULT_BOOKING_ZONES = {
+    { label = 'Mission Row PD', coords = vector3(441.0, -981.0, 30.7), radius = 60.0 },
+    { label = 'Sandy Shores Sheriff', coords = vector3(1853.0, 3689.0, 34.3), radius = 40.0 },
+    { label = 'Paleto Bay Sheriff', coords = vector3(-448.0, 6012.0, 31.7), radius = 40.0 },
+    { label = 'Bolingbroke Penitentiary', coords = vector3(1690.0, 2600.0, 45.6), radius = 250.0 },
+}
+
+function PJ.AtBookingDesk(src)
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 then return false end
+    local c = GetEntityCoords(ped)
+    for _, z in ipairs(justiceSettings().BookingZones or DEFAULT_BOOKING_ZONES) do
+        if z.coords and #(vector3(c.x, c.y, c.z) - vector3(z.coords.x, z.coords.y, z.coords.z)) <= (tonumber(z.radius) or 0) then return true end
+    end
+    return false
+end
+
+AddEventHandler('onResourceStart', function(name) if name == 'pf-justice' then PJ.Reset() end end)
+
 -- seized cash is held here until an officer opens the evidence bag (server/main.lua pays from it)
 EVIDENCE_ACCOUNT = 'system:pfm-policejob-evidence'
 
@@ -215,16 +297,15 @@ AddEventHandler('QBCore:Server:PlayerLoaded', function(LoadedPlayer)
     end
 end)
 
--- A player respawning at the hospital loses the cuffs (the respawn used to uncuff on the client
--- only). pf-ambulancejob handles the respawn itself; this only frees a downed, cuffed player.
-RegisterNetEvent('hospital:server:RespawnAtHospital', function()
-    local src = source
-    local T = exports['pfm-core']:GetPlayer(src)
+-- A player respawning at the hospital loses the cuffs. pf-ambulancejob decides the respawn on the
+-- server (its down state) and raises this server-only event afterwards; the client's
+-- hospital:server:RespawnAtHospital is no longer listened to here (a client could send it at will).
+AddEventHandler('pf-ambulancejob:server:respawned', function(src, cid)
+    src = tonumber(src)
+    local T = src and exports['pfm-core']:GetPlayer(src)
     if not T then return end
-    local meta = T.PlayerData.metadata
-    if meta['ishandcuffed'] and (meta['isdead'] or meta['inlaststand']) then
-        PoliceSetCuffed(src, false)
-    end
+    if cid ~= nil and cid ~= T.PlayerData.citizenid then return end
+    if T.PlayerData.metadata['ishandcuffed'] then PoliceSetCuffed(src, false) end
 end)
 
 --- Cuffs put on by someone who is not an on-duty officer come off after CivilianCuffMinutes, and
@@ -390,6 +471,8 @@ RegisterNetEvent('police:server:JailPlayer', function(playerId, time)
     time = math.floor(time)
     if time > (Config.MaxJailTime or 1440) then time = Config.MaxJailTime or 1440 end
 
+    if PJ.HandedOver() then return PJ.FieldJail(src, Player, OtherPlayer, time) end
+
     -- pfm-prison jails on the server: it stores and clears the items in one step, counts the time
     -- down and decides the release (the client used to do all of that)
     if GetResourceState('pfm-prison') ~= 'started' then
@@ -425,6 +508,71 @@ RegisterNetEvent('police:server:JailPlayer', function(playerId, time)
         dedupe = OtherPlayer.PlayerData.citizenid,
     })
 end)
+
+local jailLock = {} -- target citizenid -> true while a field jail for them runs (taken before the first wait)
+
+local function publicName(P)
+    local ci = P.PlayerData.charinfo or {}
+    local name = ((ci.firstname or '') .. ' ' .. (ci.lastname or '')):gsub('^%s+', ''):gsub('%s+$', '')
+    return name ~= '' and name or 'A suspect'
+end
+
+--- Field jail through pf-justice: custody first, then the jail order keyed by that custody (a double
+--- event finds the same custody and the same order). The officer is on duty and within reach (the
+--- caller checked); every refusal leaves the suspect as they were.
+function PJ.FieldJail(src, Officer, Target, minutes)
+    local notify = function(msg, kind) TriggerClientEvent('QBCore:Notify', src, msg, kind or 'error') end
+    if justiceSettings().AllowFieldJail == false then return notify('Field jail is turned off: sentence them through the MDT') end
+    if not PJ.Up() then return notify('The justice system is not available right now') end
+    local target = Target.PlayerData.source
+    local cid = Target.PlayerData.citizenid
+    if Target.PlayerData.metadata['ishandcuffed'] ~= true and not PJ.AtBookingDesk(target) then
+        return notify('The suspect must be handcuffed or at a booking desk')
+    end
+    if jailLock[cid] then return notify('They are already being jailed') end
+    jailLock[cid] = true
+    local ok, err = pcall(function()
+        local jailed = PJ.Call('IsIncarcerated', cid)
+        if jailed == nil then return notify('The justice system did not answer; nothing was done') end
+        if jailed == true then return notify('They are already serving a sentence') end
+        local actor = { src = src }
+        local opened, custodyId = false, nil
+        local c = PJ.Call('OpenCustody', target, { reason = 'Field jail', actor = actor })
+        if type(c) == 'table' and c.ok then
+            custodyId, opened = tonumber(c.custodyId), c.existing ~= true
+        elseif type(c) == 'table' and c.error == 'conflict' and tonumber(c.custodyId) then
+            custodyId = tonumber(c.custodyId) -- already in custody (arrested, booked, held): that record
+        else
+            return notify(PJ.Text(c))
+        end
+        local res = PJ.Call('CreateOrder', {
+            cid = cid, kind = 'jail', minutes = minutes, custodyId = custodyId,
+            sourceRef = { type = 'field', id = tostring(custodyId) },
+            charges = { { code = 'FIELD', label = 'Field jail', count = 1 } },
+        }, { key = ('pfm-policejob:jail:%d'):format(custodyId), actor = actor })
+        if type(res) ~= 'table' or not res.ok then
+            -- a custody opened only for this jailing is closed again; one that existed stays
+            if opened then PJ.Call('ReleaseFromCustody', custodyId, 'no_charges', { actor = actor, note = 'jail order refused' }) end
+            if type(res) == 'table' and res.error == 'key_reused' then return notify('This arrest already has a different jail order') end
+            return notify(PJ.Text(res))
+        end
+        -- the order holds them now: cuffs off on the server; pfm-prison takes them to a cell
+        PoliceSetCuffed(target, false)
+        TriggerClientEvent('police:client:SendToJail', target, minutes)
+        TriggerClientEvent('QBCore:Notify', src, Lang:t('info.sent_jail_for', { time = minutes }))
+        if not res.duplicate then
+            local name = publicName(Target)
+            CityEvent('police.sentenced', { name = name, months = minutes, place = 'Bolingbroke Penitentiary', by = 'police' }, {
+                title = ('%s sentenced to %d months'):format(name, minutes), actor = Officer.PlayerData.citizenid, dedupe = cid,
+            })
+        end
+    end)
+    jailLock[cid] = nil
+    if not ok then
+        print(('^1[pfm-policejob]^7 field jail failed: %s'):format(tostring(err)))
+        notify('Jailing failed; nothing was changed')
+    end
+end
 
 RegisterNetEvent('police:server:SeizeCash', function(playerId)
     local src = source

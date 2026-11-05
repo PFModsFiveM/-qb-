@@ -80,7 +80,9 @@ local function newInmate(src, cid)
     local p = Mock.newPlayer(src, cid)
     p.PlayerData.charinfo = { firstname = 'John', lastname = 'Escape' .. src }
     p.PlayerData.money = { cash = 0, bank = 0 }
-    p.PlayerData.job = { name = 'mechanic' }
+    p.PlayerData.job = { name = 'mechanic', onduty = true }
+    p.SetJobDuty = function(on) p.PlayerData.job.onduty = on end
+    p.Functions.SetJobDuty = p.SetJobDuty
     p.SetJob = function(name) p.PlayerData.job = { name = name } end
     p.Functions.SetJob = p.SetJob
     p.PlayerData.items = { [1] = { name = 'goldbar', amount = 3, slot = 1 }, [2] = { name = 'weapon_pistol', amount = 1, slot = 2, info = { serial = 'S1' } } }
@@ -115,7 +117,9 @@ describe('jailing (X-3: items moved by the server in one step)', function()
         local stored = meta(INMATE).jailitems
         assert_eq(#stored, 2)
         assert_eq(Mock.players[INMATE].PlayerData.money.cash, 80)
-        assert_eq(Mock.players[INMATE].PlayerData.job.name, 'unemployed')
+        -- owner decision D1 (batch 16): the job is kept, duty is not
+        assert_eq(Mock.players[INMATE].PlayerData.job.name, 'mechanic')
+        assert_eq(Mock.players[INMATE].PlayerData.job.onduty, false)
         assert_eq(#events('prison:client:Enter', INMATE), 1)
         -- jailed again while serving: no second copy, no second jail money
         assert_true(jail(INMATE, 40))
@@ -250,12 +254,17 @@ describe('prison work (X-2: time cuts on the server)', function()
         Mock.coords[INMATE] = vector3(spot.x, spot.y, spot.z)
         Mock.fireNet('prison:server:JobDone', INMATE, loc)        -- too soon after it was given
         assert_eq(meta(INMATE).injail, 100)
-        advance(10)
+        advance(60)                                               -- walked there (batch 16: travel time counts)
         Mock.fireNet('prison:server:JobDone', INMATE, loc + 100)  -- another spot
         Mock.coords[INMATE] = at(0, 0)
         Mock.fireNet('prison:server:JobDone', INMATE, loc)        -- not at the spot
         assert_eq(meta(INMATE).injail, 100)
         Mock.coords[INMATE] = vector3(spot.x, spot.y, spot.z)
+        PFPrison.SampleTick()                                     -- the server sees them at the spot
+        Mock.fireNet('prison:server:JobDone', INMATE, loc)        -- but not long enough yet
+        assert_eq(meta(INMATE).injail, 100)
+        advance(4)
+        PFPrison.SampleTick()
         Mock.fireNet('prison:server:JobDone', INMATE, loc)
         math.random = realRandom
         assert_eq(meta(INMATE).injail, 99)
