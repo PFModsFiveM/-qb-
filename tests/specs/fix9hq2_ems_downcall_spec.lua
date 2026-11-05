@@ -160,11 +160,6 @@ BeforeEach = function()
 end
 
 
-local function patientOpen()
-    local open = 0
-    for _, r in ipairs(Requests) do if r.ref.type == 'patient' then open = open + 1 end end
-    return open - closes('left') - closes('revived') - closes('recovered')
-end
 local function leave()
     Mock.fireEvent('QBCore:Server:OnPlayerUnload', nil, PATIENT)
     Mock.fireEvent('playerDropped', PATIENT)

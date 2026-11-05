@@ -233,3 +233,13 @@ Config.SeizableDrugs = {
     crack_baggy = true, xtcbaggy = true, meth = true,
 }
 Config.DrugBustWindow = 60
+
+-- pf-justice hand-over (batch 16): field /jail and /unjail go through pf-justice orders once its
+-- Config.Compat.LegacyRuntimes.policejob is false. Runtime 'auto' follows pf-justice's setting,
+-- 'justice' / 'legacy' force one side. BookingZones nil = use pf-justice's booking desks.
+Config.Justice = {
+    Runtime = 'auto',
+    AllowFieldJail = true,   -- owner decision D3: field /jail kept, with the custody rule (cuffed or at a booking desk)
+    UnjailGrade = 0,         -- minimum police grade for /unjail (admins with the command ACE always may)
+    BookingZones = nil,
+}

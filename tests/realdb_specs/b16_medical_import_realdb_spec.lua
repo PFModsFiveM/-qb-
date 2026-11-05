@@ -1,4 +1,5 @@
--- pf-ambulancejob migration v4 (batch 16B) on a real database: an installed server at v3 with
+-- pf-ambulancejob legacy import (batch 16B, its own run-once migration key) on a real database: an
+-- installed server at v3 with
 -- legacy player_injuries rows gets the anomaly index and the one-time import (open rows become
 -- pf_med_injuries rows with legacy_id, deleted rows stay out, nothing bleeds); a second run imports
 -- nothing; the injuries load into the engine at login; the legacy scan shows them once.
@@ -26,13 +27,13 @@ local function restart()
     return PFMed.Schema.Start()
 end
 local function count(sql, params) return tonumber(MySQL.scalar.await(sql, params)) or 0 end
-local function versions()
+local function versions(key)
     local out = {}
-    for _, r in ipairs(MySQL.query.await("SELECT version FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob' ORDER BY version")) do out[#out + 1] = tonumber(r.version) end
+    for _, r in ipairs(MySQL.query.await("SELECT version FROM pf_schema_migrations WHERE resource = ? ORDER BY version", { key or 'pf-ambulancejob' })) do out[#out + 1] = tonumber(r.version) end
     return table.concat(out, ',')
 end
 
-describe('migration v4: legacy injury import', function()
+describe('legacy injury import (key pf-ambulancejob-legacy)', function()
     it('imports open legacy rows once, with legacy_id, no bleeding, deleted rows left out', function()
         -- a fresh database each run (realdb/run.js)
         -- the batch-15 server: v1-v3, and rows the old client self-report wrote
@@ -48,7 +49,8 @@ describe('migration v4: legacy injury import', function()
         local legacyRows = count('SELECT COUNT(*) FROM player_injuries')
 
         assert_true(restart())
-        assert_eq(versions(), '1,2,3,4')
+        assert_eq(versions(), '1,2,3', 'the schema itself is unchanged')
+        assert_eq(versions('pf-ambulancejob-legacy'), '1', 'the import ran once, after the schema')
         assert_eq(count("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_med_events' AND INDEX_NAME = 'idx_med_ev_cid_action'"), 3, 'three-column anomaly index')
         assert_eq(count("SELECT COUNT(*) FROM pf_med_injuries WHERE legacy_id IS NOT NULL"), 3)
         assert_eq(count("SELECT COUNT(*) FROM pf_med_injuries WHERE citizenid = 'IMP1'"), 4, 'the blast also left a bruise row')
@@ -67,7 +69,9 @@ describe('migration v4: legacy injury import', function()
         -- once: a second run (and a rerun of the step) imports nothing
         local again = PFMed.LegacyImport.Run()
         assert_eq(again.inserted, 0)
-        assert_true(RunMigrations('pf-ambulancejob', PFMed.Schema.Migrations))
+        assert_true(RunMigrations('pf-ambulancejob-legacy', PFMed.LegacyImport.Migrations))
+        assert_true(restart())
+        assert_eq(versions('pf-ambulancejob-legacy'), '1')
         assert_eq(count("SELECT COUNT(*) FROM pf_med_injuries WHERE citizenid = 'IMP1'"), 4)
 
         -- the engine loads them at login; the legacy scan shows each injury once
