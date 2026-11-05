@@ -120,7 +120,7 @@ Latest full counts reported by the units (before the lead's final run):
 - parsecheck: clean on every changed Lua file in each unit; no `<const>`/`<close>`
 
 Full suites after the lead's integration (final run):
-- LEAD: to be filled by the lead (mocked / real-DB / JS / parsecheck / ledger_parallel / sql_install_check / statebag scan / event collisions)
+- Lead's final integration run (2026-11-05, all batch-15 units and follow-ups in): mocked 2947 passed / 0 failed (272 files); real DB 813 passed / 0 failed (81 files); every tests/js spec green; `realdb/ledger_parallel.js` passed; `realdb/sql_install_check.js` passed (the statebag scan and event-collision specs run inside the mocked suite). Not tested in game.
 
 How the checks worked (batch 15):
 - **Probe specs** written by each checker outside the repos (scratchpad `b15/probe15B*`, `b15/15C_probe`, `b15/p15d`,

@@ -2740,8 +2740,8 @@ start); pf-citizen bills keep the `cancelled` outcome of `CancelInvoice` instead
 fails without it); the `sweep_pol_policejob_spec` patch for the evidence forwarders.
 
 Tests: latest unit full runs mocked 2942 passed, 0 failed (272 files); real DB 806 passed, 0 failed (81 files) at
-15H's run. Lead's final integration run: TO BE FILLED BY THE LEAD (mocked / real DB / JS / `ledger_parallel` /
-`sql_install_check`). Not tested in game.
+15H's run. Lead's final integration run: mocked 2947 passed, 0 failed (272 files); real DB 813 passed, 0 failed
+(81 files); every tests/js spec green; `ledger_parallel` and `sql_install_check` pass. Not tested in game.
 
 Open (details in `docs/pf_ultimate/PF_REMAINING_WORK.md` sections 6-7): lab and court coordinates are placeholders;
 `nitrile_gloves.png` is missing; pay for the new job grades is not set; work-site coordinates need checking in game;
