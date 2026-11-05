@@ -2751,3 +2751,35 @@ check; `ClearInventory` writes no evidence custody row; `society:dot` may not ex
 relay MDT bail to pf-justice, pass a hold when reporting a player down (16A).
 
 In-game checks: `docs/pf_ultimate/PF_TEST_REPORT.md` section 5.10 (B15-L1..L19).
+
+## Batch 16 — 2026-11-05: PF Ultimate foundations II (live systems moved to the new owners)
+
+Four units, each built with specs that fail on the old code, then one combined adversarial check (two gaps found
+and fixed by the lead, with regression specs). pf-justice `Config.Compat.LegacyRuntimes` is now
+`{ mdt = false, prison = false, policejob = false }`: the old MDT jail, pfm-prison metadata jail and police field
+jail no longer run their own sentences; pf-justice owns them and imports any old rows at every start.
+
+| Unit | What changed |
+|---|---|
+| 16A down/death (pf-ambulancejob) | `server/medical/downstate.lua`: the server alone decides down, last stand and dead (server ped health + the medical engine) and writes `isdead`/`inlaststand`. Revives use server tokens; EMS revive needs on-duty EMS at 2.5 m and a kit taken on the server; civilian first aid only on an unconscious patient after a server-timed wait; respawn only when the server has the player dead, one wipe and one bill per death; check-in beds at the desk; legacy free-heal/hunger/armour/status events closed; pfm-adminmenu kill/revive through exports with the ACE. |
+| 16B damage ingestion (pf-ambulancejob) | `server/medical/ingest.lua` + `shared/medical/mechanisms.lua`: injuries only from server-seen damage (health/armour drop, weaponDamageEvent, server-sampled fall and crash speeds); the victim's bone report is a capped hint; plausibility by landing; vests and a `helmet` item protect; old `player_injuries` rows imported once (migration key `pf-ambulancejob-legacy` v1). |
+| 16C prison (pfm-prison) | `server/justice_bridge.lua` + `server/schema.lua` (key `pfm-prison` v1): intake, property locker, release, escape (suspend) and recapture (resume) driven by pf-justice orders; gates through pfm-doorlock `SetDoorState`; work credits as keyed order credits with travel/dwell checks; jobs kept (off duty) while jailed; JailPlayer/ReleasePlayer/GetJailTime forward to pf-justice. |
+| 16D MDT and field jail | pf-policemdt-DEV sentencing and pfm-policejob `/jail` create pf-justice orders (keyed), fines through `PayOrder`, bail through pf-justice offers with the new accept/decline prompt, one police `/unjail`, legacy MDT bail money moved once to the justice account; cuffs come off at respawn only from the server's `respawned` event. |
+
+Lead fixes: pf-justice re-imports old jails at every start once a runtime is handed over (after it is ready);
+`LI.ImportMeta` never re-imports pf-justice's own `injail` mirror; a relog no longer closes a carried-over sentence
+that is suspended (escape) or still matches its jail id; pfm-policejob `Config.Justice` block; the old bed test in
+`ambulance_injuries_realdb_spec` rewritten for the new bed flow.
+
+Tests: mocked 3059 passed, 0 failed (279 files); real DB 819 passed, 0 failed (85 files); every tests/js spec green;
+`ledger_parallel` and `sql_install_check` pass. Not tested in game.
+
+Open: a `helmet` item for pfm-core shared items (helmet protection needs it); the hit-component mapping
+(`HitComponents[20]='head'`), fall/crash bands, intake coordinates and duty/bed timings must be checked in game;
+a pf-justice export for the runtime flags (other resources read pf-justice's config file today); a real-DB spec for
+the pfm-prison v1 tables; batches 17-22 (treatment and hospitals, police field/traffic/lab, courts and prison life,
+departments, UI, final review) are planned in `docs/pf_ultimate/PF_ULTIMATE_SYSTEM_PLAN.md`.
+
+What players see differently: see each unit above; the main ones are server-decided death and revives (no
+auto-bans), injuries only from real hits, field revives that stop bleeding but keep injuries, jailed players keep
+their job, property lockers, escapes put the sentence on hold, unpaid MDT fines become phone invoices, bail by prompt.

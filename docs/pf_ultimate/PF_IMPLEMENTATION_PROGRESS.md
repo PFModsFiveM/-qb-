@@ -272,3 +272,9 @@ yet.
    pf-justice. Carry the batch-15 hand-over steps into the 16C/16D prompts (`PF_REMAINING_WORK.md` section 7).
 3. Run the batch-15 in-game checks (`PF_TEST_REPORT.md` 5.10) on staging when a server with clients exists; batch 16's
    live checks matter more (MED-L4..L8, POL-L2..L3, CRT-L1..L2).
+
+### 2026-11-05: batch 16 done
+Down/death (16A), damage ingestion (16B), prison via pf-justice (16C) and MDT/field jail via pf-justice (16D) are
+Implemented + Tested (automated); pf-justice LegacyRuntimes flipped to false (handed over). Combined check found two
+hand-over gaps, fixed with regression specs. Suites: mocked 3059/0, real DB 819/0. Not tested in game. Resume at
+batch 17 (PF_ULTIMATE_SYSTEM_PLAN.md section 8).
