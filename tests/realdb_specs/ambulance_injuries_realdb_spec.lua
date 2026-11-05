@@ -53,7 +53,11 @@ local function report(src, data)
     Mock.gameTimer = Mock.gameTimer + 5000   -- past the report cooldown
     Mock.fireNet('pf-ambulancejob:server:processDamage', src, data)
 end
-local function hit(injuryType, severity, zone) report(PATIENT, { injuryType = injuryType, severity = severity, bodyZone = zone or 'left_arm', health = 60, weapon = 'Knife' }) end
+-- since batch 16 the self-report writes no record (server/medical/ingest.lua decides injuries); a
+-- record in the legacy table without an engine copy is still listed, treated and cleared here
+local function hit(injuryType, severity, zone)
+    MySQL.insert.await("INSERT INTO player_injuries (citizen_id, injury_type, severity, body_zone, weapon, recorded_by) VALUES ('CID1', ?, ?, ?, 'Knife', 'damage_detection')", { injuryType, severity, zone or 'left_arm' })
+end
 
 BeforeEach = function()
     Mock.reset()
@@ -85,31 +89,9 @@ describe('injury tables', function()
 end)
 
 describe('injury reports', function()
-    it('are stored when every value is a known one', function()
-        hit('laceration', 'moderate')
-        local rows = injuries()
-        assert_eq(#rows, 1)
-        assert_eq(rows[1].injury_type, 'laceration')
-        assert_eq(rows[1].body_zone, 'left_arm')
-        assert_eq(rows[1].recorded_by, 'damage_detection')
-    end)
-    it('unknown types, severities, zones and non-tables are refused', function()
-        hit('dragon_bite', 'moderate')
-        hit('laceration', 'apocalyptic')
-        hit('laceration', 'minor', 'third_arm')
-        report(PATIENT, 'not a table')
+    it('the old self-report is only a damage hint: it writes no injury record', function()
+        report(PATIENT, { injuryType = 'laceration', severity = 'moderate', bodyZone = 'left_arm', health = 60, weapon = 'Knife' })
         assert_eq(#injuries(), 0)
-    end)
-    it('are rate-limited per player', function()
-        hit('laceration', 'minor')
-        Mock.fireNet('pf-ambulancejob:server:processDamage', PATIENT, { injuryType = 'burn', severity = 'minor', bodyZone = 'torso' })
-        assert_eq(#injuries(), 1)
-    end)
-    it('keep only the latest records per citizen', function()
-        Config.DamageTracking.MaxStoredPerCitizen = 3
-        for _ = 1, 5 do hit('laceration', 'minor') end
-        Config.DamageTracking.MaxStoredPerCitizen = 50
-        assert_eq(#injuries(), 3)
     end)
 end)
 
@@ -175,12 +157,14 @@ describe('field treatment', function()
 end)
 
 describe('hospital treatment', function()
-    it('a check-in bed clears every injury, critical ones too', function()
+    -- batch 16: the check-in heal is a server revive token applied by the bed's AI timer (the reception,
+    -- doctor-count and token flow are covered by b16_medical_downstate / b16_medical_legacy_events);
+    -- here: the clear that the hospital bill path runs heals every recorded injury, critical ones too
+    it('a hospital clear heals every injury, critical ones too', function()
         hit('gunshot_wound', 'critical', 'torso')
         hit('burn', 'minor', 'right_arm')
-        Mock.fireNet('hospital:server:SendToBed', PATIENT, 1, true, 1)
+        ClearCitizenInjuries('CID1')
         assert_eq(#injuries(), 0)
-        assert_eq(Mock.players[PATIENT].PlayerData.money.bank, 5000 - Config.BillCost)
     end)
     it('clearing a treated patient works with treatment log rows pointing at injuries', function()
         hit('laceration', 'minor')
