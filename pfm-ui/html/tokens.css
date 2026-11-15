@@ -1,26 +1,197 @@
-/* pfm-ui tokens.css: shared theme values pages can include
-   (<link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/tokens.css">). Small and neutral on purpose:
-   a page keeps its own look and reads these where it wants to match the others. */
+/* pfm-ui tokens.css: PF's design tokens, the one place every shared visual value is declared.
+   Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF (see the pfm-ui resource's NOTICE.md).
+   Ported from WHIP's html/css/base.css token families, renamed --ui-* to --pf-*.
+
+   HOW A PAGE USES IT
+       <link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/fonts.css">
+       <link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/tokens.css">
+       <script src="https://cfx-nui-pfm-ui/html/theme.js"></script>      (optional: server themes)
+   then reads the tokens with a local fallback, so it still renders when pfm-ui is not started:
+       background: var(--pf-surface-solid, rgb(10, 12, 18));
+
+   TOKENS ONLY. This file sets custom properties on :root and nothing else: no element rules, no
+   resets. Every page that loads it keeps its own layout.
+
+   THEMES. A theme is a separate resource with a theme.css that redeclares some of these tokens.
+   theme.js appends it after every other stylesheet (convar pf_ui_theme names the resource), and
+   because custom properties resolve at computed-value time the override wins everywhere.
+
+   CHROMIUM 103 ONLY (FiveM's CEF): no :has(), no color-mix(), no native nesting, no container
+   queries, no @layer. Tints are therefore explicit alpha tokens beside their parent colour.
+
+   NOT HERE ON PURPOSE: --pf-bg, --pf-bg-2, --pf-bg-3, --pf-fg*, --pf-line, --pf-ok/warn/bad and
+   --pf-radius belong to pf-devices' runtime.css (the tablet/computer app platform), which maps them
+   onto the tokens below. Do not declare those names here. */
+
 :root {
-    --pfm-bg: rgba(17, 20, 26, 0.92);
-    --pfm-surface: rgba(32, 37, 46, 0.9);
-    --pfm-fg: #eef1f5;
-    --pfm-fg-dim: rgba(238, 241, 245, 0.65);
-    --pfm-accent: #5aa9ff;
-    --pfm-danger: #f05252;
-    --pfm-success: #3fbf7f;
+    /* ---- Surfaces: the night glass ---- */
+    --pf-surface:              rgba(10, 12, 18, 0.75);
+    --pf-surface-raised:       rgba(10, 12, 18, 0.9);     /* popovers: tooltip, context menu */
+    --pf-surface-solid:        rgb(10, 12, 18);           /* panels the world must not show through */
+    --pf-surface-hover:        rgba(255, 255, 255, 0.05); /* a bare row under the pointer */
+    --pf-surface-hover-strong: rgba(255, 255, 255, 0.10); /* hover on a control that already has a wash */
+    --pf-surface-subtle:       rgba(255, 255, 255, 0.02);
+    --pf-surface-light:        rgba(255, 255, 255, 0.03);
+    --pf-surface-medium:       rgba(255, 255, 255, 0.04);
+    --pf-field:                rgba(255, 255, 255, 0.04); /* a text field's fill */
+    --pf-field-hover:          rgba(255, 255, 255, 0.05);
+    --pf-ink:                  rgb(10, 12, 18);           /* dark text on a white or coloured fill */
 
-    --pfm-radius: 10px;
-    --pfm-radius-sm: 6px;
+    /* ---- Borders ---- */
+    --pf-border:       rgba(255, 255, 255, 0.08);
+    --pf-border-hover: rgba(255, 255, 255, 0.12);
 
-    --pfm-font-sm: 12px;
-    --pfm-font-md: 14px;
-    --pfm-font-lg: 18px;
+    /* ---- Shadows ---- */
+    --pf-shadow:       0 4px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --pf-shadow-lg:    0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --pf-shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.6);
+    --pf-shadow-text:  0 1px 6px rgba(0, 0, 0, 0.8);
+    --pf-rim:          0 0 3px rgba(0, 0, 0, 0.9);        /* dark rim for text drawn on the world */
+    --pf-text-rim:     0 0 3px rgba(0, 0, 0, 0.95), 0 2px 8px rgba(0, 0, 0, 0.85);
 
-    --pfm-focus-ring: #5aa9ff;
-    --pfm-focus-width: 2px;
+    /* ---- Radius ladder ----
+       panel/pop/slot are the documented steps (20/12/8). ROW (11px) is for things you PICK (list
+       rows, tabs, chips, inventory tiles); SLOT (8px) for things you TYPE into (fields). */
+    --pf-radius-panel:   20px;
+    --pf-radius-pop:     12px;
+    --pf-radius-row:     11px;
+    --pf-radius-slot:    8px;
+    --pf-radius-sm:      6px;
+    --pf-radius-xs:      4px;
+    --pf-radius-pill:    3px;
+    --pf-radius-hair:    2px;    /* bars, tracks, the scrollbar thumb */
+    --pf-radius-capsule: 38px;   /* the capsule: the progress capsule, a hint */
+
+    /* ---- Text ---- */
+    --pf-text:       rgba(255, 255, 255, 0.93);
+    --pf-text-mid:   rgba(255, 255, 255, 0.5);
+    --pf-text-dim:   rgba(255, 255, 255, 0.25);
+    --pf-text-label: rgba(255, 255, 255, 0.48);   /* the words that say WHAT a value is */
+
+    /* ---- Semantic colours and their alpha companions ---- */
+    --pf-accent:         #60a5fa;                  /* Signal Blue: focus, a live gauge */
+    --pf-accent-hover:   #6db3ff;
+    --pf-accent-glow:    rgba(96, 165, 250, 0.2);
+    --pf-accent-subtle:  rgba(96, 165, 250, 0.07);
+    --pf-accent-light:   rgba(96, 165, 250, 0.15);
+    --pf-accent-medium:  rgba(96, 165, 250, 0.3);
+    --pf-accent-strong:  rgba(96, 165, 250, 0.4);
+    --pf-on-accent:      #fff;                     /* text on an accent fill */
+    --pf-success:        #4ade80;
+    --pf-success-subtle: rgba(74, 222, 128, 0.08);
+    --pf-success-light:  rgba(74, 222, 128, 0.12);
+    --pf-success-medium: rgba(74, 222, 128, 0.5);
+    --pf-error:          #f87171;
+    --pf-error-subtle:   rgba(248, 113, 113, 0.08);
+    --pf-error-light:    rgba(248, 113, 113, 0.12);
+    --pf-error-medium:   rgba(248, 113, 113, 0.4);
+    --pf-warning:        #fbbf24;
+    --pf-warning-subtle: rgba(251, 191, 36, 0.08);
+    --pf-warning-light:  rgba(251, 191, 36, 0.15);
+    --pf-info:           #60a5fa;
+    --pf-gold:           #e8c773;                  /* PF: a backpack, a favourite, a unique item */
+
+    /* ---- The Slot: "a thing lives here" (inventory grids) ----
+       A tile, not an outline: empty is a faint wash with no edge; filled is brighter with a quiet
+       hairline and a top highlight; hover one step brighter (filled only). */
+    --pf-slot-bg:          rgba(255, 255, 255, 0.03);
+    --pf-slot-bg-filled:   rgba(255, 255, 255, 0.07);
+    --pf-slot-bg-hover:    rgba(255, 255, 255, 0.10);
+    --pf-slot-bg-chosen:   rgba(96, 165, 250, 0.15);   /* a controller's slot: blue wash in a white ring */
+    --pf-slot-line-w:      1px;
+    --pf-slot-line-w-lg:   2px;
+    --pf-slot-line:        transparent;
+    --pf-slot-line-filled: rgba(255, 255, 255, 0.14);
+    --pf-slot-line-hover:  rgba(255, 255, 255, 0.28);
+    --pf-slot-line-focus:  #fff;
+    --pf-slot-lift:        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --pf-slot-glow:        0 0 12px rgba(255, 255, 255, 0.22);
+    --pf-ring:             rgba(255, 255, 255, 0.65);
+
+    /* ---- The selection pill: "this one" ----
+       Near-white with dark ink: a selected row, a drop target, the primary button. */
+    --pf-pill:         rgba(255, 255, 255, 0.93);
+    --pf-pill-ink:     rgb(10, 12, 18);
+    --pf-pill-ink-mid: rgba(10, 12, 18, 0.62);
+    --pf-pill-hover:   #fff;
+
+    /* ---- The disc: the stat-disc gauge (progress capsule, radial centre) ----
+       Dark core, white ring, white fill rising from the bottom, a double black outline that holds
+       it over any world. */
+    --pf-disc-core:    rgba(12, 14, 20, 0.96);
+    --pf-disc-ring:    rgba(255, 255, 255, 0.55);
+    --pf-disc-fill:    rgba(255, 255, 255, 0.93);
+    --pf-disc-outline: 0 0 0 3px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.85);
+
+    /* ---- Scrims: the dim a full-screen surface draws over the game ---- */
+    --pf-scrim:   rgba(10, 12, 18, 0.78);   /* the inventory's wash */
+    --pf-overlay: rgba(0, 0, 0, 0.45);      /* behind a dialog */
+
+    /* ---- Item art ---- */
+    --pf-item-shadow:        drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));
+    --pf-item-shadow-lifted: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.6));
+
+    /* ---- A house panel's ground: solid glass with a faint blue glow in its top-left corner.
+       Use as `background: var(--pf-panel-glow), var(--pf-surface-solid)`. A theme wanting plain
+       glass sets it to `none`. ---- */
+    --pf-panel-glow: radial-gradient(120% 60% at 0% 0%, rgba(96, 165, 250, 0.07), transparent 60%);
+
+    /* ---- Type ---- */
+    --pf-font:         'Barlow', 'Segoe UI', sans-serif;
+    --pf-mono:         var(--pf-font);            /* figures: pair with font-variant-numeric: tabular-nums */
+    --pf-font-display: 'Bricolage Grotesque', 'Barlow', 'Segoe UI', sans-serif;   /* titles */
+    --pf-fw-display:   800;
+    --pf-fs-xs: 9px;  --pf-fs-sm: 11px;  --pf-fs-md: 13px;  --pf-fs-lg: 16px;  --pf-fs-xl: 20px;
+    --pf-fs-caption: 12px;
+    --pf-fs-body-lg: 14px;
+    --pf-fs-display: 26px;
+    --pf-fw-regular: 400;  --pf-fw-medium: 500;  --pf-fw-semibold: 600;  --pf-fw-bold: 700;
+    --pf-tracking-title: -0.01em;                 /* titles are tracked tight */
+    --pf-tracking-label: 0.8px;                   /* uppercase labels are tracked open */
+
+    /* ---- Motion ---- */
+    --pf-ease:        cubic-bezier(0.16, 1, 0.3, 1);
+    --pf-ease-bounce: cubic-bezier(0.34, 1.4, 0.64, 1);
+    --pf-dur-instant: 0.1s;     /* hovers answer instantly */
+    --pf-dur-fast:    0.15s;
+    --pf-dur:         0.25s;
+    --pf-dur-slow:    0.35s;
+    --pf-fade:        0.18s;
+
+    /* ---- Spacing scale ---- */
+    --pf-sp-1: 2px;  --pf-sp-2: 4px;  --pf-sp-3: 6px;  --pf-sp-4: 8px;  --pf-sp-5: 10px;  --pf-sp-6: 14px;
+    --pf-sp-7: 20px;  --pf-sp-8: 28px;
+
+    /* ---- Scrollbars ---- */
+    --pf-scrollbar-w:                 3px;
+    --pf-scrollbar-thumb:             rgba(255, 255, 255, 0.08);
+    --pf-scrollbar-thumb-hover:       rgba(255, 255, 255, 0.15);
+    --pf-scrollbar-w-reach:           6px;    /* where the bar is how you reach hidden content */
+    --pf-scrollbar-thumb-reach:       rgba(255, 255, 255, 0.16);
+    --pf-scrollbar-thumb-reach-hover: rgba(255, 255, 255, 0.28);
+
+    /* ---- Native form controls (CEF paints <option> on its own ground) ---- */
+    --pf-select-option-bg: #111;
+    --pf-select-option-fg: #ccc;
+
+    /* ---- Legacy aliases: the first tokens.css names, read by pfm-ui/html/pad.css and older pages.
+       They resolve to the tokens above, so a theme that overrides --pf-* reskins them too.
+       Do not add new uses. ---- */
+    --pfm-bg:           var(--pf-surface-raised);
+    --pfm-surface:      var(--pf-surface-medium);
+    --pfm-fg:           var(--pf-text);
+    --pfm-fg-dim:       var(--pf-text-mid);
+    --pfm-accent:       var(--pf-accent);
+    --pfm-danger:       var(--pf-error);
+    --pfm-success:      var(--pf-success);
+    --pfm-radius:       var(--pf-radius-pop);
+    --pfm-radius-sm:    var(--pf-radius-sm);
+    --pfm-font-sm:      var(--pf-fs-caption);
+    --pfm-font-md:      var(--pf-fs-body-lg);
+    --pfm-font-lg:      var(--pf-fs-xl);
+    --pfm-focus-ring:   var(--pf-pill);       /* WHIP's controller ring is the white pill */
+    --pfm-focus-width:  2px;
     --pfm-focus-offset: 2px;
-
-    --pfm-glyph-fg: #ffffff;
-    --pfm-glyph-bg: rgba(0, 0, 0, 0.55);
+    --pfm-glyph-fg:     #ffffff;
+    --pfm-glyph-bg:     rgba(0, 0, 0, 0.55);
 }

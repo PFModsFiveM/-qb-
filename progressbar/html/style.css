@@ -1,8 +1,16 @@
-@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@200&display=swap");
+/* progressbar: the progress capsule, in the shared PF look (pfm-ui tokens.css).
+   Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF.
+   Follows WHIP's progress capsule (ui.css "DRAWTEXT", status-hud.css .sh-capsule / .sh-stat): a glass
+   capsule holding a stat disc that fills white from the bottom, the label as the title in the display
+   face beside it and a hairline track under the label; a cancelled bar turns the capsule's edge and the
+   disc red with a short "no" shake. See ../NOTICE.md.
+
+   script.js sets --pb-p (0-1) on .progress-container and the class is-cancelled; #progress-bar's width
+   is still set too. Every value has a local fallback, so it still draws without pfm-ui. */
 
 html {
     overflow: hidden;
-    font-family: "Poppins", sans-serif;
+    font-family: var(--pf-font, "Barlow", "Segoe UI", sans-serif);
 }
 
 body {
@@ -15,57 +23,190 @@ body {
 }
 
 .progress-container {
+    --pb-ease: var(--pf-ease, cubic-bezier(0.16, 1, 0.3, 1));
+    --pb-error: var(--pf-error, #f87171);
     display: none;
     z-index: 5;
-    color: #fff;
-    width: 15%;
     position: fixed;
     bottom: 15%;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--pf-text, rgba(255, 255, 255, 0.93));
+    font-family: var(--pf-font, "Barlow", "Segoe UI", sans-serif);
+}
+
+/* THE CAPSULE: night glass, 38px ends (the shape is the component), a hairline and the lift. */
+.pb-cap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 4px 26px 4px 6px;
+    white-space: nowrap;
+    background: var(--pf-surface, rgba(10, 12, 18, 0.75));
+    border: 1px solid var(--pf-border, rgba(255, 255, 255, 0.08));
+    border-radius: var(--pf-radius-capsule, 38px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    animation: pb-in 0.3s var(--pb-ease) both;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* the top-edge glass highlight */
+.pb-cap::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 16%;
+    right: 16%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+    pointer-events: none;
+}
+
+@keyframes pb-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- THE DISC: dark core, white fill rising with --pb-p, a white ring with the double black outline ---- */
+.pb-disc {
+    position: relative;
+    flex: 0 0 auto;
+    width: 64px;
+    height: 64px;
+    /* the percentage flips to ink where the white fill passes under it; isolation keeps that blend
+       inside the disc instead of against the game world */
+    isolation: isolate;
+}
+
+.pb-disc-clip {
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    overflow: hidden;
+    z-index: 1;
+}
+
+.pb-disc-core {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: var(--pf-disc-core, rgba(12, 14, 20, 0.96));
+    box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.55);
+}
+
+.pb-disc-fill {
+    position: absolute;
     left: 0;
     right: 0;
-    margin-left: auto;
-    margin-right: auto;
-    font-family: "Poppins", sans-serif;
+    bottom: 0;
+    height: 100%;
+    background: var(--pf-disc-fill, rgba(255, 255, 255, 0.93));
+    transform: scaleY(var(--pb-p, 0));
+    transform-origin: 50% 100%;
+    transition: transform 0.08s linear, background 0.3s var(--pb-ease);
+}
+
+.pb-disc-ring {
+    position: absolute;
+    inset: 4px;
+    border-radius: 50%;
+    border: 4px solid var(--pf-disc-ring, rgba(255, 255, 255, 0.55));
+    box-shadow: var(--pf-disc-outline, 0 0 0 3px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.85));
+    z-index: 2;
+    pointer-events: none;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+#progress-percentage {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: var(--pf-fw-bold, 700);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: #fff;
+    mix-blend-mode: difference;
+}
+
+/* ---- the words beside it ---- */
+.pb-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    margin-left: 14px;
+    min-width: 170px;
 }
 
 .progress-labels {
     display: flex;
-    justify-content: space-between;
     align-items: center;
 }
 
 #progress-label {
-    font-size: 1.3vh;
-    line-height: 4vh;
-    position: relative;
-    color: #ffffff;
-    z-index: 10;
-    font-weight: bold;
+    font-family: var(--pf-font-display, "Bricolage Grotesque", "Barlow", "Segoe UI", sans-serif);
+    font-size: var(--pf-fs-xl, 20px);
+    font-weight: var(--pf-fw-display, 800);
+    letter-spacing: var(--pf-tracking-title, -0.01em);
+    line-height: 1.15;
+    color: var(--pf-text, rgba(255, 255, 255, 0.93));
+    text-shadow: var(--pf-shadow-text, 0 1px 6px rgba(0, 0, 0, 0.8));
 }
 
-#progress-percentage {
-    font-size: 1.3vh;
-    line-height: 4vh;
-    position: relative;
-    color: #ffffff;
-    z-index: 10;
-    font-weight: bold;
-}
-
+/* the track under the title */
 .progress-bar-container {
-    background: rgba(0, 0, 0, 0.246);
-    height: 0.5vh;
     position: relative;
     display: block;
-    border-radius: 2px;
+    height: 3px;
+    margin-top: 7px;
+    border-radius: var(--pf-radius-hair, 2px);
+    background: var(--pf-slot-line-filled, rgba(255, 255, 255, 0.14));
+    overflow: hidden;
 }
 
 #progress-bar {
-    background-color: #dc143c;
     width: 0%;
-    height: 0.5vh;
-    border-radius: 2px;
-    transition: width 0.3s;
-    transition-timing-function: ease-out;
-    box-shadow: 0 0 10px rgba(220, 20, 60, 0.6);
+    height: 100%;
+    border-radius: var(--pf-radius-hair, 2px);
+    background: var(--pf-text, rgba(255, 255, 255, 0.93));
+    transition: width 0.08s linear;
+}
+
+/* ---- CANCELLED: the capsule's edge goes red with a soft red glow and a short shake, the disc fills red ---- */
+.progress-container.is-cancelled .pb-cap {
+    border-color: var(--pb-error);
+    box-shadow:
+        0 4px 20px rgba(0, 0, 0, 0.4),
+        0 0 0 1px var(--pb-error),
+        0 0 18px rgba(248, 113, 113, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    animation: pb-shake 0.42s var(--pb-ease);
+}
+
+.progress-container.is-cancelled .pb-disc-fill {
+    transform: scaleY(1);
+    background: var(--pb-error);
+    transition: transform 0.32s var(--pb-ease), background 0.32s var(--pb-ease);
+}
+
+.progress-container.is-cancelled .pb-disc-ring {
+    border-color: var(--pb-error);
+    box-shadow: var(--pf-disc-outline, 0 0 0 3px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.85)), 0 0 10px rgba(248, 113, 113, 0.65);
+}
+
+.progress-container.is-cancelled #progress-bar {
+    background: var(--pb-error);
+}
+
+@keyframes pb-shake {
+    0%   { transform: translateX(0); }
+    16%  { transform: translateX(-8px); }
+    33%  { transform: translateX(7px); }
+    50%  { transform: translateX(-5px); }
+    67%  { transform: translateX(3px); }
+    84%  { transform: translateX(-1px); }
+    100% { transform: translateX(0); }
 }

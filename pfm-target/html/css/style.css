@@ -1,32 +1,27 @@
-@import url("https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&display=swap");
+/* pfm-target: the eye and its options, in the shared PF look (pfm-ui tokens.css).
+   Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF.
+   Follows WHIP's interaction prompt (interact.css): a hollow ring on night glass with a dark rim while
+   you look around, filled white with a dark glyph once something is targeted; the options hang off its
+   right edge as glass rows, and the one you point at (mouse or controller) is the white pill.
+   See ../../NOTICE.md.
 
+   js/app.js colours the eye inline with var(--md-on-surface) and var(--md-success): those names stay,
+   mapped onto the tokens. Every value has a local fallback, so it still draws without pfm-ui. */
 :root {
-    /* Colors */
-    --md-primary: #f44336;
-    --md-on-primary: #ffffff;
-    --md-error: #b3261e;
-    --md-on-error: #ffffff;
-    --md-success: #386a20;
-    --md-on-success: #ffffff;
-    --md-success-container: #b6f397;
-    --md-on-success-container: #0c2000;
-    --md-surface: #1c1b1f;
-    --md-on-surface: #e6e1e5;
-    --md-surface-container: #211f26;
-    --md-surface-container-high: #2b2930;
-    --md-surface-container-highest: #36343b;
-    --md-shadow: rgba(0, 0, 0, 0.15);
-    --md-radius-small: 8px;
+    --md-primary: var(--pf-accent, #60a5fa);
+    --md-on-primary: var(--pf-on-accent, #fff);
+    --md-error: var(--pf-error, #f87171);
+    --md-on-error: var(--pf-ink, rgb(10, 12, 18));
+    --md-success: var(--pf-pill-ink, rgb(10, 12, 18));      /* the glyph on the filled white disc */
+    --md-on-success: var(--pf-pill-ink, rgb(10, 12, 18));
+    --md-surface: var(--pf-surface-solid, rgb(10, 12, 18));
+    --md-on-surface: var(--pf-text, rgba(255, 255, 255, 0.93));
+    --md-shadow: rgba(0, 0, 0, 0.85);
+    --font-primary: var(--pf-font, "Barlow", "Segoe UI", sans-serif);
 
-    /* Typography */
-    --md-typescale-label-medium-size: 12px;
-    --font-primary: "Exo 2", Arial, sans-serif;
-    --font-weight-regular: 400;
-    --font-weight-medium: 500;
-    --font-weight-bold: 700;
-
-    /* Elevation */
-    --md-elevation-1: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);
+    --tg-ease: var(--pf-ease, cubic-bezier(0.16, 1, 0.3, 1));
+    --tg-fade: 0.25s;
+    --tg-rim: 0 0 3px rgba(0, 0, 0, 0.9), inset 0 0 3px rgba(0, 0, 0, 0.9);
 }
 
 body {
@@ -34,15 +29,44 @@ body {
     font-family: var(--font-primary);
 }
 
+/* THE EYE: one 44px circle through every state, so the marker turns into a button rather than one
+   thing leaving and another arriving. */
 #target-eye {
     position: absolute;
     top: 50%;
     left: 50%;
     display: none;
-    transform: translateY(-50%) translateX(-50%);
-    font-size: 2vh;
-    text-shadow: 0 2px 4px var(--md-shadow);
-    transition: color 0.3s ease;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    box-sizing: border-box;
+    background: var(--pf-surface, rgba(10, 12, 18, 0.75));
+    border: 2px solid rgba(255, 255, 255, 0.7);
+    box-shadow: var(--tg-rim);
+    font-size: 17px;
+    line-height: 40px;
+    text-align: center;
+    text-shadow: none;
+    animation: eye-in var(--tg-fade) var(--tg-ease) both;
+    transition:
+        color var(--tg-fade) var(--tg-ease),
+        background var(--tg-fade) var(--tg-ease),
+        border-color var(--tg-fade) var(--tg-ease),
+        box-shadow var(--tg-fade) var(--tg-ease);
+}
+
+@keyframes eye-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Targeted: filled white, the glyph in dark ink. The rim's inset half is dropped (it would grey the
+   inside edge of a white disc); an outer dark edge and a drop hold it against a bright sky. */
+#target-eye.target-success {
+    background: var(--pf-pill-hover, #fff);
+    border-color: var(--pf-pill-hover, #fff);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.55), 0 3px 12px rgba(0, 0, 0, 0.45);
 }
 
 #target-label-wrapper {
@@ -51,38 +75,93 @@ body {
     align-content: center;
     justify-content: center;
     flex-direction: row;
-    left: 51.5%;
+    left: calc(50% + 34px);
     width: fit-content;
     height: 100%;
-    top: 49.25%;
+    top: calc(50% - 18px);
 }
 
 #target-label {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--pf-sp-2, 4px);
     list-style: none;
-    font-size: var(--md-typescale-label-medium-size, 1vh);
-    font-weight: var(--font-weight-medium, bold);
-    font-family: var(--font-primary, Arial, sans-serif);
+    font-size: var(--pf-fs-body-lg, 14px);
+    font-weight: var(--pf-fw-bold, 700);
+    font-family: var(--font-primary);
     color: var(--md-on-surface);
     user-select: none;
     white-space: nowrap;
-    text-shadow: 0 2px 4px var(--md-shadow);
 }
 
+/* THE OPTIONS: glass rows at the row radius, words with the world-text rim. */
 [id^="target-option-"] {
-    margin-bottom: 0.2vh;
-    padding: 0.45rem;
-    background: var(--md-surface-container-high);
+    display: flex;
+    align-items: center;
+    gap: var(--pf-sp-4, 8px);
+    min-height: 36px;
+    padding: var(--pf-sp-4, 8px) var(--pf-sp-6, 14px) var(--pf-sp-4, 8px) var(--pf-sp-5, 10px);
+    background: var(--pf-surface, rgba(10, 12, 18, 0.75));
+    border: 1px solid var(--pf-border, rgba(255, 255, 255, 0.08));
+    border-radius: var(--pf-radius-row, 11px);
+    box-shadow: var(--pf-shadow, 0 4px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05));
     color: var(--md-on-surface);
-    box-shadow: var(--md-elevation-1);
-    transition: transform 0.3s ease, background-color 0.2s ease;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    animation: option-in 0.22s var(--tg-ease) both;
+    transition:
+        background var(--pf-dur-instant, 0.1s) var(--tg-ease),
+        color var(--pf-dur-instant, 0.1s) var(--tg-ease),
+        border-color var(--pf-dur-instant, 0.1s) var(--tg-ease),
+        transform 0.2s var(--tg-ease);
 }
 
+[id^="target-option-"]:nth-child(2) { animation-delay: 0.03s; }
+[id^="target-option-"]:nth-child(3) { animation-delay: 0.06s; }
+[id^="target-option-"]:nth-child(4) { animation-delay: 0.09s; }
+[id^="target-option-"]:nth-child(n + 5) { animation-delay: 0.12s; }
+
+@keyframes option-in {
+    from { opacity: 0; transform: translateX(-6px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* A click anywhere on a row reaches the row (app.js reads the clicked element's id). */
+[id^="target-option-"] * {
+    pointer-events: none;
+}
+
+/* The icon: a quiet glyph in a fixed box, so the words line up down the list. */
+[id^="target-icon-"] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    font-size: 13px;
+    color: var(--pf-text-mid, rgba(255, 255, 255, 0.5));
+    transition: color var(--pf-dur-instant, 0.1s) var(--tg-ease);
+}
+
+/* "This one": the pointer's row, or the controller's, wears the white pill. */
 [id^="target-option-"]:hover,
 .pfm-pad [id^="target-option-"].pfm-pad-focus {
-    background: var(--md-surface-container-highest);
-    transform: translateX(10px);
+    background: var(--pf-pill, rgba(255, 255, 255, 0.93));
+    border-color: var(--pf-pill, rgba(255, 255, 255, 0.93));
+    color: var(--pf-pill-ink, rgb(10, 12, 18));
+    transform: translateX(4px);
+}
+
+[id^="target-option-"]:hover [id^="target-icon-"],
+.pfm-pad [id^="target-option-"].pfm-pad-focus [id^="target-icon-"] {
+    color: var(--pf-pill-ink, rgb(10, 12, 18));
+}
+
+/* pad.css draws an outline ring on the focused element; the pill already says it. */
+.pfm-pad [id^="target-option-"].pfm-pad-focus {
+    outline: none;
 }
 
 .target-success {
-    color: var(--md-success, #386a20) !important;
+    color: var(--md-success, rgb(10, 12, 18)) !important;
 }

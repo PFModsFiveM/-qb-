@@ -1,12 +1,21 @@
+/* pfm-menu: the list menu, in the shared PF look (pfm-ui tokens.css).
+   Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF.
+   Follows WHIP's context list (inventory.css POPOVERS): one solid pop, rows concentric with its corner,
+   a hover wash, and the white pill for "this one" (the keyboard or controller row). See ../NOTICE.md.
+
+   Every value reads a pfm-ui token with a local fallback, so the menu still draws without pfm-ui.
+   The --menu-* names stay: pf-hud's theme broadcast (script.js, end) sets them inline. */
 :root {
-    --font-primary: "Inter", sans-serif;
-    --menu-bg: rgba(15, 16, 21, 0.9);
-    --menu-bg-header: rgba(26, 28, 36, 0.95);
-    --menu-fg: #eceef2;
-    --menu-fg-dim: rgba(236, 238, 242, 0.6);
-    --menu-accent: #5b9dff;
-    --menu-radius: 12px;
-    --menu-shadow: 0 10px 28px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.25);
+    --font-primary: var(--pf-font, "Barlow", "Segoe UI", sans-serif);
+    --font-display: var(--pf-font-display, "Bricolage Grotesque", "Barlow", "Segoe UI", sans-serif);
+    --menu-bg: var(--pf-surface-solid, rgb(10, 12, 18));
+    --menu-bg-header: var(--pf-surface-solid, rgb(10, 12, 18));
+    --menu-fg: var(--pf-text, rgba(255, 255, 255, 0.93));
+    --menu-fg-dim: var(--pf-text-mid, rgba(255, 255, 255, 0.5));
+    --menu-accent: var(--pf-accent, #60a5fa);
+    --menu-radius: var(--pf-radius-pop, 12px);
+    --menu-shadow: var(--pf-shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05));
+    --menu-ease: var(--pf-ease, cubic-bezier(0.16, 1, 0.3, 1));
 }
 
 * {
@@ -22,14 +31,17 @@ body {
 }
 
 ::-webkit-scrollbar {
-    width: 5px;
+    width: var(--pf-scrollbar-w, 3px);
 }
 ::-webkit-scrollbar-track {
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: rgba(236, 238, 242, 0.2);
-    border-radius: 3px;
+    background: var(--pf-scrollbar-thumb, rgba(255, 255, 255, 0.08));
+    border-radius: var(--pf-radius-hair, 2px);
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--pf-scrollbar-thumb-hover, rgba(255, 255, 255, 0.15));
 }
 
 #container {
@@ -40,145 +52,142 @@ body {
     background: transparent !important;
 }
 
+/* THE POP: one solid surface holding every row. Solid, not glass: a row's words must not fight the
+   street behind them. The corner glow is the house panel's. */
 #buttons {
     max-height: 75vh;
-    width: 330px;
+    width: 340px;
     overflow-x: hidden;
     overflow-y: auto;
-    padding: 10px;
+    padding: var(--pf-sp-3, 6px);
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: var(--pf-sp-1, 2px);
+    background: var(--pf-panel-glow, radial-gradient(120% 60% at 0% 0%, rgba(96, 165, 250, 0.07), transparent 60%)), var(--menu-bg);
+    border: 1px solid var(--pf-border, rgba(255, 255, 255, 0.08));
+    border-radius: var(--menu-radius);
+    box-shadow: var(--menu-shadow);
+    animation: menu-in 0.22s var(--menu-ease) both;
 }
 
+#buttons:empty {
+    display: none;
+}
+
+@keyframes menu-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ROWS: the corner is --pf-radius-sm so it sits concentric inside the pop (12px outside, 6px padding). */
 .button,
 .title {
     position: relative;
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 12px;
+    gap: var(--pf-sp-5, 10px);
     width: 100%;
-    padding: 11px 13px;
+    padding: var(--pf-sp-4, 8px) var(--pf-sp-5, 10px);
     overflow: hidden;
-    background:
-        linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 50%),
-        var(--menu-bg);
     color: var(--menu-fg);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: var(--menu-radius);
-    box-shadow: var(--menu-shadow);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    animation: menu-in 0.3s cubic-bezier(0.34, 1.25, 0.64, 1) backwards;
+    border-radius: var(--pf-radius-sm, 6px);
+    animation: row-in 0.25s var(--menu-ease) backwards;
 }
 
-@keyframes menu-in {
+@keyframes row-in {
     from {
         opacity: 0;
-        transform: translateX(22px) scale(0.97);
+        transform: translateY(4px);
     }
     to {
         opacity: 1;
-        transform: translateX(0) scale(1);
+        transform: translateY(0);
     }
 }
 
 .button {
     cursor: pointer;
     transition:
-        border-color 0.18s ease,
-        background 0.18s ease,
-        transform 0.18s ease,
-        box-shadow 0.18s ease;
+        background var(--pf-dur-instant, 0.1s) var(--menu-ease),
+        color var(--pf-dur-instant, 0.1s) var(--menu-ease);
 }
 
-.button::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 3px;
-    background: var(--menu-accent);
-    border-radius: 3px 0 0 3px;
-    transform: scaleY(0);
-    transition: transform 0.18s ease;
+.button:hover {
+    background: var(--pf-surface-hover, rgba(255, 255, 255, 0.05));
 }
 
-.button:hover,
+/* "This one": the row the arrows or the D-pad are on wears the white pill, dark ink on it. */
 .button.kb-focus {
-    background:
-        linear-gradient(135deg, color-mix(in srgb, var(--menu-accent) 10%, transparent), transparent 60%),
-        var(--menu-bg-header);
-    border-color: color-mix(in srgb, var(--menu-accent) 38%, transparent);
-    transform: translateX(4px);
-    box-shadow: var(--menu-shadow), 0 0 22px -8px var(--menu-accent);
+    background: var(--pf-pill, rgba(255, 255, 255, 0.93));
+    color: var(--pf-pill-ink, rgb(10, 12, 18));
 }
 
-.button:hover::before,
-.button.kb-focus::before {
-    transform: scaleY(1);
-}
-
+/* THE TITLE: what the menu is about, in the house title face, tracked tight. No fill of its own. */
 .title {
     cursor: default;
-    background:
-        linear-gradient(135deg, color-mix(in srgb, var(--menu-accent) 16%, transparent), transparent 70%),
-        var(--menu-bg-header);
-    border-color: color-mix(in srgb, var(--menu-accent) 30%, transparent);
-}
-
-.title::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 3px;
-    background: var(--menu-accent);
-    border-radius: 3px 0 0 3px;
+    padding: var(--pf-sp-5, 10px) var(--pf-sp-5, 10px) var(--pf-sp-4, 8px);
 }
 
 .title > .column > .header {
-    font-weight: 800;
-    letter-spacing: 0.3px;
+    font-family: var(--font-display);
+    font-size: var(--pf-fs-xl, 20px);
+    font-weight: var(--pf-fw-display, 800);
+    letter-spacing: var(--pf-tracking-title, -0.01em);
+    line-height: 1.2;
+}
+
+.title > .column > .text {
+    margin-top: var(--pf-sp-1, 2px);
+    color: var(--pf-text-label, rgba(255, 255, 255, 0.48));
+}
+
+/* A title after the first row starts a group: a hairline above it, as WHIP's divider. */
+.button + .title {
+    margin-top: var(--pf-sp-2, 4px);
+    border-top: 1px solid var(--pf-border, rgba(255, 255, 255, 0.08));
+    border-radius: 0;
 }
 
 .disabled {
-    opacity: 0.45;
+    opacity: 0.4;
     cursor: default !important;
 }
 
 .disabled:hover {
-    transform: none !important;
-    border-color: rgba(255, 255, 255, 0.07) !important;
-    box-shadow: var(--menu-shadow) !important;
+    background: transparent !important;
 }
 
-.disabled:hover::before {
-    transform: scaleY(0) !important;
-}
-
+/* Icons are quiet glyphs beside the words, not tinted chips: colour is for state. */
 .icon {
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
-    border-radius: 9px;
-    background:
-        linear-gradient(145deg, color-mix(in srgb, var(--menu-accent) 24%, transparent), color-mix(in srgb, var(--menu-accent) 8%, transparent));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--menu-accent) 28%, transparent);
-    color: var(--menu-accent);
+    width: 26px;
+    height: 26px;
+    color: var(--menu-fg-dim);
     font-size: 15px;
     overflow: hidden;
-    transition: transform 0.18s ease;
+    transition: color var(--pf-dur-instant, 0.1s) var(--menu-ease);
+}
+
+.title .icon {
+    color: var(--menu-accent);
 }
 
 .button:hover .icon {
-    transform: scale(1.08);
+    color: var(--menu-fg);
+}
+
+.button.kb-focus .icon {
+    color: var(--pf-pill-ink, rgb(10, 12, 18));
 }
 
 .icon:empty {
@@ -189,6 +198,7 @@ body {
     width: 26px;
     height: 26px;
     object-fit: contain;
+    filter: var(--pf-item-shadow, drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5)));
 }
 
 .column {
@@ -200,18 +210,19 @@ body {
 
 .header {
     width: 100%;
-    color: var(--menu-fg);
-    font-size: 13.5px;
-    font-weight: 700;
-    line-height: 1.4;
+    color: inherit;
+    font-size: var(--pf-fs-body-lg, 14px);
+    font-weight: var(--pf-fw-semibold, 600);
+    line-height: 1.35;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: pre-line; /* menu strings are text: a newline (or a legacy <br>) breaks the line */
 }
 
 .text {
-    font-size: 12px;
-    font-weight: 500;
+    margin-top: 1px;
+    font-size: var(--pf-fs-caption, 12px);
+    font-weight: var(--pf-fw-medium, 500);
     color: var(--menu-fg-dim);
     line-height: 1.45;
     overflow: hidden;
@@ -219,42 +230,56 @@ body {
     white-space: pre-line;
 }
 
+.button.kb-focus .text {
+    color: var(--pf-pill-ink-mid, rgba(10, 12, 18, 0.62));
+}
+
+/* The number key: a keycap. */
 .hotkey {
     flex-shrink: 0;
-    min-width: 20px;
-    height: 20px;
+    min-width: 21px;
+    height: 21px;
     padding: 0 5px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 6px;
+    border: 1px solid var(--pf-slot-line-hover, rgba(255, 255, 255, 0.28));
+    border-radius: var(--pf-radius-sm, 6px);
+    background: var(--pf-surface-medium, rgba(255, 255, 255, 0.04));
     color: var(--menu-fg-dim);
-    font-size: 10.5px;
-    font-weight: 800;
-    transition: color 0.18s ease, border-color 0.18s ease;
+    font-size: var(--pf-fs-sm, 11px);
+    font-weight: var(--pf-fw-bold, 700);
+    font-variant-numeric: tabular-nums;
+    transition: color var(--pf-dur-instant, 0.1s) var(--menu-ease), border-color var(--pf-dur-instant, 0.1s) var(--menu-ease);
 }
 
-.button:hover .hotkey,
+.button:hover .hotkey {
+    color: var(--menu-fg);
+}
+
 .button.kb-focus .hotkey {
-    color: var(--menu-accent);
-    border-color: color-mix(in srgb, var(--menu-accent) 55%, transparent);
+    color: var(--pf-pill-ink, rgb(10, 12, 18));
+    border-color: var(--pf-pill-ink-mid, rgba(10, 12, 18, 0.62));
+    background: none;
 }
 
 .chevron {
     flex-shrink: 0;
     color: var(--menu-fg-dim);
-    font-size: 14px;
+    font-size: 11px;
     opacity: 0;
-    transform: translateX(-5px);
-    transition: opacity 0.18s ease, transform 0.18s ease;
+    transform: translateX(-4px);
+    transition: opacity var(--pf-dur-fast, 0.15s) var(--menu-ease), transform var(--pf-dur-fast, 0.15s) var(--menu-ease);
 }
 
 .button:hover .chevron,
 .button.kb-focus .chevron {
     opacity: 1;
     transform: translateX(0);
-    color: var(--menu-accent);
+}
+
+.button.kb-focus .chevron {
+    color: var(--pf-pill-ink, rgb(10, 12, 18));
 }
 
 #imageHover {
@@ -268,6 +293,9 @@ body {
     max-height: 40vh;
     max-width: 40vw;
     object-fit: scale-down;
+    padding: var(--pf-sp-5, 10px);
+    background: var(--pf-surface-solid, rgb(10, 12, 18));
+    border: 1px solid var(--pf-border, rgba(255, 255, 255, 0.08));
     border-radius: var(--menu-radius);
     box-shadow: var(--menu-shadow);
 }

@@ -218,6 +218,8 @@ const InventoryContainer = Vue.createApp({
         padClasses(slot, inventoryType) {
             const sel = this.padSel, held = this.padHeld;
             return {
+                // not a pad class, but every slot reads this map: a filled slot is a lifted tile (main.css)
+                "has-item": !!this.getItemInSlot(slot, inventoryType),
                 "pad-sel": !!sel && sel.inv === inventoryType && sel.slot === slot,
                 "pad-held": !!held && held.inv === inventoryType && held.slot === slot,
             };

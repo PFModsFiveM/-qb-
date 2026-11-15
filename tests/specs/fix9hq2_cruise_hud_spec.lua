@@ -1,7 +1,8 @@
 -- Cruise control indicator: pfm-smallresources/client/cruise.lua raises the local event
 -- 'seatbelt:client:ToggleCruise' (true when it starts holding the speed, false when it stops for
 -- any reason). Its only handler was in the deleted pfm-hud; pf-hud now keeps the state and sends it
--- as `cruise` in its 'vehicle' NUI message (html/app.js shows the icon; tests/js/pfhud_cruise_spec.js).
+-- as `cruise` in its 'vehicle' NUI message and its 'updateStatusHud' message (html/js/status-hud.js shows the
+-- cruise gauge; tests/js/pfhud_cruise_spec.js).
 load_resource('tests/lua/fivem_mocks.lua')
 
 -- Client scripts run in their own environment: threads are coroutines that a test steps frame by
@@ -69,11 +70,17 @@ describe('pf-hud shows the cruise control state', function()
         GetStreetNameFromHashKey = function() return '' end,
         GetStreetNameAtCoord = function() return 0, 0 end,
         GetEntityCoords = function() return vector3(0, 0, 0) end,
+        GetEntitySpeedVector = function() return vector3(0, 0, 0) end,   -- the dial's reverse check (client/dial.lua)
+        Citizen = { InvokeNative = function() return false end, ReturnResultAnyway = function() end },
     })
     local core = { Functions = { GetPlayerData = function() return { metadata = {} } end } }
     env.exports = setmetatable({ ['pfm-core'] = { GetCoreObject = function() return core end } }, { __call = function() end })
-    loadInto(env, '[pfscripts]/pf-hud/config.lua')
-    loadInto(env, '[pfscripts]/pf-hud/client.lua')
+    -- the client scripts in fxmanifest order (pf-hud's WHIP port split it into client/*.lua)
+    env.PadBridge = false
+    for _, f in ipairs({ 'config.lua', 'client/prefs.lua', 'client/radar.lua', 'client/skin.lua', 'client/radar_tuner.lua',
+        'client/dial.lua', 'client.lua' }) do
+        loadInto(env, '[pfscripts]/pf-hud/' .. f)
+    end
     env.CreateThread(function() env.net['QBCore:Client:OnPlayerLoaded']() end)
 
     local function lastVehicleMessage()

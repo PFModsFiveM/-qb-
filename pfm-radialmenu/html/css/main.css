@@ -1,69 +1,50 @@
-/* Import Exo 2 font as defined in style guide */
-@import url("https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&display=swap");
+/* pfm-radialmenu: the radial menu, in the shared PF look (pfm-ui tokens.css).
+   Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF.
+   Follows WHIP's radial ("Slab", ui.css section 5): dark glass slabs in a ring with a hairline edge,
+   icon and name always showing; the one you aim at turns white with dark ink; the centre is the stat
+   disc (dark core, white ring that turns Signal Blue under the pointer). See ../../NOTICE.md.
 
+   The wheel is SVG drawn by js/RadialMenu.js in a -50..50 viewBox at 375px, so sizes here are viewBox
+   units (1 unit = 3.75px). Never put a CSS transform on g.sector: it would replace the transform
+   attribute that places the slab. Every value has a local fallback, so it still draws without pfm-ui. */
 :root {
-    /* Colors */
-    --md-primary: #f44336;
-    --md-on-primary: #ffffff;
-    --md-primary-container: #ffdad6;
-    --md-on-primary-container: #410002;
-    --md-secondary: #d32f2f;
-    --md-on-secondary: #ffffff;
-    --md-surface: #fffbff;
-    --md-on-surface: #1c1b1f;
-    --md-surface-container: #f3edf7;
-    --md-surface-container-high: #ece8f0;
+    --md-primary: var(--pf-accent, #60a5fa);
+    --md-on-primary: var(--pf-text, rgba(255, 255, 255, 0.93));
+    --md-surface: var(--pf-surface-solid, rgb(10, 12, 18));
+    --md-on-surface: var(--pf-text, rgba(255, 255, 255, 0.93));
 
-    /* Typography from style guide */
-    --md-typescale-display-large-size: 57px;
-    --md-typescale-display-medium-size: 45px;
-    --md-typescale-display-small-size: 36px;
-    --md-typescale-headline-large-size: 32px;
-    --md-typescale-headline-medium-size: 28px;
-    --md-typescale-headline-small-size: 24px;
-    --md-typescale-title-large-size: 22px;
-    --md-typescale-title-medium-size: 16px;
-    --md-typescale-title-small-size: 14px;
-    --md-typescale-body-large-size: 16px;
-    --md-typescale-body-medium-size: 14px;
-    --md-typescale-body-small-size: 12px;
-    --md-typescale-label-large-size: 14px;
-    --md-typescale-label-medium-size: 12px;
-    --md-typescale-label-small-size: 11px;
-
-    /* Custom SVG menu font sizes */
-    --menu-sector-font-size: 2.8px;
+    --menu-sector-font-size: 2.9px;
     --menu-center-font-size: 2.5px;
 
-    /* Font properties */
-    --font-primary: "Exo 2", sans-serif;
+    --font-primary: var(--pf-font, "Barlow", "Segoe UI", sans-serif);
     --font-weight-regular: 400;
     --font-weight-medium: 500;
     --font-weight-bold: 700;
 
-    /* Spacing */
-    --md-spacing-small: 8px;
-    --md-elevation-1: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);
+    --rad-slab: rgba(10, 12, 18, 0.84);
+    --rad-slab-edge: rgba(255, 255, 255, 0.1);
+    --rad-slab-on: rgba(255, 255, 255, 0.95);
+    --rad-label: rgba(255, 255, 255, 0.6);
+    --rad-ink: var(--pf-pill-ink, rgb(10, 12, 18));
+    --rad-ink-mid: rgba(10, 12, 18, 0.8);
+    --rad-ease: var(--pf-ease, cubic-bezier(0.16, 1, 0.3, 1));
 }
 
 h1 {
-    font-weight: var(--font-weight-regular);
-    font-size: var(--md-typescale-headline-large-size);
+    font-family: var(--font-primary);
+    font-weight: var(--font-weight-bold);
+    font-size: 32px;
     color: var(--md-on-primary);
 }
 
-div.info {
-    margin: var(--md-spacing-small) 0;
-}
-
 div.info * {
-    font-size: var(--md-typescale-body-medium-size);
+    font-family: var(--font-primary);
+    font-size: 14px;
     color: var(--md-on-primary);
 }
 
 #icons {
     display: none;
-    filter: url(#drop-shadow);
 }
 
 .container {
@@ -86,67 +67,125 @@ div.menuHolder {
     margin-left: auto;
     margin-right: auto;
     top: 30%;
+    font-family: var(--font-primary);
 }
 
 svg.icons {
     display: none;
 }
 
+/* No scrim: the wheel sits over live gameplay. One soft shadow under the whole ring. */
 svg.menu {
     position: absolute;
     overflow: visible;
-    transition: 0.1s;
-    transition-timing-function: ease-out;
+    filter: drop-shadow(0 6px 24px rgba(0, 0, 0, 0.5));
+    /* visibility MUST stay in this list: RadialMenu.setClassAndWaitForTransition waits for its transitionend */
+    transition:
+        opacity 0.18s var(--rad-ease),
+        transform 0.28s var(--rad-ease),
+        visibility 0.18s linear;
 }
 
 svg.menu.inner {
-    transform: scale(0.66) rotate(-10deg);
+    transform: scale(0.9);
     opacity: 0;
     visibility: hidden;
 }
 
 svg.menu.outer {
+    transform: scale(1.06);
     opacity: 0;
     visibility: hidden;
 }
 
+/* ---- The slabs ---- */
 svg.menu > g > path {
-    fill: rgb(23 23 23 / 80%);
-    box-shadow: var(--md-elevation-1);
+    fill: var(--rad-slab);
+    stroke: var(--rad-slab-edge);
+    stroke-width: 0.27;
+    stroke-linejoin: round;
+    transition: fill 0.15s ease, stroke 0.15s ease;
+}
+
+/* The ring's empty places: quieter glass, nothing to aim at. */
+svg.menu > g.dummy > path {
+    fill: rgba(10, 12, 18, 0.6);
 }
 
 svg.menu > g.sector > path {
     cursor: pointer;
 }
 
-svg.menu > g.sector > text,
-svg.menu > g.sector > use {
+svg.menu > g.sector > text {
     font-family: var(--font-primary);
-    margin-top: 5px;
     font-size: var(--menu-sector-font-size);
-    letter-spacing: 0.2px;
-    text-transform: uppercase;
+    font-weight: var(--font-weight-bold);
+    letter-spacing: 0.04px;
     cursor: pointer;
-    fill: var(--md-on-primary);
+    fill: var(--rad-label);
+    transition: fill 0.15s ease;
 }
 
+/* The icon (an <svg> RadialMenu.js nests in the slab, fill="white" as an attribute: CSS wins). */
+svg.menu > g.sector > svg {
+    cursor: pointer;
+    fill: var(--md-on-surface);
+    transition: fill 0.15s ease;
+}
+
+/* AIMED AT: the slab turns white, its words dark. */
 svg.menu > g.sector:hover > path {
-    fill: var(--md-primary);
+    fill: var(--rad-slab-on);
+    stroke: var(--rad-slab-on);
+}
+
+svg.menu > g.sector:hover > svg {
+    fill: var(--rad-ink);
+}
+
+svg.menu > g.sector:hover > text {
+    fill: var(--rad-ink-mid);
+}
+
+/* The keyboard's / wheel's choice: a Signal Blue edge (the mouse aims by hover). On a controller it is
+   the only pointer, so it is the full white slab. */
+svg.menu > g.sector.selected > path {
+    stroke: var(--pf-accent, #60a5fa);
+    stroke-width: 0.5;
+}
+
+.pfm-pad svg.menu > g.sector.selected > path {
+    fill: var(--rad-slab-on);
+    stroke: var(--rad-slab-on);
+}
+
+.pfm-pad svg.menu > g.sector.selected > svg {
+    fill: var(--rad-ink);
+}
+
+.pfm-pad svg.menu > g.sector.selected > text {
+    fill: var(--rad-ink-mid);
+}
+
+/* ---- The centre: the stat disc. Dark core, a white ring with the double black outline; the ring turns
+   Signal Blue when the pointer is on it (it closes or goes back). ---- */
+svg.menu > g.center > circle {
+    cursor: pointer;
+    fill: var(--pf-disc-core, rgba(12, 14, 20, 0.96));
+    stroke: var(--pf-disc-ring, rgba(255, 255, 255, 0.55));
+    stroke-width: 1.6;
+    filter: drop-shadow(0 0 0.8px rgba(0, 0, 0, 0.9)) drop-shadow(0 0 1.6px rgba(0, 0, 0, 0.85));
+    transition: stroke 0.25s ease, fill 0.25s ease;
 }
 
 svg.menu > g.center:hover > circle {
-    fill: var(--md-primary);
-}
-
-svg.menu > g.center > circle {
-    cursor: pointer;
-    fill: rgb(23 23 23 / 80%);
+    stroke: var(--md-primary);
 }
 
 svg.menu > g.center > text,
-svg.menu > g.center > use {
-    margin-top: 5px;
+svg.menu > g.center > svg {
+    font-family: var(--font-primary);
     font-size: var(--menu-center-font-size);
     cursor: pointer;
-    fill: var(--md-on-primary);
+    fill: var(--md-on-surface);
 }

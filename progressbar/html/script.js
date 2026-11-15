@@ -27,6 +27,8 @@ document.addEventListener("DOMContentLoaded", (event) => {
 
             this.progressLabel.textContent = data.label;
             this.progressPercentage.textContent = "0%";
+            this.progressContainer.classList.remove("is-cancelled");
+            this.progressContainer.style.setProperty("--pb-p", "0");
             this.progressContainer.style.display = "block";
             let startTime = Date.now();
             let duration = parseInt(data.duration, 10);
@@ -37,6 +39,7 @@ document.addEventListener("DOMContentLoaded", (event) => {
                 if (progress > 1) progress = 1;
                 let percentage = Math.round(progress * 100);
                 this.progressBar.style.width = percentage + "%";
+                this.progressContainer.style.setProperty("--pb-p", String(progress));
                 this.progressPercentage.textContent = percentage + "%";
                 if (progress < 1) {
                     this.animationFrameRequest = requestAnimationFrame(animateProgress);
@@ -55,6 +58,7 @@ document.addEventListener("DOMContentLoaded", (event) => {
             this.progressLabel.textContent = "CANCELLED";
             this.progressPercentage.textContent = "";
             this.progressBar.style.width = "100%";
+            this.progressContainer.classList.add("is-cancelled");
             this.cancelledTimer = setTimeout(this.onCancel.bind(this), 1000);
         },
 
@@ -67,6 +71,7 @@ document.addEventListener("DOMContentLoaded", (event) => {
 
         onCancel: function () {
             this.progressContainer.style.display = "none";
+            this.progressContainer.classList.remove("is-cancelled");
             this.progressBar.style.width = "0";
             this.progressPercentage.textContent = "";
         },

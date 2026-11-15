@@ -93,3 +93,38 @@ exports['pfm-ui']:RegisterPadAction('engine', { label = 'Engine', command = 'eng
 `ResetLayout()`, `RegisterPadAction(id, def)`, `RemovePadAction(id)`, `GetPadActionButton(id)`,
 `GetLayoutState()` (the layout, every action `{ id, label }` and whether the player changed any: pfm-pause's Controller screen).
 Local event: `pfm-ui:padChanged` (pad), `pfm-ui:prefChanged` (key, value).
+
+## The shared look (tokens, fonts, themes)
+
+Every PF page draws with the same design tokens, ported from WHIP's `base.css` (see NOTICE.md):
+
+```html
+<link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/fonts.css" />
+<link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/tokens.css" />
+<script src="https://cfx-nui-pfm-ui/html/theme.js"></script>
+```
+
+Read them with a local fallback so the page still renders when pfm-ui is stopped:
+`background: var(--pf-surface-solid, rgb(10, 12, 18))`. The families: `--pf-surface*`, `--pf-border*`,
+`--pf-shadow*`, `--pf-radius-*`, `--pf-text*`, `--pf-accent*` / `success` / `error` / `warning`,
+`--pf-slot-*`, `--pf-pill*`, `--pf-disc-*`, `--pf-scrim`, `--pf-font*`, `--pf-fs-*`, `--pf-fw-*`,
+`--pf-ease*`, `--pf-dur*`, `--pf-sp-*`, `--pf-scrollbar-*`. `tokens.css` is the catalogue.
+FiveM's browser is Chromium 103: no `:has()`, `color-mix()` or CSS nesting.
+
+A **theme** is its own resource with a `theme.css` that redeclares tokens (and nothing else):
+
+```lua
+-- my_theme/fxmanifest.lua
+fx_version 'cerulean'
+game 'gta5'
+files { 'theme.css' }
+```
+
+```cfg
+# server.cfg (setr: the clients must see it)
+ensure my_theme
+setr pf_ui_theme "my_theme"
+```
+
+`theme.js` appends `https://cfx-nui-my_theme/theme.css` after the page's own styles. A stopped or
+misnamed theme leaves the base look.
