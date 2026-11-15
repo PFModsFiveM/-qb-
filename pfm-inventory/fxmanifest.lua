@@ -16,6 +16,7 @@ shared_scripts {
 }
 
 client_scripts {
+    '@pfm-ui/lib/pad_bridge.lua', -- controller support (works without pfm-ui running)
     'client/main.lua',
     'client/drops.lua',
     'client/vehicles.lua',

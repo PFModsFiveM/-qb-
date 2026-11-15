@@ -1,0 +1,511 @@
+/* Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF. */
+/* ========================================
+   CONTROLLER — the pause menu's Controller screen (js/pad-layout.js; client/pad.lua)
+
+   Opening it hides the map and shows a full-size Xbox controller, every button with
+   a line out to what it does; a button is chosen and the bar at the bottom puts another action on it,
+   with a button back to the server's default. The menu slides away as it does for the map.
+
+   The drawing is one SVG (a 1600-wide stage, scaled to fit), so the lines meet their labels at any
+   resolution. Its parts are glass greys; Signal Blue only on the button chosen and its line.
+   ======================================== */
+
+/* ---- the mode: the menu away, the map hidden ---- */
+
+#pause[data-mode="pad"] .pm-side {
+    transform: translateX(-105%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+#pause .pm-mapwrap {
+    transition: opacity 0.3s var(--ui-ease);
+}
+
+#pause[data-mode="pad"] .pm-mapwrap {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.pm-pad {
+    /* Drawn for 1080p, as the pause menu is: --ui-scale is the height over 1440 (utils.js), so this is
+       1 at 1080p. The head, the note and the bar each zoom by it (siblings: one zoom each, none nested);
+       the drawing scales itself to the room left. */
+    --pl-k: calc(var(--ui-scale) * 1.3333);
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    padding: calc(28px * var(--pl-k)) calc(40px * var(--pl-k));
+    box-sizing: border-box;
+    background: radial-gradient(55% 50% at 50% 46%, rgba(96, 165, 250, 0.06), transparent 70%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s var(--ui-ease);
+}
+
+#pause[data-mode="pad"] .pm-pad {
+    opacity: 1;
+    pointer-events: auto;
+    transition-delay: 0.12s;
+}
+
+/* On a pad the hint strip (ui.css, 28px up at --ui-scale) has the bottom: the bar stands on it. */
+html[data-input="pad"] .pm-pad {
+    padding-bottom: calc(92px * var(--pl-k));
+}
+
+.pl-head,
+.pl-foot,
+.pl-bar {
+    zoom: var(--pl-k);
+}
+
+/* ---- the head: back, the title, the views ---- */
+
+.pl-head {
+    position: relative;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 30px;
+    height: 64px;
+}
+
+/* The map's back button, here in the head (pause.css hides it outside the map). */
+#pause .pl-back {
+    top: 10px;
+    left: 0;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.pl-title {
+    font-family: var(--ui-font-display);
+    font-size: 34px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    color: #f2f4f7;
+}
+
+.pl-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--ui-border);
+}
+
+.pl-tab {
+    padding: 9px 18px;
+    border: 0;
+    border-radius: var(--ui-radius-row);
+    background: none;
+    color: var(--ui-text-mid);
+    font-family: var(--ui-font);
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+}
+
+.pl-tab:hover { color: var(--ui-text); }
+
+.pl-tab.on {
+    background: var(--ui-pill);
+    color: var(--ui-pill-ink);
+}
+
+/* LB and RB step the views on a pad. */
+.pl-tab-glyph {
+    display: none;
+    padding: 0 6px;
+}
+
+html[data-input="pad"] .pl-tab-glyph { display: inline-flex; }
+
+.pl-tab-img {
+    height: 22px;
+    width: auto;
+}
+
+.pl-status {
+    position: absolute;
+    right: 0;
+    top: 20px;
+    padding: 4px 10px;
+    border-radius: var(--ui-radius-sm);
+    border: 1px solid var(--ui-border);
+    font-family: var(--ui-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ui-text-mid);
+}
+
+.pl-status.custom {
+    color: var(--ui-accent);
+    border-color: var(--ui-accent-medium);
+}
+
+/* ---- the drawing ---- */
+
+.pl-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.pl-svg {
+    width: 100%;
+    height: 100%;
+    max-width: calc(1760px * var(--pl-k));
+    overflow: visible;
+}
+
+/* GTA's controller page as the reference: a black body with a light grey edge, the
+   shells' seam in a darker grey, the sticks, D-pad and buttons as thin white rings. */
+.pl-body {
+    fill: rgb(3, 4, 7);
+    stroke: rgb(173, 175, 178);
+    stroke-width: 3.5;
+    stroke-linejoin: round;
+}
+
+.pl-seam {
+    fill: none;
+    stroke: rgba(173, 175, 178, 0.45);
+    stroke-width: 1.8;
+    stroke-linecap: round;
+}
+
+.pl-part {
+    fill: rgb(3, 4, 7);
+    stroke: rgb(173, 175, 178);
+    stroke-width: 2.5;
+    stroke-linejoin: round;
+    transition: fill 0.12s, stroke 0.12s;
+}
+
+/* The rings round the sticks, the D-pad and the buttons: white, as GTA has them. */
+.pl-part.pl-ring {
+    fill: rgb(3, 4, 7);
+    stroke: #f2f4f7;
+    stroke-width: 1.8;
+}
+
+/* A stick's cap: grey, its grip ticks round the edge. */
+.pl-cap { fill: rgb(88, 90, 95); }
+
+.pl-ticks {
+    fill: none;
+    stroke: rgba(0, 0, 0, 0.55);
+    stroke-width: 1.4;
+}
+
+/* The D-pad's cross: dark grey arms on the black, the middle darker still. */
+.pl-hub { fill: rgb(14, 15, 18); }
+
+.pl-part.pl-arm-shape {
+    fill: rgb(30, 32, 37);
+    stroke: none;
+}
+
+.pl-arrow { fill: rgba(255, 255, 255, 0.3); }
+
+.pl-letter {
+    font-family: var(--ui-font);
+    font-size: 24px;
+    font-weight: 700;
+    text-anchor: middle;
+}
+
+.pl-mark {
+    fill: none;
+    stroke: #f2f4f7;
+    stroke-width: 1.3;
+}
+
+.pl-mark-line {
+    fill: none;
+    stroke: #f2f4f7;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+}
+
+.pl-guide { fill: rgb(48, 50, 55); }
+.pl-guide-mark { fill: none; stroke: rgba(0, 0, 0, 0.45); stroke-width: 3; }
+
+/* The chosen button is lit in Signal Blue (the server's, not GTA's). */
+.pl-btn.on .pl-part,
+.pl-part.pl-btn.on {
+    fill: rgba(96, 165, 250, 0.22);
+    stroke: var(--ui-accent);
+    stroke-width: 3;
+}
+
+.pl-btn.on .pl-part.pl-arm-shape {
+    fill: rgba(96, 165, 250, 0.55);
+    stroke: var(--ui-accent);
+    stroke-width: 1.5;
+}
+
+.pl-btn.on .pl-arrow { fill: #f2f4f7; }
+.pl-btn.on { filter: drop-shadow(0 0 9px rgba(96, 165, 250, 0.5)); }
+
+/* "Holding LB": LB drawn down. */
+.pl-part.held:not(.on) {
+    fill: rgba(96, 165, 250, 0.2);
+    stroke: rgba(96, 165, 250, 0.75);
+}
+
+.pl-btn.dim { opacity: 0.4; }
+
+/* ---- the lines: GTA's grey, square bends ---- */
+
+.pl-line {
+    fill: none;
+    stroke: rgba(173, 175, 178, 0.55);
+    stroke-width: 3;
+    stroke-linejoin: miter;
+    transition: stroke 0.12s;
+}
+
+/* The server's own buttons a step brighter. */
+.pl-line.edit { stroke: rgba(205, 208, 212, 0.8); }
+
+.pl-line.on { stroke: var(--ui-accent); }
+
+.pl-line.dim { opacity: 0.3; }
+
+/* ---- the labels ---- */
+
+.pl-cap-text {
+    font-family: var(--ui-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    fill: var(--ui-text-label);
+}
+
+.pl-main {
+    font-family: var(--ui-font);
+    font-size: 23px;
+    font-weight: 700;
+    fill: var(--ui-text);
+}
+
+.pl-label.gta .pl-main {
+    fill: rgba(255, 255, 255, 0.55);
+    font-weight: 600;
+}
+
+.pl-label.empty .pl-main { fill: var(--ui-text-dim); }
+.pl-label.dim { opacity: 0.3; }
+.pl-label.on .pl-main { fill: var(--ui-accent); }
+.pl-label.on .pl-cap-text { fill: rgba(96, 165, 250, 0.85); }
+
+.pl-hit {
+    fill: transparent;
+    cursor: pointer;
+}
+
+.pl-label.dim .pl-hit { cursor: default; }
+
+/* ---- the note under the drawing ---- */
+
+.pl-foot {
+    flex: none;
+    margin: 4px 0 14px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ui-text-label);
+}
+
+/* ---- the bar: the chosen button, what can go on it, reset ---- */
+
+.pl-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    width: min(1560px, 100%);
+    min-height: 104px;
+    margin: 0 auto;
+    padding: 18px 24px;
+    box-sizing: border-box;
+    background: var(--ui-surface-raised);
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-panel);
+    box-shadow: var(--ui-shadow-lg);
+}
+
+.pl-what {
+    flex: none;
+    width: 270px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.pl-what-glyphs {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.pl-what-img {
+    height: 34px;
+    width: auto;
+}
+
+.pl-what-text { min-width: 0; }
+
+.pl-what-name {
+    font-family: var(--ui-font-display);
+    font-size: 22px;
+    font-weight: 800;
+    color: #f2f4f7;
+}
+
+.pl-what-sub {
+    margin-top: 3px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--ui-text-mid);
+}
+
+.pl-choices {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.pl-info {
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--ui-text-mid);
+}
+
+.pl-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 8px 13px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-row);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--ui-text);
+    font-family: var(--ui-font);
+    font-size: 15px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.pl-chip:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--ui-border-hover);
+}
+
+/* What is on the button now: the selection pill. */
+.pl-chip.cur {
+    background: var(--ui-pill);
+    border-color: var(--ui-pill);
+    color: var(--ui-pill-ink);
+}
+
+/* The pad's place among them. */
+.pl-chip.on {
+    outline: 2px solid var(--ui-accent);
+    outline-offset: 2px;
+}
+
+.pl-chip-note {
+    margin-top: 2px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ui-text-mid);
+}
+
+.pl-chip.cur .pl-chip-note { color: var(--ui-pill-ink-mid); }
+
+/* Not choosing yet on a pad: the chips wait, a step back. */
+html[data-input="pad"] .pm-pad[data-focus="stage"] .pl-chip:not(.cur) { opacity: 0.6; }
+
+.pl-side {
+    flex: none;
+    display: flex;
+    align-items: center;
+}
+
+.pl-reset,
+.pl-cbtn {
+    padding: 11px 18px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-row);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--ui-text);
+    font-family: var(--ui-font);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.pl-reset:hover:not(:disabled),
+.pl-cbtn:hover {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: var(--ui-border-hover);
+}
+
+.pl-reset:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.pl-reset.hidden { display: none; }
+
+.pl-confirm {
+    display: none;
+    align-items: center;
+    gap: 10px;
+}
+
+.pl-confirm.open { display: flex; }
+
+.pl-confirm-q {
+    margin-right: 4px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ui-text-mid);
+}
+
+.pl-cbtn.on {
+    background: var(--ui-pill);
+    border-color: var(--ui-pill);
+    color: var(--ui-pill-ink);
+}
+
+.pl-cbtn[data-c="0"].on {
+    background: var(--ui-error);
+    border-color: var(--ui-error);
+    color: #0b0d12;
+}

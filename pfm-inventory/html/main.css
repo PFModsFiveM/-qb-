@@ -1450,3 +1450,17 @@ body {
 .ii-chip.fresh-chip.fresh-stale i { color: var(--inv-warn); }
 .ii-chip.fresh-chip.fresh-spoiled i { color: var(--inv-bad); }
 .ii-chip.fresh-chip { white-space: nowrap; }
+
+/* controller (pfm-ui): the selected slot and the picked-up slot, only while a pad is the device */
+.pfm-pad .item-slot.pad-sel {
+    outline: 2px solid var(--pfm-focus-ring, var(--inv-accent));
+    outline-offset: 1px;
+}
+.pfm-pad .item-slot.pad-held {
+    box-shadow: 0 0 0 2px var(--inv-accent) inset;
+    opacity: 0.75;
+}
+.tb-pad-hints {
+    margin-left: auto;
+    margin-right: 16px;
+}

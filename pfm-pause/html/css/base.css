@@ -1,0 +1,98 @@
+/* Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF.
+   BASE: the design tokens the pause menu's sheets read, and the element base.
+   Only the tokens this page uses are kept (the original holds every screen's). FiveM's CEF is
+   Chromium 103: no :has(), no native nesting, no color-mix(). Typefaces: css/fonts.css, loaded first. */
+
+:root {
+    /* --ui-scale is the window's height over 1440, set by js/main.js. */
+    --ui-accent: #60a5fa;
+    --ui-accent-medium: rgba(96, 165, 250, 0.3);
+    --ui-border: rgba(255, 255, 255, 0.08);
+    --ui-border-hover: rgba(255, 255, 255, 0.12);
+    --ui-ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --ui-error: #f87171;
+    --ui-font: 'Barlow', 'Segoe UI', sans-serif;
+    --ui-font-display: 'Bricolage Grotesque', var(--ui-font);
+    --ui-mono: var(--ui-font);
+    --ui-pill: rgba(255, 255, 255, 0.93);
+    --ui-pill-ink: rgb(10, 12, 18);
+    --ui-pill-ink-mid: rgba(10, 12, 18, 0.62);
+    --ui-radius-panel: 20px;
+    --ui-radius-row: 11px;
+    --ui-radius-sm: 6px;
+    --ui-radius-xs: 4px;
+    --ui-scale: 1;
+    --ui-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --ui-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --ui-surface: rgba(10, 12, 18, 0.75);
+    --ui-surface-raised: rgba(10, 12, 18, 0.9);
+    --ui-surface-solid: rgb(10, 12, 18);
+    --ui-text: rgba(255, 255, 255, 0.93);
+    --ui-text-dim: rgba(255, 255, 255, 0.25);
+    --ui-text-label: rgba(255, 255, 255, 0.48);
+    --ui-text-mid: rgba(255, 255, 255, 0.5);
+    --ui-select-option-bg: #111;
+    --ui-select-option-fg: #ccc;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: var(--ui-font);
+    color: var(--ui-text);
+    background: transparent;   /* the game world IS the background */
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    user-select: none;
+}
+input, textarea, [contenteditable="true"] { user-select: text; }
+
+*::-webkit-scrollbar { width: 3px; height: 3px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 2px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
+
+select option { background: var(--ui-select-option-bg); color: var(--ui-select-option-fg); }
+
+/* ---- the pad hint strip (js/main.js): bottom centre, only while a pad is the device ---- */
+#pad-hints {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translate(-50%, 6px);
+    /* Over the pause menu (9400). */
+    z-index: 9590;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 8px 18px;
+    background: var(--ui-surface);
+    border: 1px solid var(--ui-border);
+    border-radius: 20px;
+    box-shadow: var(--ui-shadow);
+    font-family: var(--ui-font);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ui-text);
+    zoom: var(--ui-scale);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s var(--ui-ease), transform 0.2s var(--ui-ease);
+}
+
+html[data-input="pad"] #pad-hints.visible {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+.pad-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pad-hint-glyph {
+    height: 24px;
+    width: auto;
+}

@@ -1,0 +1,669 @@
+/* Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF. */
+/* ========================================
+   PAUSE MENU — in place of GTA's (js/pause.js, js/pause-map.js; client/main.lua)
+
+   The map fills the screen; the menu sits over its left side — the logo with its loading light,
+   Resume / Map / Swap Character / Settings / Quit, where the player is. The player is in the middle of
+   the screen behind it. In map mode the menu slides away and the map, which never changes size, only
+   zooms; the legend, when open, glides the centre left (pause-map.js glide).
+   ======================================== */
+
+#pause {
+    --pm-side: clamp(391px, 31vw, 598px);   /* the menu's width */
+    /* The menu's text, from its width, so the longest item (Swap Character) just fills it at any
+       resolution. 62px at 1080p. */
+    --pm-item: calc(var(--pm-side) * 0.104);
+    /* The legend: the menu's look, narrower, its rows near the menu's size. 476px and 36px at 1080p. */
+    --pm-legend: calc(var(--pm-side) * 0.8);
+    --pm-legend-text: calc(var(--pm-item) * 0.58);
+
+    /* The logo, as the landing page has it (landing.css). */
+    --ld-letter: #fff;
+    --ld-ring:   #000;
+    --ld-lit:    #fff;
+    --ld-hole:   #000;
+    --ld-icon:   #000;
+    --ld-fade:   0.55s;
+
+    position: fixed;
+    inset: 0;
+    z-index: 9400;   /* under the pad hint strip (9500), over the HUD */
+    display: none;
+    overflow: hidden;
+    font-family: var(--ui-font);
+    color: var(--ui-text);
+    background: rgb(8, 14, 23);
+}
+
+#pause.open {
+    display: block;
+    animation: pmIn 0.24s var(--ui-ease);
+}
+
+@keyframes pmIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ---- the menu ---- */
+
+.pm-side {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    width: var(--pm-side);
+    display: flex;
+    flex-direction: column;
+    /* The top and bottom follow the height (64px and 56px at 1080p), as do the menu's gaps below, so
+       "where you are" stays on a 720p screen under all the items. */
+    padding: clamp(32px, 5.9vh, 64px) calc(var(--pm-side) * 0.06) clamp(28px, 5.2vh, 56px) calc(var(--pm-side) * 0.107);
+    box-sizing: border-box;
+    background:
+        radial-gradient(120% 60% at 0% 0%, rgba(96, 165, 250, 0.07), transparent 60%),
+        var(--ui-surface-solid);
+    border-right: 1px solid var(--ui-border);
+    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.45);
+    transform: translateX(0);
+    transition: transform 0.38s var(--ui-ease), opacity 0.3s var(--ui-ease);
+}
+
+#pause[data-mode="map"] .pm-side {
+    transform: translateX(-105%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* The full width of the menu. */
+.pm-logo svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+}
+
+.pm-logo .ld-letters { fill: var(--ld-letter); }
+.pm-logo .ld-ring    { fill: var(--ld-ring); }
+.pm-logo .ld-disc    { fill: var(--ld-lit); }
+.pm-logo .ld-hole    { fill: var(--ld-hole); }
+.pm-logo .ld-icon    { color: var(--ld-icon); }
+
+/* The I's circles: a lit one comes on at once, and fades when the light moves on. */
+.pm-logo .ld-dot .ld-light {
+    opacity: 0;
+    transition: opacity var(--ld-fade) cubic-bezier(0.25, 0.6, 0.35, 1);
+}
+
+.pm-logo .ld-dot.lit .ld-light {
+    opacity: 1;
+    transition: none;
+}
+
+.pm-menu {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: clamp(4px, 1.3vh, 14px);
+    margin-top: clamp(28px, 6.7vh, 72px);
+}
+
+.pm-item {
+    position: relative;
+    padding: clamp(3px, 0.56vh, 6px) 0 clamp(8px, 1.48vh, 16px);   /* 6px and 16px at 1080p */
+    background: none;
+    border: 0;
+    font-family: var(--ui-font-display);
+    font-size: var(--pm-item);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.05;
+    color: rgba(255, 255, 255, 0.34);
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.18s var(--ui-ease), transform 0.22s var(--ui-ease);
+}
+
+/* The chosen item: white, nudged in, and underlined by the logo's rounded stroke drawing itself. */
+.pm-item::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 2px;
+    height: 8px;
+    width: 100%;
+    border-radius: 4px;
+    background: #f2f4f7;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 0.28s var(--ui-ease);
+}
+
+.pm-item.on {
+    color: #f2f4f7;
+    transform: translateX(7px);
+}
+
+.pm-item.on::after {
+    transform: scaleX(1);
+}
+
+/* ---- the question before Swap Character and Quit ---- */
+
+.pm-confirm {
+    display: none;
+    margin-top: 72px;
+}
+
+#pause[data-mode="confirm"] .pm-menu { display: none; }
+#pause[data-mode="confirm"] .pm-confirm { display: block; }
+
+.pm-confirm-q {
+    margin: 0;
+    font-family: var(--ui-font-display);
+    font-size: calc(var(--pm-item) * 0.75);
+    font-weight: 800;
+    line-height: 1.12;
+}
+
+.pm-confirm-sub {
+    margin: 14px 0 34px;
+    font-size: 21px;
+    color: var(--ui-text-mid);
+}
+
+.pm-confirm-row {
+    display: flex;
+    gap: 14px;
+}
+
+.pm-btn {
+    padding: 17px 34px;
+    border-radius: var(--ui-radius-row);
+    border: 1px solid var(--ui-border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--ui-text);
+    font-family: var(--ui-font);
+    font-size: 22px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pm-btn.on {
+    background: #f2f4f7;
+    border-color: #f2f4f7;
+    color: #0b0d12;
+}
+
+.pm-btn-danger.on {
+    background: var(--ui-error);
+    border-color: var(--ui-error);
+    color: #0b0d12;
+}
+
+/* ---- where the player is ---- */
+
+.pm-where {
+    margin-top: auto;
+}
+
+.pm-zone {
+    font-family: var(--ui-font-display);
+    font-size: clamp(20px, 2.96vh, 32px);   /* 32px at 1080p; this and the street follow the height */
+    font-weight: 700;
+    color: #f2f4f7;
+}
+
+.pm-street {
+    margin-top: 6px;
+    font-size: clamp(14px, 1.85vh, 20px);
+    color: var(--ui-text-mid);
+}
+
+/* ---- the map side ---- */
+
+.pm-mapwrap {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+#pause[data-mode="map"] .pm-mapwrap {
+    cursor: default;
+}
+
+.pm-map {
+    position: absolute;
+    inset: 0;
+}
+
+.pm-back,
+.pm-keys,
+.pm-legend {
+    position: absolute;
+    z-index: 5;
+    background: var(--ui-surface-raised);
+    border: 1px solid var(--ui-border);
+    box-shadow: var(--ui-shadow);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s var(--ui-ease), transform 0.25s var(--ui-ease);
+}
+
+#pause[data-mode="map"] .pm-back,
+#pause[data-mode="map"] .pm-keys {
+    opacity: 1;
+    pointer-events: auto;
+    transition-delay: 0.18s;
+}
+
+.pm-back {
+    top: 28px;
+    left: 28px;
+    padding: 10px 18px 10px 14px;
+    border-radius: 20px;
+    color: var(--ui-text);
+    font-family: var(--ui-font);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.pm-back-arrow {
+    margin-right: 6px;
+    opacity: 0.7;
+}
+
+.pm-keys {
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 22px;
+    padding: 10px 20px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ui-text-mid);
+    white-space: nowrap;
+}
+
+.pm-keys b {
+    margin-right: 6px;
+    padding: 2px 7px;
+    border-radius: var(--ui-radius-xs);
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--ui-text);
+    font-weight: 700;
+}
+
+/* On a pad the global hint strip says it instead. */
+html[data-input="pad"] #pause .pm-keys { display: none; }
+
+/* The legend: the left menu's panel on the right, narrower, sliding in as the menu slides out, with
+   lines between each type of blip. */
+.pm-legend {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--pm-legend);
+    display: flex;
+    flex-direction: column;
+    padding: 64px calc(var(--pm-side) * 0.06) 40px;
+    box-sizing: border-box;
+    background:
+        radial-gradient(120% 60% at 100% 0%, rgba(96, 165, 250, 0.07), transparent 60%),
+        var(--ui-surface-solid);
+    border: 0;
+    border-left: 1px solid var(--ui-border);
+    box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
+    transform: translateX(105%);
+    transition: transform 0.38s var(--ui-ease), opacity 0.3s var(--ui-ease);
+}
+
+#pause.pm-legend-open[data-mode="map"] .pm-legend {
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+}
+
+.pm-legend-head {
+    font-family: var(--ui-font-display);
+    font-size: calc(var(--pm-item) * 0.75);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    color: #f2f4f7;
+}
+
+.pm-legend-list {
+    position: relative;   /* the rows' offsetTop is from here (pause.js markLegend) */
+    flex: 1 1 auto;
+    margin-top: 24px;
+    overflow-y: auto;
+    scrollbar-width: none;
+    /* No scrollbar; the last row fading out says there is more below. */
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+}
+
+.pm-legend-list::-webkit-scrollbar { display: none; }
+
+/* A row: the blip at the text's size, the name in the menu's type, a line between kinds. */
+.pm-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    padding: 10px 0;
+    border: 0;
+    border-top: 1px solid var(--ui-border);
+    background: none;
+    color: rgba(242, 244, 247, 0.6);
+    font-family: var(--ui-font-display);
+    font-size: var(--pm-legend-text);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    text-align: left;
+    cursor: pointer;
+    transition: color 0.18s var(--ui-ease);
+}
+
+.pm-legend-row:first-child { border-top: 0; }
+
+.pm-legend-row:hover,
+.pm-legend-row.on {
+    color: #f2f4f7;
+}
+
+.pm-legend-icon {
+    width: calc(var(--pm-legend-text) * 1.15);
+    height: calc(var(--pm-legend-text) * 1.15);
+    flex: 0 0 auto;
+    object-fit: contain;
+}
+
+.pm-legend-icon.pmap-dot {
+    width: 14px;
+    height: 14px;
+    margin: 0 calc(var(--pm-legend-text) * 0.575 - 7px);
+    border-radius: 50%;
+}
+
+.pm-legend-name {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* The name, underlined as the menu's chosen item is when its blip is picked. */
+.pm-legend-label {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 6px 0 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+    line-height: 1.1;
+    transition: transform 0.22s var(--ui-ease);
+}
+
+.pm-legend-label::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 5px;
+    border-radius: 3px;
+    background: #f2f4f7;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 0.28s var(--ui-ease);
+}
+
+.pm-legend-row.on .pm-legend-label { transform: translateX(6px); }
+.pm-legend-row.on .pm-legend-label::after { transform: scaleX(1); }
+
+.pm-legend-count {
+    flex: 0 0 auto;
+    font-size: calc(var(--pm-legend-text) * 0.6);
+    font-weight: 700;
+    color: var(--ui-text-mid);
+}
+
+.pm-legend-empty {
+    padding: 10px 0;
+    color: var(--ui-text-mid);
+    font-size: 20px;
+}
+
+/* ---- the map itself (js/pause-map.js) ---- */
+
+.pmap {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background: rgb(8, 14, 23);   /* the deep sea, where no shape is */
+    user-select: none;
+    --pmap-blip: 22px;
+    --pmap-cx: 50%;
+}
+
+/* The 3D map's picture, copied in (the GPS line and a page's own lines are drawn in it, on the ground). */
+.pmap-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.pmap-marks,
+.pmap-cross {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.pmap-live { cursor: grab; }
+.pmap-live.pmap-dragging { cursor: grabbing; }
+.pmap-moving, .pmap-moving .pmap-blip { cursor: grabbing; }
+
+.pmap-blip {
+    position: absolute;
+    left: calc(var(--pmap-blip) / -2);
+    top: calc(var(--pmap-blip) / -2);
+    width: var(--pmap-blip);
+    height: var(--pmap-blip);
+    object-fit: contain;
+    pointer-events: auto;
+}
+
+.pmap-blip.pmap-dot {
+    width: 10px;
+    height: 10px;
+    left: -5px;
+    top: -5px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+}
+
+/* A mark drawn from one of the page's glyphs (PauseMap.glyphMark): a dark disc, the glyph in white. */
+.pmap-blip.pmap-glyph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: calc(var(--pmap-blip) * 0.2);
+    border-radius: 50%;
+    background: rgba(10, 12, 18, 0.9);
+    border: 1.5px solid rgba(255, 255, 255, 0.85);
+    color: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+.pmap-blip.pmap-glyph svg { width: 100%; height: 100%; display: block; }
+
+/* A mark with the thing's own picture (PauseMap.pictureMark): the glyph mark, a third bigger (the markScale its
+   clicks use), the picture filling the disc once it has loaded. The pictures are shot on white (a prop's on
+   nothing), so the disc goes white under them. A ped's is the whole of them: closed in on the head, as the
+   Director's lore faces are. */
+.pmap-blip.pmap-pic {
+    --pmap-pic: calc(var(--pmap-blip) * 1.35);
+    left: calc(var(--pmap-pic) / -2);
+    top: calc(var(--pmap-pic) / -2);
+    width: var(--pmap-pic);
+    height: var(--pmap-pic);
+    overflow: hidden;
+    border-width: 2px;
+}
+.pmap-pic > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; }
+.pmap-pic.pmap-pic-on { background: #f4f5f7; }
+.pmap-pic.pmap-pic-on > img { opacity: 1; }
+.pmap-pic.pmap-pic-on > svg { visibility: hidden; }
+.pmap-pic-whole > img { padding: 6%; box-sizing: border-box; }
+.pmap-pic-face > img { object-fit: cover; object-position: 50% 0; transform-origin: 50% 17%; transform: scale(3.2); }
+
+.pmap-waypoint {
+    z-index: 2;
+    --pmap-blip: 28px;
+}
+
+/* The picked blip (the pad's centre on it, or clicked): half as big again in a ring. The ring takes
+   the blip's colour, as the icon's colour filter covers the whole element. */
+.pmap-blip.pmap-blip-on {
+    z-index: 2;
+    left: calc(var(--pmap-blip) * -0.75);
+    top: calc(var(--pmap-blip) * -0.75);
+    width: calc(var(--pmap-blip) * 1.5);
+    height: calc(var(--pmap-blip) * 1.5);
+    padding: calc(var(--pmap-blip) * 0.22);
+    box-sizing: border-box;
+    border-radius: 50%;
+    background: rgba(8, 14, 23, 0.75);
+    box-shadow: 0 0 0 3px #f2f4f7;
+}
+
+/* A picked picture mark keeps its picture: bigger, and ringed past a dark gap (a white ring on a white picture
+   would not show). */
+.pmap-blip.pmap-pic.pmap-blip-on {
+    left: calc(var(--pmap-pic) * -0.65);
+    top: calc(var(--pmap-pic) * -0.65);
+    width: calc(var(--pmap-pic) * 1.3);
+    height: calc(var(--pmap-pic) * 1.3);
+    border-color: transparent;
+    box-shadow: 0 0 0 3px rgba(8, 14, 23, 0.9), 0 0 0 6px #f2f4f7, 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+.pmap-blip.pmap-pic.pmap-pic-on.pmap-blip-on { background: #f4f5f7; }
+
+.pmap-blip.pmap-dot.pmap-blip-on {
+    width: 16px;
+    height: 16px;
+    left: -8px;
+    top: -8px;
+    padding: 0;
+    box-shadow: 0 0 0 3px rgba(8, 14, 23, 0.8), 0 0 0 6px #f2f4f7;
+}
+
+/* The player's arrow. The glow is on the arrow's box, not inside its SVG, so the SVG's edge does not
+   cut it off. */
+.pmap-player {
+    position: absolute;
+    left: -18px;
+    top: -18px;
+    width: 36px;
+    height: 36px;
+    z-index: 3;
+    transform-origin: 50% 50%;
+    filter: drop-shadow(0 0 7px rgba(96, 165, 250, 0.75));
+}
+
+.pmap-player svg {
+    display: block;
+    width: 36px;
+    height: 36px;
+    overflow: visible;
+}
+
+.pmap-player path {
+    fill: #f2f4f7;
+    stroke: rgba(8, 10, 14, 0.9);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+}
+
+/* The pad's aiming point: where A sets the waypoint (the view's centre). */
+.pmap-cross {
+    display: none;
+}
+
+html[data-input="pad"] #pause[data-mode="map"] .pmap-cross {
+    display: block;
+    background:
+        linear-gradient(rgba(242, 244, 247, 0.85), rgba(242, 244, 247, 0.85)) calc(var(--pmap-cx) - 1px) 50% / 2px 18px no-repeat,
+        linear-gradient(rgba(242, 244, 247, 0.85), rgba(242, 244, 247, 0.85)) calc(var(--pmap-cx) - 9px) 50% / 18px 2px no-repeat;
+}
+
+.pmap-tints {
+    position: absolute;
+    width: 0;
+    height: 0;
+}
+
+/* ---- PF: the brand mark in the logo's place (js/logo-light.js brandMarkup) ---- */
+
+.pm-logo .ld-letters {
+    font-family: var(--ui-font-display);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+}
+
+/* ---- PF: an item that cannot be used now (Swap Character with no character screen), and its note ---- */
+
+.pm-item.pm-item-off {
+    color: rgba(255, 255, 255, 0.16);
+    cursor: default;
+}
+
+.pm-item.pm-item-off.on { color: rgba(242, 244, 247, 0.42); }
+.pm-item.pm-item-off.on::after { background: rgba(242, 244, 247, 0.42); }
+
+.pm-note {
+    min-height: 1.3em;
+    margin-top: clamp(6px, 1.1vh, 12px);
+    font-size: clamp(13px, 1.67vh, 18px);
+    font-weight: 600;
+    color: var(--ui-text-mid);
+}
+
+/* ---- PF: the character over where the player is ---- */
+
+.pm-char {
+    margin-bottom: 8px;
+    font-size: clamp(12px, 1.48vh, 16px);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ui-text-mid);
+}
+
+.pm-char:empty { display: none; }
+.pm-char b { color: #f2f4f7; font-weight: 700; }
+
+.pm-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* ---- PF: eight items (Help beside the original seven) fit the same height ---- */
+
+#pause.pm-long {
+    --pm-item: calc(var(--pm-side) * 0.09);
+}
+
+#pause.pm-long .pm-menu {
+    gap: clamp(2px, 0.9vh, 10px);
+    margin-top: clamp(22px, 5vh, 54px);
+}

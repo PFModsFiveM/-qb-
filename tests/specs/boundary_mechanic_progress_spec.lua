@@ -11,7 +11,7 @@
 load_resource('tests/lua/fivem_mocks.lua')
 
 local function cut(rel, header)
-    local src = __readfile(rel)
+    local src = __readfile(rel):gsub('\r\n', '\n')   -- a checkout may use CRLF line endings
     local s = src:find(header, 1, true)
     assert(s, header .. ' not found in ' .. rel)
     local e = src:find('\nend\n', s, true)

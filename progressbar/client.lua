@@ -173,6 +173,12 @@ local function StartActions()
     end
 end
 
+-- B on a pad cancels too (202 is also Backspace/Esc on a keyboard, so only when a pad is the device)
+local function padCancelPressed()
+    if not PadBridge then return false end
+    return (IsControlJustPressed(0, 202) or IsDisabledControlJustPressed(0, 202)) and PadBridge.padNow()
+end
+
 local function StartProgress(action, onStart, onTick, onFinish)
     local playerPed = PlayerPedId()
     local isPlayerDead = IsEntityDead(playerPed)
@@ -192,7 +198,7 @@ local function StartProgress(action, onStart, onTick, onFinish)
                 Wait(1)
                 renewBusyLock()
                 if onTick then onTick() end
-                if IsControlJustPressed(0, 200) and action.canCancel then
+                if (IsControlJustPressed(0, 200) or padCancelPressed()) and action.canCancel then
                     TriggerEvent('progressbar:client:cancel')
                     wasCancelled = true
                     break

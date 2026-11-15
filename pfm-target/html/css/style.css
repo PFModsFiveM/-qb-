@@ -77,7 +77,8 @@ body {
     transition: transform 0.3s ease, background-color 0.2s ease;
 }
 
-[id^="target-option-"]:hover {
+[id^="target-option-"]:hover,
+.pfm-pad [id^="target-option-"].pfm-pad-focus {
     background: var(--md-surface-container-highest);
     transform: translateX(10px);
 }

@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>prompt preview</title>
+<!-- Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF. -->
+<style>
+/* ============================================================================
+   THE PREVIEW: one picture, not an atlas.
+
+   Only one prompt can be focused, so only one picture is ever shown: this page holds a single image
+   and is told which one (an option's `image`). A change is a keypress, not a frame. Same rules as the
+   other two pages: the document IS the texture, transparent, fixed size.
+   ============================================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { width: 512px; height: 288px; background: transparent; overflow: hidden; }
+
+#wrap { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+
+#img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+    /* readable against any sky or wall: a soft dark halo rather than a panel */
+    filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.85)) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+}
+
+#img.hide { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap"><img id="img" class="hide" alt=""></div>
+<script>
+(function () {
+    var img = document.getElementById('img');
+    img.addEventListener('error', function () { img.classList.add('hide'); });
+    img.addEventListener('load', function () { img.classList.remove('hide'); });
+
+    // Only pictures served by a FiveM resource (nui://res/... or https://cfx-nui-res/...), or a path
+    // relative to this page. Never an arbitrary web address: a label's picture comes from other resources.
+    function resolve(path) {
+        var p = String(path);
+        if (/^nui:\/\/[a-z0-9_\-\[\]]+\//i.test(p)) return p;
+        if (/^https:\/\/cfx-nui-[a-z0-9_\-\[\]]+\//i.test(p)) return p;
+        if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return '';
+        return p.replace(/^\/+/, '');
+    }
+
+    window.addEventListener('message', function (e) {
+        var d = e.data;
+        if (typeof d === 'string') { try { d = JSON.parse(d); } catch (err) { return; } }
+        if (!d) return;
+        // Empty means show nothing: the texture is live, so a stale picture would keep drawing.
+        var src = d.image ? resolve(d.image) : '';
+        if (!src) { img.classList.add('hide'); img.removeAttribute('src'); return; }
+        img.src = src;
+    });
+})();
+</script>
+</body>
+</html>

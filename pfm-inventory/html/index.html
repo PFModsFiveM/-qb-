@@ -11,6 +11,8 @@
         <link rel="stylesheet" href="main.css" />
         <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.2/axios.min.js"></script>
+        <link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/pad.css" />
+        <script src="https://cfx-nui-pfm-ui/html/pad.js"></script>
         <script src="app.js" defer></script>
     </head>
     <body>
@@ -22,6 +24,7 @@
                         <h1>Inventory</h1>
                         <div class="tb-sub" v-if="playerInfo">{{ playerInfo.name }}</div>
                     </div>
+                    <div class="tb-pad-hints pfm-pad-hints" v-if="padHintsHtml" v-html="padHintsHtml"></div>
                     <div class="tb-close" @click="closeInventory">
                         <span>Close<br />Inventory</span>
                         <kbd>ESC</kbd>
@@ -153,6 +156,7 @@
                             </div>
                             <div class="item-grid backpack-section">
                                 <div v-for="slot in backpackMeta.slots" :key="'b' + slot" class="item-slot backpack-slot" :data-slot="slot"
+                                    :class="padClasses(slot, 'backpack')"
                                     @mousedown="event => handleMouseDown(event, slot, 'backpack')"
                                     @mouseenter="hoverItem(getItemInSlot(slot, 'backpack'))"
                                     @mouseleave="hoverItem(null)">

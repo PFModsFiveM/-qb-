@@ -55,6 +55,7 @@ document.addEventListener("DOMContentLoaded", function () {
         for (let [index, itemData] of Object.entries(item.data)) {
             createTargetOption(index, itemData);
         }
+        if (window.PfmPad) padOptions();
     }
 
     function LeftTarget() {
@@ -64,17 +65,21 @@ document.addEventListener("DOMContentLoaded", function () {
         targetEye.classList.remove("target-success");
     }
 
+    function selectOption(index) {
+        fetch(`https://${GetParentResourceName()}/selectTarget`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=UTF-8" },
+            body: JSON.stringify(index),
+        }).catch((error) => console.error("Error:", error));
+        targetLabel.textContent = "";
+    }
+
     function handleMouseDown(event) {
         const element = event.target;
         if (element.id) {
             const split = element.id.split("-");
             if (split[0] === "target" && split[1] !== "eye" && event.button === 0) {
-                fetch(`https://${GetParentResourceName()}/selectTarget`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json; charset=UTF-8" },
-                    body: JSON.stringify(split[2]),
-                }).catch((error) => console.error("Error:", error));
-                targetLabel.textContent = "";
+                selectOption(split[2]);
             }
         }
         if (event.button === 2) {
@@ -117,6 +122,25 @@ document.addEventListener("DOMContentLoaded", function () {
                 break;
         }
     });
+
+    // controller (pfm-ui): up/down move through the options, A picks one, B closes
+    function padOptions() {
+        PfmPad.focusables(targetLabel, {
+            selector: '[id^="target-option-"]',
+            mode: "list",
+            wrap: true,
+            autoFocus: true,
+            onBack: () => handleKeyDown({ key: "Escape" }),
+        });
+    }
+    if (window.PfmPad) {
+        padOptions();
+        PfmPad.on("select", () => {
+            const el = PfmPad.current();
+            if (el && targetLabel.contains(el)) selectOption(el.id.split("-")[2]);
+            else PfmPad.move("down");
+        });
+    }
 
     window.addEventListener("mousedown", handleMouseDown);
     window.addEventListener("keydown", handleKeyDown);

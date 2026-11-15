@@ -225,6 +225,19 @@ local function setRadialState(bool, sendMessage, delay)
         SetNuiFocus(bool, bool)
     end
 
+    -- controller: read the pad for the wheel while it is open (pfm-ui's bridge, when included)
+    if PadBridge then
+        if bool then
+            PadBridge.attach({
+                keepInput = Config.UseWhilstWalking == true,
+                enable = Config.UseWhilstWalking and { 30, 31, 32, 33, 34, 35 } or nil,
+                stick = not Config.UseWhilstWalking,
+            })
+        else
+            PadBridge.detach()
+        end
+    end
+
     if sendMessage then
         SendNUIMessage({
             action = 'ui',

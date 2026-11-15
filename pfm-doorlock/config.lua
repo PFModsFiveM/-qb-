@@ -16,6 +16,9 @@ Config.DefaultColor = 'rgb(19, 28, 74)'                    -- The default color 
 Config.LockedColor = 'rgb(219 58 58)'                      -- The color of the box of the popup text if Config.ChangeColor is true and the door is locked
 Config.UnlockedColor = 'rgb(27 195 63)'                    -- The color of the box of the popup text if Config.ChangeColor is true and the door is unlocked
 Config.UseDoorLabelText = false                            -- Will use the LABEL field as the nui text instead of locked/unlocked
+Config.UsePrompts = true                                   -- With pfm-prompts started: a prompt on every door (key, Unlock/Lock, Locked/Unlocked) instead of the NUI text box
+Config.PromptShowDistance = 6.0                            -- How far away a door's prompt is drawn (the key works within the door's own distance)
+Config.PromptControl = 38                                  -- The GTA control the door prompt's key reads (38 = E on a keyboard, LB on a pad)
 Config.DoorDebug = false                                   -- Enable DRAWTEXT in the world at the coords where the door 'center' is
 Config.RemoteTriggerDistance = 15.0                        -- This is how far from your camera the raycast will go to try to hit something solid
 Config.RemoteTriggerMinDistance = 5.0                      -- This is the minimum distance required for the raycast hit to count near a door. It will take the larger two between this and 'distance' option

@@ -271,3 +271,8 @@ body {
     border-radius: var(--menu-radius);
     box-shadow: var(--menu-shadow);
 }
+
+/* controller (pfm-ui): number hotkeys mean nothing on a pad */
+.pfm-pad .hotkey {
+    display: none;
+}

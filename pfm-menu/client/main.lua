@@ -5,6 +5,15 @@ local sendData = nil
 
 -- Functions
 
+-- Controller: read the pad for this page while it has focus (pfm-ui's bridge, when included).
+local function padAttach()
+    if PadBridge then PadBridge.attach({ active = function() return sendData ~= nil end }) end
+end
+
+local function padDetach()
+    if PadBridge then PadBridge.detach() end
+end
+
 local function sortData(data, skipfirst)
     local header = data[1]
     local tempData = data
@@ -29,6 +38,7 @@ local function openMenu(data, sort, skipFirst)
     SetNuiFocus(true, true)
     headerShown = false
     sendData = data
+    padAttach()
     SendNUIMessage({
         action = 'OPEN_MENU',
         data = table.clone(data)
@@ -39,6 +49,7 @@ local function closeMenu()
     sendData = nil
     headerShown = false
     SetNuiFocus(false)
+    padDetach()
     SendNUIMessage({
         action = 'CLOSE_MENU'
     })
@@ -70,6 +81,7 @@ RegisterNUICallback('clickedButton', function(option, cb)
     if headerShown then headerShown = false end
     PlaySoundFrontend(-1, 'Highlight_Cancel', 'DLC_HEIST_PLANNING_BOARD_SOUNDS', 1)
     SetNuiFocus(false)
+    padDetach()
     if sendData then
         local data = sendData[tonumber(option)]
         sendData = nil
@@ -105,6 +117,7 @@ RegisterNUICallback('closeMenu', function(_, cb)
     headerShown = false
     sendData = nil
     SetNuiFocus(false)
+    padDetach()
     cb('ok')
     TriggerEvent('qb-menu:client:menuClosed')
 end)
@@ -114,6 +127,7 @@ end)
 RegisterCommand('playerfocus', function()
     if headerShown then
         SetNuiFocus(true, true)
+        padAttach()
     end
 end)
 

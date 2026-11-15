@@ -26,6 +26,21 @@ This doorlock system is based on [nui_doorlock by thelindat](https://github.com/
 * Admin access option
 * Change color based on locked state
 
+## In-world prompts (pfm-prompts)
+
+With [pfm-prompts](../pfm-prompts) started and `Config.UsePrompts = true`, every door shows a prompt on the
+door itself (at its `textCoords`, else its coordinates) instead of the NUI text box:
+
+* a player who may toggle it sees the key (E, or the pad button) with **Unlock** / **Lock** beside
+  **Locked** / **Unlocked**;
+* a player who may not sees only **Locked** / **Unlocked** and a padlock, with no key;
+* the key sends `qb-doorlock:server:updateState` exactly as the `toggledoorlock` binding did, and the server
+  checks authorisation and distance as before. While prompts run that binding stands down (the focused prompt
+  takes the key); without pfm-prompts the NUI text box and the binding work as they always have.
+
+`Config.PromptShowDistance` is how far away a door's prompt is drawn, `Config.PromptControl` the control its key
+reads. Lockpicking, remote triggering and the exports are unchanged.
+
 ## Single Door Configuration
 
       ['somesingledoor'] = { -- The index of the table, this is used as the doorID

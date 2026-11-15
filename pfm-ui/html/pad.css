@@ -1,0 +1,38 @@
+/* pfm-ui pad.css: the controller focus ring, button glyphs and hints.
+   Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF (see the pfm-ui resource's COPYING.LESSER).
+   Colours come from tokens.css variables, with fallbacks so it works alone. */
+
+.pfm-pad .pfm-pad-focus {
+    outline: var(--pfm-focus-width, 2px) solid var(--pfm-focus-ring, #5aa9ff);
+    outline-offset: var(--pfm-focus-offset, 2px);
+    border-radius: var(--pfm-radius-sm, 6px);
+}
+
+.pfm-pad-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5em;
+    height: 1.5em;
+    vertical-align: middle;
+    color: var(--pfm-glyph-fg, #ffffff);
+    flex: none;
+}
+.pfm-pad-glyph svg { width: 100%; height: 100%; display: block; }
+.pfm-pad-glyph-lb, .pfm-pad-glyph-rb, .pfm-pad-glyph-lt, .pfm-pad-glyph-rt { width: 2em; }
+
+/* shown only while a pad is the device, and the other way round */
+.pfm-pad-only { display: none !important; }
+.pfm-pad .pfm-kbm-only { display: none !important; }
+.pfm-pad .pfm-pad-only { display: revert !important; }
+
+.pfm-pad-hints { display: none; }
+.pfm-pad .pfm-pad-hints {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: center;
+    font-size: var(--pfm-font-sm, 12px);
+    color: var(--pfm-fg-dim, rgba(255, 255, 255, 0.7));
+}
+.pfm-pad-hint { display: inline-flex; align-items: center; gap: 5px; }

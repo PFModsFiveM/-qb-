@@ -33,6 +33,17 @@ local CheckOptions = CheckOptions
 local Bones = Load('bones')
 local listSprite = {}
 
+-- Controller (pfm-ui's bridge, when included): A opens the options as well while a pad is the
+-- device, and the bridge reads the pad for the options list while it has focus.
+local function menuKeyPressed()
+	if IsDisabledControlPressed(0, Config.MenuControlKey) then return true end
+	return PadBridge ~= nil and IsDisabledControlPressed(0, 201) and PadBridge.padNow()
+end
+
+local function padDetach()
+	if PadBridge then PadBridge.detach() end
+end
+
 ---------------------------------------
 --- Source: https://github.com/citizenfx/lua/blob/luaglm-dev/cfx/libs/scripts/examples/scripting_gta.lua
 --- Credits to gottfriedleibniz
@@ -137,6 +148,7 @@ exports('RaycastCamera', RaycastCamera)
 local function DisableNUI()
 	SetNuiFocus(false, false)
 	SetNuiFocusKeepInput(false)
+	padDetach()
 	hasFocus = false
 end
 
@@ -148,6 +160,10 @@ local function EnableNUI(options)
 	SetNuiFocus(true, true)
 	SetNuiFocusKeepInput(true)
 	hasFocus = true
+	if PadBridge then
+		-- this resource keeps input itself; movement stays on as its own loop has it
+		PadBridge.attach({ keepInput = true, enable = { 30, 31 }, active = function() return hasFocus end })
+	end
 	SendNUIMessage({ response = 'validTarget', data = options })
 end
 
@@ -156,6 +172,7 @@ exports('EnableNUI', EnableNUI)
 local function LeftTarget()
 	SetNuiFocus(false, false)
 	SetNuiFocusKeepInput(false)
+	padDetach()
 	success, hasFocus = false, false
 	table_wipe(sendData)
 	SendNUIMessage({ response = 'leftTarget' })
@@ -167,6 +184,7 @@ local function DisableTarget(forcedisable)
 	if (not targetActive and hasFocus and not Config.Toggle) or not forcedisable then return end
 	SetNuiFocus(false, false)
 	SetNuiFocusKeepInput(false)
+	padDetach()
 	Wait(100)
 	targetActive, success, hasFocus = false, false, false
 	SendNUIMessage({ response = 'closeTarget' })
@@ -226,7 +244,7 @@ local function CheckEntity(flag, datatable, entity, distance)
 			LeftTarget()
 			DrawOutlineEntity(entity, false)
 			break
-		elseif not hasFocus and IsDisabledControlPressed(0, Config.MenuControlKey) then
+		elseif not hasFocus and menuKeyPressed() then
 			EnableNUI(nuiData)
 			DrawOutlineEntity(entity, false)
 		else
@@ -351,7 +369,7 @@ local function EnableTarget()
 										LeftTarget()
 										DrawOutlineEntity(entity, false)
 										break
-									elseif not hasFocus and IsDisabledControlPressed(0, Config.MenuControlKey) then
+									elseif not hasFocus and menuKeyPressed() then
 										EnableNUI(nuiData)
 										DrawOutlineEntity(entity, false)
 									else
@@ -425,7 +443,7 @@ local function EnableTarget()
 								LeftTarget()
 								DrawOutlineEntity(entity, false)
 								break
-							elseif not hasFocus and IsDisabledControlPressed(0, Config.MenuControlKey) then
+							elseif not hasFocus and menuKeyPressed() then
 								EnableNUI(nuiData)
 								DrawOutlineEntity(entity, false)
 							end
@@ -1186,6 +1204,7 @@ RegisterNUICallback('selectTarget', function(option, cb)
 	option = tonumber(option) or option
 	SetNuiFocus(false, false)
 	SetNuiFocusKeepInput(false)
+	padDetach()
 	Wait(100)
 	targetActive, success, hasFocus = false, false, false
 	if not next(sendData) then return end
@@ -1221,6 +1240,7 @@ end)
 RegisterNUICallback('closeTarget', function(_, cb)
 	SetNuiFocus(false, false)
 	SetNuiFocusKeepInput(false)
+	padDetach()
 	Wait(100)
 	targetActive, success, hasFocus = false, false, false
 	cb('ok')

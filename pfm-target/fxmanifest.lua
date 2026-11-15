@@ -14,6 +14,7 @@ client_scripts {
 	'@PolyZone/EntityZone.lua',
 	'@PolyZone/CircleZone.lua',
 	'@PolyZone/ComboZone.lua',
+	'@pfm-ui/lib/pad_bridge.lua', -- controller support (works without pfm-ui running)
 	'init.lua',
 	'client.lua',
 }

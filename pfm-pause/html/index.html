@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF.
+     pfm-pause's page: the pause menu, its map, Server Settings, Controller and Help. See ../NOTICE.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pause menu</title>
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/pause.css">
+<link rel="stylesheet" href="css/settings-page.css">
+<link rel="stylesheet" href="css/pad-layout.css">
+<link rel="stylesheet" href="css/help.css">
+<!-- The interaction icons the logo's light shows (sets window.PfGlyphs): a plain script, before the modules. -->
+<script src="js/glyphs.js"></script>
+<!-- "three" for the 3D map (js/map3d/map3d.js imports it by that name), loaded the first time the map is built.
+     An import map has to come before the first module script. -->
+<script type="importmap">
+{ "imports": { "three": "./js/vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

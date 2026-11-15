@@ -133,6 +133,26 @@ document.onkeyup = (event) => {
     if (event.key === "Escape") return cancelMenu();
 };
 
+// controller (pfm-ui): D-pad moves like the arrows, A picks, B closes
+if (window.PfmPad) {
+    const padMove = (step) => {
+        const list = getNavigable();
+        if (!list.length) return;
+        focusIndex = focusIndex < 0 ? 0 : Math.max(0, Math.min(list.length - 1, focusIndex + step));
+        setFocus(list, focusIndex);
+    };
+    PfmPad.on("down", () => padMove(1));
+    PfmPad.on("up", () => padMove(-1));
+    PfmPad.on("left", () => {});
+    PfmPad.on("right", () => {});
+    PfmPad.on("select", () => {
+        const list = getNavigable();
+        if (focusIndex >= 0 && list[focusIndex]) return postData(list[focusIndex].id);
+        padMove(0);
+    });
+    PfmPad.on("back", () => cancelMenu());
+}
+
 document.onkeydown = (event) => {
     const list = getNavigable();
     if (!list.length) return;

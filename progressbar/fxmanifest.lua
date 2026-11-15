@@ -10,7 +10,10 @@ version '1.0.0'
 
 ui_page 'html/index.html'
 
-client_script 'client.lua'
+client_scripts {
+    '@pfm-ui/lib/pad_bridge.lua', -- controller: B cancels (works without pfm-ui running)
+    'client.lua',
+}
 
 files {
     'html/index.html',

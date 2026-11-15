@@ -1,0 +1,221 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>prompt badge atlas</title>
+<!-- Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF. -->
+<link rel="stylesheet" href="css/fonts.css">
+<style>
+/* ============================================================================
+   THE BADGE ATLAS: a texture, not an overlay.
+
+   Rendered offscreen into a GPU texture by CreateDui and sampled by DrawTexturedPoly in
+   client/render_world.lua. Nothing here is composited over the game:
+     - fixed pixel size: this document IS the texture;
+     - transparent background, always (a background colour becomes a rectangle in mid-air);
+     - no UI scale: apparent size is the quad's size in metres.
+
+   THE GRID. Columns are glyphs (a key letter, a pad button, an icon); rows are the states, in the
+   order client/render_world.lua indexes them:
+
+       row 0   idle      a faint ring: something is there
+       row 1   active    a brighter ring: in reach, but not the one the key acts on
+       row 2   focused   filled disc with the key: this is what the key acts on
+       row 3   info      a dark disc with a white icon: in reach, nothing to press (a locked door
+                         the player has no key for)
+
+   Only rows 2 and 3 carry a glyph. Cell size, column count and the disc fraction come from Lua in
+   the setup message; colours too (Config.Colors), as CSS variables.
+   ============================================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --disc-frac: 78%;
+    --ink: rgb(15, 17, 21);          /* the glyph on the focused disc, and the dark grounds */
+    --key: #ffffff;                  /* the focused disc */
+    --ring: rgba(255, 255, 255, 0.95);
+    --ring-dim: rgba(255, 255, 255, 0.55);
+    --ground: rgba(15, 17, 21, 0.55);
+    --info: rgba(27, 31, 38, 0.92);  /* the info disc */
+    --info-ink: #e6e8ec;
+}
+
+html, body {
+    background: transparent;
+    overflow: hidden;
+    font-family: 'Barlow', 'Segoe UI', sans-serif;
+}
+
+#atlas { display: grid; grid-auto-flow: row; }
+
+.cell { position: relative; display: flex; align-items: center; justify-content: center; }
+
+.disc svg { width: 100%; height: 100%; display: block; }
+
+.disc {
+    width: var(--disc-frac);
+    height: var(--disc-frac);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    font-weight: 700;
+    overflow: hidden;
+}
+
+/* A hard dark outline on every state: the badge sits on whatever the world is, and a white ring over
+   a pale wall disappears. Every shadow has to fit the cell's margin (~14px at 128px cells) or it
+   bleeds onto the neighbouring cell. */
+
+/* idle: a faint ring, no glyph */
+.s0 .disc {
+    background: var(--ground);
+    border: 4px solid var(--ring-dim);
+    color: transparent;
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.9), inset 0 0 0 2px rgba(0, 0, 0, 0.55), 0 0 6px rgba(0, 0, 0, 0.85);
+}
+
+/* active: the same ring, brighter; still no glyph (that belongs to one prompt at a time) */
+.s1 .disc {
+    background: var(--ground);
+    border: 4px solid var(--ring);
+    color: transparent;
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.9), inset 0 0 0 2px rgba(0, 0, 0, 0.55), 0 0 8px rgba(0, 0, 0, 0.85);
+}
+
+/* focused: fills, and only now shows the key */
+.s2 .disc {
+    background: var(--key);
+    border: 4px solid var(--key);
+    color: var(--ink);
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.9), 0 0 0 6px rgba(255, 255, 255, 0.30), 0 0 5px rgba(0, 0, 0, 0.6);
+}
+
+/* info: in reach with nothing to press: dark, with the icon in light ink */
+.s3 .disc {
+    background: var(--info);
+    border: 3px solid var(--ring-dim);
+    color: var(--info-ink);
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.85), 0 0 6px rgba(0, 0, 0, 0.7);
+}
+
+/* The white cell: not a badge, a column that is solid white for the hold ring to sample. */
+.cell.white { background: #fff; }
+
+/* KEYCAP: a rounded square, a key to press. */
+.t-keycap .disc { border-radius: 26%; }
+.t-keycap .s2 .disc {
+    box-shadow: inset 0 -9px 0 rgba(15, 17, 21, 0.16), 0 0 0 3px rgba(0, 0, 0, 0.9), 0 4px 6px rgba(0, 0, 0, 0.55);
+}
+
+/* DARK: black and white swapped. */
+.dark .s0 .disc {
+    background: rgba(15, 17, 21, 0.6);
+    border: 4px solid rgba(15, 17, 21, 0.85);
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.55), 0 0 6px rgba(0, 0, 0, 0.6);
+}
+.dark .s1 .disc {
+    background: rgba(15, 17, 21, 0.72);
+    border: 4px solid rgba(15, 17, 21, 0.95);
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.95), 0 0 8px rgba(0, 0, 0, 0.7);
+}
+.dark .s2 .disc {
+    background: var(--ink);
+    border: 4px solid var(--ink);
+    color: #fff;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.95), 0 0 0 6px rgba(15, 17, 21, 0.30), 0 0 5px rgba(0, 0, 0, 0.6);
+}
+.t-keycap.dark .s2 .disc {
+    box-shadow: inset 0 -9px 0 rgba(255, 255, 255, 0.14), 0 0 0 3px rgba(255, 255, 255, 0.95), 0 4px 6px rgba(0, 0, 0, 0.55);
+}
+</style>
+</head>
+<body>
+<div id="atlas"></div>
+
+<script src="js/glyphs.js"></script>
+<script>
+(function () {
+    var atlas = document.getElementById('atlas');
+    var SHARED = window.PfmGlyphs || { glyphs: {}, large: {} };
+    var GLYPHS = SHARED.glyphs;
+    var LARGE = SHARED.large;
+    var STATES = 4;
+
+    /** The middle of the disc: an icon or pad button if the name is one, otherwise the key's own text. */
+    function renderGlyph(name, cell) {
+        var g = GLYPHS[name];
+        if (g) {
+            var px = Math.round(cell * (LARGE[name] ? 0.6 : 0.46));
+            return '<span style="display:flex;width:' + px + 'px;height:' + px + 'px">' + g + '</span>';
+        }
+        // A key name longer than a letter (F1, TAB, SPACE) is set smaller the longer it is, or the rim crops it.
+        var text = String(name).replace(/[<>&"]/g, '');
+        var size = text.length <= 1 ? 1 : text.length === 2 ? 0.72 : text.length === 3 ? 0.52
+                 : text.length === 4 ? 0.42 : 0.34;
+        if (size === 1) return text;
+        return '<span style="font-size:' + size + 'em">' + text + '</span>';
+    }
+
+    // Defaults so the page is not blank before Lua's first message (and can be opened in a browser).
+    var state = { cell: 128, cols: 6, keys: ['E', 'pad_a', 'pad_lb', 'lock', 'unlock', 'pad_right'] };
+
+    function render() {
+        var cell = state.cell, cols = state.cols;
+        var w = (cell * cols) + 'px', h = (cell * STATES) + 'px';
+        document.documentElement.style.width = w;
+        document.documentElement.style.height = h;
+        document.body.style.width = w;
+        document.body.style.height = h;
+        atlas.style.width = w;
+        atlas.style.height = h;
+        atlas.style.gridTemplateColumns = 'repeat(' + cols + ', ' + cell + 'px)';
+        atlas.style.gridTemplateRows = 'repeat(' + STATES + ', ' + cell + 'px)';
+
+        var html = '';
+        for (var s = 0; s < STATES; s++) {
+            for (var c = 0; c < cols; c++) {
+                var key = state.keys[c];
+                if (key === '__white') { html += '<div class="cell white"></div>'; continue; }
+                // A column with no key stays empty: Lua never points a quad at an unassigned column.
+                var glyph = (key === undefined) ? '' : String(key);
+                html += '<div class="cell s' + s + '" style="font-size:' + Math.round(cell * 0.62)
+                     + 'px"><div class="disc">' + (glyph ? renderGlyph(glyph, cell) : '') + '</div></div>';
+            }
+        }
+        atlas.innerHTML = html;
+    }
+
+    var COLOUR = /^(#[0-9a-f]{3,8}|rgba?\([0-9., ]+\))$/i;
+    var VARS = { ink: '--ink', key: '--key', ring: '--ring', ringDim: '--ring-dim', ground: '--ground',
+                 info: '--info', infoInk: '--info-ink' };
+
+    window.addEventListener('message', function (e) {
+        var d = e.data;
+        // SendDuiMessage takes a JSON string; whether it arrives parsed is not worth assuming.
+        if (typeof d === 'string') { try { d = JSON.parse(d); } catch (err) { return; } }
+        if (!d) return;
+        if (d.cell) state.cell = d.cell;
+        if (d.cols) state.cols = d.cols;
+        if (d.keys) state.keys = d.keys;
+        if (d.discFrac) document.documentElement.style.setProperty('--disc-frac', (d.discFrac * 100) + '%');
+        if (d.colors) {
+            for (var k in VARS) {
+                if (typeof d.colors[k] === 'string' && COLOUR.test(d.colors[k])) {
+                    document.documentElement.style.setProperty(VARS[k], d.colors[k]);
+                }
+            }
+        }
+        if (typeof d.theme === 'string' && /^[a-z]+$/.test(d.theme)) {
+            document.body.className = (d.theme === 'classic' ? '' : 't-' + d.theme) + (d.dark === true ? ' dark' : '');
+        }
+        render();
+    });
+
+    render();
+})();
+</script>
+</body>
+</html>

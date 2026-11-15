@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>prompt label atlas</title>
+<!-- Copyright (c) 2026 Whippy, from WHIP, LGPL-3.0; modified for PF. -->
+<link rel="stylesheet" href="css/fonts.css">
+<style>
+/* ============================================================================
+   THE LABEL ATLAS: one row per prompt currently showing text.
+
+   Same rules as badge.html: this document IS a texture, transparent, fixed pixel size. Lua hands
+   rows out and takes them back; each label quad samples only its own row's band of v.
+
+   TEXT IS LEFT-ALIGNED AND THE REST OF THE ROW IS TRANSPARENT. DUI is one-way, so Lua can never ask
+   how wide a string rendered; a fixed-width row with invisible padding removes the question.
+
+   A ROW IS THE ACTION AND, AFTER IT, THE SUBLABEL ("Unlock  Locked"): the second in a lighter weight
+   and colour, so the two read as what the key does and what state the thing is in.
+   ============================================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root { --label: #ffffff; --sublabel: #b4bac6; --outline: #000; }
+
+html, body {
+    background: transparent;
+    overflow: hidden;
+    font-family: 'Barlow', 'Segoe UI', sans-serif;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    padding: 0 8px;    /* so a glyph's outline is not clipped by the texture edge */
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.row span { white-space: nowrap; letter-spacing: 0.5px; }
+
+/* A HARD OUTLINE, DRAWN AS EIGHT OFFSET COPIES. All legibility has to live in the texture: there is
+   no panel behind the text. Offset copies sit behind the glyph (text-stroke would eat into it). */
+.row .main {
+    font-weight: 700;
+    color: var(--label);
+    text-shadow:
+        -3px -3px 0 var(--outline),  0 -3px 0 var(--outline),  3px -3px 0 var(--outline),
+        -3px  0   0 var(--outline),                            3px  0   0 var(--outline),
+        -3px  3px 0 var(--outline),  0  3px 0 var(--outline),  3px  3px 0 var(--outline),
+         0 4px 14px rgba(0, 0, 0, 0.9);
+}
+.row .sub {
+    font-weight: 500;
+    font-size: 0.78em;
+    color: var(--sublabel);
+    margin-left: 0.55em;
+    text-shadow:
+        -2px -2px 0 var(--outline),  0 -2px 0 var(--outline),  2px -2px 0 var(--outline),
+        -2px  0   0 var(--outline),                            2px  0   0 var(--outline),
+        -2px  2px 0 var(--outline),  0  2px 0 var(--outline),  2px  2px 0 var(--outline),
+         0 3px 10px rgba(0, 0, 0, 0.9);
+}
+.row .sub:empty, .row .main:empty { display: none; }
+.row .main:empty + .sub { margin-left: 0; font-size: 1em; }
+</style>
+</head>
+<body>
+<div id="atlas"></div>
+
+<script>
+(function () {
+    var atlas = document.getElementById('atlas');
+    var state = { width: 1024, rowH: 96, rows: 8 };
+    var texts = [], subs = [];
+
+    function build() {
+        var h = (state.rowH * state.rows) + 'px';
+        document.documentElement.style.width = state.width + 'px';
+        document.documentElement.style.height = h;
+        document.body.style.width = state.width + 'px';
+        document.body.style.height = h;
+        atlas.style.width = state.width + 'px';
+        atlas.style.height = h;
+
+        var html = '';
+        for (var i = 0; i < state.rows; i++) {
+            html += '<div class="row" id="r' + i + '" style="width:' + state.width + 'px;height:' + state.rowH
+                 + 'px;font-size:' + Math.round(state.rowH * 0.56) + 'px"><span class="main"></span><span class="sub"></span></div>';
+        }
+        atlas.innerHTML = html;
+        // Repaint what the rows showed before a rebuild, or live labels would blank.
+        for (var j = 0; j < state.rows; j++) {
+            if (texts[j] || subs[j]) setRow(j, texts[j], subs[j]);
+        }
+    }
+
+    // A label too long for its row is set smaller rather than cut, down to 70%; past that it clips.
+    var MIN_SCALE = 0.7;
+    function fit(el) {
+        var size = Math.round(state.rowH * 0.56);
+        var floor = Math.round(size * MIN_SCALE);
+        el.style.fontSize = size + 'px';
+        while (size > floor && el.scrollWidth > el.clientWidth) {
+            size -= 2;
+            el.style.fontSize = size + 'px';
+        }
+    }
+
+    function setRow(i, text, sub) {
+        var el = document.getElementById('r' + i);
+        if (!el) return;
+        texts[i] = text || '';
+        subs[i] = sub || '';
+        // textContent, never innerHTML: labels come from other resources, and this is a browser.
+        el.children[0].textContent = texts[i];
+        el.children[1].textContent = subs[i];
+        fit(el);
+    }
+
+    var COLOUR = /^(#[0-9a-f]{3,8}|rgba?\([0-9., ]+\))$/i;
+
+    window.addEventListener('message', function (e) {
+        var d = e.data;
+        if (typeof d === 'string') { try { d = JSON.parse(d); } catch (err) { return; } }
+        if (!d) return;
+        if (d.setup) {
+            if (d.setup.width) state.width = d.setup.width;
+            if (d.setup.rowH) state.rowH = d.setup.rowH;
+            if (d.setup.rows) state.rows = d.setup.rows;
+            var c = d.setup.colors || {};
+            if (typeof c.label === 'string' && COLOUR.test(c.label)) document.documentElement.style.setProperty('--label', c.label);
+            if (typeof c.sublabel === 'string' && COLOUR.test(c.sublabel)) document.documentElement.style.setProperty('--sublabel', c.sublabel);
+            build();
+            return;
+        }
+        if (d.row !== undefined) setRow(d.row, d.text, d.sub);
+    });
+
+    build();
+
+    // Rows set before the font arrived were measured in the fallback face: measure again once it has.
+    function refitAll() {
+        for (var k = 0; k < state.rows; k++) {
+            var el = document.getElementById('r' + k);
+            if (el && (texts[k] || subs[k])) fit(el);
+        }
+    }
+    if (document.fonts) {
+        if (document.fonts.load) document.fonts.load('700 54px "Barlow"').then(refitAll, function () {});
+        if (document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', refitAll);
+    }
+})();
+</script>
+</body>
+</html>

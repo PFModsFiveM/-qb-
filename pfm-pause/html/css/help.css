@@ -1,0 +1,60 @@
+/* PF: the pause menu's Help page (js/help-page.js), drawn in the Settings page's look (settings-page.css's st-*
+   classes): the menu slides away and the map is hidden, as for Settings. */
+
+#pause[data-mode="help"] .pm-side {
+    transform: translateX(-105%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+#pause[data-mode="help"] .pm-mapwrap {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.pm-help {
+    --st-k: calc(var(--ui-scale) * 1.3333);
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s var(--ui-ease);
+}
+
+#pause[data-mode="help"] .pm-help {
+    opacity: 1;
+    pointer-events: auto;
+    transition-delay: 0.12s;
+}
+
+/* A rule or a key: the label may wrap (rules are sentences). */
+.pm-help .st-row.hp-wrap { height: auto; min-height: 58px; padding-top: 14px; padding-bottom: 14px; }
+.pm-help .st-row.hp-wrap .st-label { white-space: normal; line-height: 1.35; }
+.hp-num { flex: none; width: 34px; color: rgba(255, 255, 255, 0.4); font-weight: 700; }
+.hp-keys { display: inline-flex; align-items: center; gap: 8px; }
+.hp-key {
+    display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1); color: #ffffff; font: 700 14px var(--ui-font); white-space: nowrap;
+}
+.hp-pad { display: inline-flex; align-items: center; gap: 4px; color: rgba(255, 255, 255, 0.7); font: 600 14px var(--ui-font); }
+.hp-pad img { height: 26px; width: auto; }
+
+.hp-text {
+    width: 100%;
+    min-height: 180px;
+    padding: 14px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.04);
+    color: #ffffff;
+    font: 500 17px/1.45 var(--ui-font);
+    resize: none;
+    outline: none;
+}
+.hp-text:focus { border-color: var(--ui-accent); background: rgba(255, 255, 255, 0.06); }
+.hp-count { margin-top: 8px; font-size: 13px; font-weight: 600; color: rgba(255, 255, 255, 0.5); }
+.hp-send-row { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+.hp-result { font-size: 15px; font-weight: 600; }
+.hp-result.ok { color: #4ade80; }
+.hp-result.bad { color: var(--ui-error); }

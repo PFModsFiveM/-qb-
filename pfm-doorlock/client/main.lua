@@ -287,8 +287,11 @@ local function updateDoors(specificDoor)
 	lastCoords = playerCoords
 end
 
-local function isAuthorized(door)
+--- The checks the client can make by itself (everything but items). The server checks again on
+--- every toggle (qb-doorlock:server:updateState); this only decides what is shown.
+local function isAuthorizedLocal(door)
 	if door.allAuthorized then return true end
+	if not PlayerData or not PlayerData.job or not PlayerData.gang then return false end
 
 	if door.authorizedJobs then
 		if door.authorizedJobs[PlayerData.job.name] and PlayerData.job.grade.level >= door.authorizedJobs[PlayerData.job.name] then
@@ -320,6 +323,12 @@ local function isAuthorized(door)
 		end
 	end
 
+	return false
+end
+
+local function isAuthorized(door)
+	if isAuthorizedLocal(door) then return true end
+
 	if door.items then
 		local p = promise.new()
 		QBCore.Functions.TriggerCallback('qb-doorlock:server:checkItems', function(result)
@@ -330,6 +339,177 @@ local function isAuthorized(door)
 
 	return false
 end
+
+-- ── In-world prompts (pfm-prompts) ──────────────────────────────────────────────────────────────
+-- With pfm-prompts started (and Config.UsePrompts on), every door shows a prompt on itself: the key
+-- with "Unlock" / "Lock" and "Locked" / "Unlocked" beside it for a player who may toggle it, and only
+-- "Locked" / "Unlocked" for one who may not. The old NUI text box is the fallback when pfm-prompts is
+-- not running. The key still goes through toggleDoor below and the server's
+-- qb-doorlock:server:updateState, which checks authorisation and distance again.
+
+local PROMPTS = 'pfm-prompts'
+local promptsUp = GetResourceState(PROMPTS) == 'started'
+local doorPrompts = {}     -- [doorID] = { sig }: what the prompt was last given (updated only on a change)
+local itemAuth = {}        -- [doorID] = { ok, at, asking }: item doors, asked of the server now and then
+local ITEM_AUTH_MS = 5000
+
+local function promptsActive()
+	return Config.UsePrompts ~= false and promptsUp
+end
+
+--- Authorised to toggle, for showing the action. Never waits: an item door's answer comes from the
+--- server's checkItems callback (read-only), asked again every ITEM_AUTH_MS, false until it arrives.
+local function authorizedForPrompt(doorID, door)
+	if isAuthorizedLocal(door) then return true end
+	if not door.items then return false end
+	local now = GetGameTimer()
+	local c = itemAuth[doorID]
+	if not c then
+		c = { ok = false, at = now - ITEM_AUTH_MS, asking = false }
+		itemAuth[doorID] = c
+	end
+	if not c.asking and now - c.at >= ITEM_AUTH_MS then
+		c.asking = true
+		QBCore.Functions.TriggerCallback('qb-doorlock:server:checkItems', function(result)
+			c.ok, c.at, c.asking = result == true, GetGameTimer(), false
+		end, door.items, door.needsAllItems)
+	end
+	return c.ok
+end
+
+local function isBusy()
+	local m = PlayerData and PlayerData.metadata
+	return not m or m['isdead'] or m['inlaststand'] or m['ishandcuffed']
+end
+
+--- May this player toggle this door now? (What the prompt's action depends on.)
+local function canToggle(doorID)
+	local door = Config.DoorList[doorID]
+	if not door or not isLoggedIn or isBusy() then return false end
+	if door.cantUnlock and door.locked then return false end
+	return authorizedForPrompt(doorID, door) == true
+end
+
+local function doorDistance(door)
+	return door.distance or door.maxDistance or Config.FallbackDistance or 3.0
+end
+
+--- Where a door's prompt goes: its text coords (set in the config, or worked out from the door model
+--- once it has streamed in), else the door's own coords, else between its two doors.
+local function promptCoords(door)
+	if door.textCoords then return door.textCoords end
+	if door.objCoords then return door.objCoords end
+	if door.doors and door.doors[1] and door.doors[1].objCoords then
+		local a, b = door.doors[1].objCoords, door.doors[2] and door.doors[2].objCoords
+		if b then return vec3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2) end
+		return a
+	end
+	return nil
+end
+
+--- Sends the server the new state of a door, as the toggle key always has. The server decides.
+local function toggleDoor(doorID, distance)
+	local door = Config.DoorList[doorID]
+	if not door then return end
+	local distanceCheck = distance and distance > doorDistance(door)
+	local unlockableCheck = (door.cantUnlock and door.locked)
+	local busyCheck = PlayerData.metadata and (PlayerData.metadata['isdead'] or PlayerData.metadata['inlaststand'] or PlayerData.metadata['ishandcuffed'])
+	if distanceCheck or unlockableCheck or busyCheck then return end
+
+	playerPed = PlayerPedId()
+	local veh = GetVehiclePedIsIn(playerPed)
+	if veh and veh ~= 0 then
+		CreateThread(function()
+			local siren = IsVehicleSirenOn(veh)
+			for _ = 0, 100 do
+				DisableControlAction(0, 86, true)
+				SetHornEnabled(veh, false)
+				if not siren then SetVehicleSiren(veh, false) end
+				Wait(0)
+			end
+			SetHornEnabled(veh, true)
+		end)
+	end
+	local locked = not door.locked
+	local src = false
+	if door.audioRemote then src = NetworkGetNetworkIdFromEntity(playerPed) end
+
+	TriggerServerEvent('qb-doorlock:server:updateState', doorID, locked, src, false, false, true, true) -- Broadcast new state of the door to everyone
+end
+
+--- The prompt one door should show now.
+local function promptFor(door)
+	local c = promptCoords(door)
+	if not c then return nil end
+	local locked = door.locked == true
+	local status = locked and Lang:t('general.locked') or Lang:t('general.unlocked')
+	if Config.UseDoorLabelText and door.doorLabel then status = door.doorLabel end
+	local distance = doorDistance(door)
+	local def = {
+		coords = vec3(c.x, c.y, c.z),
+		distance = distance,
+		showDistance = math.max(Config.PromptShowDistance or 6.0, distance),
+		key = 'E',
+		control = Config.PromptControl or 38,
+		label = locked and Lang:t('general.prompt_unlock') or Lang:t('general.prompt_lock'),
+		sublabel = status,
+		icon = locked and 'lock' or 'unlock',
+	}
+	-- A door with a hidden label: the key alone for whoever may use it, nothing for anyone else.
+	if door.hideLabel then def.label, def.sublabel = false, false end
+	return def
+end
+
+--- Add, update or keep one door's prompt.
+local function syncDoorPrompt(doorID)
+	if not promptsActive() then return end
+	local door = Config.DoorList and Config.DoorList[doorID]
+	local current = doorPrompts[doorID]
+	local def = door and promptFor(door)
+	if not def then
+		if current then
+			pcall(function() exports[PROMPTS]:Remove('door:' .. tostring(doorID)) end)
+			doorPrompts[doorID] = nil
+		end
+		return
+	end
+	local sig = ('%.2f|%.2f|%.2f|%s|%s|%s|%.2f|%.2f'):format(def.coords.x, def.coords.y, def.coords.z,
+		tostring(def.label), tostring(def.sublabel), def.icon, def.distance, def.showDistance)
+	if current and current.sig == sig then return end
+	def.canInteract = function() return canToggle(doorID) end
+	def.onPress = function()
+		local d = Config.DoorList[doorID]
+		local pc = d and promptCoords(d)
+		local dist = pc and #(GetEntityCoords(PlayerPedId()) - vec3(pc.x, pc.y, pc.z)) or nil
+		-- (half a metre of slack: the prompt measured from the player as it was a moment ago)
+		toggleDoor(doorID, dist and math.max(0.0, dist - 0.5) or nil)
+	end
+	local ok, added = pcall(function() return exports[PROMPTS]:Add('door:' .. tostring(doorID), def) end)
+	doorPrompts[doorID] = (ok and added ~= false) and { sig = sig } or nil
+end
+
+--- Every door's prompt, and none for doors that are gone.
+local function syncAllDoorPrompts()
+	if not promptsActive() or not Config.DoorList then return end
+	for doorID in pairs(Config.DoorList) do syncDoorPrompt(doorID) end
+	for doorID in pairs(doorPrompts) do
+		if not Config.DoorList[doorID] then syncDoorPrompt(doorID) end
+	end
+end
+
+AddEventHandler('onClientResourceStart', function(res)
+	if res ~= PROMPTS then return end
+	promptsUp = true
+	doorPrompts = {}
+	hideNUI()
+	syncAllDoorPrompts()
+end)
+
+AddEventHandler('onClientResourceStop', function(res)
+	if res ~= PROMPTS then return end
+	promptsUp = false
+	doorPrompts = {}
+end)
 
 function SetupDoors()
 	local p = promise.new()
@@ -346,6 +526,7 @@ RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
 		Config.DoorList = result
 		PlayerData = QBCore.Functions.GetPlayerData()
 		isLoggedIn = true
+		syncAllDoorPrompts()
 	end)
 end)
 
@@ -365,6 +546,7 @@ RegisterNetEvent('qb-doorlock:client:setState', function(serverId, doorID, state
 	if enableSounds == nil then enableSounds = true end
 	if serverId == PlayerData.source and enableAnimation then doorAnim() end
 	Config.DoorList[doorID].locked = state
+	syncDoorPrompt(doorID)
 	updateDoors(doorID)
 	local current = Config.DoorList[doorID]
 	while true do
@@ -757,6 +939,7 @@ end)
 
 RegisterNetEvent('qb-doorlock:client:newDoorAdded', function(data, id, creatorSrc)
 	Config.DoorList[id] = data
+	syncDoorPrompt(id)
 	TriggerEvent('qb-doorlock:client:setState', creatorSrc, id, data.locked, false, true, true)
 end)
 
@@ -768,32 +951,11 @@ end)
 -- Commands
 
 RegisterCommand('toggledoorlock', function()
+	-- With in-world prompts the door's own prompt takes the key (only the focused prompt reacts), so
+	-- this binding stands down rather than toggling a second time.
+	if promptsActive() then return end
 	if not closestDoor.data or not next(closestDoor.data) then return end
-
-	local distanceCheck = closestDoor.distance > (closestDoor.data.distance or closestDoor.data.maxDistance)
-	local unlockableCheck = (closestDoor.data.cantUnlock and closestDoor.data.locked)
-	local busyCheck = PlayerData.metadata['isdead'] or PlayerData.metadata['inlaststand'] or PlayerData.metadata['ishandcuffed']
-	if distanceCheck or unlockableCheck or busyCheck then return end
-
-	playerPed = PlayerPedId()
-	local veh = GetVehiclePedIsIn(playerPed)
-	if veh then
-		CreateThread(function()
-			local siren = IsVehicleSirenOn(veh)
-			for _ = 0, 100 do
-				DisableControlAction(0, 86, true)
-				SetHornEnabled(veh, false)
-				if not siren then SetVehicleSiren(veh, false) end
-				Wait(0)
-			end
-			SetHornEnabled(veh, true)
-		end)
-	end
-	local locked = not closestDoor.data.locked
-	local src = false
-	if closestDoor.data.audioRemote then src = NetworkGetNetworkIdFromEntity(playerPed) end
-
-	TriggerServerEvent('qb-doorlock:server:updateState', closestDoor.id, locked, src, false, false, true, true) -- Broadcast new state of the door to everyone
+	toggleDoor(closestDoor.id, closestDoor.distance)
 end, false)
 TriggerEvent('chat:removeSuggestion', '/toggledoorlock')
 RegisterKeyMapping('toggledoorlock', Lang:t('general.keymapping_description'), 'keyboard', 'E')
@@ -885,7 +1047,9 @@ CreateThread(function()
 					else
 						playerCoords = GetEntityCoords(playerPed)
 						closestDoor.distance = #(closestDoor.data.textCoords - playerCoords)
-						if closestDoor.distance < (closestDoor.data.distance or closestDoor.data.maxDistance) then
+						if closestDoor.distance < (closestDoor.data.distance or closestDoor.data.maxDistance) and promptsActive() then
+							-- The door's prompt says it; closestDoor stays tracked for lockpicks and the exports.
+						elseif closestDoor.distance < (closestDoor.data.distance or closestDoor.data.maxDistance) then
 							local authorized = isAuthorized(closestDoor.data)
 							local displayText = ''
 
@@ -916,6 +1080,25 @@ CreateThread(function()
 			end
 		end
 		Wait(sleep)
+	end
+end)
+
+-- Door prompts follow the door list. Every second the doors near the player (whose text coords are
+-- worked out once they stream in), every 30 seconds all of them (doors added or loaded late); a lock
+-- change updates its door at once (qb-doorlock:client:setState).
+CreateThread(function()
+	local sweep = 0
+	while true do
+		if isLoggedIn and promptsActive() then
+			if sweep <= 0 then
+				syncAllDoorPrompts()
+				sweep = 30
+			else
+				for doorID in pairs(nearbyDoors) do syncDoorPrompt(doorID) end
+			end
+			sweep = sweep - 1
+		end
+		Wait(1000)
 	end
 end)
 

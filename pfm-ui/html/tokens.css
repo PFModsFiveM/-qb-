@@ -1,0 +1,26 @@
+/* pfm-ui tokens.css: shared theme values pages can include
+   (<link rel="stylesheet" href="https://cfx-nui-pfm-ui/html/tokens.css">). Small and neutral on purpose:
+   a page keeps its own look and reads these where it wants to match the others. */
+:root {
+    --pfm-bg: rgba(17, 20, 26, 0.92);
+    --pfm-surface: rgba(32, 37, 46, 0.9);
+    --pfm-fg: #eef1f5;
+    --pfm-fg-dim: rgba(238, 241, 245, 0.65);
+    --pfm-accent: #5aa9ff;
+    --pfm-danger: #f05252;
+    --pfm-success: #3fbf7f;
+
+    --pfm-radius: 10px;
+    --pfm-radius-sm: 6px;
+
+    --pfm-font-sm: 12px;
+    --pfm-font-md: 14px;
+    --pfm-font-lg: 18px;
+
+    --pfm-focus-ring: #5aa9ff;
+    --pfm-focus-width: 2px;
+    --pfm-focus-offset: 2px;
+
+    --pfm-glyph-fg: #ffffff;
+    --pfm-glyph-bg: rgba(0, 0, 0, 0.55);
+}

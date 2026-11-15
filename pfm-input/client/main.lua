@@ -20,6 +20,7 @@ end)
 
 RegisterNUICallback('buttonSubmit', function(data, cb)
     SetNuiFocus(false)
+    if PadBridge then PadBridge.detach() end
     properties:resolve(data.data)
     properties = nil
     cb('ok')
@@ -27,6 +28,7 @@ end)
 
 RegisterNUICallback('closeMenu', function(_, cb)
     SetNuiFocus(false)
+    if PadBridge then PadBridge.detach() end
     properties:resolve(nil)
     properties = nil
     cb('ok')
@@ -40,6 +42,8 @@ local function ShowInput(data)
     properties = promise.new()
 
     SetNuiFocus(true, true)
+    -- controller: read the pad for the form while it is open (pfm-ui's bridge, when included)
+    if PadBridge then PadBridge.attach({ active = function() return properties ~= nil end }) end
     SendNUIMessage({
         action = 'OPEN_MENU',
         data = data

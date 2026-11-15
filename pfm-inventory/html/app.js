@@ -36,6 +36,13 @@ const InventoryContainer = Vue.createApp({
         shouldCenterInventory() {
             return this.isOtherInventoryEmpty;
         },
+        padHintsHtml() {
+            // static button pictures and words (no item text), shown only while a pad is the device
+            const P = window.PfmPad;
+            if (!P) return "";
+            const hint = (g, label) => `<span class="pfm-pad-hint">${P.glyphHTML(g)}${label}</span>`;
+            return [hint("select", this.padHeld ? "Place" : "Pick up"), hint("buttonX", "Use"), hint("buttonY", "Quick move"), hint("back", this.padHeld ? "Cancel" : "Close")].join("");
+        },
         mainSlots() {
             const out = [];
             for (let i = this.pockets + 1; i <= this.totalSlots; i++) out.push(i);
@@ -137,6 +144,9 @@ const InventoryContainer = Vue.createApp({
                 pockets: 5,
                 backpackMeta: null,
                 backpackInventory: {},
+                // controller (pfm-ui): the selected slot and the slot picked up with A
+                padSel: null,
+                padHeld: null,
             };
         },
 
@@ -203,7 +213,100 @@ const InventoryContainer = Vue.createApp({
             } else if (this.searchQuery && !item) {
                 classes["search-dim"] = true;
             }
-            return classes;
+            return Object.assign(classes, this.padClasses(slot, inventoryType));
+        },
+        padClasses(slot, inventoryType) {
+            const sel = this.padSel, held = this.padHeld;
+            return {
+                "pad-sel": !!sel && sel.inv === inventoryType && sel.slot === slot,
+                "pad-held": !!held && held.inv === inventoryType && held.slot === slot,
+            };
+        },
+
+        /* ── controller (pfm-ui) ─────────────────────────────────
+           D-pad / stick: move between slots. A: pick up, then A again to place (swap or stack).
+           X: use. Y: quick move (as right-click). LB/RB: jump between sections. B: drop the pick, or close.
+           Split, give and drop still need the mouse. */
+        padSlots() {
+            const els = Array.from(document.querySelectorAll(".inventory-container .item-slot[data-slot]"));
+            return els.map((el) => ({
+                el,
+                slot: Number(el.dataset.slot),
+                inv: el.closest(".backpack-section") ? "backpack" : el.closest(".other-inventory-section") ? "other" : "player",
+            }));
+        },
+        padFind(list, sel) {
+            return sel ? list.find((s) => s.inv === sel.inv && s.slot === sel.slot) : null;
+        },
+        padSet(entry) {
+            if (!entry) return;
+            this.padSel = { inv: entry.inv, slot: entry.slot };
+            this.hoverItem(this.getItemInSlot(entry.slot, entry.inv));
+            if (typeof entry.el.scrollIntoView === "function") entry.el.scrollIntoView({ block: "nearest" });
+        },
+        padMove(dir) {
+            const list = this.padSlots();
+            if (!list.length) return;
+            const cur = this.padFind(list, this.padSel);
+            if (!cur) return this.padSet(list[0]);
+            const next = window.PfmPad.spatial(cur.el, list.map((s) => s.el), dir);
+            if (next) this.padSet(list.find((s) => s.el === next));
+        },
+        padTab(step) {
+            const list = this.padSlots();
+            const order = ["player", "backpack", "other"].filter((inv) => list.some((s) => s.inv === inv));
+            if (!order.length) return;
+            const at = this.padSel ? order.indexOf(this.padSel.inv) : -1;
+            const inv = order[(at + step + order.length) % order.length];
+            this.padSet(list.find((s) => s.inv === inv));
+        },
+        padSelect() {
+            if (!this.padSel) return this.padMove("down");
+            const { inv, slot } = this.padSel;
+            if (!this.padHeld) {
+                if (this.getItemInSlot(slot, inv)) this.padHeld = { inv, slot };
+                return;
+            }
+            const from = this.padHeld;
+            this.padHeld = null;
+            if (from.inv === inv && from.slot === slot) return;
+            const item = this.getItemInSlot(from.slot, from.inv);
+            if (!item) return;
+            // the same path as a mouse drag that ends on this slot (endDrag)
+            this.dragStartInventoryType = from.inv;
+            this.currentlyDraggingSlot = from.slot;
+            this.currentlyDraggingItem = item;
+            if (inv === "backpack") {
+                if (item.name === "backpack" || (from.inv === "other" && this.isShopInventory)) this.inventoryError(from.slot);
+                else this.handleItemDrop("backpack", slot);
+            } else if (inv === "player") {
+                this.handleDropOnPlayerSlot(slot);
+            } else {
+                this.handleDropOnOtherSlot(slot);
+            }
+            this.clearDragData();
+        },
+        padUse() {
+            if (!this.padSel || this.padSel.inv !== "player") return;
+            const item = this.getItemInSlot(this.padSel.slot, "player");
+            if (item) this.useItem(item);
+        },
+        padQuickMove() {
+            if (!this.padSel) return;
+            const { inv, slot } = this.padSel;
+            const item = this.getItemInSlot(slot, inv);
+            if (!item) return;
+            if (inv === "player" && this.isOtherInventoryEmpty) {
+                // right-click would open the mouse menu here: on a pad, into the backpack if there is one
+                if (this.backpackMeta) this.moveToBackpack(item);
+                return;
+            }
+            this.handleMouseDown({ button: 2, preventDefault() {} }, slot, inv);
+        },
+        padBack() {
+            if (this.padHeld) { this.padHeld = null; return; }
+            if (this.showContextMenu) { this.showContextMenu = false; return; }
+            this.closeInventory();
         },
         async quickStack() {
             // move every non-favorite stack whose item already exists in the container
@@ -1138,6 +1241,19 @@ const InventoryContainer = Vue.createApp({
         },
     },
     mounted() {
+        if (window.PfmPad) {
+            const open = (fn) => () => { if (this.isInventoryOpen) fn(); };
+            PfmPad.on("up", open(() => this.padMove("up")));
+            PfmPad.on("down", open(() => this.padMove("down")));
+            PfmPad.on("left", open(() => this.padMove("left")));
+            PfmPad.on("right", open(() => this.padMove("right")));
+            PfmPad.on("select", open(() => this.padSelect()));
+            PfmPad.on("back", open(() => this.padBack()));
+            PfmPad.on("buttonX", open(() => this.padUse()));
+            PfmPad.on("buttonY", open(() => this.padQuickMove()));
+            PfmPad.on("tabPrev", open(() => this.padTab(-1)));
+            PfmPad.on("tabNext", open(() => this.padTab(1)));
+        }
         window.addEventListener("keydown", (event) => {
             const key = event.key;
             if (key === "Escape" || key === "Tab") {
@@ -1171,6 +1287,9 @@ const InventoryContainer = Vue.createApp({
                 case "requiredItem":
                     this.showRequiredItem(event.data);
                     break;
+                case "pfm-ui:pad":
+                case "pfm-ui:device":
+                    break; // controller messages, handled by pad.js
                 case "theme": {
                     // PF global UI theme (broadcast by pf-hud)
                     const t = event.data.theme;

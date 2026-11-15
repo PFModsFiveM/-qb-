@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<!-- DEV PREVIEW ONLY (not in fxmanifest's files): the pause menu in a desktop browser with mock data.
+     Serve the [qb] folder over http (ES modules do not load from file://), for example:
+              serve the [qb] folder over http (e.g. npx http-server -p 8137)   then open http://localhost:8137/pfm-pause/html/preview.html
+     The map's data and blip icons load from ../../pfm-media-map/ (the resource beside this one).
+     Keys: arrows / Enter / Esc as in game; M map; on the map drag, scroll, double-click, V 3D, L legend.
+     ?pad=1 shows the controller hint strip. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pause menu preview</title>
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/pause.css">
+<link rel="stylesheet" href="css/settings-page.css">
+<link rel="stylesheet" href="css/pad-layout.css">
+<link rel="stylesheet" href="css/help.css">
+<style>
+    /* a stand-in for the game behind the page */
+    body { background: #2a3340 linear-gradient(160deg, #3b4656, #1c232c); }
+</style>
+<script>
+    window.PF_PAUSE_MEDIA_URL = '../../pfm-media-map/';
+    window.GetParentResourceName = () => 'pfm-pause';
+
+    // ---- mock Lua: the NUI callbacks client/main.lua answers ----
+    (function () {
+        const prefs = {
+            groups: [
+                { id: 'Controller', label: 'Controller', rows: [
+                    { key: 'pad.enabled', type: 'toggle', label: 'Controller support', help: 'Menus and world buttons answer a gamepad.', value: true, default: true },
+                    { key: 'pad.repeatDelay', type: 'slider', label: 'Menu repeat delay', help: 'How long a held direction waits before it repeats.', min: 150, max: 1000, step: 10, value: 380, default: 380 },
+                    { key: 'pad.repeatRate', type: 'slider', label: 'Menu repeat rate', help: 'Time between repeats of a held direction.', min: 40, max: 400, step: 10, value: 140, default: 110, changed: true },
+                    { key: 'pad.stickNav', type: 'toggle', label: 'Left stick moves in menus', help: 'The left stick moves through menus as well as the D-pad.', value: true, default: true },
+                ] },
+                { id: 'HUD', label: 'HUD', rows: [
+                    { key: 'hud.style', type: 'choice', label: 'HUD style', value: 'round', default: 'round',
+                      options: [{ value: 'round', label: 'Round' }, { value: 'square', label: 'Square' }, { value: 'minimal', label: 'Minimal' }] },
+                    { key: 'hud.streetNames', type: 'toggle', label: 'Street names', help: 'Show the street under the minimap.', value: true, default: true },
+                    { key: 'hud.cinematic', type: 'toggle', label: 'Cinematic bars', value: false, default: false, locked: true },
+                ] },
+            ],
+        };
+        const pad = {
+            actions: [
+                { id: 'radial', label: 'Radial menu', on: true }, { id: 'inventory', label: 'Inventory', on: true },
+                { id: 'target', label: 'Target / interact', on: true }, { id: 'phone', label: 'Phone', on: true },
+                { id: 'menufocus', label: 'Focus the menu', on: true }, { id: 'emotes', label: 'Emote menu', on: true },
+            ],
+            layout: { dpad_up: 'phone', dpad_down: 'radial', dpad_right: 'inventory', lb: 'target', lb_y: 'emotes' },
+            custom: false,
+        };
+        const answer = {
+            prefsState: () => prefs,
+            prefsSet: (d) => {
+                for (const g of prefs.groups) for (const r of g.rows) {
+                    if (r.key === d.key) { r.value = d.value; r.changed = d.value !== r.default; }
+                }
+                return prefs;
+            },
+            prefsReset: (d) => {
+                for (const g of prefs.groups) if (g.id === d.group) for (const r of g.rows) if (!r.locked) { r.value = r.default; r.changed = false; }
+                return prefs;
+            },
+            padLayout: () => pad,
+            padLayoutSet: (d) => {
+                const old = pad.layout[d.slot] || null, act = d.action || null;
+                let swap = null;
+                for (const s of Object.keys(pad.layout)) {
+                    if (act && pad.layout[s] === act && s !== d.slot) { if (old) pad.layout[s] = old; else delete pad.layout[s]; swap = { slot: s, gave: old }; }
+                }
+                if (act) pad.layout[d.slot] = act; else delete pad.layout[d.slot];
+                pad.custom = true;
+                return Object.assign({}, pad, { swap });
+            },
+            padLayoutReset: () => { pad.layout = { dpad_up: 'phone', dpad_down: 'radial', dpad_right: 'inventory', lb: 'target', lb_y: 'emotes' }; pad.custom = false; return pad; },
+            leave: (d) => ({ ok: true, token: 'preview-' + d.mode }),
+            leaveConfirm: (d) => { console.log('[preview] confirmed', d); return { ok: true }; },
+            report: (d) => (d.message.length >= 8 ? { ok: true } : { ok: false, why: 'Please write at least 8 characters.' }),
+            pauseWaypoint: (d) => {
+                console.log('[preview] waypoint', d);
+                window.postMessage({ action: 'pauseData', waypoint: d.clear ? false : { x: d.x, y: d.y } }, '*');
+                return { ok: true };
+            },
+        };
+        const realFetch = window.fetch.bind(window);
+        window.fetch = (url, opts) => {
+            const m = /^https:\/\/pfm-pause\/(\w+)/.exec(String(url));
+            if (!m) return realFetch(url, opts);
+            const data = opts && opts.body ? JSON.parse(opts.body) : {};
+            const fn = answer[m[1]];
+            const out = fn ? fn(data) : { ok: true };
+            if (!fn) console.log('[preview] callback', m[1], data);
+            return Promise.resolve({ json: async () => JSON.parse(JSON.stringify(out)) });
+        };
+    })();
+</script>
+<script src="js/glyphs.js"></script>
+<script type="importmap">
+{ "imports": { "three": "./js/vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<script type="module" src="js/main.js"></script>
+<script type="module">
+    // ---- mock messages: what client/main.lua sends on open ----
+    const send = (m) => window.postMessage(m, '*');
+    const padMode = /[?&]pad=1/.test(location.search);
+    send({
+        action: 'pauseOpen', brand: 'PF', quitMode: 'disconnect', pad: padMode,
+        menu: [
+            { id: 'resume', label: 'Resume' }, { id: 'map', label: 'Map' }, { id: 'controller', label: 'Controller' },
+            { id: 'swap', label: 'Swap Character' }, { id: 'gameSettings', label: 'Game Settings' },
+            { id: 'serverSettings', label: 'Server Settings' }, { id: 'help', label: 'Help' }, { id: 'quit', label: 'Quit' },
+        ],
+        character: { name: 'Jane Doe', job: 'Police · Sergeant' },
+        help: {
+            rules: [
+                'Respect every player. No harassment, hate speech or discrimination, in or out of character.',
+                'Stay in character. Use /ooc sparingly and never to share information your character does not know.',
+                'Value your life. Act as if your character fears injury and death.',
+                'No random deathmatch (RDM) or vehicle deathmatch (VDM). Violence needs a roleplay reason.',
+            ],
+            keybinds: [['Pause menu', 'Esc / P', 'Start'], ['Inventory', 'TAB', 'D-Right'], ['Phone', 'M', 'D-Up'],
+                ['Target / interact', 'Left Alt', 'LB (hold)'], ['Emote menu', 'F3', 'LB + Y'], ['Seatbelt', 'B', '']],
+            quick: [{ id: 'hud', label: 'HUD settings' }, { id: 'keys', label: 'Key bindings', action: 'keybinds' }],
+            report: { min: 8, max: 300 },
+        },
+    });
+    // the player at Legion Square, a few blips round the city, a waypoint
+    const player = { x: 195.2, y: -933.8, heading: 140, zone: 'Pillbox Hill', street: 'Vespucci Blvd' };
+    const blips = [
+        { x: 215.8, y: -810.1, sprite: 60, colour: '#5d9ee8' },     // police station
+        { x: 298.6, y: -584.3, sprite: 61, colour: '#e05050' },     // hospital
+        { x: 25.7, y: -1347.3, sprite: 52, colour: '#72cc72' },     // store
+        { x: -47.4, y: -1757.5, sprite: 52, colour: '#72cc72' },
+        { x: 373.9, y: 325.9, sprite: 52, colour: '#72cc72' },
+        { x: 265.0, y: -1261.3, sprite: 361, colour: '#ffffff' },   // gas station
+        { x: -70.2, y: -1761.8, sprite: 361, colour: '#ffffff' },
+        { x: 149.9, y: -1040.2, sprite: 108, colour: '#72cc72' },   // bank
+        { x: -1212.9, y: -330.8, sprite: 108, colour: '#72cc72' },
+        { x: -1153.6, y: -1425.7, sprite: 75, colour: '#ffffff' },  // tattoo
+        { x: 72.3, y: -1399.1, sprite: 73, colour: '#ffffff' },     // clothes
+        { x: -337.4, y: -136.9, sprite: 446, colour: '#ffffff' },   // mechanic
+        { x: 1855.2, y: 3683.5, sprite: 60, colour: '#5d9ee8' },
+    ];
+    send({ action: 'pauseData', player, waypoint: { x: 425.1, y: -979.5 }, route: false, routeColour: '#a44cf2', blips });
+    // the player walks a little, as the game's readings would say
+    let t = 0;
+    setInterval(() => {
+        t += 0.25;
+        send({ action: 'pauseData', player: Object.assign({}, player, { x: player.x + Math.sin(t / 4) * 6, y: player.y + Math.cos(t / 4) * 6, heading: (140 + t * 10) % 360 }) });
+    }, 250);
+</script>
+</body>
+</html>

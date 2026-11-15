@@ -331,3 +331,9 @@ body {
 .background {
     display: none;
 }
+
+/* controller hints (pfm-ui), shown only while a pad is the device */
+.pfm-pad .pad-hints {
+    margin-top: 10px;
+    justify-content: center;
+}

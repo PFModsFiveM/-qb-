@@ -204,6 +204,8 @@ RegisterNetEvent('qb-inventory:client:openInventory', function(items, other)
     QBCore.Functions.TriggerCallback('qb-inventory:server:getBackpack', function(backpack)
         CurrentBackpack = backpack and backpack.name or nil
         SetNuiFocus(true, true)
+        -- controller: read the pad for the inventory while it is open (pfm-ui's bridge, when included)
+        if PadBridge then PadBridge.attach() end
         SendNUIMessage({
             action = 'open',
             inventory = items,
@@ -239,6 +241,7 @@ end)
 
 RegisterNUICallback('CloseInventory', function(data, cb)
     SetNuiFocus(false, false)
+    if PadBridge then PadBridge.detach() end
     if data.name then
         if data.name:find('trunk-') then
             CloseTrunk()

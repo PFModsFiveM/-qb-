@@ -43,6 +43,7 @@ const OpenMenu = (data) => {
         }
     });
     form.push(`<div class="footer"><button type="submit" class="btn btn-success" id="submit">${data.submitText ? data.submitText : "Submit"}</button></div>`);
+    form.push(`<div class="pad-hints"></div>`);
     form.push("</form>");
 
     const w = wrapper();
@@ -71,6 +72,20 @@ const OpenMenu = (data) => {
 
     const firstField = formEl.querySelector("input, select");
     if (firstField) firstField.focus();
+
+    if (window.PfmPad) setupPad(formEl);
+};
+
+// controller (pfm-ui): the D-pad moves between fields and the button, A chooses (a text field takes
+// the keyboard, a checkbox or option toggles, the button submits), left/right change numbers and
+// lists, B cancels. Typing still needs a keyboard: GTA has no on-screen keyboard for pages.
+const PAD_FIELDS = "input:not([type=radio]):not([type=checkbox]), select, label.choice, button";
+const setupPad = (formEl) => {
+    PfmPad.focusables(formEl, { selector: PAD_FIELDS, onBack: CancelMenu, autoFocus: true });
+    const hints = [["select", "Choose"], ["back", "Cancel"]];
+    if (formEl.querySelector("input[type=number], select")) hints.splice(1, 0, [["left", "right"], "Change"]);
+    if (formEl.querySelector("input[type=text], input[type=password], input[type=number]")) hints.push([[], "Typing needs a keyboard"]);
+    PfmPad.hints(formEl.querySelector(".pad-hints"), hints);
 };
 
 const renderBasicInput = (item, type) => {
