@@ -207,6 +207,23 @@ function setVal(el, v) { el.value = v; el.dispatchEvent(new el.ownerDocument.def
         eq(opened, EVIL_ID, 'incident opens by its exact id');
     });
 
+    await it('cases: a death record opens through pf_mdt:cases:deathRecord with the case and link ids; the record is text', async () => {
+        m.responses['pf_mdt:cases:deathRecord'] = { ok: true, record: { id: 12, cid: EVIL, state: 'examined', cause: EVIL, manner: EVIL, todText: EVIL, createdAt: 1700000000,
+            autopsy: { note: EVIL, suggestedManner: EVIL, injuries: [{ text: EVIL, region: EVIL, lethal: true, attacker: 'other' }], toxins: [{ name: EVIL, level: 1 }] } } };
+        const root = page(m, 'cases');
+        btnByText(root.querySelector('tr[data-link-type="death_record"]'), 'Details').click();
+        await settle();
+        const c = m.calls('pf_mdt:cases:deathRecord').slice(-1)[0];
+        eq(c.caseId, 7); eq(c.linkId, 2);
+        const view = root.querySelector('.pfp-death-record');
+        ok(view && view.textContent.includes(EVIL) && /by another person/.test(view.textContent), 'record shown as text');
+        noInjection(m, 'death record', root);
+        m.responses['pf_mdt:cases:deathRecord'] = { ok: false, error: 'unavailable', message: 'The morgue records are not available right now' };
+        btnByText(root.querySelector('tr[data-link-type="death_record"]'), 'Details').click();
+        await settle();
+        ok(/not available right now/.test(root.querySelector('.pfp-death-record').textContent), 'refusal shown');
+    });
+
     await it('cases: create, add person, link, entry and submit send the server payloads; refusals show the server message', async () => {
         const root = page(m, 'cases');
         m.responses['pf_mdt:cases:create'] = { ok: true, caseId: 8, caseNo: 'C-000008' };
@@ -418,6 +435,28 @@ function setVal(el, v) { el.value = v; el.dispatchEvent(new el.ownerDocument.def
         eq(m.posts.filter((p) => p.name === 'printCitationPaper').slice(-1)[0].body.sentenceId, 31);
     });
 
+    await it('citations: the court tab pages pf_mdt:citations:list by order id and lists field citations apart', async () => {
+        m.responses['pf_mdt:citations:list'] = (p) => p.after
+            ? { ok: true, list: [{ orderId: 3, state: 'active', amount: 80, reason: 'Parking', issuedAt: 1700000000 }] }
+            : { ok: true, next: 4, list: [{ orderId: 5, state: 'paid', amount: 150, paidAmount: 150, reason: EVIL, plate: EVIL, speed: 90, limit: 50, officerName: EVIL, issuedAt: 1700000000, contestUntil: 1800000000 },
+                { orderId: 4, state: 'active', amount: 90, reason: 'Speeding', issuedAt: 1700000000 }],
+                pending: [{ uid: 'F1', violation: EVIL, amount: 50, state: 'failed', error: EVIL, createdAt: 1700000000 }] };
+        let r = page(m, 'citations');
+        r.querySelector('.pfp-tab[data-tab="court"]').click(); await settle();
+        r = page(m, 'citations');
+        eq(m.calls('pf_mdt:citations:list').slice(-1)[0].citizenId, 'CIT1');
+        noInjection(m, 'court citations', r);
+        ok(r.querySelector('tr[data-order-id="5"]') && r.textContent.includes(EVIL), 'rows as text');
+        ok(/not yet taken by the court system/.test(r.textContent) && r.querySelector('[data-citation-uid="F1"]'), 'field citations apart');
+        btnByText(r, 'Load more').click(); await settle();
+        eq(m.calls('pf_mdt:citations:list').slice(-1)[0].after, 4, 'cursor = last order id');
+        ok(page(m, 'citations').querySelector('tr[data-order-id="3"]') && !btnByText(page(m, 'citations'), 'Load more'), 'next page appended, no more');
+        m.responses['pf_mdt:citations:list'] = { ok: false, error: 'unavailable', message: 'The court system is not available right now' };
+        page(m, 'citations').querySelector('.pfp-tab[data-tab="fines"]').click(); await settle();
+        page(m, 'citations').querySelector('.pfp-tab[data-tab="court"]').click(); await settle();
+        ok(page(m, 'citations').querySelector('.pfp-state-error') && /court system is not available/.test(page(m, 'citations').textContent), 'error state');
+    });
+
     // ── plates and impound ──────────────────────────────────────────────────
     await it('vehicles: run plate reads RunPlate and the profile; flags, BOLOs, impound and ALPR rows are text', async () => {
         m.responses['police:server:runPlate'] = { ok: true, plate: 'ABC123', model: EVIL, owner: { citizenid: 'CIT1', name: EVIL, licence: { driver: 'valid' } },
@@ -480,7 +519,7 @@ function setVal(el, v) { el.value = v; el.dispatchEvent(new el.ownerDocument.def
         const client = fs.readFileSync(path.join(RES, 'client', 'main.lua'), 'utf8');
         ok(client.includes("RegisterNUICallback('pfMdtCall'"), 'bridge callback');
         ok(/PFMdtBridge\.allowed\[name\]/.test(client), 'only allowlisted names pass');
-        for (const n of ['pf_mdt:cases:submit', 'pf_mdt:warrants:review', 'pf_mdt:bolos:clear', 'police:server:runPlate', 'police:GetImpoundedVehicles'])
+        for (const n of ['pf_mdt:cases:submit', 'pf_mdt:cases:deathRecord', 'pf_mdt:citations:list', 'pf_mdt:warrants:review', 'pf_mdt:bolos:clear', 'police:server:runPlate', 'police:GetImpoundedVehicles'])
             ok(client.includes(`'${n}'`), n + ' allowed');
         ok(/actions\.warrantApprove/.test(client) && /actions = actions/.test(client), 'rank answer per action');
         const mf = fs.readFileSync(path.join(RES, 'fxmanifest.lua'), 'utf8');
