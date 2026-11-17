@@ -278,3 +278,7 @@ Down/death (16A), damage ingestion (16B), prison via pf-justice (16C) and MDT/fi
 Implemented + Tested (automated); pf-justice LegacyRuntimes flipped to false (handed over). Combined check found two
 hand-over gaps, fixed with regression specs. Suites: mocked 3059/0, real DB 819/0. Not tested in game. Resume at
 batch 17 (PF_ULTIMATE_SYSTEM_PLAN.md section 8).
+
+### 2026-11-17: batch 17 done
+Exam/diagnosis (17A), treatment/items (17B), recovery/effects (17C), EMS equipment (17D) and hospital core (17E):
+Implemented + Tested (automated). Suites: mocked 3412/0, real DB 840/0. Not tested in game. Resume at batch 18.

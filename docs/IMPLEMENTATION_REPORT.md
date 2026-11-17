@@ -2783,3 +2783,29 @@ departments, UI, final review) are planned in `docs/pf_ultimate/PF_ULTIMATE_SYST
 What players see differently: see each unit above; the main ones are server-decided death and revives (no
 auto-bans), injuries only from real hits, field revives that stop bleeding but keep injuries, jailed players keep
 their job, property lockers, escapes put the sentence on hold, unpaid MDT fines become phone invoices, bail by prompt.
+
+## Batch 17 — 2026-11-17: medical, EMS and hospital features
+
+Five units built in parallel, one combined adversarial check (three real gaps found and fixed by the builders), lead
+fixes. Everything sits in pf-ambulancejob unless noted.
+
+| Unit | What changed |
+|---|---|
+| 17A exam and diagnosis | `shared/medical/findings.lua`, `server/medical/{diagnosis,exam}.lua`, `client/exam.lua`: 15 exam modalities with a sensitivity per provider tier; a miss adds nothing and nothing false is ever found; only X-ray, CT and labs confirm; internal bleeding only on FAST (suspected) and CT (confirmed); imaging only in an imaging bed; results reused for 60 s; `/checkinjuries` opens the exam; chart and `GetMedicalRecord` access limited to physicians, attending/recent providers and admitted-patient staff, every read audited. |
+| 17B treatment and items | `shared/medical/treatments.lua`, `server/medical/treatment.lua`, `server/items.lua`: equipment-driven treatment (items used on the server before any effect), scope of practice from pf-government qualifications, procedure order, tourniquet penalty, CPR only within 1.5 m, defibrillation only on VF, request dedupe; stabilising never equals recovering; 35 medical items in pfm-core, stocked in the ambulance armory by grade; the EMS MDT buttons keep their old items. |
+| 17C recovery and effects | `server/medical/recovery.lua`, `server/medical/effects.lua`, `client/effects.lua`: stage machine from absolute timestamps (offline healing), restrictions that survive relog, effects combined by maximum with restriction floors after painkillers, infection and re-bleed rules, `no_drive` logged not punished; the old client limb/bleed loops are gone. Schema v5 (treatments, restrictions, admissions, bills, bill lines). |
+| 17D EMS equipment | `server/ems/equipment.lua`, `client/ems_equipment.lua`, `config_ems.lua`: server-spawned stretchers, wheelchairs and medbags, one stretcher per rig, load/unload at the rear doors, patients released safely on every drop, removal and restart, replicated state bags; the radial-menu bin-bag stretcher and its streamed model are removed. |
+| 17E hospital core | `server/hospital/{facility,beds,admissions,billing,ai_care}.lua`, `client/hospital.lua`: check-in at reception, triage, server bed occupancy, admissions, transfers, discharge with restrictions and a calendar follow-up; one keyed bill per admission from server rows only (care by on-duty staff or the AI, never self-care), unpaid -> phone invoice that cannot be declined; AI care only below 2 staff after 180 s, never on a patient staff handled (v6 `staff_acted_at`); respawn admits to the ED with injuries kept; `p.triage` for booking screening. |
+
+Lead fixes: helmet item; character deletion removes treatments, restrictions, admissions and settled bills; treatment
+rows carry a job only for on-duty medical staff; older medical real-DB version asserts updated; evidence release needs
+the DisposeEvidence allowlist; pf-justice `LegacyRuntimeLive` export (prison, MDT, police job prefer it); real-DB spec
+for the pfm-prison tables.
+
+Tests: mocked 3412 passed, 0 failed (295 files); real DB 840 passed, 0 failed (90 files); every tests/js spec green;
+`ledger_parallel` and `sql_install_check` pass. Not tested in game.
+
+Open: inventory images for `helmet`, `nitrile_gloves` and the 35 medical items; the old SendToBed/bill code in
+`server/main.lua` is unreachable and can be deleted; pf-justice `IsCourtOrderValid` (19A) gates court-order record
+reads; batch 19G's planned migration number moves to v7 (17E used v6); in-game checks per unit (zones, bed and
+animation offsets, armory stock).
