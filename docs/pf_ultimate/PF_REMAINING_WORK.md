@@ -157,6 +157,20 @@ None of these blocks batch 16; each names where it lands. "Minor" means the chec
 
 ## 8. Exact next steps
 
+Status 2026-11-17: batches 15-18 are committed. Batch 18's open items are listed in `docs/IMPLEMENTATION_REPORT.md`
+(Batch 18, "Open").
+
+1. Batch 19 (justice and corrections): 19A must ship `IsCourtOrderValid`, `FileCase` and `RequestWarrantReview` with the
+   shapes the batch-18 callers already use (pfm-policejob evidence and telemetry, pf-ambulancejob records,
+   pf-policemdt-DEV cases and warrants), then 19B-19G.
+2. Batches 20-22 in order (20: hospital/EMS advanced, departments; 21: UI in the pfm-ui shared look, incl. MDT warrant,
+   BOLO and audit pages and radial-menu entries; 22: review and docs).
+3. Owner (in parallel): dedicated item art for the batch 17/18 items (they borrow existing icons); confirm speed-camera,
+   lab, court and work-site coordinates; rotate the old MDT evidence webhook and set `pf_policemdt_evidence_webhook`
+   with `set` (not `setr`); provide a staging server with clients for the in-game checklist in `PF_TEST_REPORT.md`.
+
+Earlier next steps (batch 15 era, done):
+
 1. Lead: final batch-15 integration run (mocked, real DB, JS, parsecheck, `ledger_parallel`, `sql_install_check`,
    state-bag scan, event collisions); fill the placeholders in `PF_TEST_REPORT.md` (Batch 15) and
    `docs/IMPLEMENTATION_REPORT.md` (Batch 15); commit and push both repos.

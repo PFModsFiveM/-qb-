@@ -37,7 +37,7 @@ block disagree, the note (and the code) wins. The DDL blocks for later batches (
 |---|---|---|---|
 | pf-ambulancejob | `pf-ambulancejob` | v1 `injury records, treatment log, health snapshots` (`server/injury_database.lua`) | v2 medical core, v3 medical events + diagnosis layers + `hold_until` (15A, built); v4 legacy import (16B); v5 clinical + hospital core without findings/diagnoses (17C); v6 custody care (19G); v7 hospital services, morgue, supplies (20A) |
 | pf-emsmdt | `pf-emsmdt` (resource name) | v1 `roster reset backups` (`server/roster.lua`) | v2 tables created ad hoc before (15G, built); v3 PCR, handover, units (20D) |
-| pfm-policejob | `pfm-policejob` (resource name) | v1 `/fine` records (`server/fines.lua`) | v2 evidence core (15D, built); v3 traffic, impound, telemetry, lab (18B) |
+| pfm-policejob | `pfm-policejob` (resource name) | v1 `/fine` records (`server/fines.lua`) | v2 evidence core (15D, built); v3 traffic, impound, telemetry, lab (18B, built: adds `pf_police_citations` and `pf_police_speed_events.driver_cid`) |
 | pf-policemdt-DEV | `pf-policemdt-DEV` (resource name; `GetCurrentResourceName()`) | v1-v6 (`server/sentencing.lua`): active jails, sentences, licence actions, charge audit, roster backups, `released_why` | v7 SQL-file tables (15F, built); v8 cases, BOLOs, record audit, warrant columns (18E); v9 personnel, UoF, pursuits, IA (20F) |
 | pf-justice | `pf-justice` | none (new resource) | v1 core (15B, built); v2 legacy import (15B step, 15C code, built); v3 courts, v4 supervision, v5 community service (19A) |
 | pfm-prison | `pfm-prison` | none (metadata only today) | v1 inmates and events (16C); v2 facility, v3 economy, v4 security (19D) |

@@ -282,3 +282,10 @@ batch 17 (PF_ULTIMATE_SYSTEM_PLAN.md section 8).
 ### 2026-11-17: batch 17 done
 Exam/diagnosis (17A), treatment/items (17B), recovery/effects (17C), EMS equipment (17D) and hospital core (17E):
 Implemented + Tested (automated). Suites: mocked 3412/0, real DB 840/0. Not tested in game. Resume at batch 18.
+
+### 2026-11-17: batch 18 done
+Custody field flow (18A), traffic/ALPR/impound/citations (18B), equipment and telemetry (18C), evidence lab (18D), MDT
+cases (18E) and warrants/BOLO/records (18F): Implemented + Tested (automated). Combined check: 7 real defects (lab
+commands refused under pfm-core, tox never ran, MDT photo capture, impound release on DB error, telemetry flush race,
+speeding citation target, missing item icons), all fixed with specs. Suites: mocked 3606/0, real DB REALDB_COUNT. Not
+tested in game. Resume at batch 19 (PF_ULTIMATE_SYSTEM_PLAN.md section 10).

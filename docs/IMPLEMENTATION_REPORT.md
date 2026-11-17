@@ -2809,3 +2809,32 @@ Open: inventory images for `helmet`, `nitrile_gloves` and the 35 medical items; 
 `server/main.lua` is unreachable and can be deleted; pf-justice `IsCourtOrderValid` (19A) gates court-order record
 reads; batch 19G's planned migration number moves to v7 (17E used v6); in-game checks per unit (zones, bed and
 animation offsets, armory stock).
+
+## Batch 18 — 2026-11-17: police field work, traffic, equipment, evidence lab, MDT records
+
+Six units built in parallel, one combined adversarial check (seven real defects, all fixed with regression specs),
+lead fixes. pfm-policejob schema key moves to v3, pf-policemdt-DEV to v8.
+
+| Unit | What changed |
+|---|---|
+| 18A custody field flow | `pfm-policejob/server/{interactions,custody_field}.lua`, `client/custody_field.lua`: surrender, detain, frisk, zipties, server-owned escort and seat choice, arrest -> pf-justice `OpenCustody`, release at scene; police items (`zipties`, `ziptie_cutter`, `breathalyzer`, `radar_gun`, `evidence_kit`, `spike_strip`). |
+| 18B traffic, ALPR, impound | `server/traffic.lua`, `server/vehicle.lua`, `client/traffic.lua`, `config_traffic.lua`: radar readings from server natives only (net id in, speed/heading from the server), ALPR in 60 m spatial buckets with batched, deduped reads and 14-day retention, speed cameras, `RunPlate`, plate flags from the MDT with live invalidation, breath tests through pf-ambulancejob `GetBreathAlcohol`, citations as one pf-justice order per uid (retried with the same key), a speeding citation only for the driver the server saw or the plate's owner; impound records (reason, hold, case, fee) with supervisor override and fail-closed release when records cannot be read. Schema v3 (traffic, impound, telemetry, lab tables, `pf_police_citations`). |
+| 18C equipment and telemetry | `server/{main,telemetry,objects,gameplay}.lua`: duty GPS only to on-duty leo/ems (no `-1` broadcast), metadata telemetry (body/dash, weapon, vehicle, radio) in a bounded buffer with batched writes, holds and retention, the flush swaps its batch out before the insert; server-spawned capped props and riot shield; gated info callbacks; structured alerts (legacy text maps to a kind); GSR from `weaponDamageEvent`; K9 sniff from server inventory; drone with server range limits; restricted radio channels; `/cam` retired. |
+| 18D evidence lab | `server/evidence/{lab,scene,api}.lua`: results from server records only, DNA names only against booked reference samples (partial samples give candidates), lab-tech release, tox screen through pf-ambulancejob `GetToxinLevels`; disposal and release need a pf-justice court order (fails closed until 19A); commands use unguarded internal calls because pfm-core invokes them. `/takedna` creates a `dna_swab` evidence item. |
+| 18E cases | `pf-policemdt-DEV/server/cases.lua`, schema v8: cases with links, suspects, statements, leads, surveillance and interviews; court submissions stored as ready for court and handed to pf-justice `FileCase` with a stable key once 19A ships it. |
+| 18F records | `server/records_ext.lua`, `access.lua`, `cctv.lua`, `client/main.lua`: warrants v2 (server id and expiry, real suspect, judge review or supervisor approval, serve links custody), BOLO board feeding ALPR, normalised plate flags, vehicle activity, record audit, `RegisterActions`, gate fixes, CCTV without fake recordings, reports no longer auto-approve, evidence photos captured by the server with a server-only convar (`pf_policemdt_evidence_webhook`), soft-deleting `ExpungeRecord`. |
+
+Lead fixes: pf-ambulancejob `GetBreathAlcohol` and `GetToxinLevels` (pfm-policejob only, levels only); `/cam` shows the
+CCTV notice and `/pobject tape`; deleted incidents and sentences hidden in pf-government and the MDT sentence list;
+pfm-doorlock state callers; every new item (batch 17 medical, helmet, gloves, batch 18 police) points at an existing
+inventory icon, guarded by `tests/js/item_images_spec.js`; older specs updated for the new versions and flows.
+
+Tests: mocked 3606 passed, 0 failed (302 files); real DB REALDB_COUNT; every tests/js spec green; `ledger_parallel`
+and `sql_install_check` pass; parsecheck clean on 72 changed Lua files. Not tested in game.
+
+Open: dedicated item art; speed-camera zone coordinates; `/flagplate` stays a 12 h field flag (no MDT write export);
+nothing emits `pf-ambulancejob:server:projectileRecovered` yet; pf-justice `IsCourtOrderValid`, `FileCase` and
+`RequestWarrantReview` (19A) unlock court-order disposal, telemetry and medical record reads, case filing and judge
+review; the owner should rotate the old MDT evidence webhook; pf-justice has no export to move custody between
+officers' cids; radial-menu entries for the new police actions (21); MDT page buttons for warrant review, BOLOs and
+audit (21A); in-game checks per unit (radar cone, ALPR alerts, prop placement, shield bone, drone, GSR hashes).
