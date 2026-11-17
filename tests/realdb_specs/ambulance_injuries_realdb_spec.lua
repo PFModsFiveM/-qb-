@@ -1,6 +1,6 @@
 -- pf-ambulancejob injury system on a real database: migrations, checked injury reports, scans by an
--- on-duty medic next to the patient, field treatment that uses up its item, and hospital treatment
--- clearing every injury.
+-- on-duty medic next to the patient, the legacy field-treatment event (a forwarder since 17B), and
+-- hospital treatment clearing every injury.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 function IsDuplicityVersion() return true end
@@ -118,37 +118,17 @@ describe('scanning a patient', function()
 end)
 
 describe('field treatment', function()
-    local function treat(kind) Mock.fireNet('pf-ambulancejob:server:applyTreatment', MEDIC, PATIENT, kind) Mock.gameTimer = Mock.gameTimer + 10000 end
-    it('uses up the item, removes what it treats and logs it', function()
+    -- batch 17B: pf-ambulancejob:server:applyTreatment is a forwarder to the treatment engine
+    -- (server/medical/treatment.lua, specs b17_medical_treatment*); the legacy player_injuries table is
+    -- frozen since the 16B import, so the event no longer removes its rows or logs to player_treatment_log
+    local function treat(kind) Mock.fireNet('pf-ambulancejob:server:applyTreatment', MEDIC, PATIENT, kind) end
+    it('the legacy event leaves the frozen legacy tables and the items alone', function()
         hit('laceration', 'moderate')
-        hit('fracture', 'minor', 'left_leg')
-        treat('bandage')
-        local rows = injuries()
-        assert_eq(#rows, 1)
-        assert_eq(rows[1].injury_type, 'fracture')
-        assert_eq(items[MEDIC].bandage, 1)
-        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM player_treatment_log WHERE treatment_type = 'bandage' AND treated_by = 'CID2'")), 1)
-        assert_eq(#Mock.clientEventsNamed('pf-ambulancejob:client:applyTreatmentEffects'), 1)
-    end)
-    it('critical injuries need the hospital', function()
-        hit('gunshot_wound', 'critical', 'torso')
         treat('bandage')
         assert_eq(#injuries(), 1)
-        assert_eq(items[MEDIC].bandage, 2, 'no item used when there is nothing to treat')
-    end)
-    it('needs the item, an on-duty medic, closeness and a real treatment', function()
-        hit('respiratory', 'moderate', 'torso')
-        items[MEDIC].ifaks = 0
-        treat('oxygen')                                   -- no item
-        items[MEDIC].ifaks = 1
-        treat('teleport')                                 -- no such treatment
-        Mock.coords[MEDIC] = vector3(0, 0, 0)
-        treat('oxygen')                                   -- too far
-        Mock.coords[MEDIC] = vector3(301.0, -580.0, 43.0)
-        Mock.players[MEDIC].PlayerData.job.onduty = false
-        treat('oxygen')                                   -- off duty
-        assert_eq(#injuries(), 1)
-        assert_eq(items[MEDIC].ifaks, 1)
+        assert_eq(items[MEDIC].bandage, 2)
+        assert_eq(tonumber(MySQL.scalar.await('SELECT COUNT(*) FROM player_treatment_log')), 0)
+        assert_eq(#Mock.clientEventsNamed('pf-ambulancejob:client:applyTreatmentEffects'), 0)
     end)
     it('the old unchecked revive event is gone', function()
         assert_eq(Mock.netHandlers['pf-ambulancejob:server:revivePlayerEvent'], nil)

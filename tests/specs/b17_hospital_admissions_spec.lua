@@ -362,6 +362,20 @@ describe('discharge', function()
         assert_eq(H.Admissions.OpenOf('PATIENTCID'), nil)
         assert_eq(Store.Peek('PATIENTCID').triage, nil, 'triage cleared at discharge')
     end)
+    it('restrictions go through the recovery module when it is there (17C AddRestriction), else into the table', function()
+        local id = admitted()
+        local added = {}
+        PFMed.Recovery = { AddRestriction = function(cid, spec) added[#added + 1] = { cid = cid, spec = spec } return { ok = true, id = #added } end,
+            ReloadRestrictions = function() error('no reload when nothing was written directly') end }
+        assert_true(cb('discharge', MEDIC, id, { restrictions = { { kind = 'no_drive', hours = 2 } } }).ok)
+        PFMed.Recovery = nil
+        assert_eq(#added, 1)
+        assert_eq(added[1].cid, 'PATIENTCID')
+        assert_eq(added[1].spec.kind, 'no_drive')
+        assert_eq(added[1].spec.untilAt, Mock.clock + 7200)
+        assert_eq(added[1].spec.byCid, 'MEDICCID')
+        assert_eq(#DB.restrictions, 0)
+    end)
     it('refuses unknown restriction kinds, prescriptions, a far follow-up and a nurse-less tier', function()
         local id = admitted()
         assert_eq(cb('discharge', MEDIC, id, { restrictions = { { kind = 'fly', hours = 1 } } }).error, 'bad_args')

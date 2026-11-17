@@ -99,10 +99,11 @@ local function stay(src, treatments)
     local res = cb('checkIn', src, 'pillbox')
     assert_true(res.ok, tostring(res.message))
     local id = res.admissionId
-    assert_true(cb('admit', MEDIC, id, 'ed').ok, 'admitted')
+    local ad = cb('admit', MEDIC, id, 'ed')
+    assert_true(ad.ok, 'admitted: ' .. tostring(ad.message))
     for _, t in ipairs(treatments or {}) do
         MySQL.insert.await([[INSERT INTO pf_med_treatments (citizenid, action, by_cid, by_job, location, admission_id, result, at)
-            VALUES (?, ?, 'RDBMED', 'ambulance', 'hospital', ?, ?, ?)]], { t.cid or Mock.players[src].PlayerData.citizenid, t.action, t.adm == false and nil or id, t.result or 'ok', os.time() })
+            VALUES (?, ?, 'RDBMED', 'ambulance', 'hospital', ?, ?, ?)]], { t.cid or Mock.players[src].PlayerData.citizenid, t.action, id, t.result or 'ok', os.time() })
     end
     Mock.clock = Mock.clock + 2 * 3600 + 30
     local d = cb('discharge', MEDIC, id, { restrictions = { { kind = 'no_sprint', hours = 6 } }, followUpHours = 48 })

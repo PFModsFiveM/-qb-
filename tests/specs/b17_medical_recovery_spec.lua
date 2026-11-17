@@ -357,6 +357,31 @@ describe('AddRestriction', function()
         assert_eq(lastEffects(1).drive, 0)
     end)
 
+    it('ReloadRestrictions picks up rows another module wrote itself (deferred while a pass holds the patient)', function()
+        online(1)
+        local function write(kind)
+            DB.nextR = DB.nextR + 1
+            DB.restrictions[DB.nextR] = { id = DB.nextR, citizenid = 'CID1', kind = kind, from_at = os.time(), until_at = os.time() + 3600 }
+        end
+        write('no_drive')
+        assert_true(patient().restrictions.no_drive == nil, 'not known yet')
+        local res = Rec.ReloadRestrictions('CID1')
+        assert_true(res.ok and res.reloaded)
+        assert_true(patient().restrictions.no_drive ~= nil)
+        assert_eq(lastEffects(1).drive, 2, 'pushed')
+        -- while a pass waits on the database the reload is kept for the end of that pass
+        write('no_sprint')
+        local orig = PFMed.SQL.InsertRestriction
+        local inner
+        PFMed.SQL.InsertRestriction = function(r) inner = Rec.ReloadRestrictions('CID1') return orig(r) end
+        Rec.AddRestriction('CID1', { kind = 'crutches' })
+        PFMed.SQL.InsertRestriction = orig
+        assert_true(inner.deferred)
+        Rec.Advance('CID1')
+        assert_true(patient().restrictions.no_sprint ~= nil, 'reloaded by the next pass')
+        assert_true(Rec.ReloadRestrictions('CIDOFF').ok, 'offline: the next load reads the table')
+    end)
+
     it('a deleted character loses its restriction rows', function()
         Rec.AddRestriction('CIDX', { kind = 'no_drive' })
         Mock.fireEvent('pfm-core:server:characterDeleted', nil, 'CIDX')

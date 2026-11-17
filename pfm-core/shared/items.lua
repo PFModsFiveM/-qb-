@@ -402,6 +402,7 @@ QBCore.Shared.Items = {
     -- batch 15H: the evidence store's bag (unique; pfm-policejob writes info.evidenceId and records every move)
     -- and the gloves the evidence glove rule checks (prints/DNA collected without them are contaminated)
     evidence_bag                 = { name = 'evidence_bag', label = 'Evidence Bag', weight = 200, type = 'item', image = 'evidence.png', unique = true, useable = false, shouldClose = false, description = 'A sealed, tagged evidence bag. Its chain of custody is kept by the police evidence system' },
+    helmet                       = { name = 'helmet', label = 'Helmet', weight = 1000, type = 'item', image = 'helmet.png', unique = false, useable = false, shouldClose = false, description = 'A protective helmet. Carried, it lowers head injuries from impacts, falls and crashes' },
     nitrile_gloves               = { name = 'nitrile_gloves', label = 'Nitrile Gloves', weight = 50, type = 'item', image = 'nitrile_gloves.png', unique = false, useable = false, shouldClose = false, description = 'Disposable gloves. Prints or DNA collected without them are marked as contaminated' },
 
     -- Firework Tools
