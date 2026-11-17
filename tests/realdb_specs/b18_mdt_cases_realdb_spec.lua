@@ -131,7 +131,7 @@ describe('MDT schema v8 (MariaDB)', function()
 
     it('a second run applies nothing and every v8 step can run again', function()
         assert_eq(RunMigrations(KEY, Schema.Migrations), true)
-        assert_eq(n('SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = ?', { KEY }), 8)
+        assert_eq(n('SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = ?', { KEY }), 9) -- v9 (20F) included
         for _, sql in ipairs(Schema.Migrations[8].up) do MySQL.query.await(sql) end
         assert_eq(one("SELECT approval_state FROM pf_mdt_warrants WHERE warrantId = 'W-1'").approval_state, 'legacy')
     end)

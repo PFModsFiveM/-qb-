@@ -429,7 +429,7 @@ describe('lab, imaging, surgery and stays on one admission', function()
         for _, l in ipairs(procs) do sumProc = sumProc + tonumber(l.unit_price) end
         assert_eq(sumProc, tariff.Admission.checkin + tariff.Lab.cbc + tariff.Lab.tox + tariff.Lab.bac + tariff.Lab.blood_type + tariff.Imaging.xray
             + tariff.Treatments.surgery_trauma)
-        assert_eq(count('SELECT COUNT(*) FROM pf_hosp_orders WHERE admission_id = ? AND bill_id = ?', { id, bill.id }), 5)
+        assert_eq(count('SELECT COUNT(*) FROM pf_hosp_orders WHERE admission_id = ? AND bill_id = ?', { id, bill.id }), 6, 'four labs, the x-ray, the operation')
         -- charged once from the bank to society:ambulance under the bill's key
         assert_eq(bill.state, 'paid')
         local txs = MySQL.query.await('SELECT * FROM pf_transactions WHERE idempotency_key LIKE ?', { 'pf-ambulancejob:bill:' .. bill.id .. ':%' })

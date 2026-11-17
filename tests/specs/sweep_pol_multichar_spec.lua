@@ -81,6 +81,16 @@ describe('character creation', function()
         Mock.fireNet('qb-multicharacter:server:loadUserData', A, { citizenid = 'CHAR1' })
         assert_eq(#logins, 1)
     end)
+    it('a character the medical examiner holds as deceased is not loaded (batch 20B)', function()
+        local realState = GetResourceState
+        GetResourceState = function(res) if res == 'pf-ambulancejob' then return 'started' end return realState(res) end
+        Mock.exportsByResource['pf-ambulancejob'] = { IsDeceased = function(_, cid) return cid == 'CHAR1', 7 end }
+        local before = #logins
+        Mock.fireNet('qb-multicharacter:server:loadUserData', A, { citizenid = 'CHAR1' })
+        assert_eq(#logins, before)
+        GetResourceState = realState
+        Mock.exportsByResource['pf-ambulancejob'] = nil
+    end)
 end)
 
 describe('callbacks', function()

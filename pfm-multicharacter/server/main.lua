@@ -150,6 +150,15 @@ RegisterNetEvent('qb-multicharacter:server:loadUserData', function(cData)
     -- replaced it without saving
     if type(cData) ~= 'table' or type(cData.citizenid) ~= 'string' then return end
     if QBCore.Functions.GetPlayer(src) then return end
+    -- a character the medical examiner holds as deceased (pf-ambulancejob morgue, batch 20B) cannot be loaded
+    if GetResourceState('pf-ambulancejob') == 'started' then
+        local ok, deceased = pcall(function() return exports['pf-ambulancejob']:IsDeceased(cData.citizenid) end)
+        if ok and deceased == true then
+            TriggerClientEvent('QBCore:Notify', src, 'This character is deceased.', 'error')
+            TriggerClientEvent('qb-multicharacter:client:chooseChar', src)
+            return
+        end
+    end
     if QBCore.Player.Login(src, cData.citizenid) then
         repeat
             Wait(10)
