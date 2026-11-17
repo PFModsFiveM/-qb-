@@ -12,13 +12,22 @@ local nui, sent, calls, progress = {}, {}, {}, {}
 local answers = {}           -- [callback name] = answer or function(...) -> answer
 local cancelProgress = false
 
+-- pfm-core's client: ONE pending slot per callback name (a second call of a name before its answer
+-- replaces the first, whose answer is then lost). Sync mode answers at once; async mode keeps the
+-- slot until deliver(name) answers it, like the real client.
+local asyncMode = false
+local slots = {}
 local QB = {
     Functions = {
         TriggerCallback = function(name, cb, ...)
             calls[#calls + 1] = { name = name, args = table.pack(...) }
-            local a = answers[name]
-            if type(a) == 'function' then a = a(...) end
-            cb(a)
+            local args = table.pack(...)
+            local function answer()
+                local a = answers[name]
+                if type(a) == 'function' then a = a(table.unpack(args, 1, args.n)) end
+                cb(a)
+            end
+            if asyncMode then slots[name] = answer else answer() end
         end,
         Progressbar = function(name, label, ms, _, canCancel, _, _, _, _, onFinish, onCancel)
             progress[#progress + 1] = { name = name, label = label, ms = ms, canCancel = canCancel }
@@ -50,6 +59,16 @@ local function reply(name, data)
     return out
 end
 
+local function deliver(name)
+    local fn = slots[name]
+    slots[name] = nil
+    assert_true(fn ~= nil, 'a request is pending for ' .. name)
+    fn()
+end
+
+local timers = {}
+function SetTimeout(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
+
 local function callsNamed(name)
     local out = {}
     for _, c in ipairs(calls) do if c.name == name then out[#out + 1] = c end end
@@ -61,6 +80,8 @@ BeforeEach = function()
     sent, calls, progress, answers = {}, {}, {}, {}
     cancelProgress = false
     C.target, C.uiOpen = nil, false
+    asyncMode, slots, timers = false, {}, {}
+    C.queues = {}
 end
 
 describe('catalogue for the menus', function()
@@ -164,6 +185,68 @@ describe('patient care: the server answers, the page shows them', function()
         answers['pf-ambulancejob:server:getChart'] = { ok = true, findings = {} }
         assert_true(reply('emsCareChart', { target = 12 }).ok)
         assert_eq(callsNamed('pf-ambulancejob:server:getChart')[1].args[1], 12)
+    end)
+end)
+
+describe('one request per callback name at a time (pfm-core keeps one slot per name)', function()
+    local function twoNearby()
+        Mock.coords[1000] = vector3(0, 0, 0)
+        Mock.coords[2001] = vector3(2, 0, 0)   -- server id 11
+        Mock.coords[2002] = vector3(1, 0, 0)   -- server id 12
+        Mock.coords[2003] = vector3(9, 0, 0)
+        answers['pf-emsmdt:server:getCitizenData'] = function(t) return { citizenid = 'C' .. t, firstname = 'P', lastname = tostring(t) } end
+    end
+
+    it('nearby with two patients in reach answers with both', function()
+        twoNearby()
+        asyncMode = true
+        local out
+        nui.emsCareNearby({}, function(r) out = r end)
+        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 1, 'the second waits for the first answer')
+        deliver('pf-emsmdt:server:getCitizenData')
+        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 2)
+        deliver('pf-emsmdt:server:getCitizenData')
+        assert_true(out ~= nil and out.ok, 'the page got its answer')
+        assert_eq(#out.list, 2)
+        assert_eq(out.list[1].target, 12, 'nearest first')
+        assert_eq(out.list[2].target, 11)
+    end)
+
+    it('a selection while nearby is loading waits its turn and gets its own answer', function()
+        twoNearby()
+        asyncMode = true
+        answers['pf-ambulancejob:server:examOptions'] = { ok = true, modalities = {} }
+        answers['pf-ambulancejob:server:treatOptions'] = { ok = true, actions = {} }
+        local near, sel
+        nui.emsCareNearby({}, function(r) near = r end)
+        nui.emsCareSelect({ target = 11 }, function(r) sel = r end)
+        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 1)
+        deliver('pf-emsmdt:server:getCitizenData')
+        deliver('pf-emsmdt:server:getCitizenData')
+        assert_eq(#near.list, 2)
+        deliver('pf-emsmdt:server:getCitizenData')   -- the selection's own request
+        assert_eq(callsNamed('pf-emsmdt:server:getCitizenData')[3].args[1], 11)
+        deliver('pf-ambulancejob:server:examOptions')
+        deliver('pf-ambulancejob:server:treatOptions')
+        assert_true(sel.ok)
+        assert_eq(sel.patient.citizenid, 'C11')
+    end)
+
+    it('a lost answer times out and the queue goes on; a late answer is dropped', function()
+        asyncMode = true
+        answers['pf_emsmdt:units:list'] = { ok = true, units = {} }
+        local first, second
+        nui.emsServer({ op = 'units:list' }, function(r) first = r end)
+        local lost = slots['pf_emsmdt:units:list']
+        nui.emsServer({ op = 'units:list' }, function(r) second = r end)
+        assert_eq(#callsNamed('pf_emsmdt:units:list'), 1)
+        timers[1].fn()                               -- the first answer never came
+        assert_eq(first.error, 'no_answer')
+        assert_eq(#callsNamed('pf_emsmdt:units:list'), 2, 'the next request went out')
+        lost()                                       -- a late answer to the first request
+        assert_eq(first.error, 'no_answer', 'not answered twice')
+        deliver('pf_emsmdt:units:list')
+        assert_true(second.ok)
     end)
 end)
 

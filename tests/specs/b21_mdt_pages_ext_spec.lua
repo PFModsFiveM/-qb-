@@ -17,8 +17,14 @@ function IsDuplicityVersion() return true end
 local states = {}
 function GetResourceState(name) return states[name] or 'missing' end
 QBCore = QBCoreMock
-MySQL = MySQL or { query = { await = function() return {} end }, single = { await = function() return nil end },
-    insert = { await = function() return 1 end }, update = { await = function() return 1 end }, scalar = { await = function() return 0 end } }
+-- MySQL: this file only writes audit rows; inserts are recorded and can be made to fail
+local SQL = { inserts = {}, fail = false }
+MySQL = { query = { await = function() return {} end }, single = { await = function() return nil end },
+    insert = { await = function(sql, p)
+        if SQL.fail then error('db down') end
+        SQL.inserts[#SQL.inserts + 1] = { sql = sql, params = p }
+        return #SQL.inserts
+    end }, update = { await = function() return 1 end }, scalar = { await = function() return 0 end } }
 
 -- ── owners by contract ──
 local JU = { calls = {}, custody = nil, booking = nil, inc = { ok = true, remainingSeconds = 0 }, orders = { ok = true, list = {} }, bail = { ok = true } }
@@ -72,6 +78,7 @@ BeforeEach = function()
     JU.inc, JU.orders, JU.bail = { ok = true, remainingSeconds = 0 }, { ok = true, list = {} }, { ok = true }
     PJ.calls, PJ.list, PJ.item, PJ.timeline = {}, { ok = true, list = {} }, nil, { ok = true, events = {}, note = 'n' }
     GOV.quals = {}
+    SQL.inserts, SQL.fail = {}, false
     cop(OFF, 'OFF1', 1)
     cop(SGT, 'SGT2', 2)
     cop(OFFDUTY, 'OFF3', 1, false)
@@ -121,9 +128,11 @@ describe('21B page relays: gate and access answer', function()
         local w = call('pf_mdt:custody:log', OFFDUTY, { custodyId = 3, kind = 'meal' })
         assert_eq(w.error, 'off_duty')
         assert_eq(#JU.calls, 0)
-        -- the off-duty officer still reads
+        -- the off-duty officer keeps the evidence/timeline reads (their owners check duty) but not custody
         JU.custody = { id = 3, cid = 'ABC123', state = 'held' }
-        assert_eq(call('pf_mdt:custody:get', OFFDUTY, { cid = 'ABC123' }).ok, true)
+        assert_eq(call('pf_mdt:custody:get', OFFDUTY, { cid = 'ABC123' }).error, 'not_on_duty')
+        assert_eq(#JU.calls, 0)
+        assert_eq(#SQL.inserts, 0)
     end)
 
     it('answers what the caller may do from the server: ranks, timeline supervisors, lab qualification', function()
@@ -166,6 +175,47 @@ describe('21B page relays: custody record', function()
         assert_eq(gc[2].latest, true)
         assert_eq(last(JU, 'GetBooking')[1], 12)
         assert_eq(last(JU, 'GetOrders')[2].limit, 20)
+    end)
+
+    it('audits every custody read (never deduplicated) and returns only the booking fields the page shows', function()
+        JU.custody = { id = 12, cid = 'ABC123', state = 'held' }
+        JU.booking = { ok = true, booking = { id = 4, custodyId = 12, cid = 'ABC123', bookingNo = 'B-1', fingerprint = 'FP1',
+            dnaSampleRef = 'S-9', bloodtype = 'O+', screening = 'clear', internal = 'x' } }
+        local r = call('pf_mdt:custody:get', OFF, { cid = 'ABC123' })
+        assert_true(r.ok)
+        assert_eq(r.booking.bookingNo, 'B-1')
+        assert_eq(r.booking.dnaSampleRef, 'S-9')
+        assert_eq(r.booking.internal, nil)
+        assert_eq(r.booking.cid, nil)
+        assert_eq(r.booking.id, nil)
+        assert_eq(#SQL.inserts, 1)
+        local row = SQL.inserts[1]
+        assert_true(row.sql:find('INSERT INTO pf_mdt_record_audit', 1, true) ~= nil)
+        assert_eq(row.params[1], 'citizen')
+        assert_eq(row.params[2], 'ABC123')
+        assert_eq(row.params[3], 'read')
+        assert_eq(row.params[4], 'OFF1')
+        assert_eq(row.params[5], 'police')
+        assert_eq(json.decode(row.params[6]).custodyId, 12)
+        -- a second read by the same officer is audited again
+        call('pf_mdt:custody:get', OFF, { cid = 'ABC123' })
+        assert_eq(#SQL.inserts, 2)
+        -- no custody on record is still a read of the citizen's orders and bail
+        JU.custody = nil
+        call('pf_mdt:custody:get', SGT, { cid = 'ABC123' })
+        assert_eq(#SQL.inserts, 3)
+        assert_eq(SQL.inserts[3].params[4], 'SGT2')
+    end)
+
+    it('shows nothing when the read cannot be audited', function()
+        JU.custody = { id = 12, cid = 'ABC123', state = 'held' }
+        JU.booking = { ok = true, booking = { bookingNo = 'B-1', fingerprint = 'FP1' } }
+        SQL.fail = true
+        local r = call('pf_mdt:custody:get', OFF, { cid = 'ABC123' })
+        assert_eq(r.ok, false)
+        assert_eq(r.error, 'db_unavailable')
+        assert_eq(r.booking, nil)
+        assert_eq(r.custody, nil)
     end)
 
     it('shows no booking as absent (not an error), and no custody without asking for a booking', function()

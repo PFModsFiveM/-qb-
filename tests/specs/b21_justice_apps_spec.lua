@@ -404,12 +404,17 @@ describe('the citizen portal reads and acts on the caller only', function()
         local form = rpc('justice-records', 'iaForm', CIV)
         assert_true(form.ok and form.key:find('^pf%-justice:app:ia:') ~= nil and #form.categories == 6)
         local res = rpc('justice-records', 'fileComplaint', CIV, { summary = 'He shoved me at the pier for no reason', officerName = 'Ofc. Ray',
-            category = 'force', incidentRef = 'INC-4', complainantCid = 'CIV2', officerCid = 'COP1', key = form.key })
+            category = 'force', incidentRef = 'INC-4', complainantCid = 'CIV2', officerCid = 'COP1', officerCallsign = '  1-ADAM-12\n ', key = form.key })
         assert_true(res.ok and res.complaintId == 77)
         local call = iaCalls[1]
         assert_true(call.opts.actor.src == CIV and call.opts.key == form.key)
         assert_eq(call.spec.complainantCid, nil, 'pf-policemdt-DEV takes the complainant from actor.src')
         assert_true(call.spec.category == 'force' and call.spec.officerCid == 'COP1' and call.spec.officerName == 'Ofc. Ray' and call.spec.incidentRef == 'INC-4')
+        assert_eq(call.spec.officerCallsign, '1-ADAM-12', 'callsign passed through, trimmed')
+        rpc('justice-records', 'fileComplaint', CIV, { summary = 'Another long enough complaint text', key = form.key,
+            officerName = '  ' .. string.rep('n', 200), officerCallsign = string.rep('c', 50) })
+        assert_eq(#iaCalls[2].spec.officerName, 128, 'name capped')
+        assert_eq(#iaCalls[2].spec.officerCallsign, 32, 'callsign capped')
         assert_eq(rpc('justice-records', 'fileComplaint', CIV2, { summary = 'x', key = form.key }).error, 'bad_key', 'another player cannot use the key')
         iaAnswer = { ok = false, error = 'rate_limited', message = 'Too many complaints today; IA will contact you' }
         assert_eq(rpc('justice-records', 'fileComplaint', CIV, { summary = 'Another long enough complaint text', officerName = 'x', key = form.key }).error, 'rate_limited')

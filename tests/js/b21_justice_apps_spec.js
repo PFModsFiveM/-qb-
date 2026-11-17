@@ -412,7 +412,10 @@ function courtHandlers(role, extra) {
             await env.open('justice-records');
             await env.click(env.$('[data-tab="complaint"]'));
             const form = env.$('form');
+            ok(env.text().includes('kept from seeing it once they are identified'), 'no promise beyond what the MDT does');
+            ok(!env.text().includes('The officer named does not see it'));
             form.querySelector('input').value = 'Ofc. Ray';
+            form.querySelector('input[placeholder="Callsign or badge number (optional)"]').value = '1-ADAM-12';
             form.querySelector('select').value = 'force';
             form.querySelector('textarea').value = 'short';
             await env.submit(form);
@@ -422,9 +425,17 @@ function courtHandlers(role, extra) {
             const p = env.last('fileComplaint').payload;
             eq(p.key, 'srv:ia:1', 'the same key for the retry');
             eq(p.officerName, 'Ofc. Ray');
+            eq(p.officerCallsign, '1-ADAM-12');
             eq(p.category, 'force');
             ok(!('complainantCid' in p) && !('complainant' in p), 'the complainant is the player, read on the server');
             ok(env.text().includes('Complaint #41 received'));
+            ok(!env.text().includes('was identified'), 'no identification claim without the MDT flag');
+            const res2 = makeWindow(device, recHandlers({ 'justice-records.fileComplaint': () => ({ ok: true, complaintId: 42, officerResolved: true }) }));
+            await res2.open('justice-records');
+            await res2.click(res2.$('[data-tab="complaint"]'));
+            res2.$('textarea').value = 'He pushed me at the pier for no reason.';
+            await res2.submit(res2.$('form'));
+            ok(res2.text().includes('The officer was identified and cannot see this complaint.'), 'shown when the MDT confirms');
         });
     }
 
