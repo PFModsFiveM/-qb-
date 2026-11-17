@@ -250,8 +250,9 @@ function A.Checkout(src, itemName)
         if not hasQual(cid, entry.qual) then return fail('no_permission', 'You are not qualified for that') end
         local held, why = gov('ListAssets', dept, { holder = cid, state = 'issued', limit = 100 })
         if why or not held.ok then return fail('unavailable', 'The asset register did not answer') end
-        if #held.list >= (tonumber(A.Cfg().MaxOut) or 6) then return fail('conflict', 'Return equipment before drawing more') end
-        for _, a in ipairs(held.list) do
+        local heldList = type(held.list) == 'table' and held.list or {}
+        if #heldList >= (tonumber(A.Cfg().MaxOut) or 6) then return fail('conflict', 'Return equipment before drawing more') end
+        for _, a in ipairs(heldList) do
             if a.item == itemName then return fail('conflict', 'You already hold one: ' .. tostring(a.serial)) end
         end
         local canAdd = exports['pfm-inventory']:CanAddItem(src, itemName, 1)
@@ -259,8 +260,9 @@ function A.Checkout(src, itemName)
         local stock, why2 = gov('ListAssets', dept, { state = 'in_stock', kind = entry.kind, limit = 100 })
         if why2 or not stock.ok then return fail('unavailable', 'The asset register did not answer') end
         local asset
-        for i = #stock.list, 1, -1 do -- oldest first (the list is newest first)
-            local a = stock.list[i]
+        local stockList = type(stock.list) == 'table' and stock.list or {}
+        for i = #stockList, 1, -1 do -- oldest first (the list is newest first)
+            local a = stockList[i]
             if a.item == nil or a.item == itemName then asset = a break end
         end
         if not asset then return fail('out_of_stock', 'None in stock') end

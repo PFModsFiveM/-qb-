@@ -131,7 +131,7 @@ describe('pf-emsmdt schema file', function()
         assert_true(v1.up[1]:find('KEY `idx_emsmdt_roster_backup_batch` (`batch`)', 1, true) ~= nil)
         assert_eq(v2.version, 2)
         assert_true(Mock.callable(v2.up))
-        assert_eq(#PFEmsSchema.Migrations, 2)
+        assert_eq(#PFEmsSchema.Migrations, 3)
     end)
 
     it('v2 creates every table, adds missing columns and renames an old SOP column, all guarded', function()

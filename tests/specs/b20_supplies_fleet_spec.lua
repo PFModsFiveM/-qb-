@@ -103,6 +103,10 @@ Mock.exportsByResource['pf-stores'] = {
             o.status = 'failed'
             Ledger[('supply:%d:charge'):format(o.id)] = { state = 'failed', error = 'insufficient_funds' }
             return { ok = false, error = 'insufficient_funds' }
+        elseif Stores.mode == 'lost' then
+            -- the order went through but the answer never came back (an error on the way)
+            Ledger[('supply:%d:charge'):format(o.id)] = { state = 'completed' }
+            error('connection lost')
         elseif Stores.mode == 'unclear' then
             -- pf-stores fails the order on any refusal; the ledger has the charge pending
             o.status = 'failed'
@@ -234,6 +238,10 @@ local function run(kind, q, p)
             end
         end
         return out
+    end
+    if has(q, 'SELECT id, status, total FROM pf_store_supply_orders WHERE id = ?') then
+        local o = Stores.orders[p[1]]
+        return o and { id = o.id, status = o.status, total = o.total } or nil
     end
     if has(q, 'FROM pf_store_supply_orders o') then
         local best
@@ -425,6 +433,26 @@ describe('20C procurement: purchases', function()
         assert_eq(row.state, 'charge_held')
         assert_eq(#auditOf('procure_held'), 2)
         assert_true(P.Create(EMSMGR, 'ems:pillbox', { { name = 'bandage', quantity = 5 } }).ok)
+    end)
+
+    it('an answer lost on the way back: the order pf-stores made is found and the purchase is paid', function()
+        Stores.mode = 'lost'
+        local res = P.Create(EMSMGR, 'ems:pillbox', { { name = 'bandage', quantity = 5 } })
+        assert_true(res.ok, tostring(res.error))
+        assert_eq(DB.proc[1].state, 'paid')
+        assert_eq(DB.proc[1].store_order_id, Stores.last.id)
+    end)
+
+    it('an order pf-stores is still being paid for stays held', function()
+        Stores.mode = 'unclear'
+        P.Create(EMSMGR, 'ems:pillbox', { { name = 'bandage', quantity = 5 } })
+        Stores.last.status = 'created'
+        Ledger[('supply:%d:charge'):format(Stores.last.id)] = { state = 'completed' }
+        P.ReconcileTick()
+        assert_eq(DB.proc[1].state, 'payment_pending')
+        Stores.last.status = 'awaiting_supplier' -- pf-stores recovered it as paid
+        P.ReconcileTick()
+        assert_eq(DB.proc[1].state, 'paid')
     end)
 
     it('an unclear charge the ledger then refuses becomes failed', function()
