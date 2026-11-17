@@ -49,7 +49,7 @@ describe('legacy injury import (key pf-ambulancejob-legacy)', function()
         local legacyRows = count('SELECT COUNT(*) FROM player_injuries')
 
         assert_true(restart())
-        assert_eq(versions(), '1,2,3,5', 'the schema itself is unchanged')
+        assert_eq(versions(), '1,2,3,5,6', 'the schema itself is unchanged')
         assert_eq(versions('pf-ambulancejob-legacy'), '1', 'the import ran once, after the schema')
         assert_eq(count("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_med_events' AND INDEX_NAME = 'idx_med_ev_cid_action'"), 3, 'three-column anomaly index')
         assert_eq(count("SELECT COUNT(*) FROM pf_med_injuries WHERE legacy_id IS NOT NULL"), 3)

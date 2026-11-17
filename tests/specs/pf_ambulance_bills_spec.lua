@@ -87,6 +87,7 @@ local function installFakeSQL()
         return 1
     end
     S.InsertRestriction = function() return 1 end
+    S.MarkStaff = function(id, at, cid) local r = DB.adm[id] if r and not r.staff_acted_at then r.staff_acted_at, r.staff_cid = at, cid return 1 end return 0 end
     S.FindBillByAdmission = function(id) for _, b in ipairs(DB.bills) do if b.admission_id == id then return copy(b) end end end
     S.GetBill = function(id) return copy(DB.bills[id]) end
     S.InsertBill = function(r) local b = copy(r); b.id = #DB.bills + 1; b.attempt = 0; DB.bills[b.id] = b; return b.id end

@@ -103,7 +103,8 @@ local function stay(src, treatments)
     assert_true(ad.ok, 'admitted: ' .. tostring(ad.message))
     for _, t in ipairs(treatments or {}) do
         MySQL.insert.await([[INSERT INTO pf_med_treatments (citizenid, action, by_cid, by_job, location, admission_id, result, at)
-            VALUES (?, ?, 'RDBMED', 'ambulance', 'hospital', ?, ?, ?)]], { t.cid or Mock.players[src].PlayerData.citizenid, t.action, id, t.result or 'ok', os.time() })
+            VALUES (?, ?, ?, ?, 'hospital', ?, ?, ?)]], { t.cid or Mock.players[src].PlayerData.citizenid, t.action, t.by or 'RDBMED', t.job or 'ambulance',
+            id, t.result or 'ok', os.time() })
     end
     Mock.clock = Mock.clock + 2 * 3600 + 30
     local d = cb('discharge', MEDIC, id, { restrictions = { { kind = 'no_sprint', hours = 6 } }, followUpHours = 48 })
@@ -141,6 +142,18 @@ describe('hospital tables (17C v5) and admission SQL', function()
         assert_eq(row(id).state, 'left_ama')
         H.Admissions.Start() -- drop the stale memory copy
     end)
+    it('the staff marker (v6 columns) is written and survives a restart, so the AI leaves the patient alone', function()
+        Mock.coords[PATIENT] = reception()
+        local id = cb('checkIn', PATIENT, 'pillbox').admissionId
+        assert_eq(row(id).staff_acted_at, nil)
+        assert_true(cb('admit', MEDIC, id, 'ward').ok)
+        assert_eq(row(id).staff_cid, 'RDBMED')
+        assert_true(tonumber(row(id).staff_acted_at) ~= nil)
+        assert_true(H.Admissions.Start())
+        assert_eq(H.AI.MayTake(H.Admissions.ById(id), os.time() + 9999, 0), false)
+        Mock.clock = Mock.clock + 5
+        assert_true(cb('discharge', MEDIC, id, {}).ok)
+    end)
     it('bed occupancy is rebuilt from the open rows at start', function()
         Mock.coords[PATIENT] = reception()
         local id = cb('checkIn', PATIENT, 'pillbox').admissionId
@@ -172,7 +185,7 @@ describe('bills on the ledger', function()
     it('itemised from the rows only and paid once from the bank to society:ambulance', function()
         local before = ambulance()
         local id = stay(PATIENT, { { action = 'sutures' }, { action = 'txa' }, { action = 'cast', result = 'refused' },
-            { action = 'sutures', cid = 'RDBMED' } })
+            { action = 'sutures', cid = 'RDBMED' }, { action = 'pressure_dressing', by = 'RDBPAT', job = 'unemployed' } })
         local bill = billOf(id)
         local t = Config.Hospital.Tariff
         local expected = t.Admission.checkin + 3 * t.BedHour.ed + t.Treatments.sutures + t.Drugs.txa

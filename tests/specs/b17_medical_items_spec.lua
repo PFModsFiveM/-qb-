@@ -318,3 +318,46 @@ describe('self-care items', function()
         assert_eq(Items[CIV].firstaid, 1, 'used up only when the revive happens')
     end)
 end)
+
+describe('honest EMS can get the supplies (pfm-shops ambulance armory)', function()
+    local saved = Config
+    Config = nil
+    load_resource('pfm-shops/config.lua')
+    local shops = Config
+    Config = saved
+    it('the ambulance armory stocks every item a medic treatment uses up or needs, for the ambulance job only', function()
+        local loc = shops.Locations['ambulance']
+        assert_eq(loc.requiredJob, 'ambulance')
+        local stocked = {}
+        for _, p in ipairs(loc.products) do stocked[p.name] = p end
+        for name in pairs(PFMed.Treatments.ItemNames()) do
+            if name ~= 'water_bottle' then
+                assert_true(stocked[name] ~= nil, name .. ' is not in the ambulance armory')
+                assert_true(stocked[name].amount > 0)
+            end
+        end
+        for _, name in ipairs(MEDICAL) do assert_true(stocked[name] ~= nil, name .. ' is not in the ambulance armory') end
+        -- controlled drugs and hospital kits follow the grades' scope of practice
+        assert_eq(stocked.morphine.requiredGrade, 1)
+        assert_eq(stocked.suture_kit.requiredGrade, 2)
+        assert_eq(stocked.tourniquet.requiredGrade, nil)
+    end)
+end)
+
+describe('legacy EMS MDT keys keep their old item', function()
+    it('Apply Splint with a first-aid kit and Burn Dressing with an IFAK, through the legacy key only', function()
+        local frac = wound({ type = 'fracture', subtype = 'closed', structure = 'tibia_l', severity = 2, mechanism = 'fall' })
+        local burn = wound({ type = 'burn', subtype = 'second', region = 'forearm_r', severity = 2, mechanism = 'burn' })
+        Items[MEDIC] = { firstaid = 1, ifaks = 1 }
+        -- the new treat callback does not take the old items
+        local res = Mock.callCallback('pf-ambulancejob:server:treat', MEDIC, { target = PATIENT, action = 'splint', region = 'lower_leg_l' })
+        assert_eq(res.error, 'missing_item')
+        Mock.fireNet('pf-ambulancejob:server:applyTreatment', MEDIC, PATIENT, 'splint')
+        assert_eq(injury(frac).treatments.splinted, true)
+        assert_eq(Items[MEDIC].firstaid, 0)
+        advance(10)
+        Mock.fireNet('pf-ambulancejob:server:applyTreatment', MEDIC, PATIENT, 'burn_dressing')
+        assert_eq(injury(burn).treatments.dressed, true)
+        assert_eq(Items[MEDIC].ifaks, 0)
+    end)
+end)

@@ -89,6 +89,12 @@ local function installFakeSQL()
         return 1
     end
     S.InsertRestriction = function(r) DB.restrictions[#DB.restrictions + 1] = copy(r) return #DB.restrictions end
+    S.MarkStaff = function(id, at, cid)
+        local r = DB.adm[id]
+        if not r or r.staff_acted_at then return 0 end
+        r.staff_acted_at, r.staff_cid = at, cid
+        return 1
+    end
     S.FindBillByAdmission = function(id) for _, b in pairs(DB.bills) do if b.admission_id == id then return copy(b) end end end
     S.GetBill = function(id) return copy(DB.bills[id]) end
     S.InsertBill = function(r) DB.nextBill = DB.nextBill + 1; local b = copy(r); b.id = DB.nextBill; b.attempt = 0; DB.bills[b.id] = b; return b.id end
@@ -204,7 +210,7 @@ local function admitAndDischarge(opts)
         local admId = id
         if t.adm == false then admId = nil end
         DB.treatments[#DB.treatments + 1] = { id = #DB.treatments + 1, citizenid = t.cid or 'PATIENTCID', action = t.action, location = t.location or 'hospital',
-            result = t.result or 'ok', admission_id = admId, at = os.time() }
+            result = t.result or 'ok', admission_id = admId, at = os.time(), by_cid = t.by or 'MEDICCID', by_job = t.job or 'ambulance' }
     end
     advance(opts.stay or 600)
     local res = cb('discharge', MEDIC, id, {})
@@ -217,6 +223,9 @@ describe('itemised bill', function()
         local id = admitAndDischarge({ stay = 3 * 3600 + 5, treatments = {
             { action = 'sutures' }, { action = 'morphine' }, { action = 'cast', result = 'refused' },
             { action = 'sutures', cid = 'CIVCID' }, { action = 'splint', adm = false, location = 'field' },
+            -- not hospital care: the patient's own bandage, a civilian's dressing, a police officer's tourniquet
+            { action = 'pressure_dressing', by = 'PATIENTCID', job = 'unemployed' }, { action = 'pressure_dressing', by = 'CIVCID', job = 'unemployed' },
+            { action = 'tourniquet', by = 'NURSECID', job = 'police' },
         } })
         local n, bill = only(DB.bills)
         assert_eq(n, 1)
@@ -290,6 +299,17 @@ describe('itemised bill', function()
         assert_eq(billOf(id).state, 'invoiced')
         assert_eq(#Invoices, 1)
         assert_eq(bank(PATIENT), 0, 'no second bank charge after the clear refusal')
+    end)
+end)
+
+describe('what is billable', function()
+    it('only staff care on someone else and the AI\'s rows; never self-care, civilians or rows without a provider', function()
+        local B = H.Billing
+        assert_true(B.Billable({ by_cid = 'MEDICCID', by_job = 'ambulance' }, 'PATIENTCID'))
+        assert_true(B.Billable({ by_job = 'ai_care' }, 'PATIENTCID'))
+        assert_false(B.Billable({ by_cid = 'PATIENTCID', by_job = 'ambulance' }, 'PATIENTCID'), 'a medic treating themselves')
+        assert_false(B.Billable({ by_cid = 'CIVCID', by_job = 'unemployed' }, 'PATIENTCID'))
+        assert_false(B.Billable({ by_job = 'ambulance' }, 'PATIENTCID'), 'no provider')
     end)
 end)
 

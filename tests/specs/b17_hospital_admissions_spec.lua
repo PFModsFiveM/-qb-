@@ -89,6 +89,12 @@ local function installFakeSQL()
         return 1
     end
     S.InsertRestriction = function(r) DB.restrictions[#DB.restrictions + 1] = copy(r) return #DB.restrictions end
+    S.MarkStaff = function(id, at, cid)
+        local r = DB.adm[id]
+        if not r or r.staff_acted_at then return 0 end
+        r.staff_acted_at, r.staff_cid = at, cid
+        return 1
+    end
     S.FindBillByAdmission = function(id) for _, b in pairs(DB.bills) do if b.admission_id == id then return copy(b) end end end
     S.GetBill = function(id) return copy(DB.bills[id]) end
     S.InsertBill = function(r) DB.nextBill = DB.nextBill + 1; local b = copy(r); b.id = DB.nextBill; b.attempt = 0; DB.bills[b.id] = b; return b.id end
@@ -557,6 +563,35 @@ describe('AI care (D17)', function()
         staff(NURSE, 2, false)
         H.AI.Tick(os.time())
         assert_eq(DB.adm[id].mode, 'ai', 'one medic who did not come: the AI takes over')
+    end)
+    it('a patient a medic admitted is never taken by the AI, also after a restart', function()
+        local id = waiting()
+        staff(MEDIC, 2)
+        Mock.coords[MEDIC] = reception()
+        assert_true(cb('admit', MEDIC, id, 'ward').ok)
+        assert_true(DB.adm[id].staff_acted_at ~= nil, 'persisted staff marker')
+        assert_eq(DB.adm[id].staff_cid, 'MEDICCID')
+        staff(MEDIC, 2, false)
+        advance(Config.Hospital.AI.WaitSeconds + 1)
+        Mock.coords[PATIENT] = bedCoords('pillbox', H.Admissions.ById(id).bed_id)
+        assert_eq(H.AI.Tick(os.time())[id], nil)
+        boot() -- restart: memory rebuilt from the rows
+        advance(10)
+        assert_eq(H.AI.Tick(os.time())[id], nil, 'still a staff patient after the restart')
+        assert_eq(DB.adm[id].mode, 'staff')
+    end)
+    it('a Dispatch accept is persisted too (no AI after a restart even with pf-services gone)', function()
+        local id = waiting()
+        staff(MEDIC, 1)
+        RequestHandlers[Config.Hospital.Request.Kind].onAccepted({ ref = { type = 'hospital_admission', id = tostring(id) } }, MEDIC)
+        assert_eq(DB.adm[id].staff_cid, 'MEDICCID')
+        boot()
+        local find = Mock.exportsByResource['pf-services'].FindOpenByRef
+        Mock.exportsByResource['pf-services'].FindOpenByRef = function() return nil end
+        advance(Config.Hospital.AI.WaitSeconds + 1)
+        local out = H.AI.Tick(os.time())
+        Mock.exportsByResource['pf-services'].FindOpenByRef = find
+        assert_eq(out[id], nil)
     end)
     it('not when a medic accepted the request in the Dispatch app', function()
         local id = waiting()
