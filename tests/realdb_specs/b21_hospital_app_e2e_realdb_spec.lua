@@ -127,6 +127,9 @@ online(PATIENT, 'RDB21PAT')
 online(DOC, 'RDB21DOC').PlayerData.job = { name = 'ambulance', type = 'ems', onduty = true, grade = { level = 2 } }
 online(FAR, 'RDB21FAR').PlayerData.job = { name = 'ambulance', type = 'ems', onduty = true, grade = { level = 2 } }
 Mock.coords[PATIENT], Mock.coords[DOC], Mock.coords[FAR] = reception, reception, vector3(0.0, 0.0, 0.0)
+local EMT = 5
+online(EMT, 'RDB21EMT').PlayerData.job = { name = 'ambulance', type = 'ems', onduty = true, grade = { level = 0 } }
+Mock.coords[EMT] = reception
 
 local admissionId
 describe('b21 hospital workstation drives the real pf-ambulancejob', function()
@@ -198,3 +201,61 @@ describe('b21 hospital workstation drives the real pf-ambulancejob', function()
         assert_eq(hist.admissions[1].id, admissionId)
     end)
 end)
+
+-- B21-3: the counter queue is pf-ambulancejob's (ListPharmacyQueue): the hospital the viewer stands
+-- in, at the pharmacy's LogTier, the infirmary's dose schedules only inside the infirmary, and an
+-- audit row for every controlled prescription shown.
+describe('b21 hospital workstation: pharmacy counter queue under pf-ambulancejob rules', function()
+    local T = os.time()
+    local function rx(cid, drug, hospital, controlled, custodyRef)
+        return tonumber(MySQL.insert.await([[INSERT INTO pf_hosp_prescriptions (citizenid, drug, dose, qty, refills, controlled, prescriber_cid, state,
+            created_at, expires_at, dispensed, interval_seconds, hospital_id, admission_id, units_per_fill, custody_ref)
+            VALUES (?, ?, 'd', 3, 2, ?, 'DOC1', 'active', ?, ?, 0, 86400, ?, NULL, 2, ?)]], { cid, drug, controlled and 1 or 0, T, T + 86400, hospital, custodyRef }))
+    end
+    local pill = rx('RDB21PAT', 'painkillers', 'pillbox', false)
+    local morphine = rx('RDB21PAT', 'morphine', 'pillbox', true)
+    local paleto = rx('RDB21PAT', 'bandage', 'paleto', false)
+    local inmate = rx('RDB21PAT', 'painkillers', nil, false, 'order:7')
+    local function ids(res) local t = {} for _, r in ipairs(res.list) do t[#t + 1] = r.id end table.sort(t) return t end
+    local function has(res, id) for _, r in ipairs(res.list) do if r.id == id then return true end end return false end
+
+    it('a medic in Pillbox sees Pillbox counter rows only (not Paleto, not the infirmary schedules)', function()
+        Mock.coords[DOC] = reception
+        local res = rpc('pharmacy', DOC, { facility = 'paleto' })
+        assert_true(res.ok, tostring(res.message))
+        assert_eq(res.hospitalId, 'pillbox', 'the hospital the viewer stands in, not the one the client names')
+        assert_true(has(res, pill) and has(res, morphine))
+        assert_false(has(res, paleto), 'another facility')
+        assert_false(has(res, inmate), 'an infirmary schedule')
+        assert_eq(res.list[1].name, 'Test Player1')
+    end)
+    it('outside every hospital or below the pharmacy tier: refused by pf-ambulancejob', function()
+        assert_eq(rpc('pharmacy', FAR, {}).error, 'too_far')
+        assert_eq(rpc('pharmacy', EMT, {}).error, 'no_permission')
+    end)
+    it('infirmary staff (inside the infirmary) see the dose schedules and nothing else', function()
+        Mock.coords[DOC] = Config.Hospital.Facilities.bolingbroke.zone.center
+        local res = rpc('pharmacy', DOC, {})
+        assert_true(res.ok, tostring(res.message))
+        assert_eq(res.infirmary, true)
+        assert_eq(table.concat(ids(res), ','), tostring(inmate))
+        Mock.coords[DOC] = reception
+    end)
+    it('every controlled prescription shown is an audit row on the patient record', function()
+        PFMed.Store.FlushAll()
+        local before = tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_med_events WHERE action = 'hosp_rx_queue_read' AND citizenid = 'RDB21PAT'"))
+        assert_true(rpc('pharmacy', DOC, { q = 'RDB21PAT' }).ok)
+        PFMed.Store.FlushAll()
+        local rows = MySQL.query.await("SELECT actor_cid, detail FROM pf_med_events WHERE action = 'hosp_rx_queue_read' AND citizenid = 'RDB21PAT' ORDER BY id")
+        assert_eq(#rows, before + 1, 'one row: only the morphine prescription is controlled')
+        assert_eq(rows[#rows].actor_cid, 'RDB21DOC')
+        assert_eq(json.decode(rows[#rows].detail).rx, morphine)
+    end)
+    it('search narrows to the citizen id or a name match', function()
+        MySQL.query.await('INSERT INTO players (citizenid, license, name, money, charinfo, job, gang, position, metadata, inventory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            { 'RDB21PAT', 'license:rdb21pat', 'Test', '{}', json.encode({ firstname = 'Test', lastname = 'Player1' }), '{}', '{}', '{}', '{}', '[]' })
+        assert_eq(#rpc('pharmacy', DOC, { q = 'RDB21DOC' }).list, 0)
+        assert_true(#rpc('pharmacy', DOC, { q = 'Player1' }).list >= 2, 'by last name')
+    end)
+end)
+

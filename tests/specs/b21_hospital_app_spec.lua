@@ -57,6 +57,9 @@ local function resetAJ()
         orders = { { id = 70, citizenid = 'PAT1', admissionId = 11, hospitalId = 'pillbox', kind = 'lab', test = 'cbc', label = 'Complete blood count', state = 'resulted',
             result = { values = { hemoglobin = 9.1 } } }, { id = 71, citizenid = 'PAT1', admissionId = 11, hospitalId = 'pillbox', kind = 'imaging', test = 'ct', state = 'ordered' } },
         discharge = { ok = true, admissionId = 11 },
+        queue = { ok = true, hospitalId = 'pillbox', label = 'Pillbox Medical Center', infirmary = false, list = {
+            { id = 3, citizenid = 'ANN9', drug = 'painkillers', label = 'Painkillers', fills = 3, filled = 1, units = 4, controlled = true,
+                expiresAt = 2000000000, admissionId = 11 } } },
     }
 end
 resetAJ()
@@ -92,6 +95,7 @@ Mock.exportsByResource['pf-ambulancejob'] = {
         return { ok = true, list = list }
     end,
     DischargePatient = function(_, id, opts) rec('DischargePatient', id, opts) return AJ.discharge end,
+    ListPharmacyQueue = function(_, src, filter) rec('ListPharmacyQueue', src, filter) return AJ.queue end,
 }
 -- server callbacks as pfm-core holds them (funcrefs into pf-ambulancejob)
 local function ajCallback(name, answer)
@@ -101,14 +105,30 @@ local function ajCallback(name, answer)
         if res ~= false then cb(res or AJ.cb[name] or { ok = true }) end
     end)
 end
-QBCoreMock.ServerCallbacks = {}
-for _, n in ipairs({ 'triage', 'admit', 'transfer', 'careLevel', 'labOrder', 'labDraw', 'imagingOrder', 'orderCancel', 'patientOrders',
-    'rxPrescribe', 'rxCancel', 'pharmacyLog' }) do
-    QBCoreMock.ServerCallbacks['pf-ambulancejob:server:' .. n] = ajCallback(n)
+function AddEventHandler(name, fn)
+    local prev = Mock.eventHandlers[name]
+    if prev then Mock.eventHandlers[name] = function(...) prev(...) fn(...) end else Mock.eventHandlers[name] = fn end
 end
-QBCoreMock.ServerCallbacks['pf-ambulancejob:server:imagingPerform'] = ajCallback('imagingPerform', function()
-    return { ok = true, orderId = 71, findings = { { label = '<img src=x onerror=alert(1)>', structure = 'femur_l' } } }
-end)
+local coreFetches = 0
+local coreObject = Mock.exportsByResource['pfm-core'].GetCoreObject
+local countingCore = function(self, filters)
+    if type(filters) == 'table' and filters[1] == 'ServerCallbacks' then coreFetches = coreFetches + 1 end
+    return coreObject(self, filters)
+end
+Mock.exportsByResource['pfm-core'].GetCoreObject = countingCore
+Mock.passThrough[countingCore] = true
+local function buildCallbacks()
+    local t = {}
+    for _, n in ipairs({ 'triage', 'admit', 'transfer', 'careLevel', 'labOrder', 'labDraw', 'imagingOrder', 'orderCancel', 'patientOrders',
+        'rxPrescribe', 'rxCancel', 'pharmacyLog' }) do
+        t['pf-ambulancejob:server:' .. n] = ajCallback(n)
+    end
+    t['pf-ambulancejob:server:imagingPerform'] = ajCallback('imagingPerform', function()
+        return { ok = true, orderId = 71, findings = { { label = '<img src=x onerror=alert(1)>', structure = 'femur_l' } } }
+    end)
+    return t
+end
+QBCoreMock.ServerCallbacks = buildCallbacks()
 
 -- ── SQL (bills, bill lines, counter queue, offline names) ───────────────────────────────────────
 local Sql
@@ -137,8 +157,14 @@ local function setupPlayers()
     Mock.newPlayer(CHIEF, 'CHIEF1'); setJob(CHIEF, 'ambulance', true, 4)
 end
 
+local CALLBACKS
 local function loadAll()
     Config, PFHospitalApp = nil, nil
+    CALLBACKS = buildCallbacks()
+    QBCoreMock.ServerCallbacks = CALLBACKS
+    for _, ev in ipairs({ 'onResourceStart', 'pf-ambulancejob:server:admissionChanged', 'pf-ambulancejob:server:orderResulted', 'playerDropped' }) do
+        Mock.eventHandlers[ev] = nil
+    end
     load_resource(DIR .. 'config.lua')
     load_resource(DIR .. 'server/hospital_app.lua')
     load_resource(DIR .. 'server/devices.lua')
@@ -379,28 +405,88 @@ describe('b21 hospital app: queues', function()
         assert_eq(res.list[1].by, 'Test Player1')
         assert_eq(callsNamed('cb:pharmacyLog')[1].args[1], MED)
     end)
-    it('the counter queue is a paged SELECT of the facility with search', function()
-        Sql.rows['FROM pf_hosp_prescriptions'] = { { id = 3, citizenid = 'ANN9', drug = 'painkillers', qty = 3, units_per_fill = 4, dispensed = 1, controlled = 0,
-            created_at = 1, expires_at = 2000000000 } }
-        Sql.rows['FROM players WHERE charinfo'] = { { citizenid = 'ANN9' } }
+    it('the counter queue comes from pf-ambulancejob for this player (B21-3), never a direct SELECT', function()
+        Sql.rows['FROM players WHERE (JSON_VALUE'] = { { citizenid = 'ANN9' } }
         Sql.rows['FROM players WHERE citizenid IN'] = { { citizenid = 'ANN9', charinfo = '{"firstname":"Ann","lastname":"Lee"}' } }
-        local res = rpc('pharmacy', MED, { facility = 'pillbox', q = 'Ann', page = 2 })
+        local res = rpc('pharmacy', MED, { facility = 'paleto', q = 'Ann', page = 2 })
         assert_true(res.ok)
+        local c = callsNamed('ListPharmacyQueue')[1]
+        assert_true(c ~= nil, 'asked pf-ambulancejob')
+        assert_eq(c.args[1], MED, 'the queue of the player asking (position, tier and audit there)')
+        assert_eq(c.args[2].limit, 26)
+        assert_eq(c.args[2].offset, 25)
+        assert_eq(c.args[2].cids[1], 'Ann', 'an exact citizen id')
+        assert_eq(c.args[2].cids[2], 'ANN9', 'and the name matches')
+        assert_true(c.args[2].facility == nil, 'the client does not pick the facility')
+        assert_true(sqlNamed('pf_hosp_prescriptions') == nil, 'no direct read of the prescriptions')
+        assert_eq(res.hospitalId, 'pillbox')
         assert_eq(res.list[1].name, 'Ann Lee')
-        assert_eq(res.list[1].label, 'Painkillers')
+        assert_eq(res.list[1].controlled, true)
         assert_eq(res.list[1].filled, 1)
-        assert_eq(sqlNamed('FROM players WHERE charinfo').params[1], '%Ann%')
-        local s = sqlNamed('FROM pf_hosp_prescriptions')
-        assert_true(not s.sql:find('JOIN', 1, true), 'no cross-table citizen id comparison')
-        assert_eq(s.params[1], 'pillbox')
-        assert_eq(s.params[3], 'Ann')
-        assert_eq(s.params[4], 'ANN9')
-        assert_eq(s.params[#s.params], 25, 'offset of page 2')
-        assert_eq(s.params[#s.params - 1], 26, 'one more row than a page tells whether there is a next page')
     end)
-    it('LIKE wildcards in a search are literal', function()
-        rpc('pharmacy', MED, { facility = 'pillbox', q = '50%_x' })
-        assert_eq(sqlNamed('FROM players WHERE charinfo').params[1], '%50\\%\\_x%')
+    it('a refusal of pf-ambulancejob (tier, place) comes back as it is', function()
+        AJ.queue = { ok = false, error = 'too_far', message = 'You must be in a hospital.' }
+        local res = rpc('pharmacy', MED, {})
+        assert_eq(res.error, 'too_far')
+        assert_eq(res.message, 'You must be in a hospital.')
+        assert_eq(rpc('pharmacy', CIV, {}).error, 'not_staff')
+        assert_eq(#callsNamed('ListPharmacyQueue'), 1)
+    end)
+end)
+
+describe('b21 hospital app: name search (B21-5)', function()
+    it('matches first and last name values with JSON_VALUE, wildcards literal', function()
+        rpc('bills', CHIEF, { facility = 'pillbox', q = '50%_x Lee' })
+        local s = sqlNamed('FROM players WHERE (JSON_VALUE')
+        assert_true(s ~= nil, 'JSON_VALUE on the name fields')
+        assert_true(s.sql:find("JSON_VALUE(charinfo, '$.firstname') LIKE ?", 1, true) ~= nil)
+        assert_true(s.sql:find("JSON_VALUE(charinfo, '$.lastname') LIKE ?", 1, true) ~= nil)
+        assert_true(not s.sql:find('charinfo LIKE', 1, true), 'never the raw JSON')
+        assert_eq(s.params[1], '%50\\%\\_x%')
+        assert_eq(s.params[3], '%Lee%')
+        assert_eq(#s.params, 4)
+    end)
+    it('terms shorter than the minimum are not searched by name', function()
+        rpc('bills', CHIEF, { facility = 'pillbox', q = 'a' })
+        assert_true(sqlNamed('FROM players WHERE (JSON_VALUE') == nil)
+        assert_eq(sqlNamed('FROM pf_hosp_bills WHERE hospital_id').params[2], 'a', 'still an exact citizen id')
+    end)
+end)
+
+describe('b21 hospital app: callback reference cache (B21-6)', function()
+    it('fetched once for many relays, again after pf-ambulancejob or pfm-core start', function()
+        coreFetches = 0
+        rpc('labDraw', MED, { orderId = 70 })
+        rpc('labDraw', MED, { orderId = 71 })
+        rpc('orderCancel', MED, { orderId = 71 })
+        assert_eq(coreFetches, 1)
+        -- pf-ambulancejob restarts: pfm-core now holds new references
+        local seen = 0
+        QBCoreMock.ServerCallbacks = { ['pf-ambulancejob:server:labDraw'] = Mock.funcref(function(_, cb) seen = seen + 1 cb({ ok = true, fresh = true }) end) }
+        assert_true(rpc('labDraw', MED, { orderId = 70 }).fresh == nil, 'the cached reference until a start says otherwise')
+        Mock.fireEvent('onResourceStart', nil, 'pf-ambulancejob')
+        assert_eq(rpc('labDraw', MED, { orderId = 70 }).fresh, true)
+        assert_eq(seen, 1)
+        assert_eq(coreFetches, 2)
+        Mock.fireEvent('onResourceStart', nil, 'pfm-core')
+        rpc('labDraw', MED, { orderId = 70 })
+        assert_eq(coreFetches, 3)
+        Mock.fireEvent('onResourceStart', nil, 'pf-justice')
+        rpc('labDraw', MED, { orderId = 70 })
+        assert_eq(coreFetches, 3, 'other resources do not matter')
+    end)
+    it('a missing callback is looked up again at most every 30 s', function()
+        coreFetches = 0
+        QBCoreMock.ServerCallbacks = { ['pf-ambulancejob:server:careLevel'] = CALLBACKS['pf-ambulancejob:server:careLevel'] }
+        assert_true(rpc('careLevel', MED, { facility = 'pillbox', admissionId = 12, level = 'icu' }).ok)
+        assert_eq(coreFetches, 1)
+        assert_eq(rpc('labDraw', MED, { orderId = 70 }).error, 'hospital_offline')
+        QBCoreMock.ServerCallbacks = CALLBACKS -- registered meanwhile
+        assert_eq(rpc('labDraw', MED, { orderId = 70 }).error, 'hospital_offline')
+        assert_eq(coreFetches, 1, 'not looked up again within 30 s')
+        Mock.clock = Mock.clock + 31
+        assert_true(rpc('labDraw', MED, { orderId = 70 }).ok, 'found after the wait')
+        assert_eq(coreFetches, 2)
     end)
 end)
 

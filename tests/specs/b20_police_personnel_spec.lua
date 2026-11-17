@@ -261,7 +261,9 @@ describe('20F: manifests and schema v9', function()
         local code = __readfile(RES .. 'server/personnel_ext.lua')
         assert_true(code:find('CREATE TABLE', 1, true) == nil and code:find('ALTER TABLE', 1, true) == nil and code:find('RunMigrations', 1, true) == nil)
         for name in code:gmatch('pf_mdt_[%w_]+') do
-            assert_true(created[name] ~= nil or name == 'pf_mdt_record_audit', name .. ' named but not created by v9')
+            local older = false
+            for _, t in ipairs(Schema.Tables) do if t.name == name then older = true end end
+            assert_true(created[name] ~= nil or name == 'pf_mdt_record_audit' or older, name .. ' named but not created')
         end
     end)
 end)
@@ -477,6 +479,45 @@ describe('20F: internal affairs', function()
         assert_true(q.sql:find('officer_cid <> ?', 1, true) ~= nil and q.params[1] == 'LT3', 'the list leaves out complaints naming the reader')
         assert_eq(call('pf_mdt:ia:file', OFF, { officerCid = 'OFF1', summary = 'Complaint about myself' }).error, 'conflict')
         assert_eq(call('pf_mdt:ia:assign', CHIEF, { id = 5 }).state, 'investigating')
+    end)
+
+    it('a portal complaint naming the officer in words is resolved on the server when one officer matches', function()
+        local file = mdtExports.FileIaComplaint
+        Mock.invokingResource = 'pf-justice'
+        local r = file({ officerName = 'Officer test  PLAYER3', summary = 'Searched my car without a reason.' }, { key = 'portal:n1', actor = { src = CIV } })
+        assert_eq(r.ok, true, tostring(r.error))
+        assert_eq(r.officerResolved, true)
+        assert_eq(logged('INSERT INTO pf_mdt_ia_complaints')[1].params[3], 'LT3')
+        Mock.players[LT].PlayerData.metadata.callsign = '1A-12'
+        local c = file({ officerCallsign = '1a-12', summary = 'Searched my car without a reason.' }, { key = 'portal:n2', actor = { src = CIV } })
+        assert_eq(c.officerResolved, true, 'a callsign alone names the officer')
+        local ins = logged('INSERT INTO pf_mdt_ia_complaints')
+        assert_eq(ins[2].params[3], 'LT3')
+        assert_eq(ins[2].params[4], '1a-12')
+        -- no match, or several officers match: no officer id is stored
+        local u = file({ officerName = 'Officer Smith', summary = 'Searched my car without a reason.' }, { key = 'portal:n3', actor = { src = CIV } })
+        assert_eq(u.officerResolved, false)
+        assert_eq(logged('INSERT INTO pf_mdt_ia_complaints')[3].params[3], nil)
+        Mock.players[SGT].PlayerData.charinfo = { firstname = 'Test', lastname = 'Player3' }
+        local amb = file({ officerName = 'Test Player3', summary = 'Searched my car without a reason.' }, { key = 'portal:n4', actor = { src = CIV } })
+        assert_eq(amb.officerResolved, false, 'two officers carry that name')
+    end)
+
+    it('an unresolved complaint never reaches the officer it names in words (list, get, assign, close)', function()
+        local row = { id = 9, officer_cid = nil, officer_name = 'Ofc. Test Player3 (1A-12)', state = 'received', summary = 's', complainant_cid = 'CIV4' }
+        answer('SELECT * FROM pf_mdt_ia_complaints WHERE id = ?', row, 'single')
+        answer('FROM pf_mdt_ia_complaints WHERE', { row }, 'query')
+        assert_eq(#call('pf_mdt:ia:list', LT, {}).list, 0)
+        assert_eq(#call('pf_mdt:ia:list', CHIEF, {}).list, 1)
+        assert_eq(call('pf_mdt:ia:get', LT, { id = 9 }).error, 'not_found')
+        assert_eq(call('pf_mdt:ia:assign', LT, { id = 9 }).error, 'not_found')
+        assert_eq(call('pf_mdt:ia:close', LT, { id = 9, outcome = 'nothing to it' }).error, 'not_found')
+        assert_eq(call('pf_mdt:ia:assign', CHIEF, { id = 9, investigatorCid = 'LT3' }).error, 'conflict')
+        -- the callsign alone also names him
+        Mock.players[LT].PlayerData.charinfo = { firstname = 'Other', lastname = 'Name' }
+        Mock.players[LT].PlayerData.metadata.callsign = '1A-12'
+        assert_eq(call('pf_mdt:ia:get', LT, { id = 9 }).error, 'not_found')
+        assert_eq(call('pf_mdt:ia:get', CHIEF, { id = 9 }).ok, true)
     end)
 
     it('findings need an investigation; dismissing an uninvestigated complaint needs a reason', function()

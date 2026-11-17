@@ -1,9 +1,9 @@
 -- pf-emsmdt batch 21D on a real database: the hospital workstation's read-only SQL on
 -- pf-ambulancejob's tables, created by pf-ambulancejob's own migrations (pf_hosp_bills,
--- pf_hosp_bill_lines, pf_hosp_prescriptions) and pfm-core's players table: the counter queue (active,
--- unexpired, this facility only, newest first, paged, search by citizen id or name words with LIKE
--- wildcards taken literally), bills (facility, state, search, paging) and bill lines, and the
--- offline-name lookup. pf-ambulancejob's exports are mocked by contract for the facility list.
+-- pf_hosp_bill_lines) and pfm-core's players table: the name search (JSON_VALUE of first and last
+-- name, minimum term length, LIKE wildcards literal), bills (facility, state, search, paging), bill
+-- lines and the offline-name lookup. pf-ambulancejob's exports are mocked by contract for the
+-- facility list; the counter queue (pf-ambulancejob's ListPharmacyQueue) is in the e2e spec.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
 function IsDuplicityVersion() return true end
@@ -54,21 +54,6 @@ player('ANN001', 'Ann', 'Lee')
 player('BOB002', 'Bob', 'Stone')
 player('PCT003', '50%_off', 'Sale')
 
-local function rx(cid, drug, state, hospital, expires, created)
-    return MySQL.insert.await([[INSERT INTO pf_hosp_prescriptions (citizenid, drug, dose, qty, refills, controlled, prescriber_cid, state, created_at,
-        expires_at, dispensed, interval_seconds, hospital_id, admission_id, units_per_fill) VALUES (?, ?, 'd', 3, 2, 0, 'DOC1', ?, ?, ?, 1, 86400, ?, 5, 4)]],
-        { cid, drug, state, created or T, expires, hospital })
-end
-rx('ANN001', 'painkillers', 'active', 'pillbox', T + 86400)
-rx('BOB002', 'antibiotics', 'active', 'pillbox', T + 86400)
-rx('ANN001', 'bandage', 'active', 'paleto', T + 86400)       -- other facility
-rx('BOB002', 'crutches', 'filled', 'pillbox', T + 86400)     -- collected
-rx('ANN001', 'antibiotics', 'active', 'pillbox', T - 10)     -- expired
-rx('PCT003', 'bandage', 'active', 'pillbox', T + 86400)
--- an infirmary dose schedule (19G: no hospital_id) never shows at a counter
-MySQL.insert.await([[INSERT INTO pf_hosp_prescriptions (citizenid, drug, dose, qty, prescriber_cid, state, created_at, expires_at, custody_ref)
-    VALUES ('BOB002', 'painkillers', 'd', 4, 'DOC1', 'active', ?, ?, 'order:1')]], { T, T + 86400 })
-
 local function bill(cid, hospital, state, total, discount)
     local id = MySQL.insert.await([[INSERT INTO pf_hosp_bills (citizenid, admission_id, hospital_id, total, discount, state, created_at)
         VALUES (?, 5, ?, ?, ?, ?, ?)]], { cid, hospital, total, discount, state, T })
@@ -81,27 +66,18 @@ local b2 = bill('BOB002', 'pillbox', 'invoiced', 900, 450)
 local b3 = bill('ANN001', 'paleto', 'open', 300, 0)
 for i = 1, 26 do bill('BOB002', 'pillbox', 'open', 100 + i, 0) end
 
-describe('b21 hospital app on MariaDB: counter queue', function()
-    it('only active, unexpired prescriptions of this facility, newest first', function()
-        local res = rpc('pharmacy', { facility = 'pillbox' })
-        assert_true(res.ok, tostring(res.error))
-        assert_eq(#res.list, 3)
-        assert_eq(res.list[1].citizenid, 'PCT003')
-        assert_eq(res.list[2].name, 'Bob Stone')
-        assert_eq(res.list[3].label, 'Painkillers')
-        assert_eq(res.list[3].units, 4)
-        assert_eq(res.list[3].filled, 1)
-        assert_eq(res.list[3].nextAt, nil)
-        assert_eq(res.more, false)
-    end)
-    it('search by citizen id or name words; wildcards are literal', function()
-        assert_eq(#rpc('pharmacy', { facility = 'pillbox', q = 'ANN001' }).list, 1)
-        assert_eq(rpc('pharmacy', { facility = 'pillbox', q = 'bob stone' }).list[1].citizenid, 'BOB002')
-        assert_eq(#rpc('pharmacy', { facility = 'pillbox', q = 'Ann Stone' }).list, 0)
-        local pct = rpc('pharmacy', { facility = 'pillbox', q = '50%_' })
-        assert_eq(#pct.list, 1)
-        assert_eq(pct.list[1].citizenid, 'PCT003')
-        assert_eq(#rpc('pharmacy', { facility = 'pillbox', q = '%' }).list, 1, 'a bare % matches only a literal %')
+describe('b21 hospital app on MariaDB: name search (B21-5)', function()
+    it('matches first and last name values, never the JSON keys', function()
+        local function cids(q) local t = HA.SQL.CidsByName(q) table.sort(t) return table.concat(t, ',') end
+        assert_eq(cids('ann'), 'ANN001')
+        assert_eq(cids('Stone'), 'BOB002')
+        assert_eq(cids('bob stone'), 'BOB002')
+        assert_eq(cids('Ann Stone'), '')
+        assert_eq(cids('name'), '', 'the key "firstname" is not a name')
+        assert_eq(cids('first'), '')
+        assert_eq(cids('a'), '', 'below the minimum term length')
+        assert_eq(cids('50%_'), 'PCT003', 'wildcards literal')
+        assert_eq(cids('%%'), '')
     end)
 end)
 

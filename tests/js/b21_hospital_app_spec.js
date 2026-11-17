@@ -104,7 +104,8 @@ const baseHandlers = (over) => Object.assign({
         { id: 70, citizenid: 'PAT1', name: EVIL, online: true, admissionId: 11, test: p.kind === 'lab' ? 'cbc' : 'ct', label: EVIL, state: 'ordered', orderedAt: now() - 60 },
         { id: 72, citizenid: 'PAT1', name: 'Pat', online: true, admissionId: 11, test: 'bac', label: 'Blood alcohol', state: 'resulted', orderedAt: now() - 600, hasResult: true },
     ] }),
-    pharmacy: () => ({ ok: true, page: 1, more: true, list: [{ id: 3, citizenid: 'PAT1', name: EVIL, drug: 'painkillers', label: EVIL, fills: 3, filled: 1, units: 4, controlled: true, expiresAt: now() + 86400 }] }),
+    pharmacy: () => ({ ok: true, hospitalId: 'pillbox', label: EVIL, page: 1, more: true, list: [{ id: 3, citizenid: 'PAT1', name: EVIL, drug: 'painkillers', label: EVIL, fills: 3, filled: 1, units: 4, controlled: true, expiresAt: now() + 86400 },
+        { id: 4, citizenid: 'INM1', name: 'Inmate', drug: 'painkillers', label: 'Painkillers', fills: 6, filled: 0, units: 1, infirmary: true, expiresAt: now() + 86400 }] }),
     results: () => ({ ok: true, list: [{ id: 70, label: 'Complete blood count', state: 'resulted', orderedAt: now() - 600, result: { values: { hemoglobin: 9.1, note: EVIL }, findings: [{ label: EVIL, structure: 'femur_l' }] } }] }),
     controlledLog: () => ({ ok: true, list: [{ id: 1, drug: 'morphine', qty: 1, kind: 'withdraw', at: now() - 30, patient: EVIL, by: 'Doc' }] }),
     bills: () => ({ ok: true, page: 1, more: false, list: [{ id: 8, citizenid: 'PAT1', name: EVIL, admissionId: 11, total: 900, discount: 450, due: 450, state: 'invoiced', createdAt: now() - 100 }] }),
@@ -369,6 +370,8 @@ const baseHandlers = (over) => Object.assign({
         env.tab('pharmacy').click(); await settle();
         eq(JSON.stringify(env.last('pharmacy')), JSON.stringify({ facility: 'pillbox', q: '', page: 1 }));
         ok(env.root().textContent.includes('controlled'));
+        ok(env.root().querySelector('[data-field="queueOf"]').textContent.includes(EVIL), 'the server names the hospital whose queue it is (as text)');
+        ok(!env.root().querySelector('tr[data-rx="4"] [data-action="rxCancel"]'), 'an infirmary schedule is not cancelled at a counter');
         const q = env.root().querySelector('[data-field="q"]');
         q.value = ' PAT1 ';
         env.root().querySelector('[data-action="search"]').click(); await settle();
