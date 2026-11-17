@@ -544,7 +544,7 @@ describe('20C procurement: purchases', function()
         assert_eq(cat.dept, 'ems')
         assert_false(cat.mayOrder)
         assert_true(P.Catalog(EMSMGR).mayOrder)
-        assert_eq(#cat.facilities, 2)
+        assert_eq(#cat.facilities, 4, 'two supply rooms and two pharmacies')
     end)
 
     it('exports refuse resources outside the allowlist', function()
@@ -563,6 +563,8 @@ describe('20C procurement: purchases', function()
         Mock.coords[COP] = PILLBOX_POINT
         assert_eq(P.OpenStash(COP).error, 'no_permission')
         Mock.coords[MEDIC] = vector3(0, 0, 0)
+        assert_eq(P.OpenStash(MEDIC).error, 'too_far')
+        Mock.coords[MEDIC] = vector3(308.36, -595.25, 43.28) -- the pharmacy counter: its stock is never opened here
         assert_eq(P.OpenStash(MEDIC).error, 'too_far')
     end)
 end)
@@ -765,6 +767,10 @@ describe('20C rig restock at a hospital bay', function()
         assert_eq(S.OnDelivered({ stash = SUP, orderId = 77, items = { { item = 'bandage', qty = 20 }, { item = 'ifaks', qty = 4 } } }), 2)
         assert_eq(S.OnDelivered({ stash = 'pf_infirmary_bolingbroke', orderId = 78, items = { { item = 'painkillers', qty = 10 } } }), 1)
         assert_eq(S.OnDelivered({ stash = 'pf_police_supply_mrpd', orderId = 79, items = { { item = 'zipties', qty = 10 } } }), 0)
+        if ((Config.Hospital or {}).Pharmacy or {}).Stashes then
+            assert_eq(S.OnDelivered({ stash = 'pf_pharmacy_pillbox', orderId = 81, items = { { item = 'morphine', qty = 4 } } }), 1, 'the pharmacy stock')
+            table.remove(DB.usage)
+        end
         assert_eq(DB.usage[1].reason, 'delivery')
         assert_eq(DB.usage[1].ref_id, 77)
         assert_eq(DB.usage[3].facility, 'bolingbroke')
