@@ -35,7 +35,7 @@ Config.LockpickBreakChance = { lockpick = 100, advancedlockpick = 17 } -- % chan
 -- Server scripts that set door states without a player (exports SetDoorState / GetDoorState). Only the
 -- resources listed in StateCallers may lock or unlock doors this way; StateReaders = '*' lets any
 -- server resource read a state (every client already receives every door state).
-Config.StateCallers = { ['pfm-prison'] = true, ['pf-justice'] = true }
+Config.StateCallers = { ['pfm-prison'] = true, ['pf-justice'] = true, ['pfm-policejob'] = true }
 Config.StateReaders = '*'
 -- Stable names for doors other resources lock and unlock (pf-justice holding cells, pfm-prison gates).
 -- A name points at the door's coordinates, not its list position, so adding or moving doors in

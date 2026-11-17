@@ -80,7 +80,7 @@ describe('the fine table', function()
         -- v1 is the fine table (applied once), v2 the evidence tables of batch 15
         local applied = tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob' AND version = 1 AND name = 'police fine records'"))
         assert_eq(applied, 1)
-        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob'")), 2)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob'")), 3)
     end)
 end)
 

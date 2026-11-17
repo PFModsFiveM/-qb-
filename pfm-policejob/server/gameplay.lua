@@ -56,15 +56,19 @@ local gsrAt = {}       -- [src] = os.time() of the last shot the server knows of
 local gsrWritten = {}  -- [src] = os.time() metadata.gsr was last written
 
 local sharedWeapons
+local weaponByHash = {} -- normalised hash -> definition (false = not a weapon); damage events are frequent
 local function WeaponDef(hash)
     sharedWeapons = sharedWeapons or exports['pfm-core']:GetShared('Weapons') or {}
     local def = sharedWeapons[hash]
     if def then return def end
     local h = u32(hash)
     if not h then return nil end
+    local cached = weaponByHash[h]
+    if cached ~= nil then return cached or nil end
     for k, v in pairs(sharedWeapons) do
-        if u32(k) == h then return v end
+        if u32(k) == h then weaponByHash[h] = v return v end
     end
+    weaponByHash[h] = false
     return nil
 end
 G.WeaponDef = WeaponDef

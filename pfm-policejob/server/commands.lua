@@ -106,6 +106,8 @@ QBCore.Commands.Add('pobject', Lang:t('commands.place_object'), { { name = 'type
             TriggerClientEvent('police:client:spawnTent', src)
         elseif type == 'light' then
             TriggerClientEvent('police:client:spawnLight', src)
+        elseif type == 'tape' then
+            TriggerClientEvent('police:client:spawnTape', src)
         elseif type == 'delete' then
             TriggerClientEvent('police:client:deleteObject', src)
         end
@@ -521,14 +523,10 @@ end)
 
 -- Misc
 
-QBCore.Commands.Add('cam', Lang:t('commands.camera'), { { name = 'camid', help = Lang:t('info.camera_id') } }, false, function(source, args)
-    local src = source
-    local Player = exports['pfm-core']:GetPlayer(src)
-    if Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty then
-        TriggerClientEvent('police:client:ActiveCamera', src, tonumber(args[1]))
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.on_duty_police_only'), 'error')
-    end
+-- /cam is retired (batch 18C): live security cameras are viewed on the MDT CCTV page, which checks
+-- duty on the server and audits every camera opened.
+QBCore.Commands.Add('cam', Lang:t('commands.camera'), {}, false, function(source)
+    TriggerClientEvent('QBCore:Notify', source, 'Use the MDT CCTV page to view security cameras.', 'primary')
 end)
 
 QBCore.Commands.Add('paytow', Lang:t('commands.paytow'), { { name = 'id', help = Lang:t('info.player_id') } }, true, function(source, args)

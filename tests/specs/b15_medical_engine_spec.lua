@@ -527,6 +527,17 @@ describe('exports', function()
         assert_eq(as('pf-policemdt-DEV', function() return aj():GetPatientSummary(1) end).triage, nil)
     end)
 
+    it('GetBreathAlcohol gives pfm-policejob the BAC only, and nobody else anything', function()
+        online(1)
+        Engine.AddToxin('CID1', 'ethanol', 0.09)
+        local r = as('pfm-policejob', function() return aj():GetBreathAlcohol(1) end)
+        assert_true(r.ok); assert_true(math.abs(r.bac - 0.09) < 0.001, tostring(r.bac))
+        local keys = 0; for _ in pairs(r) do keys = keys + 1 end
+        assert_eq(keys, 2, 'ok and bac only')
+        assert_eq(as('pf-policemdt-DEV', function() return aj():GetBreathAlcohol(1) end).error, 'not_allowed')
+        assert_eq(as('pfm-policejob', function() return aj():GetBreathAlcohol('NOSUCH') end).ok, false)
+    end)
+
     it('GetPatientSummary reads an offline citizen from the database', function()
         DB.patients.CID9 = { citizenid = 'CID9', consciousness = 'dead', stage = 'injured', blood_ml = 2000, hgb_factor = 1, airway = 'clear',
             breathing = 1, pain = 0, temp_c = 37, last_tick_at = os.time(), updated_at = os.time() }

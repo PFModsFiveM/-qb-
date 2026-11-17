@@ -98,8 +98,8 @@ end
 
 describe('MDT court leads', function()
     it('a warrant on record is one lead with the suspect and charge titles only', function()
-        Mock.fireNet('pf_mdt:createWarrant', OFFICER, { warrantId = 'W12345', suspect = 'Rob Banks', charges = { 'Robbery', { name = 'Evading' } },
-            narrative = 'secret notes', witnesses = { 'Witness A' }, officers = { 'Officer B' } })
+        -- batch 18F: the lead goes out when a warrant is approved, with the server-made id
+        PFMdtShared.ReportWarrant('W12345', 'Rob Banks', { 'Robbery', { name = 'Evading' } }, 'OFFCID')
         local ev = events('police.warrant')
         assert_eq(#ev, 1)
         assert_eq(ev[1].data.suspect, 'Rob Banks')

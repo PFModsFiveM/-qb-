@@ -129,6 +129,15 @@ Config.Equipment = {
         Default = 'suspicious',
     },
 
+    -- Restricted radio channels (pma-voice addChannelCheck, decided on the server): channel ->
+    -- job types that may join while on duty. A client-side radio check alone could be skipped.
+    RadioChannels = {
+        [1] = { leo = true, ems = true }, [2] = { leo = true, ems = true }, [3] = { leo = true, ems = true },
+        [4] = { leo = true, ems = true }, [5] = { leo = true, ems = true }, [6] = { leo = true, ems = true },
+        [7] = { leo = true, ems = true }, [8] = { leo = true, ems = true }, [9] = { leo = true, ems = true },
+        [10] = { leo = true, ems = true },
+    },
+
     -- Fingerprint scanner (station): a session between the officer and the person scanned
     Fingerprint = { Range = 2.5, SessionSeconds = 120 },
 

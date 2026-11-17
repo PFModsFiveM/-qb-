@@ -493,6 +493,22 @@ describe('drone', function()
     end)
 end)
 
+-- ── restricted radio channels ────────────────────────────────────────────────────────────────
+describe('restricted radio channels', function()
+    it('pma-voice gets a server check per channel: only on-duty leo/ems join', function()
+        local checks = {}
+        Mock.exportsByResource['pma-voice'] = { addChannelCheck = function(_, ch, cb) checks[ch] = cb end }
+        resources['pma-voice'] = 'started'
+        assert_eq(PoliceRegisterRadioChecks(), 10)
+        assert_true(Mock.callable(checks[1]))
+        assert_false(checks[1](CIV))
+        assert_false(checks[1](OFFSGT))
+        assert_true(checks[1](COP))
+        assert_true(checks[10](MEDIC))
+        assert_eq(checks[11], nil)
+    end)
+end)
+
 -- ── static cameras ───────────────────────────────────────────────────────────────────────────
 describe('static /cam cameras are retired', function()
     it('the client no longer creates a camera for /cam', function()

@@ -680,7 +680,7 @@ local function CitationDocument(row, res)
     if row.plate then lines[#lines + 1] = ('Vehicle: %s'):format(row.plate) end
     if tonumber(row.speed_kmh) then lines[#lines + 1] = ('Speed: %d km/h in a %d km/h zone'):format(tonumber(row.speed_kmh), tonumber(row.limit_kmh) or 0) end
     lines[#lines + 1] = ('Issued: %s'):format(os.date('%Y-%m-%d %H:%M', Now()))
-    lines[#lines + 1] = ('Justice order #%s. Pay or contest it in the bills app.'):format(tostring(res.orderId))
+    lines[#lines + 1] = ('Justice order #%s'):format(tostring(res.orderId))
     pcall(function() exports['pf-citizen']:CreateDocument(row.citizenid, { title = ('Traffic citation %s'):format(row.uid), body = table.concat(lines, '\n') }) end)
 end
 

@@ -175,7 +175,7 @@ end
 describe('schema (key pfm-policejob)', function()
     it('applies v1 fines and v2 evidence once; a second run applies nothing', function()
         local versions = MySQL.query.await("SELECT version, name FROM pf_schema_migrations WHERE resource = 'pfm-policejob' ORDER BY version")
-        assert_eq(#versions, 2)
+        assert_eq(#versions, 3)
         assert_eq(versions[1].name, 'police fine records')
         assert_eq(versions[2].name, 'evidence core')
         for _, t in ipairs({ 'pfm_police_fines', 'pf_evidence_items', 'pf_evidence_custody', 'pf_evidence_scene_drops', 'pf_evidence_lockers' }) do
@@ -183,7 +183,7 @@ describe('schema (key pfm-policejob)', function()
         end
         Schema.state = 'idle'
         assert_true(Schema.Run())
-        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob'")), 2)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-policejob'")), 3)
     end)
     it('on a server that already has v1 (fines rows kept), only v2 is applied', function()
         MySQL.query.await("INSERT INTO pfm_police_fines (citizenid, society, amount, state) VALUES ('OLDCID', 'police', 50, 'paid')")
@@ -505,6 +505,11 @@ describe('CreateEvidence, GetEvidence and disposal', function()
         assert_eq(A.DisposeEvidence(id, 'destroy', { courtOrderId = 'CO-1', actor = { src = SARGE } }).error, 'too_far', 'no remote seizure from an officer')
         assert_eq(A.TransferEvidence(id, { kind = 'officer', src = SARGE }, { actor = { src = SARGE } }).error, 'too_far')
         Mock.coords[SARGE] = vector3(0, 1, 0)
+        -- without pf-justice confirming the order, disposal fails closed
+        assert_true(not A.DisposeEvidence(id, 'destroy', { courtOrderId = 'CO-1', actor = { src = SARGE } }).ok, 'no unverified court order')
+        assert_eq(row(id).state ~= 'destroyed', true)
+        started['pf-justice'] = true
+        Mock.exportsByResource['pf-justice'] = { IsCourtOrderValid = function(_, order, kind) return order == 'CO-1' and kind == 'evidence_destroy' end }
         local res = A.DisposeEvidence(id, 'destroy', { courtOrderId = 'CO-1', actor = { src = SARGE } })
         assert_true(res.ok, tostring(res.error))
         assert_eq(row(id).state, 'destroyed')
@@ -512,5 +517,6 @@ describe('CreateEvidence, GetEvidence and disposal', function()
         assert_eq(events(id)[#events(id)].event, 'destroyed')
         assert_eq(A.TransferEvidence(id, { kind = 'officer', src = SARGE }, { actor = { src = SARGE } }).error, 'invalid_state')
         assert_true(A.DisposeEvidence(id, 'destroy', { courtOrderId = 'CO-1', actor = { src = SARGE } }).duplicate)
+        started['pf-justice'], Mock.exportsByResource['pf-justice'] = nil, nil
     end)
 end)

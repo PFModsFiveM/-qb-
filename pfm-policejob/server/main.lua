@@ -155,6 +155,27 @@ local function RegisterPoliceDutyPoints()
 end
 RegisterPoliceDutyPoints()
 
+-- Restricted radio channels: pma-voice asks this check when a player joins one of them.
+function PoliceRadioAllowed(src, channel)
+    local types = (Eq().RadioChannels or {})[channel]
+    if not types then return true end
+    return OnDutyOfType(exports['pfm-core']:GetPlayer(tonumber(src)), types)
+end
+
+local function RegisterRadioChecks()
+    if GetResourceState('pma-voice') ~= 'started' then return 0 end
+    local n = 0
+    for channel in pairs(Eq().RadioChannels or {}) do
+        local ch = tonumber(channel)
+        if ch and pcall(function()
+            exports['pma-voice']:addChannelCheck(ch, function(src) return PoliceRadioAllowed(src, ch) end)
+        end) then n = n + 1 end
+    end
+    return n
+end
+PoliceRegisterRadioChecks = RegisterRadioChecks
+RegisterRadioChecks()
+
 AddEventHandler('onResourceStart', function(resourceName)
     if resourceName == GetCurrentResourceName() then
         CreateThread(function()
@@ -162,6 +183,8 @@ AddEventHandler('onResourceStart', function(resourceName)
         end)
     elseif resourceName == 'pfm-core' then
         RegisterPoliceDutyPoints()
+    elseif resourceName == 'pma-voice' then
+        RegisterRadioChecks()
     end
 end)
 
