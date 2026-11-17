@@ -380,23 +380,27 @@ describe('b21 hospital app: queues', function()
         assert_eq(callsNamed('cb:pharmacyLog')[1].args[1], MED)
     end)
     it('the counter queue is a paged SELECT of the facility with search', function()
-        Sql.rows['FROM pf_hosp_prescriptions'] = { { id = 3, citizenid = 'PAT1', drug = 'painkillers', qty = 3, units_per_fill = 4, dispensed = 1, controlled = 0,
-            created_at = 1, expires_at = 2000000000, charinfo = '{"firstname":"Ann","lastname":"Lee"}' } }
+        Sql.rows['FROM pf_hosp_prescriptions'] = { { id = 3, citizenid = 'ANN9', drug = 'painkillers', qty = 3, units_per_fill = 4, dispensed = 1, controlled = 0,
+            created_at = 1, expires_at = 2000000000 } }
+        Sql.rows['FROM players WHERE charinfo'] = { { citizenid = 'ANN9' } }
+        Sql.rows['FROM players WHERE citizenid IN'] = { { citizenid = 'ANN9', charinfo = '{"firstname":"Ann","lastname":"Lee"}' } }
         local res = rpc('pharmacy', MED, { facility = 'pillbox', q = 'Ann', page = 2 })
         assert_true(res.ok)
         assert_eq(res.list[1].name, 'Ann Lee')
         assert_eq(res.list[1].label, 'Painkillers')
         assert_eq(res.list[1].filled, 1)
+        assert_eq(sqlNamed('FROM players WHERE charinfo').params[1], '%Ann%')
         local s = sqlNamed('FROM pf_hosp_prescriptions')
+        assert_true(not s.sql:find('JOIN', 1, true), 'no cross-table citizen id comparison')
         assert_eq(s.params[1], 'pillbox')
         assert_eq(s.params[3], 'Ann')
-        assert_eq(s.params[4], '%Ann%')
+        assert_eq(s.params[4], 'ANN9')
         assert_eq(s.params[#s.params], 25, 'offset of page 2')
         assert_eq(s.params[#s.params - 1], 26, 'one more row than a page tells whether there is a next page')
     end)
     it('LIKE wildcards in a search are literal', function()
         rpc('pharmacy', MED, { facility = 'pillbox', q = '50%_x' })
-        assert_eq(sqlNamed('FROM pf_hosp_prescriptions').params[4], '%50\\%\\_x%')
+        assert_eq(sqlNamed('FROM players WHERE charinfo').params[1], '%50\\%\\_x%')
     end)
 end)
 
@@ -407,14 +411,14 @@ describe('b21 hospital app: bills (supervisors)', function()
         assert_eq(#Sql.log, 0)
     end)
     it('paged by state and search; the due amount is total minus coverage', function()
-        Sql.rows['FROM pf_hosp_bills'] = { { id = 8, citizenid = 'PAT1', admission_id = 11, total = 900, discount = 450, state = 'invoiced', created_at = 5,
-            charinfo = '{"firstname":"Ann","lastname":"Lee"}' } }
+        Sql.rows['FROM pf_hosp_bills'] = { { id = 8, citizenid = 'ANN9', admission_id = 11, total = 900, discount = 450, state = 'invoiced', created_at = 5 } }
+        Sql.rows['FROM players WHERE citizenid IN'] = { { citizenid = 'ANN9', charinfo = '{"firstname":"Ann","lastname":"Lee"}' } }
         local res = rpc('bills', CHIEF, { facility = 'pillbox', state = 'invoiced', q = 'PAT1' })
         assert_true(res.ok)
         assert_eq(res.list[1].due, 450)
         assert_eq(res.list[1].name, 'Ann Lee')
         assert_eq(res.more, false)
-        local s = sqlNamed('FROM pf_hosp_bills b')
+        local s = sqlNamed('FROM pf_hosp_bills WHERE hospital_id')
         assert_eq(s.params[1], 'pillbox'); assert_eq(s.params[2], 'invoiced'); assert_eq(s.params[3], 'PAT1')
         assert_eq(rpc('bills', CHIEF, { facility = 'pillbox', state = 'stolen' }).error, 'bad_args')
     end)

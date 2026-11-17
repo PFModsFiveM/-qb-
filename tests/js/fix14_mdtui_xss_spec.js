@@ -110,7 +110,8 @@ function textOf(el) { return el ? el.textContent : null; }
 
 (async () => {
     // ── helpers (police app.js) ─────────────────────────────────────────
-    const police = boot('pf-policemdt-DEV');
+    const policeResponses = {}; // NUI callback answers by name; tests below set pfMdtCall (the batch-21 page bridge)
+    const police = boot('pf-policemdt-DEV', { responses: policeResponses });
     await open(police);
     const P = police.w;
 
@@ -232,18 +233,30 @@ function textOf(el) { return el ? el.textContent : null; }
 
     // ── MDT-XSS-2/3: officer-typed text ──────────────────────────────────
     await it('police: warrant cards and the details modal show warrant text as text', async () => {
+        // batch 21: the Warrants v2 page (html/pages/warrants.js) replaced the old warrant grid; it reads
+        // pf_mdt:searchWarrants and GetWarrantDetails through the pfMdtCall bridge and builds text nodes
+        const W = { warrantId: EVIL_ID, suspectName: EVIL, issuedBy: EVIL, issuedAt: EVIL, charges: [EVIL], narrative: EVIL, title: EVIL, status: 'active',
+            type: 'arrest', approvalState: 'approved', officers: [EVIL], witnesses: [{ name: EVIL, statement: EVIL }], expiresAt: EVIL };
+        policeResponses.pfMdtCall = (b) => {
+            if (b.name === 'pf_mdt:searchWarrants') return { data: [W], total: 1 };
+            if (b.name === 'pf_mdt_dispatch:server:GetWarrantDetails') return Object.assign({ id: EVIL_ID, address: EVIL, approvedBy: EVIL }, W);
+            return {};
+        };
         police.run("router.set('warrant')");
-        police.post({ action: 'setWarrants', totalCount: 1, warrants: [{ warrantId: EVIL, suspectName: EVIL, issuedBy: EVIL, issuedAt: EVIL, charges: [EVIL], narrative: EVIL, title: EVIL, status: 'active', officers: [EVIL], witnesses: [{ name: EVIL, statement: EVIL }] }] });
         await settle();
-        const grid = P.document.getElementById('warrantGrid');
-        noInjection(police, 'warrant cards', grid);
-        eq(textOf(grid.querySelector('.warrant-suspect')), EVIL);
-        eq(grid.querySelectorAll('[onclick]').length, 0, 'no inline handler carries the warrant');
-        grid.querySelector('button[data-warrant-index]').dispatchEvent(new P.MouseEvent('click', { bubbles: true }));
+        const page = P.document.querySelector('[data-pfp-page="warrant"]');
+        ok(page, 'warrants page mounted');
+        noInjection(police, 'warrant rows', page);
+        const row = page.querySelector('.pfp-row[data-warrant-id]');
+        ok(row, 'row rendered');
+        eq(textOf(row.querySelector('.pfp-row-title')), EVIL);
+        eq(row.dataset.warrantId, EVIL_ID, 'the row carries the exact id as data');
+        eq(page.querySelectorAll('[onclick]').length, 0, 'no inline handler carries the warrant');
+        row.click();
         await settle();
-        noInjection(police, 'warrant details', P.document.getElementById('warrantDetailsModal') || P.document.body);
-        const body = P.document.getElementById('warrantDetailsBody') || P.document.getElementById('warrantDetailsModal');
-        ok(body && body.textContent.includes(EVIL), 'details show the narrative as text');
+        noInjection(police, 'warrant details', page);
+        ok(page.textContent.includes(EVIL), 'details show the narrative as text');
+        delete policeResponses.pfMdtCall;
     });
 
     await it('police: incident cards show title, location, officer and people as text; bad dates are "Unknown"', async () => {

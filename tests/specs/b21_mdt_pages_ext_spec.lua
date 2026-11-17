@@ -97,6 +97,23 @@ describe('21B page relays: gate and access answer', function()
         assert_eq(Access.Actions['pf_mdt:custody:get'], nil)
     end)
 
+    it('the manifest loads the relays after the gate and personnel_ext, and the client file after main.lua', function()
+        local mf = __readfile(RES .. 'fxmanifest.lua')
+        local function order(block, pattern)
+            local pos, i = {}, 0
+            for f in mf:match(block .. '%s*(%b{})'):gmatch(pattern) do i = i + 1; pos[f] = i end
+            return pos
+        end
+        local s = order('server_scripts', "'(server/[%w_]+%.lua)'")
+        assert_true(s['server/pages_ext.lua'] ~= nil, 'server/pages_ext.lua listed')
+        assert_true(s['server/pages_ext.lua'] > s['server/access.lua'] and s['server/pages_ext.lua'] > s['server/personnel_ext.lua'])
+        local c = order('client_scripts', "'(client/[%w_]+%.lua)'")
+        assert_true(c['client/pages_ext.lua'] ~= nil and c['client/pages_ext.lua'] > c['client/main.lua'])
+        for _, f in ipairs({ 'custody.js', 'evidence_coc.js', 'lab.js', 'timeline.js', 'uof.js', 'personnel_ext.js', 'pages_ext.css' }) do
+            assert_true(mf:find("'html/pages/" .. f .. "'", 1, true) ~= nil, f .. ' in files')
+        end
+    end)
+
     it('refuses civilians on reads and off-duty officers on writes, before any owner is called', function()
         local r = call('pf_mdt:custody:get', CIV, { cid = 'ABC123' })
         assert_eq(r.success, false)

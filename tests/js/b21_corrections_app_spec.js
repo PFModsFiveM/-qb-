@@ -381,4 +381,6 @@ async function open(device, handlers) {
 
     console.log(`b21_corrections_app_spec: ${passed} passed, ${failed} failed`);
     if (failures.length) { failures.forEach((f) => console.log('  - ' + f)); process.exit(1); }
+    // windows still open hold their 30 s refresh timers; end here
+    process.exit(0);
 })();
