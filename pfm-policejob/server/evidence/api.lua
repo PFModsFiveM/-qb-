@@ -271,6 +271,10 @@ end
 
 export('TransferEvidence', function(id, to, opts)
     opts = type(opts) == 'table' and opts or {}
+    -- a release is a disposal: it needs the DisposeEvidence allowlist too (the MDT may move evidence, not dispose it)
+    if type(to) == 'table' and to.kind == 'release' and not E.Allowed('DisposeEvidence') then
+        return E.Err('not_allowed', 'This resource may not release evidence')
+    end
     return withActor(opts, function(actor) return C.Transfer(id, to, opts, actor) end)
 end)
 

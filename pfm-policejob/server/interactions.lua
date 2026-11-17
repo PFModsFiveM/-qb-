@@ -27,9 +27,23 @@ local justiceFile -- nil = not read; false = unreadable; table = LegacyRuntimes
 
 local function justiceSettings() return (Config and Config.Justice) or {} end
 
+
+-- pf-justice's LegacyRuntimeLive export, when pf-justice is running (preferred over reading its config file)
+local function justiceFlagsFromExport()
+    if GetResourceState == nil or GetResourceState('pf-justice') ~= 'started' then return nil end
+    local ok, flags = pcall(function()
+        local t = {}
+        for _, n in ipairs({ 'mdt', 'prison', 'policejob' }) do t[n] = exports['pf-justice']:LegacyRuntimeLive(n) ~= false end
+        return t
+    end)
+    return ok and type(flags) == 'table' and flags or nil
+end
+
 function PJ.ReadJusticeFlags()
     if justiceFile ~= nil then return justiceFile or nil end
     justiceFile = false
+    local fromExport = justiceFlagsFromExport()
+    if fromExport then justiceFile = fromExport return fromExport end
     if LoadResourceFile == nil or load == nil then return nil end
     local okRead, text = pcall(LoadResourceFile, 'pf-justice', 'config.lua')
     if not okRead or type(text) ~= 'string' or text == '' then return nil end

@@ -198,6 +198,12 @@ describe('exports', function()
         assert_eq(Mock.selfExport('SealEvidence')(1, {}).error, 'not_allowed', 'sealing is PJ only')
         assert_true(Mock.selfExport('GetEvidence')(1, {}).error ~= 'not_allowed')
     end)
+    it('a release through TransferEvidence needs the DisposeEvidence allowlist (the MDT cannot dispose)', function()
+        Mock.invokingResource = 'pf-policemdt-DEV'
+        assert_eq(Mock.selfExport('TransferEvidence')(1, { kind = 'release', cid = 'CID1' }, { courtOrderId = 1 }).error, 'not_allowed')
+        assert_true(Mock.selfExport('TransferEvidence')(1, { kind = 'lab' }, {}).error ~= 'not_allowed', 'other moves still allowed')
+        Mock.invokingResource = nil
+    end)
     it('callers from other resources must pass an idempotency key', function()
         Mock.invokingResource = 'pf-justice'
         local res = Mock.selfExport('CreateEvidence')({ kind = 'item', attrs = { item = 'phone' } }, { giveTo = 'stash:x' })
