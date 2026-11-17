@@ -2864,3 +2864,29 @@ Tests: mocked 3747 passed, 0 failed (309 files); real DB 982 passed, 0 failed (1
 Open: GOV `SetLicenseStatus` for court licence suspensions (D16); remand time credit is a manual `AdjustOrder`;
 custody care is not billed (owner decision); the court, corrections and probation screens are batch 21 (commands
 until then); all prison, court, office and work-site coordinates are first placements; in-game checks per unit.
+
+## Batch 20 — 2026-11-17: hospital services, morgue, supplies and fleet, EMS MDT, departments, police personnel
+
+Six units built in parallel, lead follow-ups, one combined adversarial check (CHECK_SUMMARY). pf-ambulancejob schema
+moves to v8, pf-government to v7, pf-emsmdt to v3, pf-policemdt-DEV to v9.
+
+| Unit | What changed |
+|---|---|
+| 20A hospital services | `pf-ambulancejob/server/hospital/{pharmacy,lab,imaging,surgery}.lua`, schema v8: prescriptions (keyed, discharge prescriptions on the one bill), a controlled-substance dispensing log written before any item moves, lab orders read from engine state at the draw, imaging in an imaging bed confirming diagnoses, surgery in an operating room with a confirmed diagnosis raising `projectileRecovered` for the police lab, ward/ICU stays billed per started bed-hour on the single keyed admission bill. |
+| 20B morgue | `server/hospital/morgue.lua`, `client/morgue.lua`: admin-only deceased marking (ordinary deaths still respawn), autopsy from the engine's real injury and event history (cause, suggested manner, time-of-death range), death records linked to MDT cases with `AttachExternalRecord`; a deceased character cannot be loaded (pfm-multicharacter). |
+| 20C supplies and fleet | `pf-government/server/departments/procurement.lua`, `pf-ambulancejob/server/hospital/supplies.lua`, `server/ems/fleet.lua`, `pfm-prison/server/supplies.lua`: the pf-stores buyer kind `facility` (department society pays; unclear charges held), deliveries unpacked into facility stashes, rig restock from the hospital supply room, the prison kitchen cooks from pantry stock, fleet maintenance as `mechanic.fleet` proven by server vehicle health and `SetServiceState`. |
+| 20D EMS MDT | `pf-emsmdt/server/{pcr,units}.lua`, schema v3: patient care reports charted from server treatment events, capped narrative, handover acknowledged only by receiving hospital staff, unit board from server duty state, the Medical tab reads `GetMedicalRecord`; police leftovers removed. |
+| 20E departments | `pf-government/server/departments/{training,assets,payroll}.lua`, `server/apps/department.lua`, schema v7: training that grants qualifications through the qualification store, a serial-tracked asset register with keyed issue/return, payroll reports from ledger wage transfers (pay stays in the paycheck), department app handlers that re-check the role on the server. |
+| 20F police personnel | `pf-policemdt-DEV/server/personnel_ext.lua`, schema v9; `pfm-policejob/server/armory.lua`: use-of-force and pursuit reports drafted from the server telemetry timeline, a review chain the subject cannot approve, keyed IA complaints hidden from the named officer, performance reviews, the armory checking out serial-tracked assets (makes `Config.ArmoryWhitelist` real). |
+
+Lead fixes: pf-stores keeps an order whose charge came back unclear as `created` and settles it from the ledger record
+(`O.RecoverCreated`, never charged twice); medical record lists death records; pfm-multicharacter refuses deceased
+characters; `prison_food_stock` item; pf-emsmdt SQL install file and removed client dispatch files; older version
+asserts updated (pf-government, pf-emsmdt).
+
+Tests: TEST_SUMMARY. Not tested in game.
+
+Open (owner decisions in PF_REMAINING_WORK): the police shop still hands out free firearms and radios, which bypasses
+the serial-tracked armory (left until managers stock the register); the prison commissary does not draw from stock;
+Paleto has no operating room; all new counters, zones, docks, bays and the morgue are first placements; the MDT and
+EMS MDT pages for these endpoints are batch 21.
