@@ -296,3 +296,9 @@ security (19F) and medical in custody (19G): Implemented + Tested (automated). C
 export, warrant request/recall from the prison, hospital transfers counted as time served, prison district for work
 orders. Combined check: 3 defects fixed with specs. Suites: mocked 3747/0, real DB 982/0. Not tested in game. Resume at batch 20
 (PF_ULTIMATE_SYSTEM_PLAN.md section 11).
+
+### 2026-11-17: batch 20 done
+Hospital services (20A), morgue (20B), supplies and fleet (20C), EMS MDT (20D), department management (20E) and police
+personnel (20F): Implemented + Tested (automated). Lead follow-ups: pf-stores unclear charges keep their order waiting;
+deceased characters refused at selection. Combined check: 8 defects fixed with specs. Suites: mocked 3907/0, real DB
+1033/0. Not tested in game. Resume at batch 21 (PF_ULTIMATE_SYSTEM_PLAN.md section 12).

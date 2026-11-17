@@ -157,14 +157,17 @@ None of these blocks batch 16; each names where it lands. "Minor" means the chec
 
 ## 8. Exact next steps
 
-Status 2026-11-17: batches 15-19 are committed. Open items per batch are listed in `docs/IMPLEMENTATION_REPORT.md`
-(Batch 18 and Batch 19, "Open").
+Status 2026-11-17: batches 15-20 are committed. Open items per batch are listed in `docs/IMPLEMENTATION_REPORT.md`
+(Batch 18, 19 and 20, "Open").
 
 1. Batch 19 is done (courts exports live for the batch-18 callers). Owner decisions it raised: whether custody care is
    billed to the state (today not billed), court licence suspension needs a pf-government `SetLicenseStatus` (D16),
    remand credit is a manual `AdjustOrder`, a police grade-4 officer may decide a warrant review after 30 minutes with no
    judge on duty (`Config.Courts.WarrantFallback`).
-2. Batches 20-22 in order (20: hospital/EMS advanced, departments; 21: UI in the pfm-ui shared look, incl. MDT warrant,
+   Batch 20 raised: the police shop still hands out free firearms and radios, bypassing the serial-tracked armory
+   (remove them from pfm-shops `Config.Products.police` once managers have registered armory stock); the prison
+   commissary does not draw from stock; Paleto has no operating room.
+2. Batches 21-22 in order (20: hospital/EMS advanced, departments; 21: UI in the pfm-ui shared look, incl. MDT warrant,
    BOLO and audit pages and radial-menu entries; 22: review and docs).
 3. Owner (in parallel): dedicated item art for the batch 17/18 items (they borrow existing icons); confirm speed-camera,
    lab, court and work-site coordinates; rotate the old MDT evidence webhook and set `pf_policemdt_evidence_webhook`

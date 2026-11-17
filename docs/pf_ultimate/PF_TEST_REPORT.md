@@ -165,7 +165,13 @@ searches, escape and recapture with the warrant; prison jobs, commissary, trust 
 visit, prescriptions and an escorted hospital transfer.
 
 ### Batch 20
-(to be filled)
+Mocked 3907 passed / 0 failed (315 files); real DB 1033 passed / 0 failed (108 files); tests/js all green; `ledger_parallel`,
+`sql_install_check` pass; parsecheck clean (66 files). New specs: `b20_hospital_services`, `b20_morgue`,
+`b20_supplies_fleet` (+ `b20_supplies_realdb`), `b20_emsmdt_pcr`, `b20_gov_departments`, `b20_police_personnel` (each
+with a real-DB spec). In-game checks pending: pharmacy counters and operating room, imaging bed, lab draw, surgery and
+the projectile reaching the evidence locker, ICU billing; morgue zone, deceased marking and character selection;
+procurement delivery to each dock and unpack, rig restock bays, `/fleetservice`; PCR flow and handover; department app
+(batch 21); armory counters, serial on drawn weapons, lost-equipment block; use-of-force auto drafts while recording.
 
 ### Batch 21
 (to be filled)

@@ -2867,7 +2867,7 @@ until then); all prison, court, office and work-site coordinates are first place
 
 ## Batch 20 — 2026-11-17: hospital services, morgue, supplies and fleet, EMS MDT, departments, police personnel
 
-Six units built in parallel, lead follow-ups, one combined adversarial check (CHECK_SUMMARY). pf-ambulancejob schema
+Six units built in parallel, lead follow-ups, one combined adversarial check (eight real defects, all fixed with specs: controlled drugs only through the logged pharmacy, armory equipment returned only at the armory with a lost-equipment block, stays billed by total time, crew cannot accept their own handover, prescriptions cancelled only in their hospital, imaging orders reset after a restart, bandages orderable, one-of-each checked by asset kind). pf-ambulancejob schema
 moves to v8, pf-government to v7, pf-emsmdt to v3, pf-policemdt-DEV to v9.
 
 | Unit | What changed |
@@ -2884,7 +2884,8 @@ Lead fixes: pf-stores keeps an order whose charge came back unclear as `created`
 characters; `prison_food_stock` item; pf-emsmdt SQL install file and removed client dispatch files; older version
 asserts updated (pf-government, pf-emsmdt).
 
-Tests: TEST_SUMMARY. Not tested in game.
+Tests: mocked 3907 passed, 0 failed (315 files); real DB 1033 passed, 0 failed (108 files); every tests/js spec green;
+`ledger_parallel` and `sql_install_check` pass; parsecheck clean on 66 changed Lua files. Not tested in game.
 
 Open (owner decisions in PF_REMAINING_WORK): the police shop still hands out free firearms and radios, which bypasses
 the serial-tracked armory (left until managers stock the register); the prison commissary does not draw from stock;
