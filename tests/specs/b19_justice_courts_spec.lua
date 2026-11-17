@@ -285,7 +285,7 @@ describe('manifest and config for batch 19', function()
         local lists = {}
         local function capture(name) return function(v) lists[name] = v end end
         for _, k in ipairs({ 'fx_version', 'game', 'author', 'description', 'version', 'lua54' }) do _G[k] = function() end end
-        for _, k in ipairs({ 'dependencies', 'shared_scripts', 'server_scripts', 'client_scripts' }) do _G[k] = capture(k) end
+        for _, k in ipairs({ 'dependencies', 'shared_scripts', 'server_scripts', 'client_scripts', 'files' }) do _G[k] = capture(k) end
         load_resource('[pfscripts]/pf-justice/fxmanifest.lua')
         local pos = {}
         for i, f in ipairs(lists.server_scripts) do pos[f] = i end
