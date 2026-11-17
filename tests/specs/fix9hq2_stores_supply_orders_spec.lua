@@ -630,6 +630,44 @@ describe('(d) the buyer pays the freight on top of the goods (owner decision)', 
         assert_eq(res.data.freight, 150)
         assert_eq(bal(BUYER), 333)
     end)
+    it('an unclear charge keeps the order waiting; the ledger record then settles it, never a second charge (batch 20)', function()
+        bank.balances[BUYER] = 1000
+        local bankx = Mock.exportsByResource['pfm-banking']
+        local realTransfer = bankx.Transfer
+        local charges = 0
+        bankx.Transfer = function(self, o)
+            if o.key:find(':charge', 1, true) then
+                charges = charges + 1
+                bank.n = bank.n + 1
+                bank.byKey[o.key] = { tx_id = 'TX' .. bank.n, idempotency_key = o.key, from_account = o.from, to_account = o.to, amount = o.amount, state = 'debited' }
+                return { ok = false, error = 'interrupted', state = 'debited', unclear = true }
+            end
+            return realTransfer(self, o)
+        end
+        local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 40 } } })
+        assert_false(res.ok)
+        assert_eq(res.error, 'payment_pending')
+        local id = res.data.orderId
+        assert_eq(orderRow(id).status, 'created', 'not failed while the ledger may still complete it')
+        orderRow(id).created_at = orderRow(id).created_at - 120000
+        O.RecoverCreated()
+        assert_eq(orderRow(id).status, 'created', 'still debited: keeps waiting')
+        for k, tx in pairs(bank.byKey) do if k:find(':charge', 1, true) and tx.idempotency_key == k then tx.state = 'completed' end end
+        O.RecoverCreated()
+        assert_eq(orderRow(id).status, 'awaiting_supplier')
+        assert_eq(charges, 1, 'charged once')
+        -- a second order whose unclear charge the ledger then fails is failed, not charged again
+        local res2 = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'trucking', cart = { { name = 'sandwich', quantity = 40 } } })
+        assert_eq(res2.error, 'payment_pending', tostring(res2.error))
+        do
+            local id2 = res2.data.orderId
+            orderRow(id2).created_at = orderRow(id2).created_at - 120000
+            for k, tx in pairs(bank.byKey) do if tx.state == 'debited' then tx.state = 'failed'; tx.error = 'insufficient_funds' end end
+            O.RecoverCreated()
+            assert_eq(orderRow(id2).status, 'failed')
+        end
+        bankx.Transfer = realTransfer
+    end)
     it('a pickup is the goods only; the quote and the pricing match what an order is charged', function()
         bank.balances[BUYER] = 40
         local res = O.Create(OWNER, { kind = 'shop', buyerId = 'deli', method = 'pickup', cart = { { name = 'sandwich', quantity = 10 } } })

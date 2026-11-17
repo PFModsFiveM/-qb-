@@ -12,9 +12,8 @@
 -- The stock is taken from the pantry before the meals are put in the canteen, and given back when
 -- the canteen does not take them, so nothing is created or lost. Everything happens on the server.
 --
--- prison_food_stock is not in pfm-core's shared items yet, so it is registered at start through
--- pfm-core AddItems when missing (the pattern pf-restaurants uses); it should move into
--- pfm-core/shared/items.lua with an image.
+-- prison_food_stock is in pfm-core's shared items; it is still registered at start through pfm-core
+-- AddItems when missing (an older pfm-core).
 
 PFPrison = PFPrison or {}
 PFPrison.Supplies = PFPrison.Supplies or {}
@@ -31,7 +30,7 @@ S.DEFAULTS = {
         PortionsPerUnit = 4,
     },
     StockItemDef = {
-        name = 'prison_food_stock', label = 'Bulk Food Stock', weight = 2000, type = 'item', image = 'cardboard_box.png',
+        name = 'prison_food_stock', label = 'Bulk Food Stock', weight = 2000, type = 'item', image = 'sandwich.png',
         unique = false, useable = false, shouldClose = false, description = 'Catering-size food stock for the prison kitchen',
     },
 }
