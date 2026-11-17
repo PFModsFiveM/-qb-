@@ -106,7 +106,7 @@ describe('MDT schema v8 (MariaDB)', function()
         assert_eq(before, 7)
         assert_true(Schema.Run(), tostring(Schema.lastError))
         local rows = MySQL.query.await('SELECT version, name FROM pf_schema_migrations WHERE resource = ? ORDER BY version', { KEY })
-        assert_eq(#rows, 8)
+        assert_eq(#rows, 9) -- v9 (20F personnel) applies in the same run
         assert_eq(tonumber(rows[8].version), 8)
         assert_eq(rows[8].name, 'cases, BOLOs, record audit, warrant columns')
         for _, t in ipairs({ 'pf_mdt_cases', 'pf_mdt_case_links', 'pf_mdt_case_people', 'pf_mdt_case_entries', 'pf_mdt_case_submissions',

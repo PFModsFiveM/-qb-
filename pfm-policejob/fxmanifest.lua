@@ -53,6 +53,7 @@ server_scripts {
 	'server/vehicle.lua',
 	'server/traffic.lua', -- (18B) radar, ALPR, speed cameras, breathalyzer, plate checks, citations
 	'server/gameplay.lua',
+	'server/armory.lua', -- (20F) serial-tracked armory checkout/return against the pf-government asset register
 }
 
 ui_page 'html/index.html'

@@ -314,7 +314,10 @@ end
 
 describe('schema v7 (custody care)', function()
     it('is the next version after 17E\'s v6 and creates the custody tables', function()
-        local last = PFMed.Schema.Migrations[#PFMed.Schema.Migrations]
+        -- v8 (batch 20 hospital services) follows; v7 stays the custody version
+        local last
+        for _, m in ipairs(PFMed.Schema.Migrations) do if m.version == 7 then last = m end end
+        assert_eq(PFMed.Schema.Migrations[#PFMed.Schema.Migrations].version, 8)
         assert_eq(last.version, 7)
         assert_eq(last.name, 'custody care')
         local sql = table.concat(last.up, '\n')

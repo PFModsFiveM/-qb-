@@ -39,4 +39,5 @@ server_scripts {
     'server/work.lua',           -- prison jobs and credits (19E)
     'server/economy.lua',        -- trust accounts, commissary, restitution (19E)
     'server/security.lua',       -- doors, alarms, searches, escapes (19F)
+    'server/supplies.lua',       -- kitchen cooks from pantry stock bought through pf-government procurement (20C)
 }

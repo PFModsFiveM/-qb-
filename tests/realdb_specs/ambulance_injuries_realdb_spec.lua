@@ -75,10 +75,11 @@ describe('injury tables', function()
     it('are created by the migration, and rerunning it changes nothing', function()
         assert_true(InjuryDB.Start())
         -- v1 (these tables) plus the medical engine's v2/v3, all under the one 'pf-ambulancejob' key
-        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob'")), 6)
+        -- (v1-v3, v5-v8: v8 is the batch-20 hospital services)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob'")), 7)
         assert_eq(MySQL.scalar.await("SELECT name FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob' AND version = 1"), 'injury records, treatment log, health snapshots')
         assert_true(RunMigrations('pf-ambulancejob', PFMed.Schema.Migrations))
-        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob'")), 6)
+        assert_eq(tonumber(MySQL.scalar.await("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob'")), 7)
         local fk = MySQL.scalar.await([[SELECT DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS
             WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'player_treatment_log']])
         assert_eq(fk, 'SET NULL')

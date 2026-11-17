@@ -113,22 +113,22 @@ end
 
 describe('migration v7 (custody care)', function()
     it('applies after v6 on a fresh database; a rerun applies nothing', function()
-        assert_eq(versions(), '1,2,3,5,6,7')
+        assert_eq(versions(), '1,2,3,5,6,7,8') -- v8: batch 20 hospital services (extends the prescription tables)
         for _, t in ipairs(NEW_TABLES) do assert_eq(count('SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', { t }), 1, t) end
         assert_true(hasColumn('pf_hosp_admissions', 'custody_ref'))
         assert_true(hasColumn('pf_hosp_admissions', 'escort_cid'))
         assert_true(RunMigrations('pf-ambulancejob', PFMed.Schema.Migrations))
-        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob'"), 6)
+        assert_eq(count("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob'"), 7)
         assert_eq(MySQL.scalar.await("SELECT name FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob' AND version = 7"), 'custody care')
     end)
     it('a server at v6 gets only v7, rerun-safe after a partial run (columns already there)', function()
         for _, t in ipairs(NEW_TABLES) do MySQL.query.await('DROP TABLE IF EXISTS `' .. t .. '`') end
         MySQL.query.await('ALTER TABLE pf_hosp_admissions DROP COLUMN escort_cid')
-        MySQL.query.await("DELETE FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob' AND version = 7")
+        MySQL.query.await("DELETE FROM pf_schema_migrations WHERE resource = 'pf-ambulancejob' AND version IN (7, 8)")
         assert_eq(versions(), '1,2,3,5,6')
         H = restart()
         Q = H.SQL
-        assert_eq(versions(), '1,2,3,5,6,7')
+        assert_eq(versions(), '1,2,3,5,6,7,8')
         assert_true(hasColumn('pf_hosp_admissions', 'escort_cid'))
         assert_true(hasColumn('pf_hosp_admissions', 'custody_ref'))
     end)

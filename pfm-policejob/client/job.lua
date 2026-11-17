@@ -1073,3 +1073,122 @@ CreateThread(function()
         end
     end)
 end)
+
+-- ── Armory (batch 20F) ─────────────────────────────────────────────────────────────────────────
+-- Serial-tracked checkout and return against the pf-government asset register. The server decides
+-- everything (duty, rank, qualification, whitelist, stock, distance to the counter); this file only
+-- shows the counter prompt and the menu the server builds. The counter positions come from the
+-- server (Config.Armory there), so the client never holds its own copy.
+
+local armoryZonesMade = false
+
+local function armoryNotify(res, okText)
+    if type(res) == 'table' and res.ok then
+        QBCore.Functions.Notify(okText, 'success')
+    else
+        QBCore.Functions.Notify((type(res) == 'table' and res.message) or 'The armory refused', 'error')
+    end
+end
+
+local function openArmory()
+    QBCore.Functions.TriggerCallback('police:server:armoryMenu', function(res)
+        if type(res) ~= 'table' or not res.ok then
+            armoryNotify(res)
+            return
+        end
+        local menu = { { header = Lang:t('menu.pol_armory'), isMenuHeader = true } }
+        for _, it in ipairs(res.items or {}) do
+            local txt = ('%d in stock'):format(tonumber(it.inStock) or 0)
+            if not it.allowed then txt = it.reason == 'rank' and 'Your rank cannot draw this' or 'Qualification required' end
+            menu[#menu + 1] = {
+                header = 'Draw: ' .. tostring(it.label),
+                txt = txt,
+                disabled = not it.allowed or (tonumber(it.inStock) or 0) < 1,
+                params = { event = 'police:client:ArmoryCheckout', args = { item = it.item } },
+            }
+        end
+        for _, h in ipairs(res.held or {}) do
+            menu[#menu + 1] = {
+                header = 'Return: ' .. tostring(h.label) .. ' ' .. tostring(h.serial),
+                txt = h.carried and 'Hand it back in' or 'Not in your inventory (report it to a supervisor)',
+                disabled = not h.carried,
+                params = { event = 'police:client:ArmoryReturn', args = { serial = h.serial } },
+            }
+        end
+        menu[#menu + 1] = { header = Lang:t('menu.close'), txt = '', params = { event = 'qb-menu:client:closeMenu' } }
+        exports['pfm-menu']:openMenu(menu)
+    end)
+end
+
+RegisterNetEvent('police:client:OpenArmory', function() openArmory() end)
+
+RegisterNetEvent('police:client:ArmoryCheckout', function(data)
+    if type(data) ~= 'table' then return end
+    QBCore.Functions.TriggerCallback('police:server:armoryCheckout', function(res)
+        armoryNotify(res, type(res) == 'table' and res.serial and ('Drawn: serial ' .. tostring(res.serial)) or 'Drawn')
+        if type(res) == 'table' and res.ok then openArmory() end
+    end, { item = data.item })
+end)
+
+RegisterNetEvent('police:client:ArmoryReturn', function(data)
+    if type(data) ~= 'table' then return end
+    QBCore.Functions.TriggerCallback('police:server:armoryReturn', function(res)
+        armoryNotify(res, 'Returned: serial ' .. tostring(data.serial))
+        if type(res) == 'table' and res.ok then openArmory() end
+    end, { serial = data.serial })
+end)
+
+local function armoryListener()
+    CreateThread(function()
+        while inArmoury and PlayerJob.type == 'leo' do
+            if IsControlJustReleased(0, 38) then
+                exports['pfm-core']:HideText()
+                openArmory()
+                break
+            end
+            Wait(0)
+        end
+    end)
+end
+
+local function makeArmoryZones(points)
+    if armoryZonesMade or type(points) ~= 'table' or #points == 0 then return end
+    armoryZonesMade = true
+    if Config.UseTarget then
+        for i, p in ipairs(points) do
+            exports['pfm-target']:AddCircleZone('PoliceArmory_' .. i, vector3(p.x, p.y, p.z), 1.0, {
+                name = 'PoliceArmory_' .. i, useZ = true, debugPoly = false,
+            }, {
+                options = { { type = 'client', event = 'police:client:OpenArmory', icon = 'fas fa-gun', label = Lang:t('target.open_armory'), jobType = 'leo' } },
+                distance = 1.5,
+            })
+        end
+        return
+    end
+    local zones = {}
+    for _, p in ipairs(points) do
+        zones[#zones + 1] = BoxZone:Create(vector3(p.x, p.y, p.z), 1.5, 1.5, { name = 'box_zone', debugPoly = false, minZ = p.z - 1, maxZ = p.z + 1 })
+    end
+    ComboZone:Create(zones, { name = 'armoryCombo', debugPoly = false }):onPlayerInOut(function(isPointInside)
+        inArmoury = isPointInside
+        if isPointInside and PlayerJob.type == 'leo' and PlayerJob.onduty then
+            exports['pfm-core']:DrawText(Lang:t('info.enter_armory'), 'left')
+            armoryListener()
+        elseif not isPointInside then
+            exports['pfm-core']:HideText()
+        end
+    end)
+end
+
+local function loadArmory()
+    if armoryZonesMade or PlayerJob.type ~= 'leo' then return end
+    QBCore.Functions.TriggerCallback('police:server:armoryPoints', function(res)
+        makeArmoryZones(type(res) == 'table' and res.points or nil)
+    end)
+end
+
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function() SetTimeout(1000, loadArmory) end)
+RegisterNetEvent('QBCore:Client:OnJobUpdate', function() SetTimeout(1000, loadArmory) end)
+AddEventHandler('onResourceStart', function(name)
+    if name == GetCurrentResourceName() then SetTimeout(2000, loadArmory) end
+end)

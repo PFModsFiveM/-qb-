@@ -124,7 +124,7 @@ describe('schema', function()
         assert_eq(num(scalar("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pf_gov_budget_transactions' AND COLUMN_NAME IN ('idem_key', 'state', 'ledger_key')")), 3)
         GovSchema.__reset()
         assert_true(GovSchema.Ensure(), 'second run')
-        assert_eq(num(scalar("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-government'")), 6)
+        assert_eq(num(scalar("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-government'")), #GovSchema.Migrations)
         -- every step is rerun-safe (an interrupted version restarts from its first step)
         for _, m in ipairs(GovSchema.Migrations) do
             if m.version >= 5 then for _, sql in ipairs(m.up) do MySQL.query.await(sql) end end
