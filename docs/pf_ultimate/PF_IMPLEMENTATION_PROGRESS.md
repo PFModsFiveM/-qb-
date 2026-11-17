@@ -287,5 +287,5 @@ Implemented + Tested (automated). Suites: mocked 3412/0, real DB 840/0. Not test
 Custody field flow (18A), traffic/ALPR/impound/citations (18B), equipment and telemetry (18C), evidence lab (18D), MDT
 cases (18E) and warrants/BOLO/records (18F): Implemented + Tested (automated). Combined check: 7 real defects (lab
 commands refused under pfm-core, tox never ran, MDT photo capture, impound release on DB error, telemetry flush race,
-speeding citation target, missing item icons), all fixed with specs. Suites: mocked 3606/0, real DB REALDB_COUNT. Not
+speeding citation target, missing item icons), all fixed with specs. Suites: mocked 3606/0, real DB 908/0. Not
 tested in game. Resume at batch 19 (PF_ULTIMATE_SYSTEM_PLAN.md section 10).

@@ -145,7 +145,7 @@ Known gaps: see `PF_REMAINING_WORK.md` sections 6-7 (batch-15 open items and han
 (to be filled)
 
 ### Batch 18
-Mocked 3606 passed / 0 failed (302 files); real DB REALDB_COUNT; tests/js all green (incl. new `item_images_spec.js`);
+Mocked 3606 passed / 0 failed (302 files); real DB 908 passed, 0 failed (95 files); tests/js all green (incl. new `item_images_spec.js`);
 `ledger_parallel`, `sql_install_check` pass; parsecheck clean (72 files). New specs: `b18_police_field`,
 `b18_police_traffic` (+ realdb), `b18_police_telemetry` (+ realdb), `b18_police_equipment`, `b18_evidence_lab`
 (+ realdb), `b18_mdt_cases` (+ realdb), `b18_mdt_records` (+ realdb). Each fails on the old code (checked in scratch

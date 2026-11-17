@@ -2829,7 +2829,7 @@ CCTV notice and `/pobject tape`; deleted incidents and sentences hidden in pf-go
 pfm-doorlock state callers; every new item (batch 17 medical, helmet, gloves, batch 18 police) points at an existing
 inventory icon, guarded by `tests/js/item_images_spec.js`; older specs updated for the new versions and flows.
 
-Tests: mocked 3606 passed, 0 failed (302 files); real DB REALDB_COUNT; every tests/js spec green; `ledger_parallel`
+Tests: mocked 3606 passed, 0 failed (302 files); real DB 908 passed, 0 failed (95 files); every tests/js spec green; `ledger_parallel`
 and `sql_install_check` pass; parsecheck clean on 72 changed Lua files. Not tested in game.
 
 Open: dedicated item art; speed-camera zone coordinates; `/flagplate` stays a 12 h field flag (no MDT write export);
