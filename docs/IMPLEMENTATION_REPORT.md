@@ -2841,7 +2841,7 @@ audit (21A); in-game checks per unit (radar cone, ALPR alerts, prop placement, s
 
 ## Batch 19 — 2026-11-17: justice and corrections
 
-Seven units built in parallel, cross-unit follow-ups, one combined adversarial check (CHECK_SUMMARY), lead fixes.
+Seven units built in parallel, cross-unit follow-ups, one combined adversarial check (three real defects, all fixed with specs: system warrant requests now reach a judge; a wage can no longer be lost when the money lock is busy; restitution refusals are final and visible instead of retried forever), lead fixes.
 pf-justice schema moves to v5, pfm-prison to v4, pf-ambulancejob to v7 (pf-policemdt-DEV stays at v8).
 
 | Unit | What changed |
@@ -2858,7 +2858,8 @@ Lead fixes: pf-policemdt-DEV `RequestWarrant` / `RecallWarrant` (keyed, system a
 inmate on an escorted hospital transfer as time served; pf-government Bolingbroke district and work-order callers for
 pfm-prison; commissary food and drink consumable; older version asserts updated (pf-justice 5, pfm-prison 4).
 
-Tests: TEST_SUMMARY. Not tested in game.
+Tests: mocked 3747 passed, 0 failed (309 files); real DB 982 passed, 0 failed (102 files); every tests/js spec green;
+`ledger_parallel` and `sql_install_check` pass; parsecheck clean on 62 changed Lua files. Not tested in game.
 
 Open: GOV `SetLicenseStatus` for court licence suspensions (D16); remand time credit is a manual `AdjustOrder`;
 custody care is not billed (owner decision); the court, corrections and probation screens are batch 21 (commands

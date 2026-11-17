@@ -3,10 +3,11 @@
 Planning documents for the overhaul of police, EMS, the medical engine, hospitals, evidence, the MDTs, booking/jail,
 prison/corrections, community service, courts/probation/parole and department management. Written 2026-11-03.
 
-Status (2026-11-17): **batches 15-18 are built, checked and committed**: the new owners (medical engine, pf-justice,
-evidence, work orders, departments) are live, the old jail runtimes are handed over, and the police field, traffic,
-equipment, evidence lab and MDT records work of batch 18 is in. Nothing is tested in game yet. Next: batch 19
-(PF_ULTIMATE_SYSTEM_PLAN.md section 10).
+Status (2026-11-17): **batches 15-19 are built, checked and committed**: the new owners (medical engine, pf-justice,
+evidence, work orders, departments) are live, batch 18 added police field work, traffic, equipment, the evidence lab
+and MDT records, and batch 19 added courts, probation/parole, community service, the prison facility, prison work and
+economy, prison security and medical care in custody. Nothing is tested in game yet. Next: batch 20
+(PF_ULTIMATE_SYSTEM_PLAN.md section 11).
 
 Previous status: Status (2026-11-04): **batch 15 (Foundations I) is built, checked and reworked**; the lead's final integration run
 and commit are pending. Next is batch 16 (the switch-over). Start a new session at the journal in

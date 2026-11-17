@@ -295,8 +295,14 @@ function W.Complete(inmate, jobName, made)
     if not rec.ok then return rec end
     if rec.credit > 0 then rec.applied = W.Credit(cid, orderId, rec.ticket, rec.credit) end
     if rec.wage > 0 then
+        -- the ticket row already holds the wage: whatever happens now, E.WageTick (economy.lua)
+        -- pays a ticket whose wage never started moving, and RetryTick one the budget refused
         local paid = E().Earn and E().Earn(cid, orderId, rec.ticket, rec.wage)
-        rec.wageState = type(paid) == 'table' and paid.state or 'failed'
+        if type(paid) ~= 'table' or paid.error == 'busy' or (paid.error == 'db_unavailable' and paid.id == nil) then
+            rec.wageState = 'queued'
+        else
+            rec.wageState = paid.state or 'queued'
+        end
     end
     E().Event(cid, 'work', { job = jobName, orderId = orderId, ticket = rec.ticket, credit = rec.credit, wage = rec.wage, made = made })
     return rec
@@ -312,7 +318,8 @@ local function tellDone(src, label, rec)
     elseif rec.credit > 0 and rec.applied == nil then parts[#parts + 1] = 'time credit pending' end
     if rec.wage > 0 then
         parts[#parts + 1] = rec.wageState == 'completed' and ('$%d to your trust'):format(rec.wage)
-            or rec.wageState == 'pending' and ('$%d wage pending'):format(rec.wage) or 'wage delayed (the corrections budget is empty)'
+            or rec.wageState == 'failed' and ('$%d wage delayed: the corrections budget refused it for now'):format(rec.wage)
+            or ('$%d wage on its way to your trust'):format(rec.wage)
     end
     notify(src, table.concat(parts, ', '), 'success')
 end

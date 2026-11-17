@@ -357,6 +357,25 @@ describe('finishing a shift', function()
         assert_eq(rec.applied, 0)
         assert_eq(Log[2].credit, 0)
     end)
+    it('a wage that could not start now is reported as on its way, never as a refused budget', function()
+        local earn = PFPrison.Economy.Earn
+        PFPrison.Economy.Earn = function() return { ok = false, error = 'busy' } end
+        local rec = W.Complete(PFPrison.Inmate(INMATE), 'kitchen', {})
+        assert_eq(rec.wageState, 'queued')
+        PFPrison.Economy.Earn = function() return { ok = false, state = 'failed', error = 'insufficient_funds', id = 9 } end
+        local rec2 = W.Complete(PFPrison.Inmate(INMATE), 'kitchen', {})
+        assert_eq(rec2.wageState, 'failed')
+        PFPrison.Economy.Earn = earn
+        start('kitchen')
+        workAll('kitchen')
+        W.sessions[INMATE].startedAt = Mock.clock - K.minSeconds
+        PFPrison.Economy.Earn = function() return { ok = false, error = 'busy' } end
+        Mock.fireNet('pfm-prison:server:WorkFinish', INMATE)
+        PFPrison.Economy.Earn = earn
+        local msg = lastNotify()
+        assert_true(msg:find('on its way', 1, true) ~= nil, msg)
+        assert_true(msg:find('budget', 1, true) == nil, msg)
+    end)
     it('credits and wages are capped per day', function()
         local credited, paid = 0, 0
         for _ = 1, CW.MaxTicketsPerDay + 1 do

@@ -54,13 +54,21 @@ E.SQL = {
     countRef = 'SELECT COUNT(*) FROM pf_prison_account_tx WHERE ref LIKE ?',
     countKind = 'SELECT COUNT(*) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = ?',
     lastKindAt = 'SELECT MAX(at) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = ?',
+    -- paid to the victim and not (yet) on the order: pending, unrecorded and refused-by-pf-justice rows
     heldRestitution = [[SELECT COALESCE(SUM(-amount), 0) FROM pf_prison_account_tx
-        WHERE kind = 'restitution' AND ref = ? AND ledger_state IN ('pending', 'completed')]],
+        WHERE kind = 'restitution' AND ref IN (?, ?) AND ledger_state IN ('pending', 'completed')]],
     pending = "SELECT * FROM pf_prison_account_tx WHERE ledger_state = 'pending' AND at <= ? ORDER BY id LIMIT 100",
     undelivered = [[SELECT * FROM pf_prison_account_tx WHERE citizenid = ? AND kind = 'purchase'
         AND ledger_state = 'completed' AND ref LIKE '%:due' ORDER BY id LIMIT 20]],
     unrecorded = [[SELECT * FROM pf_prison_account_tx WHERE kind = 'restitution' AND ledger_state = 'completed'
-        AND ref LIKE '%:due' ORDER BY id LIMIT 50]],
+        AND ref LIKE '%:due' AND id > ? ORDER BY id LIMIT 50]],
+    -- finished shifts with a wage and no earning row at all (the wage move never started: the money
+    -- lock was held, the row insert failed, or the server stopped between the two writes)
+    unpaidWages = [[SELECT w.id, w.citizenid, w.order_id, w.ticket, w.wage FROM pf_prison_work_log w
+        WHERE w.wage > 0 AND w.id > ? AND w.at >= ? AND w.at <= ?
+          AND NOT EXISTS (SELECT 1 FROM pf_prison_account_tx t WHERE t.kind = 'earning' AND t.ref = CONCAT('wl:', w.order_id, ':', w.ticket))
+        ORDER BY w.id LIMIT 50]],
+    earningRows = "SELECT COUNT(*) FROM pf_prison_account_tx WHERE kind = 'earning' AND ref = ?",
     -- wages whose every attempt was clearly refused (nothing pending or paid under that ticket)
     failedEarnings = [[SELECT ref, citizenid, MIN(amount) AS amount, COUNT(*) AS n, MAX(at) AS last FROM pf_prison_account_tx
         WHERE kind = 'earning' GROUP BY ref, citizenid
@@ -213,15 +221,31 @@ end
 
 local OPEN_RESTITUTION = { 'issued', 'overdue', 'upheld', 'referred' }
 
+-- pf-justice answers that only mean "not now": the same key is offered again by RecordTick. Any
+-- other refusal is final: the money already reached the victim, so the row is marked refused and
+-- an anomaly row tells staff (pf_prison_events) instead of retrying it forever.
+local RECORD_RETRY = { pending = true, busy = true, db_unavailable = true, bank_unavailable = true }
+
+--- Records one completed restitution payment on the pf-justice order. Returns 'recorded', 'retry'
+--- or 'refused'.
 local function recordRestitution(row, orderId)
     local amount = -num(row.amount, 0)
     local res = J('RecordRestitution', orderId, { amount = amount, ledgerKey = row.ledger_key, from = TRUST },
         { key = row.ledger_key, actor = SYSTEM })
+    local due = ('rest:%d:due'):format(orderId)
     if type(res) == 'table' and res.ok == true then
-        setRef(row.id, ('rest:%d:rec'):format(orderId), ('rest:%d:due'):format(orderId))
-        return true
+        setRef(row.id, ('rest:%d:rec'):format(orderId), due)
+        return 'recorded'
     end
-    return false
+    -- no answer: pf-justice stopped, or its RecordRestitution export is missing
+    if type(res) ~= 'table' or RECORD_RETRY[res.error] then return 'retry' end
+    if setRef(row.id, ('rest:%d:refused'):format(orderId), due) then
+        E.Event(row.citizenid, 'anomaly', { what = 'restitution_unrecorded', orderId = orderId, amount = amount,
+            key = row.ledger_key, error = tostring(res.error), overpaid = res.error == 'invalid_state' or nil })
+        print(('^1[pfm-prison]^7 restitution %s ($%d) reached the victim but pf-justice refused to record it (%s)')
+            :format(tostring(row.ledger_key), amount, tostring(res.error)))
+    end
+    return 'refused'
 end
 
 --- A share of one wage pays the victim of the inmate's oldest open restitution order. Caller holds
@@ -235,10 +259,19 @@ local function restituteLocked(cid, earned)
     for _, o in ipairs(res.list) do
         local orderId = math.tointeger(tonumber(o.id))
         if orderId and o.kind == 'restitution' and validCid(o.victimCid) and o.victimCid ~= cid then
-            local held = num(db('scalar', E.SQL.heldRestitution, { ('rest:%d:due'):format(orderId) }), 0)
-            local due = num(o.amount, 0) - num(o.paidAmount, 0) - held
+            local held = num(db('scalar', E.SQL.heldRestitution, { ('rest:%d:due'):format(orderId), ('rest:%d:refused'):format(orderId) }), 0)
             local bal = E.Balance(cid)
-            local amount = math.min(share, due, bal and bal.available or 0)
+            local amount = math.min(share, num(o.amount, 0) - num(o.paidAmount, 0) - held, bal and bal.available or 0)
+            if amount >= 1 then
+                -- the offender may have paid the order meanwhile (PayOrder does not take this lock):
+                -- read what is still owed once more right before the money moves
+                local fresh = J('GetOrder', orderId)
+                local fo = type(fresh) == 'table' and fresh.ok == true and type(fresh.order) == 'table' and fresh.order or nil
+                local open = false
+                for _, st in ipairs(OPEN_RESTITUTION) do if fo and fo.state == st then open = true end end
+                if not open then return 0 end
+                amount = math.min(amount, num(fo.amount, 0) - num(fo.paidAmount, 0) - held)
+            end
             if amount >= 1 then
                 local n = num(db('scalar', E.SQL.countRef, { ('rest:%d:%%'):format(orderId) }), 0) + 1
                 local key = ('pf-justice:restitution:%d:%d'):format(orderId, n)
@@ -246,7 +279,7 @@ local function restituteLocked(cid, earned)
                     from = TRUST, to = ('player:%s:bank'):format(o.victimCid), ledgerKind = 'restitution',
                     reason = ('Restitution, order #%d (inmate wage)'):format(orderId) })
                 if r.ok then
-                    recordRestitution({ id = r.id, amount = -amount, ledger_key = key }, orderId)
+                    recordRestitution({ id = r.id, citizenid = cid, amount = -amount, ledger_key = key }, orderId)
                     E.Event(cid, 'trust', { what = 'restitution', orderId = orderId, amount = amount, key = key })
                     return amount
                 end
@@ -449,13 +482,45 @@ function E.RetryTick(now)
 end
 
 --- Restitution paid to a victim that pf-justice has not recorded yet (it was busy or stopped).
+--- 50 rows per call, paged by id, so rows that keep answering "not now" never block newer ones.
+E.recordCursor = E.recordCursor or 0
 function E.RecordTick()
     if not E.RestitutionAvailable() then return 0 end
+    local rows = db('query', E.SQL.unrecorded, { E.recordCursor }) or {}
     local n = 0
-    for _, row in ipairs(db('query', E.SQL.unrecorded, {}) or {}) do
+    for _, row in ipairs(rows) do
+        E.recordCursor = math.max(E.recordCursor, num(row.id, 0))
         local orderId = tonumber(tostring(row.ref):match('^rest:(%d+):due$'))
-        if orderId and recordRestitution(row, orderId) then n = n + 1 end
+        if orderId and recordRestitution(row, orderId) == 'recorded' then n = n + 1 end
     end
+    if #rows < 50 then E.recordCursor = 0 end
+    return n
+end
+
+--- Finished shifts whose wage never started moving (see SQL.unpaidWages): paid now under the
+--- ticket's first key, under the inmate's lock, after checking again that no attempt exists.
+--- A held lock just leaves the ticket for the next tick. Looks back 30 days, 50 tickets per call.
+E.wageCursor = E.wageCursor or 0
+function E.WageTick(now)
+    now = now or os.time()
+    local rows = db('query', E.SQL.unpaidWages, { E.wageCursor, now - 30 * 86400, now - 10 }) or {}
+    local n = 0
+    for _, w in ipairs(rows) do
+        E.wageCursor = math.max(E.wageCursor, num(w.id, 0))
+        local orderId, ticket, wage = math.tointeger(tonumber(w.order_id)), math.tointeger(tonumber(w.ticket)), math.tointeger(tonumber(w.wage))
+        if validCid(w.citizenid) and orderId and ticket and wage then
+            local res = E.WithLock(w.citizenid, function()
+                local ref = ('wl:%d:%d'):format(orderId, ticket)
+                local have, okHave = db('scalar', E.SQL.earningRows, { ref })
+                if not okHave or num(have, 0) > 0 then return { ok = false, error = 'exists' } end
+                return earnLocked(w.citizenid, orderId, ticket, wage, 1)
+            end)
+            -- a ticket left unpaid here (lock held, row not written) comes round again when the
+            -- cursor wraps to the start
+            if type(res) == 'table' and res.ok then n = n + 1 end
+        end
+    end
+    if #rows < 50 then E.wageCursor = 0 end
     return n
 end
 
@@ -485,6 +550,7 @@ function E.Tick(now)
     now = now or os.time()
     if not dbReady() then return end
     E.SettleTick(now)
+    E.WageTick(now)
     E.RetryTick(now)
     E.RecordTick()
     E.PayoutTick(now)
@@ -501,6 +567,9 @@ end
 
 CreateThread(function()
     Wait(5000)
+    -- after a restart: wages of shifts recorded just before it
+    while not dbReady() do Wait(2000) end
+    pcall(E.WageTick)
     local reconcileAt = os.time() + 600
     while true do
         Wait(math.max(10, num(EC.TickSeconds, 60)) * 1000)

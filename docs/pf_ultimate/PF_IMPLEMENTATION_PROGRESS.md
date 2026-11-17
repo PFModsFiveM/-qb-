@@ -289,3 +289,10 @@ cases (18E) and warrants/BOLO/records (18F): Implemented + Tested (automated). C
 commands refused under pfm-core, tox never ran, MDT photo capture, impound release on DB error, telemetry flush race,
 speeding citation target, missing item icons), all fixed with specs. Suites: mocked 3606/0, real DB 908/0. Not
 tested in game. Resume at batch 19 (PF_ULTIMATE_SYSTEM_PLAN.md section 10).
+
+### 2026-11-17: batch 19 done
+Courts (19A), supervision (19B), community service (19C), prison facility (19D), prison work and economy (19E), prison
+security (19F) and medical in custody (19G): Implemented + Tested (automated). Cross-unit follow-ups: restitution
+export, warrant request/recall from the prison, hospital transfers counted as time served, prison district for work
+orders. Combined check: 3 defects fixed with specs. Suites: mocked 3747/0, real DB 982/0. Not tested in game. Resume at batch 20
+(PF_ULTIMATE_SYSTEM_PLAN.md section 11).

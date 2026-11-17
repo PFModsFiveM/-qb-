@@ -155,7 +155,14 @@ GSR weapon hashes, restricted radio channels, MDT evidence photo with the server
 notifications, lab commands end to end.
 
 ### Batch 19
-(to be filled)
+Mocked 3747 passed / 0 failed (309 files); real DB 982 passed / 0 failed (102 files); tests/js all green; `ledger_parallel`, `sql_install_check` pass; parsecheck clean (62 files). New specs: `b19_justice_courts`, `b19_justice_supervision`, `b19_justice_cs`, `b19_prison_facility`,
+`b19_prison_work`, `b19_prison_security`, `b19_medical_custody` (each with a real-DB spec, plus
+`b19_prison_economy_realdb`). Changed behaviour proven to fail on the old code in scratch copies. In-game checks
+pending: courtroom, office, prison, infirmary and work-site coordinates; judge commands and warrant approval in the
+MDT; court bail at a bail desk; `/checkin` and monitor breaches; community service steps, menus and a reconnect;
+prison intake and cell placement, routine notices, headcounts, discipline hearing, visits, lockdown, doors, cameras,
+searches, escape and recapture with the warrant; prison jobs, commissary, trust deposit and release payout; infirmary
+visit, prescriptions and an escorted hospital transfer.
 
 ### Batch 20
 (to be filled)

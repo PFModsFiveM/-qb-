@@ -48,8 +48,21 @@ local Justice = {
         for _, o in ipairs(JU.restitution) do if o.cid == cid then list[#list + 1] = o end end
         return { ok = true, list = list }
     end,
+    GetOrder = function(orderId)
+        for _, o in ipairs(JU.restitution) do
+            if o.id == orderId then
+                local c = {}
+                for k, v in pairs(o) do c[k] = v end
+                -- the offender paid the rest through PayOrder after GetOrders was read
+                if JU.paidElsewhere then c.paidAmount, c.state = c.amount, 'paid' end
+                return { ok = true, order = c }
+            end
+        end
+        return { ok = false, error = 'not_found' }
+    end,
     RecordRestitution = function(orderId, pay, opts)
         jcall('RecordRestitution', { orderId = orderId, pay = pay, opts = opts })
+        if JU.recordFn then return JU.recordFn(orderId, pay) end
         if not JU.record then return { ok = false, error = 'busy' } end
         for _, o in ipairs(JU.restitution) do if o.id == orderId then o.paidAmount = o.paidAmount + pay.amount end end
         return { ok = true }
@@ -131,6 +144,8 @@ BeforeEach = function()
     Mock.clock = Mock.clock + 86400 -- a new day: fresh daily limits
     CID, ORDER = 'INM' .. seq, 100 + seq
     JU.calls, JU.restitution, JU.open, JU.record, JU.room, JU.adjustDown, JU.full = {}, {}, {}, true, nil, false, false
+    JU.recordFn, JU.paidElsewhere = nil, false
+    E.locks[CID] = nil
     Given = {}
     E.restProbe = { at = -math.huge, ok = false }
     for k in pairs(PFPrison.Bridge.rows) do PFPrison.Bridge.rows[k] = nil end
@@ -375,6 +390,87 @@ describe('restitution', function()
         assert_eq(E.Balance(CID).available, CW.Jobs.kitchen.wage)
         assert_eq(scalar("SELECT COUNT(*) FROM pf_prison_account_tx WHERE kind = 'restitution' AND citizenid = ?", { CID }), 0)
         Mock.exportsByResource['pf-justice'].RecordRestitution = function(_, orderId) if orderId == 0 then return { ok = false, error = 'bad_args' } end end
+    end)
+end)
+
+describe('a wage whose move never started (B19-2)', function()
+    it('is paid later by the wage sweep, exactly once, when the money lock was held at completion', function()
+        fund('corrections', 5000, 'b19e:fund:' .. seq)
+        E.locks[CID] = true -- a settle or retry of this inmate is running
+        local rec = W.Complete(inmate(INMATE), 'kitchen', {})
+        E.locks[CID] = nil
+        assert_true(rec.ok)
+        assert_eq(rec.wageState, 'queued')
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = 'earning'", { CID }), 0)
+        assert_eq(E.WageTick(Mock.clock), 0, 'the direct path has the first seconds')
+        Mock.clock = Mock.clock + 11
+        assert_eq(E.WageTick(Mock.clock), 1)
+        assert_eq(tx(('pfm-prison:trust:%s:e%d.1.1'):format(CID, ORDER)).state, 'completed')
+        assert_eq(E.WageTick(Mock.clock + 60), 0, 'paid once')
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = 'earning'", { CID }), 1)
+        assert_eq(E.Balance(CID).available, CW.Jobs.kitchen.wage)
+        reconciled()
+    end)
+    it('also after a stop between the ticket row and the wage (a restart pays it)', function()
+        fund('corrections', 5000, 'b19e:fund:' .. seq)
+        MySQL.insert.await('INSERT INTO pf_prison_work_log (citizenid, order_id, job, ticket, output, credit_seconds, wage, at) VALUES (?, ?, ?, 1, NULL, 0, 30, ?)',
+            { CID, ORDER, 'laundry', Mock.clock })
+        Mock.clock = Mock.clock + 11
+        E.locks[CID] = true
+        assert_eq(E.WageTick(Mock.clock), 0, 'lock held: left for the next pass')
+        E.locks[CID] = nil
+        assert_eq(E.WageTick(Mock.clock), 1)
+        assert_eq(E.Balance(CID).available, 30)
+        assert_eq(E.WageTick(Mock.clock), 0)
+        reconciled()
+    end)
+end)
+
+describe('restitution pf-justice will not record (B19-3)', function()
+    local function setup()
+        fund('corrections', 5000, 'b19e:fund:' .. seq)
+        local victim = 'VIR' .. seq
+        MySQL.insert.await([[INSERT INTO players (citizenid, license, name, money, job, position, metadata)
+            VALUES (?, 'lic', 'Victim', '{"cash":0,"bank":0}', '{}', '{}', '{}')]], { victim })
+        JU.restitution = { { id = 970 + seq, kind = 'restitution', cid = CID, victimCid = victim, amount = 200, paidAmount = 0, state = 'issued' } }
+        return 970 + seq
+    end
+    it('a final refusal marks the row refused with an anomaly row; "not now" is retried', function()
+        local orderId = setup()
+        JU.recordFn = function() return { ok = false, error = 'busy' } end
+        W.Complete(inmate(INMATE), 'kitchen', {})
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_prison_account_tx WHERE ref = ?', { ('rest:%d:due'):format(orderId) }), 1, 'busy: kept due')
+        JU.recordFn = function() return { ok = false, error = 'invalid_state' } end
+        E.RecordTick()
+        assert_eq(scalar('SELECT COUNT(*) FROM pf_prison_account_tx WHERE ref = ?', { ('rest:%d:refused'):format(orderId) }), 1)
+        local ev = MySQL.single.await("SELECT * FROM pf_prison_events WHERE citizenid = ? AND kind = 'anomaly' ORDER BY id DESC LIMIT 1", { CID })
+        assert_true(ev ~= nil and ev.detail:find('restitution_unrecorded', 1, true) ~= nil)
+        assert_true(ev.detail:find('"amount":' .. math.floor(CW.Jobs.kitchen.wage * EC.RestitutionShare), 1, true) ~= nil)
+        local n = #jcalls('RecordRestitution')
+        E.RecordTick()
+        assert_eq(#jcalls('RecordRestitution'), n, 'never offered again')
+        reconciled()
+    end)
+    it('the share is not moved when the order was paid meanwhile', function()
+        setup()
+        JU.paidElsewhere = true
+        W.Complete(inmate(INMATE), 'kitchen', {})
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = 'restitution'", { CID }), 0)
+        assert_eq(E.Balance(CID).available, CW.Jobs.kitchen.wage)
+    end)
+    it('rows that keep answering "not now" never block newer ones (paged by id)', function()
+        local special
+        for i = 1, 55 do
+            local key = ('b19e:page:%d:%d'):format(seq, i)
+            MySQL.insert.await("INSERT INTO pf_prison_account_tx (citizenid, kind, amount, ledger_key, ledger_state, ref, at) VALUES ('PAGE', 'restitution', -1, ?, 'completed', 'rest:7777:due', 1)", { key })
+            special = key
+        end
+        JU.recordFn = function(_, pay) if pay.ledgerKey == special then return { ok = true } end return { ok = false, error = 'busy' } end
+        E.recordCursor = 0
+        assert_eq(E.RecordTick(), 0)
+        assert_eq(E.RecordTick(), 1, 'the second page')
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_prison_account_tx WHERE citizenid = 'PAGE' AND ref = 'rest:7777:rec'"), 1)
+        MySQL.update.await("DELETE FROM pf_prison_account_tx WHERE citizenid = 'PAGE'")
     end)
 end)
 

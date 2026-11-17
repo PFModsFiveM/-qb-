@@ -35,12 +35,12 @@ block disagree, the note (and the code) wins. The DDL blocks for later batches (
 
 | Resource | Key | Existing versions (where today) | New versions |
 |---|---|---|---|
-| pf-ambulancejob | `pf-ambulancejob` | v1 `injury records, treatment log, health snapshots` (`server/injury_database.lua`) | v2 medical core, v3 medical events + diagnosis layers + `hold_until` (15A, built); v4 legacy import (16B); v5 clinical + hospital core without findings/diagnoses (17C); v6 custody care (19G); v7 hospital services, morgue, supplies (20A) |
+| pf-ambulancejob | `pf-ambulancejob` | v1 `injury records, treatment log, health snapshots` (`server/injury_database.lua`) | v2 medical core, v3 medical events + diagnosis layers + `hold_until` (15A, built); v4 legacy import (16B); v5 clinical + hospital core without findings/diagnoses (17C); v6 hospital core (17E, built); **v7 custody care (19G, built**: screenings `result` VARCHAR(20), custody care and reports, prescriptions and dispense log with keys); v8 hospital services, morgue, supplies (20A, extends the prescription tables) |
 | pf-emsmdt | `pf-emsmdt` (resource name) | v1 `roster reset backups` (`server/roster.lua`) | v2 tables created ad hoc before (15G, built); v3 PCR, handover, units (20D) |
 | pfm-policejob | `pfm-policejob` (resource name) | v1 `/fine` records (`server/fines.lua`) | v2 evidence core (15D, built); v3 traffic, impound, telemetry, lab (18B, built: adds `pf_police_citations` and `pf_police_speed_events.driver_cid`) |
 | pf-policemdt-DEV | `pf-policemdt-DEV` (resource name; `GetCurrentResourceName()`) | v1-v6 (`server/sentencing.lua`): active jails, sentences, licence actions, charge audit, roster backups, `released_why` | v7 SQL-file tables (15F, built); v8 cases, BOLOs, record audit, warrant columns (18E); v9 personnel, UoF, pursuits, IA (20F) |
-| pf-justice | `pf-justice` | none (new resource) | v1 core (15B, built); v2 legacy import (15B step, 15C code, built); v3 courts, v4 supervision, v5 community service (19A) |
-| pfm-prison | `pfm-prison` | none (metadata only today) | v1 inmates and events (16C); v2 facility, v3 economy, v4 security (19D) |
+| pf-justice | `pf-justice` | none (new resource) | v1 core (15B, built); v2 legacy import (15B step, 15C code, built); v3 courts, v4 supervision, v5 community service (19A, built: `cases.kind` VARCHAR(16), `idem_key` on hearings, decisions, reviews and court orders, `notify_state` on reviews) |
+| pfm-prison | `pfm-prison` | none (metadata only today) | v1 inmates and events (16C); v2 facility, v3 economy, v4 security (19D, built: `pf_prison_infractions.idem_key` UNIQUE) |
 | pf-government | `pf-government` | v1-v4 (`server/schema.lua`): zones/requests/districts/notes, recurring bills, late fees, bill payment attempts | v5 work orders, v6 department core + keyed budget columns (15E, built); v7 department management (20E) |
 | pf-jobgarages | `pf-jobgarages` | none (SQL file `sql/pf_jobgarages.sql`) | v1 tables from the SQL file + fleet service columns (15H, built) |
 | pfm-phone | (no key) | column checks in `EnsureInvoiceColumns` (`server/main.lua`) | `ref` column + unique index through the same check (15H, built) |
@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS `pf_hosp_bill_lines` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-### v6 custody care (19G)
+### v7 custody care (19G; built as v7 because 17E used v6)
 ```sql
 ALTER TABLE `pf_hosp_admissions` ADD COLUMN IF NOT EXISTS `custody_ref` VARCHAR(64) NULL;
 ALTER TABLE `pf_hosp_admissions` ADD COLUMN IF NOT EXISTS `escort_cid` VARCHAR(64) NULL;
