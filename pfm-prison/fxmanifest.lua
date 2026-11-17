@@ -40,4 +40,11 @@ server_scripts {
     'server/economy.lua',        -- trust accounts, commissary, restitution (19E)
     'server/security.lua',       -- doors, alarms, searches, escapes (19F)
     'server/supplies.lua',       -- kitchen cooks from pantry stock bought through pf-government procurement (20C)
+    'server/apps.lua',           -- the Corrections MDT app on pf-devices (21E); after the modules it relays to
+}
+
+-- the Corrections MDT module page (pf-devices loads it into the tablet and the computer)
+files {
+    'html/apps/corrections.js',
+    'html/apps/corrections.css',
 }
