@@ -16,8 +16,9 @@
 -- held, one of each item, and room in the inventory. pf-government re-checks duty and department.
 -- Only unique items (one per slot) are issued: a stacking item would merge two serials.
 --
--- Config.ArmoryWhitelist accepts { item = minGrade } or { item = { grade, kind, qual } } or a list of
+-- Config.ArmoryWhitelist accepts { item = minGrade } or { item = { grade, kind, qual, default } } or a list of
 -- item names (grade 0). `kind` is the asset kind in pf-government Config.Departments.Assets.Kinds.
+-- An asset registered without an item stands for the default item of its kind (A.ItemOf).
 
 PFArmory = PFArmory or {}
 local A = PFArmory
@@ -37,7 +38,7 @@ local DEFAULTS = {
 
 -- Asset kind of each default item; the whitelist may name others with an explicit kind.
 local DEFAULT_ITEMS = {
-    weapon_pistol = { grade = 0, kind = 'sidearm' },
+    weapon_pistol = { grade = 0, kind = 'sidearm', default = true },
     weapon_combatpistol = { grade = 0, kind = 'sidearm' },
     weapon_stungun = { grade = 0, kind = 'taser' },
     weapon_pumpshotgun = { grade = 1, kind = 'shotgun' },
@@ -86,10 +87,26 @@ function A.Whitelist()
         local def = item and sharedItem(item)
         if item and type(kind) == 'string' and def and def.unique == true then
             out[item] = { grade = math.max(0, math.floor(tonumber(e.grade) or 0)), kind = kind,
-                qual = type(e.qual) == 'string' and e.qual or nil, label = def.label or item }
+                qual = type(e.qual) == 'string' and e.qual or nil, label = def.label or item, default = e.default == true }
         end
     end
     return out
+end
+
+--- The item an asset stands for: its registered item, or for an asset registered without one, the
+--- default item of its kind (the whitelist entry marked default = true, else the first by name).
+--- Checkout, the held check and the menu all use this, so a kind-only asset is one item everywhere.
+function A.ItemOf(asset, whitelist)
+    if type(asset) ~= 'table' then return nil end
+    if asset.item ~= nil then return asset.item end
+    local pick, pickDefault
+    for name, e in pairs(whitelist or A.Whitelist()) do
+        if e.kind == asset.kind then
+            if e.default and (not pickDefault or name < pick) then pick, pickDefault = name, true
+            elseif not pickDefault and (not pick or name < pick) then pick = name end
+        end
+    end
+    return pick
 end
 
 local function gradeOf(P)
@@ -207,14 +224,15 @@ function A.Menu(src)
     local grade = gradeOf(P)
     local stockByKind = {}
     local items = {}
-    for name, entry in pairs(A.Whitelist()) do
+    local wl = A.Whitelist()
+    for name, entry in pairs(wl) do
         if not stockByKind[entry.kind] then
             local res = gov('ListAssets', dept, { state = 'in_stock', kind = entry.kind, limit = 100 })
             stockByKind[entry.kind] = type(res) == 'table' and res.ok and res.list or {}
         end
         local n = 0
         for _, a in ipairs(stockByKind[entry.kind]) do
-            if a.item == nil or a.item == name then n = n + 1 end
+            if A.ItemOf(a, wl) == name then n = n + 1 end
         end
         local reason
         if grade < entry.grade then reason = 'rank'
@@ -239,7 +257,8 @@ function A.Checkout(src, itemName)
     itemName = itemName:lower()
     local P, e = context(src, true)
     if not P then return e end
-    local entry = A.Whitelist()[itemName]
+    local wl = A.Whitelist()
+    local entry = wl[itemName]
     if not entry then return fail('no_permission', 'The armory does not issue that') end
     if gradeOf(P) < entry.grade then return fail('no_permission', 'Your rank cannot draw that') end
     if not rateOk(src) then return fail('rate_limited', 'Slow down') end
@@ -253,7 +272,10 @@ function A.Checkout(src, itemName)
         local heldList = type(held.list) == 'table' and held.list or {}
         if #heldList >= (tonumber(A.Cfg().MaxOut) or 6) then return fail('conflict', 'Return equipment before drawing more') end
         for _, a in ipairs(heldList) do
-            if a.item == itemName then return fail('conflict', 'You already hold one: ' .. tostring(a.serial)) end
+            -- one of each item: compared by kind, and by the item the asset stands for
+            if a.kind == entry.kind and A.ItemOf(a, wl) == itemName then
+                return fail('conflict', 'You already hold one: ' .. tostring(a.serial))
+            end
         end
         local canAdd = exports['pfm-inventory']:CanAddItem(src, itemName, 1)
         if not canAdd then return fail('inventory_full', 'No room in your inventory') end
@@ -263,7 +285,7 @@ function A.Checkout(src, itemName)
         local stockList = type(stock.list) == 'table' and stock.list or {}
         for i = #stockList, 1, -1 do -- oldest first (the list is newest first)
             local a = stockList[i]
-            if a.item == nil or a.item == itemName then asset = a break end
+            if A.ItemOf(a, wl) == itemName then asset = a break end
         end
         if not asset then return fail('out_of_stock', 'None in stock') end
         local key = ('pfm-policejob:armory:%s:issue:%d:%d'):format(asset.serial, now(), math.random(1000, 9999))

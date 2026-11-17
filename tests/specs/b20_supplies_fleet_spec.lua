@@ -781,6 +781,54 @@ describe('20C rig restock at a hospital bay', function()
     end)
 end)
 
+describe('20C catalogs cover what the hospital hands out', function()
+    -- B20-7: an item staff may prescribe or draw that no facility can order can never be filled
+    local function stashIds(t, out)
+        for k, v in pairs(type(t) == 'table' and t or {}) do
+            if k == 'id' and type(v) == 'string' then out[#out + 1] = v elseif type(v) == 'table' then stashIds(v, out) end
+        end
+        return out
+    end
+    local function buyersInto(stashId)
+        local out = {}
+        for id, b in pairs(P.DEFAULTS.Buyers) do if b.stash and b.stash.id == stashId then out[#out + 1] = b end end
+        return out
+    end
+
+    it('every pharmacy formulary and ward item is in the catalog of each buyer that fills a pharmacy stash', function()
+        local ph = Config.Hospital.Pharmacy
+        local ids = stashIds(ph.Stashes, {})
+        assert_true(#ids > 0, 'the pharmacy has stock stashes')
+        for _, sid in ipairs(ids) do
+            local buyers = buyersInto(sid)
+            assert_true(#buyers > 0, 'a procurement buyer delivers into ' .. sid)
+            for _, b in ipairs(buyers) do
+                assert_eq(b.dept, 'ems')
+                assert_eq(b.point, nil, sid .. ' is never opened by /supplyroom')
+                local cat = P.DEFAULTS.Catalogs[b.catalog]
+                for _, list in ipairs({ ph.Formulary or {}, ph.Ward or {} }) do
+                    for item in pairs(list) do assert_true(cat[item] ~= nil, item .. ' orderable for ' .. sid) end
+                end
+            end
+        end
+    end)
+
+    it('every infirmary formulary item is orderable for the infirmary stash', function()
+        local cu = Config.Hospital.Custody
+        for _, sid in ipairs(stashIds(cu.Stashes, {})) do
+            local buyers = buyersInto(sid)
+            assert_true(#buyers > 0, 'a procurement buyer delivers into ' .. sid)
+            for _, b in ipairs(buyers) do
+                for item in pairs(cu.Formulary or {}) do assert_true(P.DEFAULTS.Catalogs[b.catalog][item] ~= nil, item .. ' orderable for ' .. sid) end
+            end
+        end
+    end)
+
+    it('the supply rooms the restock draws from are the stashes procurement fills', function()
+        for _, r in pairs(S.DEFAULTS.Rooms) do assert_true(#buyersInto(r.stash.id) > 0, r.stash.id) end
+    end)
+end)
+
 describe('20C rig wear reports', function()
     it('a worn rig (server health) is reported once per cooldown; healthy rigs and other vehicles are not', function()
         STARTED['pf-government'] = true

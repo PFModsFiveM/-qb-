@@ -408,6 +408,28 @@ describe('narrative, handover and closing', function()
         assert_eq(#db.pcr, 1)
     end)
 
+    it('a unit partner who charted nothing cannot accept the handover (PCR unit or the lead\'s current unit)', function()
+        assert_true(cb('pf_emsmdt:units:join', MED1, { unit = 'MEDIC 1' }).ok)
+        assert_true(cb('pf_emsmdt:units:join', NURSE, { unit = 'MEDIC 1' }).ok) -- silent partner, same job as hospital staff
+        local id = open()
+        assert_eq(db.pcr[1].unit, 'MEDIC 1')
+        AJ.admissions['PAT1'] = { id = 9, hospitalId = 'pillbox', hospital = 'Pillbox Medical Center', state = 'triaged', open = true }
+        assert_eq(#entriesOf(id, 'treatment'), 1)
+        assert_eq(cb('pf_emsmdt:pcr:acknowledgeHandover', NURSE, { id = id }).error, 'no_permission')
+        assert_false(cb('pf_emsmdt:pcr:get', NURSE, { id = id }).pcr.can.acknowledge)
+        -- the PCR's unit was empty at open; the lead's current unit counts too
+        assert_true(cb('pf_emsmdt:units:leave', NURSE).ok)
+        assert_true(cb('pf_emsmdt:units:leave', MED1).ok)
+        db.pcr[1].unit = nil
+        assert_true(cb('pf_emsmdt:units:join', MED1, { unit = 'MEDIC 9' }).ok)
+        assert_true(cb('pf_emsmdt:units:join', NURSE, { unit = 'MEDIC 9' }).ok)
+        assert_eq(cb('pf_emsmdt:pcr:acknowledgeHandover', NURSE, { id = id }).error, 'no_permission')
+        -- off the unit, the same nurse is receiving staff
+        assert_true(cb('pf_emsmdt:units:leave', NURSE).ok)
+        assert_true(cb('pf_emsmdt:pcr:get', NURSE, { id = id }).pcr.can.acknowledge)
+        assert_true(cb('pf_emsmdt:pcr:acknowledgeHandover', NURSE, { id = id }).ok)
+    end)
+
     it('the patient offline or away blocks the handover', function()
         local id = open()
         AJ.admissions['PAT1'] = { id = 9, hospitalId = 'pillbox', state = 'triaged', open = true }

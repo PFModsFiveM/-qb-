@@ -139,6 +139,7 @@ Mock.exportsByResource['pfm-inventory'] = {
 }
 QBCoreMock.Shared.Items.weapon_stungun = { name = 'weapon_stungun', label = 'Taser', type = 'weapon', unique = true, weight = 1000 }
 QBCoreMock.Shared.Items.weapon_carbinerifle = { name = 'weapon_carbinerifle', label = 'Carbine', type = 'weapon', unique = true, weight = 1000 }
+QBCoreMock.Shared.Items.weapon_combatpistol = { name = 'weapon_combatpistol', label = 'Combat Pistol', type = 'weapon', unique = true, weight = 1000 }
 QBCoreMock.Shared.Items.radio = { name = 'radio', label = 'Radio', type = 'item', unique = true, weight = 1000 }
 QBCoreMock.Shared.Items.bodycam = { name = 'bodycam', label = 'Body Camera', type = 'item', unique = false, weight = 300 }
 
@@ -581,6 +582,44 @@ describe('20F: armory checkout', function()
         assert_eq(m.ok, true)
         assert_eq(m.held[1].serial, 'PD-SDA-1')
         assert_eq(m.held[1].carried, true)
+    end)
+
+    it('an asset registered without an item is its kind\'s default item everywhere: one pistol, never a second', function()
+        pj()
+        GOV.depts[OFF] = 'police'
+        for i = 1, 4 do stock('PD-SDA-' .. i, 'sidearm', nil) end
+        assert_eq(A.ItemOf({ kind = 'sidearm' }), 'weapon_pistol')
+        assert_eq(A.ItemOf({ kind = 'sidearm', item = 'weapon_combatpistol' }), 'weapon_combatpistol')
+        local m = A.Menu(OFF)
+        for _, it in ipairs(m.items) do
+            if it.item == 'weapon_pistol' then assert_eq(it.inStock, 4) end
+            if it.item == 'weapon_combatpistol' then assert_eq(it.inStock, 0) end
+        end
+        local r = checkout(OFF, 'weapon_pistol')
+        assert_eq(r.ok, true, tostring(r.error))
+        assert_eq(checkout(OFF, 'weapon_pistol').error, 'conflict', 'a second pistol from kind-only stock')
+        assert_eq(checkout(OFF, 'weapon_combatpistol').error, 'out_of_stock', 'kind-only stock is not handed out as another item')
+        assert_eq(#GOV.issued, 1)
+        assert_eq(#INV.added, 1)
+        -- a whitelist entry marked default decides which item a kind-only asset is
+        Config.ArmoryWhitelist = { weapon_pistol = { kind = 'sidearm' }, weapon_combatpistol = { kind = 'sidearm', default = true } }
+        assert_eq(A.ItemOf({ kind = 'sidearm' }), 'weapon_combatpistol')
+        -- the held kind-only asset is now a combat pistol: a second one is refused, a pistol is not stocked
+        assert_eq(checkout(OFF, 'weapon_combatpistol').error, 'conflict')
+        assert_eq(checkout(OFF, 'weapon_pistol').error, 'out_of_stock')
+    end)
+
+    it('the return books in through ReturnAsset with the officer as actor and the armory key (to in_stock)', function()
+        pj()
+        GOV.depts[OFF] = 'police'
+        stock('PD-SDA-1', 'sidearm', nil)
+        assert_eq(checkout(OFF, 'weapon_pistol').ok, true)
+        assert_eq(GOV.issued[1].opts.ref, 'armory')
+        assert_eq(giveBack(OFF, 'PD-SDA-1').ok, true)
+        local o = GOV.returned[1].opts
+        assert_eq(o.actor.src, OFF)
+        assert_eq(o.to, nil, 'default destination in_stock')
+        assert_true(o.key:find('^pfm%-policejob:armory:PD%-SDA%-1:return:') ~= nil)
     end)
 
     it('MaxOut and a full inventory refuse before anything is issued', function()

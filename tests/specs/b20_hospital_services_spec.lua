@@ -48,7 +48,12 @@ Mock.exportsByResource['pfm-inventory'] = {
         return true
     end,
     CreateInventory = function() end,
-    OpenInventory = function() end,
+    OpenInventory = function(_, src, id) Trace[#Trace + 1] = 'open:' .. tostring(id) end,
+    GetInventory = function(_, id)
+        local items = {}
+        for name, n in pairs(Stash[id] or {}) do items[#items + 1] = { name = name, amount = n } end
+        return { items = items }
+    end,
     HasItem = function() return true end,
 }
 
@@ -112,6 +117,14 @@ local function installFakeSQL()
     S.PhInsertLog = function(r) DB.log[r.idem_key] = copy(r) Trace[#Trace + 1] = 'log:' .. r.kind return #Trace end
     S.PhDeleteLog = function(key) local had = DB.log[key] ~= nil DB.log[key] = nil Trace[#Trace + 1] = 'unlog' return had and 1 or 0 end
     S.PhAdmissionRx = function() return {} end
+    S.PhGetRx = function(id) return copy(DB.rx[id]) end
+    S.PhCancelPharmacyRx = function(id, hospitalId, by)
+        local r = DB.rx[id]
+        if not r or r.state ~= 'active' or r.hospital_id ~= hospitalId then return 0 end
+        r.state, r.cancelled_by = 'cancelled', by
+        return 1
+    end
+    S.PhCancelRx = function(id, by) local r = DB.rx[id] if r and r.state == 'active' then r.state = 'cancelled' return 1 end return 0 end
     S.OrdBillable = function() return {} end
     S.OrdSetBill = function() return 1 end
     S.StaysFor = function(id) return copy(DB.stays[id] or {}) end
@@ -275,6 +288,53 @@ describe('pharmacy counter and ward drugs', function()
     end)
 end)
 
+describe('pharmacy stock and cancels (check fixes)', function()
+    it('staff never open the stock stash: a read-only view and a restock logged before the items move', function()
+        Mock.coords[MEDIC] = COUNTER
+        Stash.pf_pharmacy_pillbox = { morphine = 3, painkillers = 7 }
+        assert_eq(cb('pharmacyStock', MEDIC).error, 'no_permission', 'below the log tier')
+        Mock.coords[DOC] = COUNTER
+        Trace = {}
+        local v = cb('pharmacyStock', DOC)
+        assert_true(v.ok, tostring(v.message))
+        for _, e in ipairs(Trace) do assert_true(e:sub(1, 5) ~= 'open:', 'the stash was opened to a player') end
+        local seen = {}
+        for _, r in ipairs(v.list) do seen[r.item] = r end
+        assert_eq(seen.morphine.amount, 3)
+        assert_true(seen.morphine.controlled)
+        assert_eq(seen.painkillers.amount, 7)
+        Pockets[DOC] = { morphine = 2 }
+        Trace = {}
+        local r = cb('pharmacyRestock', DOC, 'morphine', 2)
+        assert_true(r.ok, tostring(r.message))
+        assert_eq(table.concat(Trace, ','), 'log:restock,remove:' .. DOC .. ':morphine,add:pf_pharmacy_pillbox:morphine')
+        assert_eq(Stash.pf_pharmacy_pillbox.morphine, 5)
+        local row
+        for _, l in pairs(DB.log) do if l.kind == 'restock' then row = l end end
+        assert_true(row.controlled)
+        advance(2)
+        Trace = {}
+        assert_eq(cb('pharmacyRestock', DOC, 'morphine', 4).error, 'conflict', 'not carried')
+        assert_eq(table.concat(Trace, ','), 'log:restock,remove:' .. DOC .. ':morphine,unlog')
+        advance(2)
+        assert_eq(cb('pharmacyRestock', DOC, 'pistol_ammo', 1).error, 'bad_args')
+    end)
+    it('a physician cancels only a pharmacy prescription of the hospital they stand in', function()
+        local now = os.time()
+        DB.rx[1] = { id = 1, citizenid = 'PATCID', drug = 'painkillers', state = 'active', qty = 3, dispensed = 0, custody_ref = 'order:9', expires_at = now + 999 }
+        DB.rx[2] = { id = 2, citizenid = 'PATCID', drug = 'painkillers', state = 'active', qty = 1, dispensed = 0, hospital_id = 'paleto', expires_at = now + 999 }
+        DB.rx[3] = { id = 3, citizenid = 'PATCID', drug = 'antibiotics', state = 'active', qty = 1, dispensed = 0, hospital_id = 'pillbox', expires_at = now + 999 }
+        Mock.coords[DOC] = PILLBOX
+        assert_eq(cb('rxCancel', DOC, 1).error, 'not_found', 'an infirmary dose schedule is not the pharmacy\'s')
+        assert_eq(DB.rx[1].state, 'active')
+        assert_eq(cb('rxCancel', DOC, 2).error, 'too_far', 'another hospital\'s prescription')
+        assert_eq(DB.rx[2].state, 'active')
+        assert_eq(cb('rxCancel', MEDIC, 3).error, 'no_permission')
+        assert_true(cb('rxCancel', DOC, 3).ok)
+        assert_eq(DB.rx[3].state, 'cancelled')
+    end)
+end)
+
 describe('lab and imaging', function()
     it('a sample is read from the engine state and the character, not from anything the client sends', function()
         local p = PFMed.Store.Get('PATCID')
@@ -300,23 +360,40 @@ describe('lab and imaging', function()
 end)
 
 describe('stays on the bill', function()
-    it('replace 17E\'s single bed line by one line per stay at the stay\'s rate', function()
+    local function beds(a, rows)
+        DB.stays[a.id] = rows
+        local out = {}
+        for _, l in ipairs(H.Billing.Lines(a)) do if l.kind == 'bed' then out[#out + 1] = l end end
+        return out
+    end
+    it('replace 17E\'s single bed line: the admission\'s time in started hours, split over the rates by time', function()
         local a = admitted('ward', 'w1')
         local t = os.time()
         a.discharged_at = t + 3 * 3600
         local before = H.Billing.Lines(a)
-        DB.stays[a.id] = {
-            { id = 7, dept = 'ward', level = 'ward', started_at = t, ended_at = t + 1800 },
-            { id = 8, dept = 'ward', level = 'icu', started_at = t + 1800, ended_at = t + 3 * 3600 },
-        }
-        local lines = H.Billing.Lines(a)
-        local beds = {}
-        for _, l in ipairs(lines) do if l.kind == 'bed' then beds[#beds + 1] = l end end
-        assert_eq(#beds, 2)
-        assert_eq(beds[1].ref_id, 7)
-        assert_eq(beds[1].qty * beds[1].unit_price, Config.Hospital.Tariff.BedHour.ward)
-        assert_eq(beds[2].qty, 3, 'two and a half hours are three started hours')
-        assert_eq(beds[2].unit_price, Config.Hospital.Tariff.BedHour.icu)
+        local T = Config.Hospital.Tariff.BedHour
+        -- 1 h ward + 2 h ICU: three hours, one line per rate
+        local b = beds(a, { { id = 7, dept = 'ward', level = 'ward', started_at = t, ended_at = t + 3600 },
+            { id = 8, dept = 'ward', level = 'icu', started_at = t + 3600, ended_at = t + 3 * 3600 } })
+        assert_eq(#b, 2)
+        assert_eq(b[1].ref_id, 7)
+        assert_eq(b[1].qty * b[1].unit_price, T.ward)
+        assert_eq(b[2].qty, 2)
+        assert_eq(b[2].unit_price, T.icu)
+        -- 10 min ED + 10 min ward: one started hour for the admission, not one per stay
+        b = beds(a, { { id = 1, dept = 'ed', level = 'ed', started_at = t, ended_at = t + 600 },
+            { id = 2, dept = 'ward', level = 'ward', started_at = t + 600, ended_at = t + 1200 } })
+        local hours = 0
+        for _, l in ipairs(b) do hours = hours + l.qty end
+        assert_eq(hours, 1)
+        -- toggling ICU/standard four times in 80 minutes: two hours (40 min at each rate), not four
+        b = beds(a, { { id = 11, dept = 'ward', level = 'ward', started_at = t, ended_at = t + 1200 },
+            { id = 12, dept = 'ward', level = 'icu', started_at = t + 1200, ended_at = t + 2400 },
+            { id = 13, dept = 'ward', level = 'ward', started_at = t + 2400, ended_at = t + 3600 },
+            { id = 14, dept = 'ward', level = 'icu', started_at = t + 3600, ended_at = t + 4800 } })
+        assert_eq(#b, 2, 'one line per rate')
+        assert_eq(b[1].qty + b[2].qty, 2)
+        assert_eq(b[1].qty * b[1].unit_price + b[2].qty * b[2].unit_price, T.ward + T.icu)
         -- without stay rows the 17E line stays as it was
         DB.stays[a.id] = nil
         local plain = H.Billing.Lines(a)

@@ -168,6 +168,28 @@ describe('20E asset register (real DB)', function()
         assert_eq(num(scalar("SELECT COUNT(*) FROM pf_gov_dept_audit WHERE target = ? AND action LIKE 'asset_%'", { sn })), 5)
     end)
 
+    it('armory equipment: booked in only by the armory; a manager\'s lost report keeps the holder and blocks armory draws', function()
+        local s1, s2 = 'AR1-' .. seq, 'AR2-' .. seq
+        assert_true(gov:RegisterAsset('police', { kind = 'sidearm', serial = s1, item = 'weapon_pistol' }, { key = 'ar:r1:' .. seq, actor = { src = LT } }).ok)
+        assert_true(gov:RegisterAsset('police', { kind = 'sidearm', serial = s2, item = 'weapon_pistol' }, { key = 'ar:r2:' .. seq, actor = { src = LT } }).ok)
+        Mock.invokingResource = 'pfm-policejob'
+        assert_true(gov:IssueAsset(s1, C.cop, { key = 'ar:i1:' .. seq, actor = { src = COP }, ref = 'armory' }).ok)
+        Mock.invokingResource = nil
+        assert_eq(App.returnAsset(COP, { serial = s1, key = 'nonce-ar1' .. seq }).error, 'invalid_state')
+        assert_eq(App.returnAsset(LT, { serial = s1, key = 'nonce-ar2' .. seq }).error, 'invalid_state')
+        assert_true(App.returnAsset(LT, { serial = s1, to = 'lost', key = 'nonce-ar3' .. seq }).ok)
+        local row = MySQL.single.await('SELECT state, holder_cid, issue_ref FROM pf_gov_dept_assets WHERE serial = ?', { s1 })
+        assert_eq(row.state, 'lost')
+        assert_eq(row.holder_cid, C.cop)
+        assert_eq(row.issue_ref, 'armory')
+        Mock.invokingResource = 'pfm-policejob'
+        assert_eq(gov:IssueAsset(s2, C.cop, { key = 'ar:i2:' .. seq, actor = { src = COP }, ref = 'armory' }).error, 'conflict')
+        assert_true(gov:ReturnAsset(s1, { key = 'ar:ret:' .. seq, actor = { src = COP } }).ok, 'the armory books the found item in')
+        assert_eq(gov:GetAsset(s1).asset.state, 'in_stock')
+        assert_true(gov:IssueAsset(s2, C.cop, { key = 'ar:i3:' .. seq, actor = { src = COP }, ref = 'armory' }).ok)
+        Mock.invokingResource = nil
+    end)
+
     it('a deleted character\'s equipment is marked lost', function()
         local sn = 'DL-' .. seq
         assert_true(gov:RegisterAsset('police', { kind = 'radio', serial = sn }, { key = 'dl:r:' .. seq, actor = { src = LT } }).ok)

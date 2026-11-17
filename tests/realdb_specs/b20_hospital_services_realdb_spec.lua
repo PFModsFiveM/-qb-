@@ -101,6 +101,7 @@ local function restart()
     assert(PFHospital.Stays.Start(os.time()), 'stays ready')
     PFHospital.Imaging.WaitFor = function() end
     PFHospital.Surgery.WaitFor = function() end
+    PFHospital.Orders.Recover() -- what the start does once the tables are ready
     return PFHospital
 end
 local H = restart()
@@ -293,6 +294,52 @@ describe('pharmacy', function()
     end)
 end)
 
+describe('check fixes', function()
+    it('a restart reopens a scan and cancels an operation left in_progress; the order can be run again', function()
+        local id = admitTo('ward', 'w3')
+        Mock.coords[DOC], Mock.coords[NURSE] = bedPos('w3'), bedPos('w3')
+        local img = cb('imagingOrder', DOC, PATIENT, 'ct')
+        assert_true(img.ok, tostring(img.message))
+        local t = os.time()
+        MySQL.update.await("UPDATE pf_hosp_orders SET state = 'in_progress', done_by = 'RDBNUR20', ready_at = ? WHERE id = ?", { t + 30, img.orderId })
+        local proc = Q.OrdInsert({ citizenid = PAT, admission_id = id, hospital_id = 'pillbox', kind = 'procedure', test = 'surgery_trauma',
+            state = 'in_progress', ordered_by = 'RDBDOC20', done_by = 'RDBDOC20', ordered_at = t, ready_at = t + 90 })
+        H = restart()
+        Q = H.SQL
+        assert_eq(Q.OrdGet(img.orderId).state, 'ordered')
+        assert_eq(Q.OrdGet(img.orderId).done_by, nil)
+        assert_eq(Q.OrdGet(proc).state, 'cancelled')
+        advance(3)
+        local again = cb('imagingOrder', DOC, PATIENT, 'ct')
+        assert_eq(again.orderId, img.orderId)
+        assert_eq(again.state, 'ordered')
+        advance(3)
+        assert_true(cb('imagingPerform', NURSE, img.orderId).ok, 'the reopened scan runs')
+        discharge(id)
+    end)
+    it('a cancel touches only a pharmacy prescription of that hospital; a restock row is logged', function()
+        local t = os.time()
+        local infirmary = Q.PhInsertRx({ citizenid = PAT, drug = 'painkillers', dose = '1', qty = 3, prescriber_cid = 'D', created_at = t, expires_at = t + 99,
+            custody_ref = 'order:9', interval_seconds = 3600 })
+        local paleto = Q.PhInsertRx({ citizenid = PAT, drug = 'crutches', dose = '1', qty = 1, prescriber_cid = 'D', created_at = t, expires_at = t + 99,
+            hospital_id = 'paleto' })
+        assert_eq(Q.PhCancelPharmacyRx(infirmary, 'pillbox', 'D'), 0)
+        assert_eq(Q.PhCancelPharmacyRx(paleto, 'pillbox', 'D'), 0)
+        assert_eq(Q.PhCancelPharmacyRx(paleto, 'paleto', 'D'), 1)
+        assert_eq(Q.PhGetRx(paleto).cancelled_by, 'D')
+        assert_eq(Q.PhGetRx(infirmary).state, 'active')
+        Mock.coords[DOC] = COUNTER
+        Pockets[DOC] = { fentanyl = 2 }
+        local r = cb('pharmacyRestock', DOC, 'fentanyl', 2)
+        assert_true(r.ok, tostring(r.message))
+        local row = MySQL.single.await('SELECT kind, controlled, hospital_id, by_cid FROM pf_hosp_dispense_log WHERE id = ?', { r.logId })
+        assert_eq(row.kind, 'restock')
+        assert_eq(tonumber(row.controlled), 1)
+        assert_eq(row.hospital_id, 'pillbox')
+        assert_eq(Stash[STASH].fentanyl, 2)
+    end)
+end)
+
 describe('lab, imaging, surgery and stays on one admission', function()
     it('results come from the engine state; imaging confirms; surgery recovers the projectile; the bill prices each stay', function()
         local id = admitTo('ward', 'w3') -- w3 is in the imaging room
@@ -416,14 +463,14 @@ describe('lab, imaging, surgery and stays on one admission', function()
         assert_eq(tonumber(stays[1].bill_id), tonumber(bill.id))
         local tariff = Config.Hospital.Tariff
         local beds = MySQL.query.await("SELECT qty, unit_price FROM pf_hosp_bill_lines WHERE bill_id = ? AND kind = 'bed' ORDER BY id", { bill.id })
-        assert_eq(#beds, 3, 'one line per stay, no 17E single bed line')
-        local rates = { tariff.BedHour.ward, tariff.BedHour.icu, tariff.BedHour.ed }
-        for i, s in ipairs(stays) do
-            local hours = math.max(1, math.ceil((tonumber(s.ended_at) - tonumber(s.started_at)) / 3600))
-            assert_eq(tonumber(beds[i].qty), hours, 'started hours of stay ' .. i)
-            assert_eq(tonumber(beds[i].unit_price), rates[i], 'rate of stay ' .. i)
-        end
-        assert_eq(tonumber(beds[3].qty), 1, 'the 30-minute ED stay is one started hour')
+        -- the whole stay in started hours (no hour added per stay), split over the three rates
+        local total, hours = 0, 0
+        for _, s in ipairs(stays) do total = total + tonumber(s.ended_at) - tonumber(s.started_at) end
+        local priced = {}
+        for _, l in ipairs(beds) do hours = hours + tonumber(l.qty) priced[tonumber(l.unit_price)] = true end
+        assert_eq(hours, math.max(1, math.ceil(total / 3600)), 'started hours of the admission')
+        assert_true(#beds <= 3, 'at most one line per rate, no 17E single bed line')
+        assert_true(priced[tariff.BedHour.icu] and priced[tariff.BedHour.ward], 'ward and ICU are billed at their own rates')
         local procs = MySQL.query.await("SELECT label, unit_price FROM pf_hosp_bill_lines WHERE bill_id = ? AND kind = 'procedure' ORDER BY id", { bill.id })
         local sumProc = 0
         for _, l in ipairs(procs) do sumProc = sumProc + tonumber(l.unit_price) end

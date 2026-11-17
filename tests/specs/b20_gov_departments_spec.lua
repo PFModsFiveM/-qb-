@@ -198,6 +198,81 @@ describe('20E asset change path', function()
     end)
 end)
 
+describe('20E armory equipment (B20-2: weapons must not multiply)', function()
+    local function armoryRows()
+        local rows = {
+            { id = 7, dept = 'police', kind = 'sidearm', serial = 'PD-SDA-1', item = 'weapon_pistol', state = 'issued', holder_cid = 'COP1',
+                issue_ref = 'armory', issued_at = 100, issued_by = 'COP1', updated_at = 0, cost = 0, acquired_at = 0 },
+            { id = 8, dept = 'police', kind = 'sidearm', serial = 'PD-SDA-2', item = 'weapon_pistol', state = 'in_stock', updated_at = 0, cost = 0, acquired_at = 0 },
+        }
+        assetTable(rows)
+        DB.on("WHERE holder_cid = ? AND state = 'lost'", function(_, _, p)
+            for _, r in ipairs(rows) do if r.holder_cid == p[1] and r.state == 'lost' and r.issue_ref == p[2] then return { serial = r.serial } end end
+        end)
+        return rows
+    end
+
+    it('neither the holder nor a manager can book an armory-issued weapon back in from the app', function()
+        local rows = armoryRows()
+        assert_eq(App.returnAsset(COP, { serial = 'PD-SDA-1', key = 'nonce-r001' }).error, 'invalid_state', 'the holder keeps the item: no return outside the armory')
+        assert_eq(App.returnAsset(COP, { serial = 'PD-SDA-1', to = 'lost', key = 'nonce-r002' }).error, 'no_permission', 'the holder cannot report it lost')
+        assert_eq(App.returnAsset(LT, { serial = 'PD-SDA-1', key = 'nonce-r003' }).error, 'invalid_state', 'a manager cannot book it in')
+        assert_eq(App.returnAsset(LT, { serial = 'PD-SDA-1', to = 'maintenance', key = 'nonce-r004' }).error, 'invalid_state')
+        assert_eq(rows[1].state, 'issued')
+        Mock.invokingResource = 'pf-policemdt-DEV'
+        assert_eq(gov:ReturnAsset('PD-SDA-1', { key = 'mdt:r1', actor = { src = COP } }).error, 'invalid_state', 'another allowed resource is not the armory')
+        Mock.invokingResource = nil
+        assert_eq(rows[1].state, 'issued')
+    end)
+
+    it('a manager marks it lost: the holder stays recorded and the armory issues them nothing until resolved', function()
+        local rows = armoryRows()
+        local r = App.returnAsset(LT, { serial = 'PD-SDA-1', to = 'lost', key = 'nonce-l001' })
+        assert_true(r.ok, r.error)
+        assert_eq(rows[1].state, 'lost')
+        assert_eq(rows[1].holder_cid, 'COP1', 'lost while held by')
+        assert_eq(rows[1].issue_ref, 'armory')
+        Mock.invokingResource = 'pfm-policejob'
+        local again = gov:IssueAsset('PD-SDA-2', 'COP1', { key = 'arm:i2', actor = { src = COP }, ref = 'armory' })
+        assert_eq(again.error, 'conflict')
+        assert_eq(rows[2].state, 'in_stock')
+        Mock.invokingResource = nil
+        assert_eq(App.assetAction(LT, { serial = 'PD-SDA-1', action = 'found', key = 'nonce-f001' }).error, 'invalid_state',
+            'found from the register would let the item exist twice')
+        -- the item turns up at the armory: it books it in, and the officer may draw again
+        Mock.invokingResource = 'pfm-policejob'
+        local back = gov:ReturnAsset('PD-SDA-1', { key = 'arm:r1', actor = { src = COP } })
+        assert_true(back.ok, back.error)
+        assert_eq(rows[1].state, 'in_stock')
+        assert_eq(rows[1].holder_cid, nil)
+        assert_true(gov:IssueAsset('PD-SDA-2', 'COP1', { key = 'arm:i3', actor = { src = COP }, ref = 'armory' }).ok)
+        Mock.invokingResource = nil
+    end)
+
+    it('a write-off (retire) resolves it; the armory itself books an issued weapon in', function()
+        local rows = armoryRows()
+        Mock.invokingResource = 'pfm-policejob'
+        assert_true(gov:ReturnAsset('PD-SDA-1', { key = 'arm:r9', actor = { src = COP } }).ok)
+        assert_eq(rows[1].state, 'in_stock')
+        Mock.invokingResource = nil
+        rows[1].state, rows[1].holder_cid, rows[1].issue_ref = 'issued', 'COP1', 'armory'
+        assert_true(App.returnAsset(LT, { serial = 'PD-SDA-1', to = 'lost', key = 'nonce-l009' }).ok)
+        assert_true(App.assetAction(LT, { serial = 'PD-SDA-1', action = 'retire', key = 'nonce-w009' }).ok)
+        assert_eq(rows[1].state, 'retired')
+        assert_eq(rows[1].holder_cid, nil)
+        Mock.invokingResource = 'pfm-policejob'
+        assert_true(gov:IssueAsset('PD-SDA-2', 'COP1', { key = 'arm:i9', actor = { src = COP }, ref = 'armory' }).ok)
+        Mock.invokingResource = nil
+    end)
+
+    it('non-armory equipment keeps the old return rules', function()
+        local rows = { radio('issued', 'COP1') }
+        assetTable(rows)
+        assert_true(App.returnAsset(COP, { serial = 'PD-RAD-1', key = 'nonce-x001' }).ok)
+        assert_eq(rows[1].state, 'in_stock')
+    end)
+end)
+
 describe('20E training grants through the qualification store', function()
     it('a failed grant is finished by a replay of the same training key; never a second grant key', function()
         local calls = {}
