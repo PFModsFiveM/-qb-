@@ -493,25 +493,40 @@ Config.JobInteractions = {
         event = 'police:client:EscortPlayer',
         shouldClose = true
     }, {
+        -- EMS equipment (pf-ambulancejob, batch 17D): every entry asks the server, which spawns the
+        -- props and checks job, duty and distances from server positions. The field is `equipment`
+        -- because the radial treats an `action` field as a function to call.
         id = 'stretcheroptions',
         title = 'Stretcher',
         icon = 'bed-pulse',
         items = {
-            {
-                id = 'spawnstretcher',
-                title = 'Spawn Stretcher',
-                icon = 'plus',
-                type = 'client',
-                event = 'qb-radialmenu:client:TakeStretcher',
-                shouldClose = false
-            }, {
-            id = 'despawnstretcher',
-            title = 'Remove Stretcher',
-            icon = 'minus',
-            type = 'client',
-            event = 'qb-radialmenu:client:RemoveStretcher',
-            shouldClose = false
+            { id = 'spawnstretcher', title = 'Take Stretcher', icon = 'plus', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'spawn_stretcher', shouldClose = true },
+            { id = 'pushstretcher', title = 'Push / Stop', icon = 'hand', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'push', shouldClose = true },
+            { id = 'placepatient', title = 'Place Patient', icon = 'bed-pulse', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'place_patient', shouldClose = true },
+            { id = 'takepatient', title = 'Take Patient Off', icon = 'person-walking', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'take_patient', shouldClose = true },
+            { id = 'loadstretcher', title = 'Load Into Ambulance', icon = 'truck-medical', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'load', shouldClose = true },
+            { id = 'unloadstretcher', title = 'Unload Patient', icon = 'truck-ramp-box', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'unload', shouldClose = true },
+            { id = 'foldstretcher', title = 'Fold / Unfold', icon = 'compress', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'fold', shouldClose = true },
+            { id = 'despawnstretcher', title = 'Put Back', icon = 'minus', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'return', shouldClose = true },
         }
+    }, {
+        id = 'wheelchairoptions',
+        title = 'Wheelchair',
+        icon = 'wheelchair',
+        items = {
+            { id = 'spawnwheelchair', title = 'Take Wheelchair', icon = 'plus', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'spawn_wheelchair', shouldClose = true },
+            { id = 'seatpatient', title = 'Seat Patient', icon = 'wheelchair', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'seat', shouldClose = true },
+            { id = 'unseatpatient', title = 'Help Patient Up', icon = 'person-walking', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'unseat', shouldClose = true },
+            { id = 'returnwheelchair', title = 'Put Away', icon = 'minus', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'return', shouldClose = true },
+        }
+    }, {
+        id = 'medbagoptions',
+        title = 'Medbag',
+        icon = 'kit-medical',
+        items = {
+            { id = 'placemedbag', title = 'Take Medbag', icon = 'plus', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'place_medbag', shouldClose = true },
+            { id = 'openmedbag', title = 'Open Medbag', icon = 'box-open', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'open_medbag', shouldClose = true },
+            { id = 'pickupmedbag', title = 'Pick Up Medbag', icon = 'minus', type = 'client', event = 'pf-ambulancejob:client:Equipment', equipment = 'pickup_medbag', shouldClose = true },
         }
     }
     },
