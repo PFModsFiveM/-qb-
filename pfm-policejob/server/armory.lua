@@ -5,7 +5,9 @@
 -- right kind, pf-government records it as issued to them (IssueAsset, keyed), and the item lands in
 -- the inventory carrying the serial (info.assetSerial; weapons also info.serie, the weapon serial the
 -- inventory and evidence code read). A return removes exactly that item and books the asset back in
--- stock (ReturnAsset, keyed on the issue time so a retry finds the first return). Nothing comes from
+-- stock (ReturnAsset, keyed on the issue time so a retry finds the first return); equipment a manager marked lost while
+-- the officer held it is handed in the same way, which lifts pf-government's block on new draws (a
+-- draw while it is open answers conflict with the serial to hand in). Nothing comes from
 -- thin air: no stock in the register = nothing to take, and with pf-government stopped the armory is
 -- closed (fails closed).
 --
@@ -29,6 +31,7 @@ local DEFAULTS = {
     Radius = 3.0,
     MaxOut = 6,
     RateMs = 1500,
+    Ref = 'armory', -- issue_ref of armory equipment (pf-government Config.Departments.Assets.ArmoryRef)
     -- armory counters at Mission Row and Paleto (server-checked; the client draws the prompt)
     Locations = {
         vector3(452.30, -982.50, 30.69),
@@ -58,7 +61,11 @@ local function now() return os.time() end
 local function getPlayer(src) return exports['pfm-core']:GetPlayer(src) end
 local function started(res) return GetResourceState(res) == 'started' end
 
-local function fail(code, message) return { ok = false, error = code, message = message or code } end
+local function fail(code, message, extra)
+    local out = { ok = false, error = code, message = message or code }
+    for k, v in pairs(extra or {}) do out[k] = v end
+    return out
+end
 
 local function sharedItem(name)
     local items = exports['pfm-core']:GetShared('Items') or {}
@@ -240,12 +247,18 @@ function A.Menu(src)
         items[#items + 1] = { item = name, label = entry.label, kind = entry.kind, inStock = n, allowed = reason == nil, reason = reason }
     end
     table.sort(items, function(a, b) return a.label < b.label end)
+    -- held: issued to the officer, and armory equipment a manager marked lost while they held it
+    -- (it blocks new draws until it is handed in here or written off)
     local held = {}
-    local res = gov('ListAssets', dept, { holder = cid, state = 'issued', limit = 100 })
-    for _, a in ipairs(type(res) == 'table' and res.ok and res.list or {}) do
-        local it = itemWithSerial(P, a.serial)
-        held[#held + 1] = { serial = a.serial, kind = a.kind, item = it and it.name or a.item, label = a.label or a.kind,
-            carried = it ~= nil }
+    for _, state in ipairs({ 'issued', 'lost' }) do
+        local res = gov('ListAssets', dept, { holder = cid, state = state, limit = 100 })
+        for _, a in ipairs(type(res) == 'table' and res.ok and res.list or {}) do
+            if state == 'issued' or a.ref == A.Cfg().Ref then
+                local it = itemWithSerial(P, a.serial)
+                held[#held + 1] = { serial = a.serial, kind = a.kind, item = it and it.name or a.item, label = a.label or a.kind,
+                    carried = it ~= nil, lost = state == 'lost' or nil }
+            end
+        end
     end
     return { ok = true, items = items, held = held, maxOut = A.Cfg().MaxOut }
 end
@@ -289,9 +302,15 @@ function A.Checkout(src, itemName)
         end
         if not asset then return fail('out_of_stock', 'None in stock') end
         local key = ('pfm-policejob:armory:%s:issue:%d:%d'):format(asset.serial, now(), math.random(1000, 9999))
-        local res, why3 = govWrite('IssueAsset', asset.serial, cid, { key = key, actor = { src = src }, ref = 'armory', note = itemName })
+        local res, why3 = govWrite('IssueAsset', asset.serial, cid, { key = key, actor = { src = src }, ref = A.Cfg().Ref, note = itemName })
         if why3 then return fail('unavailable', 'The asset register did not answer; nothing was issued') end
-        if not res.ok then return fail(res.error or 'unavailable', res.message) end
+        if not res.ok then
+            -- pf-government blocks new armory draws while equipment marked lost is still held by them
+            if res.error == 'conflict' and type(res.serial) == 'string' then
+                return fail('conflict', ('Hand in %s at the armory first (reported lost while you held it)'):format(res.serial), { serial = res.serial })
+            end
+            return fail(res.error or 'unavailable', res.message)
+        end
         local info = { assetSerial = asset.serial, dept = dept }
         local def = sharedItem(itemName)
         if def and def.type == 'weapon' then info.serie = asset.serial end
@@ -327,7 +346,10 @@ function A.Return(src, serial)
         if why then return fail('unavailable', 'The asset register did not answer') end
         if not got.ok then return fail(got.error or 'not_found', got.message) end
         local asset = got.asset
-        if asset.state ~= 'issued' or asset.holder ~= cid then return fail('not_found', 'That equipment is not issued to you') end
+        -- issued to them, or armory equipment a manager marked lost while they held it (handing it in
+        -- here books it back in and lifts the block on new draws)
+        local lostHeld = asset.state == 'lost' and asset.ref == A.Cfg().Ref
+        if (asset.state ~= 'issued' and not lostHeld) or asset.holder ~= cid then return fail('not_found', 'That equipment is not issued to you') end
         P = getPlayer(src)
         local it, slot = itemWithSerial(P, serial)
         if not it then return fail('not_carried', 'You do not carry that equipment') end

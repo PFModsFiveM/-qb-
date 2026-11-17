@@ -1110,7 +1110,8 @@ local function openArmory()
         for _, h in ipairs(res.held or {}) do
             menu[#menu + 1] = {
                 header = 'Return: ' .. tostring(h.label) .. ' ' .. tostring(h.serial),
-                txt = h.carried and 'Hand it back in' or 'Not in your inventory (report it to a supervisor)',
+                txt = (h.lost and 'Reported lost: hand it in to clear the block. ' or '')
+                    .. (h.carried and 'Hand it back in' or 'Not in your inventory (report it to a supervisor)'),
                 disabled = not h.carried,
                 params = { event = 'police:client:ArmoryReturn', args = { serial = h.serial } },
             }

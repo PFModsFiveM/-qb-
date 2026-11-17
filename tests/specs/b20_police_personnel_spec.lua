@@ -80,7 +80,7 @@ Mock.exportsByResource['pfm-policejob'] = {
 
 -- ── pf-government by contract (15I quals, 20E assets) ──
 local GOV = { depts = {}, quals = {}, assets = {}, issued = {}, returned = {}, issueFail = nil, returnFail = nil, listed = 0 }
-local function view(a) return { id = a.id, dept = a.dept, kind = a.kind, serial = a.serial, item = a.item, label = a.label, state = a.state, holder = a.holder, issuedAt = a.issuedAt } end
+local function view(a) return { id = a.id, dept = a.dept, kind = a.kind, serial = a.serial, item = a.item, label = a.label, state = a.state, holder = a.holder, issuedAt = a.issuedAt, ref = a.ref } end
 Mock.exportsByResource['pf-government'] = {
     GetDepartmentOf = function(_, src) return GOV.depts[src] end,
     HasQualification = function(_, cid, q) return GOV.quals[cid .. ':' .. q] == true end,
@@ -102,8 +102,14 @@ Mock.exportsByResource['pf-government'] = {
     IssueAsset = function(_, serial, cid, opts)
         GOV.issued[#GOV.issued + 1] = { serial = serial, cid = cid, opts = opts }
         if GOV.issueFail then return { ok = false, error = GOV.issueFail } end
+        -- 20E B20-2: armory equipment lost while held blocks new armory issues to that holder
+        if opts.ref == 'armory' then
+            for _, a in ipairs(GOV.assets) do
+                if a.state == 'lost' and a.holder == cid and a.ref == 'armory' then return { ok = false, error = 'conflict', serial = a.serial } end
+            end
+        end
         for _, a in ipairs(GOV.assets) do
-            if a.serial == serial then a.state, a.holder, a.issuedAt = 'issued', cid, 1700000123 return { ok = true, asset = view(a) } end
+            if a.serial == serial then a.state, a.holder, a.issuedAt, a.ref = 'issued', cid, 1700000123, opts.ref return { ok = true, asset = view(a) } end
         end
         return { ok = false, error = 'not_found' }
     end,
@@ -111,7 +117,11 @@ Mock.exportsByResource['pf-government'] = {
         GOV.returned[#GOV.returned + 1] = { serial = serial, opts = opts }
         if GOV.returnFail then return { ok = false, error = GOV.returnFail } end
         for _, a in ipairs(GOV.assets) do
-            if a.serial == serial then a.state, a.holder = 'in_stock', nil return { ok = true, asset = view(a) } end
+            if a.serial == serial then
+                if a.state ~= 'issued' and not (a.state == 'lost' and a.ref == 'armory') then return { ok = false, error = 'invalid_state' } end
+                a.state, a.holder, a.ref = 'in_stock', nil, nil
+                return { ok = true, asset = view(a) }
+            end
         end
         return { ok = false, error = 'not_found' }
     end,
@@ -658,6 +668,48 @@ describe('20F: armory checkout', function()
 end)
 
 describe('20F: armory return', function()
+    it('armory equipment marked lost blocks draws (the serial is named) until it is handed in here', function()
+        pj()
+        GOV.depts[OFF] = 'police'
+        stock('PD-SDA-1', 'sidearm', 'weapon_pistol', 'lost', 'OFF1')
+        GOV.assets[1].ref, GOV.assets[1].issuedAt = 'armory', 1700000100
+        stock('PD-SDA-2', 'sidearm', 'weapon_pistol')
+        stock('PD-RAD-1', 'radio', 'radio')
+        local r = checkout(OFF, 'radio')
+        assert_eq(r.error, 'conflict')
+        assert_eq(r.serial, 'PD-SDA-1')
+        assert_true(r.message:find('PD-SDA-1', 1, true) ~= nil, 'the officer is told which serial to hand in')
+        assert_eq(#INV.added, 0)
+        local m = A.Menu(OFF)
+        assert_eq(#m.held, 1)
+        assert_eq(m.held[1].serial, 'PD-SDA-1')
+        assert_eq(m.held[1].lost, true)
+        assert_eq(m.held[1].carried, false)
+        -- the pistol turns up in the officer's inventory and is handed in
+        Mock.players[OFF].PlayerData.items[3] = { name = 'weapon_pistol', amount = 1, info = { assetSerial = 'PD-SDA-1', serie = 'PD-SDA-1' }, slot = 3 }
+        local back = giveBack(OFF, 'PD-SDA-1')
+        assert_eq(back.ok, true, tostring(back.error))
+        assert_eq(INV.removed[1].slot, 3)
+        assert_eq(GOV.returned[1].opts.key, 'pfm-policejob:armory:PD-SDA-1:return:1700000100')
+        assert_eq(GOV.assets[1].state, 'in_stock')
+        -- block lifted
+        assert_eq(checkout(OFF, 'radio').ok, true)
+    end)
+
+    it('lost equipment that was not armory-issued, or held by someone else, is not taken here', function()
+        pj()
+        GOV.depts[OFF] = 'police'
+        stock('PD-SDA-1', 'sidearm', 'weapon_pistol', 'lost', 'OFF1')
+        stock('PD-SDA-2', 'sidearm', 'weapon_pistol', 'lost', 'SGT2')
+        GOV.assets[2].ref = 'armory'
+        Mock.players[OFF].PlayerData.items[3] = { name = 'weapon_pistol', amount = 1, info = { assetSerial = 'PD-SDA-1' }, slot = 3 }
+        Mock.players[OFF].PlayerData.items[4] = { name = 'weapon_pistol', amount = 1, info = { assetSerial = 'PD-SDA-2' }, slot = 4 }
+        assert_eq(giveBack(OFF, 'PD-SDA-1').error, 'not_found')
+        assert_eq(giveBack(OFF, 'PD-SDA-2').error, 'not_found')
+        assert_eq(#INV.removed, 0)
+        assert_eq(#GOV.returned, 0)
+    end)
+
     it('removes exactly the item with the serial and books it in under a key from the issue time', function()
         pj()
         GOV.depts[OFF] = 'police'
