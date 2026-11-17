@@ -174,7 +174,13 @@ procurement delivery to each dock and unpack, rig restock bays, `/fleetservice`;
 (batch 21); armory counters, serial on drawn weapons, lost-equipment block; use-of-force auto drafts while recording.
 
 ### Batch 21
-(to be filled)
+Mocked 4031 passed / 0 failed (322 files); real DB 1068 passed / 0 failed (113 files); all 34 tests/js spec files green
+(new: `b21_mdt_records_pages`, `b21_mdt_custody_pages`, `b21_ems_pages`, `b21_hospital_app`, `b21_corrections_app`,
+`b21_justice_apps`, `b21_department_app`); Lua specs for every new server handler with real-DB specs for their SQL.
+In-game checks pending: every page at 760x640 and in large windows on both shells, controller navigation, MDT
+`pfMdtCall` bridge in full screen and embedded, EMS exam/treat progress and the live monitor, PCR handover between two
+players, hospital actions at the bedside, corrections actions in person, court flow with mails/calendar, portal fine
+payment, department app armory and purchasing flows.
 
 ### Batch 22
 (to be filled)

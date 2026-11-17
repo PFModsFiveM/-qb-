@@ -2891,3 +2891,32 @@ Open (owner decisions in PF_REMAINING_WORK): the police shop still hands out fre
 the serial-tracked armory (left until managers stock the register); the prison commissary does not draw from stock;
 Paleto has no operating room; all new counters, zones, docks, bays and the morgue are first placements; the MDT and
 EMS MDT pages for these endpoints are batch 21.
+
+## Batch 21 — 2026-11-17: UI on every device
+
+Seven UI units built in parallel in the owner's shared look (pfm-ui tokens with fallbacks, pf-devices `runtime.css`),
+lead follow-ups, one combined adversarial check (seven findings, none high, all fixed with specs).
+
+| Unit | What changed |
+|---|---|
+| 21A MDT records pages | pf-policemdt-DEV page hook `window.PFMdtPages` and one NUI bridge `pfMdtCall` (allowlist; every name still gated on the server); case, warrant v2 (no client ids, approval state, serve), BOLO, citations (MDT fines plus court citations from pf-justice), plate check/ALPR/impound pages; licence reasons and history, `releasedOnLogin`, readable error codes; `server/pages_records.lua` (death-record details on cases, audited; court citations paged). |
+| 21B MDT custody pages | custody/booking with a read-only sentence clock (on duty, every read audited, booking fields whitelisted), evidence chain of custody, lab queue, telemetry timeline ("metadata, not video"), use-of-force with server autosave, personnel/IA/reviews; `server/pages_ext.lua` relays with the caller as actor. |
+| 21C EMS tablet | exam by modality (server findings only), treatments showing the server's real result, vitals monitor (exam, chart and the new live push), PCR editor with server autosave, unit board, Medical tab; sentencing and jail code removed; client callbacks queued per name (pfm-core keeps one slot per callback name). |
+| 21D hospital workstation | pf-devices `hospital` app: reception, triage and bed boards, admissions, discharge orders, lab/imaging queues, pharmacy queue through pf-ambulancejob `ListPharmacyQueue` (facility, tier and audit rules), bills for supervisors; actions relayed to pf-ambulancejob's own callbacks with the real player. |
+| 21E corrections app | pfm-prison `corrections` app: population, cells, counts and schedule, infractions and hearings, visits, lockdown, camera list, read-only trust, sentence data from pf-justice. |
+| 21F justice apps | pf-justice `court` (docket, cases, hearings, decisions, warrant reviews, court orders, probation caseload), `community-service` (shifts, tasks, supervisor sign-off) and `justice-records` (own record, court dates, sentence clock, keyed fine payment, citation contest, IA complaint intake). |
+| 21G department app | pf-government `department` app (roster, qualifications, shifts, training, asset register with the armory rules, purchasing, budget, payroll) and the shared `--pf-status-*`, `--pf-triage-*`, `--pf-vital-*` tokens in pf-devices `runtime.css`. |
+
+Lead follow-ups: pf-ambulancejob vitals monitor (`monitorAttach`/`monitorDetach`, 5 s `pf-ambulancejob:client:Monitor`
+push to the attached medic only) and an exam-menu link to the MDT patient page; IA complaints named only in words are
+resolved to the officer on the server and hidden from any officer they name; older specs adjusted to the new markup
+and manifests.
+
+Tests: mocked 4031 passed, 0 failed (322 files); real DB 1068 passed, 0 failed (113 files); all 34 tests/js spec files
+green; `ledger_parallel` and `sql_install_check` pass; parsecheck clean. Not tested in game.
+
+Open: custody log read-back (pf-justice `GetCustodyLog`), property receipt on bookings, a pfm-policejob lab-job list,
+pf-ambulancejob exports for bills/beds/tier (the hospital app reads some tables directly), PCR list paging, the
+narrative typed in the last 1.5 s before a window closes, a server batch lookup for nearby patients (a callback answer
+later than 10 s could label the wrong patient), pf-emsmdt README and dead files (`injury_panel.html`, old overlay CSS),
+defender assignment and portal bail; every page must be checked in game at 760x640 and in large computer windows.

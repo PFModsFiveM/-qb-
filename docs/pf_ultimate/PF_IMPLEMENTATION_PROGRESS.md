@@ -302,3 +302,9 @@ Hospital services (20A), morgue (20B), supplies and fleet (20C), EMS MDT (20D), 
 personnel (20F): Implemented + Tested (automated). Lead follow-ups: pf-stores unclear charges keep their order waiting;
 deceased characters refused at selection. Combined check: 8 defects fixed with specs. Suites: mocked 3907/0, real DB
 1033/0. Not tested in game. Resume at batch 21 (PF_ULTIMATE_SYSTEM_PLAN.md section 12).
+
+### 2026-11-17: batch 21 done
+UI on every device (21A-21G) in the owner's shared look: Implemented + Tested (automated: jsdom page specs, Lua handler
+specs, real-DB specs). Follow-ups: live vitals monitor, death-record and court-citation endpoints, IA complaints
+resolved server-side. Combined check: 7 findings (none high), all fixed with specs. Suites: mocked 4031/0, real DB
+1068/0, JS 34 files green. Not tested in game. Resume at batch 22 (PF_ULTIMATE_SYSTEM_PLAN.md section 13).
