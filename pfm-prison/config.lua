@@ -183,8 +183,8 @@ Config.Security = {
         EvidencePoint = { coords = vector3(1845.0, 2585.0, 45.67), radius = 6.0 },
         -- visitors are searched where they come in (check in game)
         VisitorZone = { coords = vector3(1845.0, 2585.0, 45.67), radius = 20.0 },
-        InfractionCode = 'contraband',
-        InfractionSeverity = 2,
+        -- a find on an inmate is reported as this discipline code (config_facility.lua Discipline.Codes)
+        InfractionCode = 'P-200',
         RetrySeconds = 60,     -- a seizure held in a locker whose evidence could not be made is retried this often
         MaxRetries = 30,
     },

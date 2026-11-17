@@ -633,8 +633,12 @@ end
 
 local function infraction(cid, orderId, searchId, evidenceIds, actor)
     local ok, res = pcall(function()
-        return exports['pfm-prison']:RecordInfraction(cid, { code = SEARCH.InfractionCode or 'contraband', severity = num(SEARCH.InfractionSeverity, 2),
-            evidenceIds = evidenceIds, orderId = orderId }, { key = ('pfm-prison:contraband:%d:infraction'):format(searchId), actor = { src = actor.src } })
+        local list = {}
+        for i, id in ipairs(evidenceIds or {}) do if i <= 10 then list[i] = id end end
+        -- the facility's reporter is corrections staff; a police officer's find is reported by the system
+        local by = actor.job == 'corrections' and { src = actor.src } or SYSTEM
+        return exports['pfm-prison']:RecordInfraction(cid, { code = SEARCH.InfractionCode or 'P-200', evidenceIds = list, orderId = orderId },
+            { key = ('pfm-prison:contraband:%d:infraction'):format(searchId), actor = by })
     end)
     if ok and type(res) == 'table' and res.ok == true then return tonumber(res.infractionId) end
     warnOnce('infraction', 'RecordInfraction is not available: contraband searches record no infraction')
@@ -686,6 +690,16 @@ function Sec.Search(officerSrc, kind, target)
         searchId = math.tointeger(tonumber(searchId))
         if not searchId or searchId < 1 then return err('db_unavailable', 'The search could not be recorded') end
         Sec.lastSearch[targetKey] = t
+        -- still together after the wait (a person may have walked off)
+        if targetSrc and dist(I.pedPos(staff.src), I.pedPos(targetSrc)) > num(SEARCH.Reach, 2.5) + 1.0 then
+            db('update', Sec.SQL.searchUpdate, { encode({ state = 'aborted', error = 'too_far', items = {} }), nil, searchId })
+            return err('too_far', 'They moved away')
+        end
+        if kind == 'cell' then
+            -- a stash is loaded into the inventory when it is created or opened
+            inv('CreateInventory', stash, { label = ('Cell %s locker'):format(cellId), maxweight = num(SC.CellLockerWeight, 20000),
+                slots = num(SC.CellLockerSlots, 10) })
+        end
         -- what the target holds now (read after the wait, right before the roll)
         items = kind == 'cell' and stashItems(stash) or playerItems(targetSrc)
         local found = Sec.Roll(kind, items)
@@ -912,6 +926,12 @@ function Sec.Tick(at)
     end
     for key, f in pairs(Sec.forfeits) do Sec.RunForfeit(key, f) end
     Sec.RetryPending(at)
+    -- bounded memory: cooldown marks older than their cooldown are dropped
+    local zoneCd, camCd, searchCd = num(SC.ZoneCooldown, 300), num(SC.CameraAuditSeconds, 60), num(SEARCH.TargetCooldown, 60)
+    for k, t in pairs(Sec.zoneSeen) do if at - t >= zoneCd then Sec.zoneSeen[k] = nil end end
+    for k, t in pairs(Sec.cameraSeen) do if at - t >= camCd then Sec.cameraSeen[k] = nil end end
+    for k, t in pairs(Sec.lastSearch) do if at - t >= searchCd then Sec.lastSearch[k] = nil end end
+    for k, t in pairs(Sec.lastOfficer) do if at - t >= num(SEARCH.OfficerCooldown, 5) then Sec.lastOfficer[k] = nil end end
 end
 
 function Sec.Boot()
@@ -929,14 +949,6 @@ CreateThread(function()
         if not booted then booted = Sec.Boot() end
         local ok, e = pcall(Sec.Tick)
         if not ok then print(('^1[pfm-prison]^7 security tick failed: %s'):format(tostring(e))) end
-    end
-end)
-
-AddEventHandler('playerDropped', function()
-    local src = tonumber(source)
-    if not src then return end
-    for key in pairs(Sec.zoneSeen) do
-        if key:sub(1, #tostring(src) + 1) == tostring(src) .. ':' then Sec.zoneSeen[key] = nil end
     end
 end)
 

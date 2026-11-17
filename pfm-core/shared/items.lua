@@ -449,4 +449,14 @@ QBCore.Shared.Items = {
     item_bench = {name = "item_bench", label = "Workbench", weight = 15000, type = "item", image = "workbench.png", unique = true, useable = true, shouldClose = false, combinable = nil, description = "A workbench to craft items."},
     attachment_bench = {name = "attachment_bench", label = "Attachment Workbench", weight = 15000, type = "item", image = "attworkbench.png", unique = true, useable = true, shouldClose = false, combinable = nil, description = "A workbench for crafting attachments."},
 
+    -- Prison (pfm-prison, batch 19). Images reuse existing inventory art until dedicated art exists.
+    prison_uniform               = { name = 'prison_uniform', label = 'Prison Uniform', weight = 500, type = 'item', image = 'id_card.png', unique = true, useable = false, shouldClose = false, description = 'Bolingbroke issue. Handed out at intake and taken back at release' },
+    laundry_bag                  = { name = 'laundry_bag', label = 'Clean Linen', weight = 2000, type = 'item', image = 'weapon_garbagebag.png', unique = false, useable = false, shouldClose = false, description = 'A bag of washed and folded bed linen from the prison laundry' },
+    commissary_noodles           = { name = 'commissary_noodles', label = 'Instant Noodles', weight = 200, type = 'item', image = 'tosti.png', unique = false, useable = true, shouldClose = true, description = 'Commissary noodles. Add hot water' },
+    commissary_soda              = { name = 'commissary_soda', label = 'Commissary Soda', weight = 300, type = 'item', image = 'cola.png', unique = false, useable = true, shouldClose = true, description = 'A can of soda from the prison commissary' },
+    commissary_hygiene           = { name = 'commissary_hygiene', label = 'Hygiene Kit', weight = 300, type = 'item', image = 'cleaningkit.png', unique = false, useable = false, shouldClose = false, description = 'Soap, toothbrush and toothpaste from the commissary' },
+    contraband_shiv              = { name = 'contraband_shiv', label = 'Shiv', weight = 300, type = 'item', image = 'weapon_switchblade.png', unique = false, useable = false, shouldClose = false, description = 'A sharpened piece of scrap. Contraband' },
+    contraband_phone             = { name = 'contraband_phone', label = 'Smuggled Phone', weight = 200, type = 'item', image = 'samsungphone.png', unique = true, useable = false, shouldClose = false, description = 'A cheap phone smuggled past the gate. Contraband' },
+    contraband_pills             = { name = 'contraband_pills', label = 'Loose Pills', weight = 50, type = 'item', image = 'painkillers.png', unique = false, useable = false, shouldClose = false, description = 'Unlabelled pills passed hand to hand. Contraband' },
+
 }

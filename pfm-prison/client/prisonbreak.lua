@@ -224,7 +224,8 @@ end)
 -- the viewer stands before it sends a camera or an alert.
 
 RegisterNetEvent('prison:client:SecurityAlert', function(alert)
-    if GetInvokingResource() then return end
+    local invoker = GetInvokingResource()
+    if invoker and invoker ~= GetCurrentResourceName() then return end -- only the server sends these
     if type(alert) ~= 'table' then return end
     local label = tostring(alert.label or 'Prison alarm'):sub(1, 64)
     QBCore.Functions.Notify('Bolingbroke: ' .. label, 'error', 8000)
@@ -262,7 +263,8 @@ local function cameraText(text)
 end
 
 RegisterNetEvent('prison:client:ViewCamera', function(cam)
-    if GetInvokingResource() then return end
+    local invoker = GetInvokingResource()
+    if invoker and invoker ~= GetCurrentResourceName() then return end -- only the server sends these
     if type(cam) ~= 'table' or type(cam.coords) ~= 'table' or type(cam.lookAt) ~= 'table' then return end
     local c, l = cam.coords, cam.lookAt
     if not tonumber(c.x) or not tonumber(l.x) then return end
