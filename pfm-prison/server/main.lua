@@ -107,6 +107,24 @@ end
 
 local function notify(src, text, kind) TriggerClientEvent('QBCore:Notify', src, text, kind) end
 
+-- Security (batch 19F, server/security.lua) fills PFPrison.Security; without it these hooks do nothing.
+local function security(name)
+    local S = PFPrison.Security
+    local fn = type(S) == 'table' and S[name] or nil
+    if isCallable(fn) then return fn end
+    return nil
+end
+
+--- A lockdown is on: the timed one after a failed gate hack, or the facility lockdown staff ordered
+--- (batch 19D server/facility.lua, PFPrison.Facility.lockdown): no gate can be hacked during either.
+local function lockdownActive(now)
+    now = now or os.time()
+    if LockdownUntil > now then return true end
+    local F = PFPrison.Facility
+    local L = type(F) == 'table' and type(F.lockdown) == 'table' and F.lockdown or nil
+    return L ~= nil and L.on == true and (L.untilAt == nil or num(L.untilAt, 0) > now)
+end
+
 -- City events (pf-services). A confirmed escape is reported once: news bulletin + police dispatch
 -- request (crime.prison.escape has police = true) at the spot the inmate was seen, with their public name.
 local function CityEvent(kind, data, opts)
@@ -206,13 +224,15 @@ local function Lockdown()
     local now = os.time()
     if LockdownUntil > now then return end
     LockdownUntil = now + num(G.LockdownSeconds, 600)
+    local onAlarm = security('OnGateAlarm')
+    if onAlarm then pcall(onAlarm, 'failed gate hack') end
     local ev = bridge('Event')
     if ev then ev(nil, 'lockdown', { untilAt = LockdownUntil, reason = 'failed gate hack' }) end
     TriggerClientEvent('prison:client:SetLockDown', -1, true)
     BreakAlarm()
     local until_ = LockdownUntil
     SetTimeout(num(G.LockdownSeconds, 600) * 1000, function()
-        if LockdownUntil == until_ then TriggerClientEvent('prison:client:SetLockDown', -1, false) end
+        if LockdownUntil == until_ and not lockdownActive() then TriggerClientEvent('prison:client:SetLockDown', -1, false) end
     end)
 end
 
@@ -448,13 +468,19 @@ end
 -- A confirmed escape. Old runtime: the sentence ends and the stored items are forfeited. pf-justice:
 -- the order is suspended and the items stay in the property locker (owner decision D12). Either way
 -- the city and the police hear of it.
-local function Escape(src, pos)
+local function Escape(src, pos, gate)
     local Player = getPlayer(src)
     if not Player then return end
     if Inmates[src] == 'justice' then
         forget(src)
         local onEscape = bridge('OnEscape')
         if onEscape then onEscape(src, pos) end
+        -- batch 19F: the escape record, the warrant request, the classification and the staff alert
+        local sec = security('OnEscape')
+        if sec then
+            local ok, err = pcall(sec, src, Player.PlayerData.citizenid, pos, { method = 'gate_hack', gate = gate })
+            if not ok then print(('^1[pfm-prison]^7 escape record failed: %s'):format(tostring(err))) end
+        end
         ReportEscape(Player, pos)
         BreakAlarm()
         TriggerClientEvent('prison:client:Escaped', src, { suspended = true })
@@ -529,19 +555,22 @@ local function sample(src, now)
         else
             for i, gate in ipairs(Gates) do
                 if gateIsOpen(i, now) and pathDistance(prev.pos, pos, gate.coords) <= num(P.GateReach, 12.0) then
-                    t.passedGateAt = now
+                    t.passedGateAt, t.passedGate = now, i
                 end
             end
         end
     end
     if inside then
         t.lastInside = t.last
+        -- batch 19F: restricted zones inside the walls
+        local zones = security('SampleInmate')
+        if zones then pcall(zones, src, pos, now) end
         return
     end
     local li = t.lastInside
     local escaped = t.passedGateAt ~= nil and now - t.passedGateAt <= num(P.BreachWindow, 600)
         and li ~= nil and now - li.at <= num(P.ExitWindow, 8)
-    if escaped then Escape(src, pos) else SendBack(src, t, now) end
+    if escaped then Escape(src, pos, t.passedGate) else SendBack(src, t, now) end
 end
 
 --- One look at every inmate (every SampleSeconds; also used by tests).
@@ -764,7 +793,7 @@ RegisterNetEvent('prison:server:StartGateHack', function(gate)
     local Player = getPlayer(src)
     if not Player or not PFPrison.IsServing(src) then return end
     local now = os.time()
-    if LockdownUntil > now then return notify(src, Lang:t('error.security_activated'), 'error') end
+    if lockdownActive(now) then return notify(src, Lang:t('error.security_activated'), 'error') end
     if GateOpen[gate] or Tickets[src] then return end
     if LastHackStart[src] and now - LastHackStart[src] < num(G.StartCooldown, 30) then return end
     local pos = pedPos(src)
@@ -823,7 +852,7 @@ RegisterNetEvent('prison:server:GateHackResult', function(ticketId, ok)
     local inTime = elapsed >= num(G.MinSeconds, 5) and elapsed <= num(G.MaxSeconds, 60)
     local pos = pedPos(src)
     local near = pos ~= nil and #(pos - Gates[ticket.gate].coords) <= num(G.Reach, 2.5) + 1.0
-    if passed and inTime and near and not GateOpen[ticket.gate] and LockdownUntil <= now then
+    if passed and inTime and near and not GateOpen[ticket.gate] and not lockdownActive(now) then
         OpenGate(ticket.gate, src)
     else
         Lockdown()
@@ -835,7 +864,7 @@ QBCore.Functions.CreateCallback('prison:server:GetState', function(_, cb)
     local now = os.time()
     local open = {}
     for i in pairs(GateOpen) do open[#open + 1] = i end
-    cb({ alarm = AlarmActivated, lockdown = LockdownUntil > now, gates = open })
+    cb({ alarm = AlarmActivated, lockdown = lockdownActive(now), gates = open })
 end)
 
 QBCore.Functions.CreateCallback('prison:server:IsAlarmActive', function(_, cb)
@@ -933,5 +962,6 @@ PFPrison.Internal = {
     reportEscape = ReportEscape, breakAlarm = BreakAlarm,
     inmates = Inmates, track = Track, jobs = Jobs, gotPhone = GotPhone, gateOpen = GateOpen,
     lockdownUntil = function() return LockdownUntil end, alarmActive = function() return AlarmActivated end,
+    lockdownActive = lockdownActive, relockGates = RelockGates,
     players = function() return QBCore.Functions.GetPlayers() or {} end,
 }

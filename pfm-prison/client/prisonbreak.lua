@@ -186,7 +186,7 @@ CreateThread(function()
         inRange = false
         currentGate = 0
         local sleep = 1000
-        if PlayerJob?.name ~= 'police' then
+        if PlayerJob?.name ~= 'police' and PlayerJob?.name ~= 'corrections' then
             local pos = GetEntityCoords(PlayerPedId())
             for k in pairs(Gates) do
                 local dist = #(pos - Gates[k].coords)
@@ -218,3 +218,100 @@ CreateThread(function()
 end)
 
 -- Leaving the prison is decided by the server (escape or back to a cell): no client check here.
+
+-- ── security (batch 19F): alerts for staff and the camera view ─────────────────────────────────
+-- Everything here only shows what the server decided; the server checks job, duty, grade and where
+-- the viewer stands before it sends a camera or an alert.
+
+RegisterNetEvent('prison:client:SecurityAlert', function(alert)
+    if GetInvokingResource() then return end
+    if type(alert) ~= 'table' then return end
+    local label = tostring(alert.label or 'Prison alarm'):sub(1, 64)
+    QBCore.Functions.Notify('Bolingbroke: ' .. label, 'error', 8000)
+    local c = alert.coords
+    if type(c) ~= 'table' or not tonumber(c.x) or not tonumber(c.y) then return end
+    local blip = AddBlipForCoord(tonumber(c.x), tonumber(c.y), tonumber(c.z) or 0.0)
+    SetBlipSprite(blip, 161)
+    SetBlipScale(blip, 1.2)
+    SetBlipColour(blip, 1)
+    BeginTextCommandSetBlipName('STRING')
+    AddTextComponentSubstringPlayerName(label)
+    EndTextCommandSetBlipName(blip)
+    SetTimeout(120000, function() RemoveBlip(blip) end)
+end)
+
+local viewing = nil -- { cam, index, count, label, from }
+
+local function stopCamera()
+    if not viewing then return end
+    RenderScriptCams(false, false, 0, true, true)
+    DestroyCam(viewing.cam, false)
+    ClearFocus()
+    ClearTimecycleModifier()
+    viewing = nil
+end
+
+local function cameraText(text)
+    SetTextFont(4)
+    SetTextScale(0.45, 0.45)
+    SetTextColour(255, 255, 255, 230)
+    SetTextOutline()
+    BeginTextCommandDisplayText('STRING')
+    AddTextComponentSubstringPlayerName(text)
+    EndTextCommandDisplayText(0.02, 0.02)
+end
+
+RegisterNetEvent('prison:client:ViewCamera', function(cam)
+    if GetInvokingResource() then return end
+    if type(cam) ~= 'table' or type(cam.coords) ~= 'table' or type(cam.lookAt) ~= 'table' then return end
+    local c, l = cam.coords, cam.lookAt
+    if not tonumber(c.x) or not tonumber(l.x) then return end
+    local first = viewing == nil
+    if first then
+        viewing = { cam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true), from = GetEntityCoords(PlayerPedId()) }
+    end
+    viewing.index, viewing.count = tonumber(cam.index) or 1, tonumber(cam.count) or 1
+    viewing.label = tostring(cam.label or ''):sub(1, 48)
+    SetCamCoord(viewing.cam, c.x, c.y, c.z)
+    PointCamAtCoord(viewing.cam, l.x, l.y, l.z)
+    SetCamFov(viewing.cam, tonumber(cam.fov) or 60.0)
+    SetFocusPosAndVel(c.x, c.y, c.z, 0.0, 0.0, 0.0)
+    SetTimecycleModifier('scanline_cam_cheap')
+    RenderScriptCams(true, false, 0, true, true)
+    if not first then return end
+    -- a frame loop only while a camera is on screen (it draws the overlay and reads the keys)
+    CreateThread(function()
+        while viewing do
+            DisableAllControlActions(0)
+            EnableControlAction(0, 245, true) -- chat
+            EnableControlAction(0, 249, true) -- push to talk
+            cameraText(('CAM %d/%d  %s   [LEFT/RIGHT] switch  [BACKSPACE] exit'):format(viewing.index, viewing.count, viewing.label))
+            if IsDisabledControlJustPressed(0, 177) or IsDisabledControlJustPressed(0, 194) then
+                stopCamera()
+            elseif IsDisabledControlJustPressed(0, 175) then
+                TriggerServerEvent('prison:server:ViewCamera', viewing.index % viewing.count + 1)
+            elseif IsDisabledControlJustPressed(0, 174) then
+                TriggerServerEvent('prison:server:ViewCamera', (viewing.index - 2) % viewing.count + 1)
+            elseif #(GetEntityCoords(PlayerPedId()) - viewing.from) > 3.0 or IsEntityDead(PlayerPedId()) then
+                stopCamera()
+            end
+            Wait(0)
+        end
+    end)
+end)
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource == GetCurrentResourceName() then stopCamera() end
+end)
+
+CreateThread(function()
+    TriggerEvent('chat:addSuggestion', '/prisonsearch', 'Search for contraband (staff)', {
+        { name = 'kind', help = 'pat, visitor or cell' }, { name = 'id', help = 'server id (optional: the nearest person)' } })
+    TriggerEvent('chat:addSuggestion', '/prisonlockdown', 'Order or lift a lockdown (staff, gatehouse)', { { name = 'state', help = 'on or off' } })
+    TriggerEvent('chat:addSuggestion', '/prisondoor', 'Lock or unlock a security door (staff, gatehouse)', {
+        { name = 'door', help = 'door number' }, { name = 'action', help = 'lock or unlock' } })
+    TriggerEvent('chat:addSuggestion', '/prisoncam', 'Watch the prison cameras (staff, gatehouse)', { { name = 'n', help = 'camera number' } })
+    TriggerEvent('chat:addSuggestion', '/prisonalarm', 'Open alarms (staff)', { { name = 'action', help = 'list, clear <id> or riot' } })
+    TriggerEvent('chat:addSuggestion', '/prisonevidence', 'Open the prison evidence stash (staff, gatehouse)')
+    TriggerEvent('chat:addSuggestion', '/celllocker', 'Open the locker of your cell (inmates)')
+end)

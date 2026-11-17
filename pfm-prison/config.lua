@@ -123,3 +123,90 @@ Config.Locations = {
         }
     }
 }
+
+-- Security (batch 19F, server/security.lua): doors, cameras, alarms, zones, searches, lockdowns and
+-- escapes. Every check is made on the server (job, duty, grade, positions); coordinates marked
+-- "check in game" were placed from the map and the existing prison points, not walked in game.
+Config.Security = {
+    Facility = 'bolingbroke',
+    -- who works security: on-duty members of these jobs at or above the grade
+    StaffJobs = { corrections = 0, police = 0 },
+    -- doors, lockdowns and alarms need this grade (per job)
+    ControlGrade = { corrections = 2, police = 3 },
+    -- the security doors (pfm-doorlock door keys or aliases); a lockdown locks every one through SetDoorState
+    Doors = {
+        { id = 'bolingbroke_gate_1', label = 'Front gate' },
+        { id = 'bolingbroke_gate_2', label = 'Inner gate' },
+        { id = 'bolingbroke_gate_3', label = 'Yard gate' },
+    },
+    -- where staff work the doors and watch the cameras (the gatehouse; check in game)
+    ControlPoints = {
+        { label = 'Gatehouse', coords = vector3(1845.0, 2585.0, 45.67), radius = 10.0 },
+    },
+    -- camera points (fixed cameras, shown to staff at a control point; check in game)
+    Cameras = {
+        { id = 'gate_front', label = 'Front gate', coords = vector3(1852.0, 2598.0, 51.0), lookAt = vector3(1845.99, 2604.7, 45.58), fov = 60.0 },
+        { id = 'gate_inner', label = 'Inner gate', coords = vector3(1826.0, 2598.0, 51.0), lookAt = vector3(1819.47, 2604.67, 45.56), fov = 60.0 },
+        { id = 'gate_yard', label = 'Yard gate', coords = vector3(1810.0, 2610.0, 51.0), lookAt = vector3(1804.74, 2616.31, 45.61), fov = 60.0 },
+        { id = 'yard', label = 'Yard', coords = vector3(1775.0, 2555.0, 55.0), lookAt = vector3(1765.67, 2565.91, 44.56), fov = 70.0 },
+        { id = 'cellblock', label = 'Cell block', coords = vector3(1680.0, 2530.0, 52.0), lookAt = vector3(1661.05, 2524.68, 45.56), fov = 70.0 },
+    },
+    CameraAuditSeconds = 60,   -- one audit row per viewer and camera per this many seconds
+    -- areas inmates may not enter: the server sees them there (positions every SampleSeconds) and
+    -- alerts the staff on duty, once per inmate and zone per ZoneCooldown (check in game)
+    Zones = {
+        { id = 'gatehouse', label = 'Gatehouse', coords = vector3(1845.0, 2585.0, 45.67), radius = 8.0 },
+    },
+    ZoneCooldown = 300,
+    MaxAlarms = 50,            -- open alarms kept (the oldest goes first)
+    -- searches: the server rolls detection for every contraband stack the target holds
+    Search = {
+        Reach = 2.5,           -- metres between the officer and the person searched (server positions)
+        CellReach = 3.0,       -- metres from a cell locker
+        OfficerCooldown = 5,   -- seconds between two searches by one officer
+        TargetCooldown = 60,   -- seconds between two searches of one person or cell
+        Chance = { pat = 0.65, cell = 0.8, visitor = 0.55 },
+        -- how well an item hides (multiplies the chance): weapons are found, small items less often
+        Concealment = { weapon = 1.0, drug = 0.7, phone = 0.8, default = 0.85 },
+        Items = {
+            phone = 'phone', radio = 'phone', lockpick = 'tool', advancedlockpick = 'tool', electronickit = 'tool',
+            gatecrack = 'tool', screwdriverset = 'tool', drill = 'tool', thermite = 'tool', trojan_usb = 'tool',
+            cryptostick = 'tool', security_card_01 = 'tool', markedbills = 'tool',
+            cokebaggy = 'drug', crack_baggy = 'drug', meth = 'drug', xtcbaggy = 'drug', oxy = 'drug', joint = 'drug',
+            coke_brick = 'drug', coke_small_brick = 'drug',
+        },
+        -- item name prefixes that are contraband (shared items of type 'weapon' always are)
+        Prefixes = { contraband_ = 'tool', weed_ = 'drug', weapon_ = 'weapon' },
+        -- found contraband goes into evidence (pf-justice forfeiture -> pfm-policejob evidence) and
+        -- the evidence bags land in this stash at the gatehouse (check in game)
+        EvidenceStash = 'pfprison_evidence_bolingbroke',
+        EvidencePoint = { coords = vector3(1845.0, 2585.0, 45.67), radius = 6.0 },
+        -- visitors are searched where they come in (check in game)
+        VisitorZone = { coords = vector3(1845.0, 2585.0, 45.67), radius = 20.0 },
+        InfractionCode = 'contraband',
+        InfractionSeverity = 2,
+        RetrySeconds = 60,     -- a seizure held in a locker whose evidence could not be made is retried this often
+        MaxRetries = 30,
+    },
+    -- cell lockers: [cell id] = locker position. The cell ids are the facility's (config_facility.lua);
+    -- a cell with a position listed there needs no entry here. A cell without a position has no locker.
+    CellLockers = {},
+    CellLockerSlots = 10, CellLockerWeight = 20000,
+    Escape = {
+        Classification = 'max',    -- an escapee is raised to this classification (kept after the recapture)
+        ForfeitSeconds = 3600,     -- taken back on recapture (pf-justice caps it at the credits earned)
+        WarrantRetrySeconds = 120, -- the escape warrant request is asked again this often while it fails
+        WarrantMaxAttempts = 30,
+        Charges = { 'Escape from custody' },
+        MaxActionAttempts = 10,
+    },
+    TickSeconds = 15,
+    -- server resources that may call the security exports (pf-justice, the MDTs, the admin menu)
+    Callers = {
+        ViewCamera = {},
+        Search = {},
+        RaiseAlarm = { ['pfm-adminmenu'] = true },
+        SetDoor = { ['pfm-adminmenu'] = true },
+        SetLockdown = { ['pfm-adminmenu'] = true },
+    },
+}
