@@ -96,6 +96,11 @@ Mock.exportsByResource['pf-ambulancejob'] = {
     end,
     DischargePatient = function(_, id, opts) rec('DischargePatient', id, opts) return AJ.discharge end,
     ListPharmacyQueue = function(_, src, filter) rec('ListPharmacyQueue', src, filter) return AJ.queue end,
+    -- batch 22: bills, lines, tier and beds come from pf-ambulancejob's read exports
+    ListBills = function(_, filter) rec('ListBills', filter) return AJ.bills or { ok = true, list = {} } end,
+    GetBillLines = function(_, id, opts) rec('GetBillLines', id, opts) return AJ.billLines or { ok = false, error = 'not_found', message = 'No such bill.' } end,
+    GetStaffTier = function(_, src) rec('GetStaffTier', src) return { ok = true, staff = true, tier = 3, surgeon = false } end,
+    ListBeds = function(_, id) rec('ListBeds', id) return { ok = true, hospitalId = id, beds = {} } end,
 }
 -- server callbacks as pfm-core holds them (funcrefs into pf-ambulancejob)
 local function ajCallback(name, answer)
@@ -449,7 +454,7 @@ describe('b21 hospital app: name search (B21-5)', function()
     it('terms shorter than the minimum are not searched by name', function()
         rpc('bills', CHIEF, { facility = 'pillbox', q = 'a' })
         assert_true(sqlNamed('FROM players WHERE (JSON_VALUE') == nil)
-        assert_eq(sqlNamed('FROM pf_hosp_bills WHERE hospital_id').params[2], 'a', 'still an exact citizen id')
+        assert_eq(callsNamed('ListBills')[1].args[1].cids[1], 'a', 'still an exact citizen id')
     end)
 end)
 
@@ -495,24 +500,26 @@ describe('b21 hospital app: bills (supervisors)', function()
         assert_eq(rpc('bills', MED, { facility = 'pillbox' }).error, 'no_permission')
         assert_eq(rpc('billLines', MED, { billId = 1 }).error, 'no_permission')
         assert_eq(#Sql.log, 0)
+        assert_eq(#callsNamed('ListBills') + #callsNamed('GetBillLines'), 0)
     end)
     it('paged by state and search; the due amount is total minus coverage', function()
-        Sql.rows['FROM pf_hosp_bills'] = { { id = 8, citizenid = 'ANN9', admission_id = 11, total = 900, discount = 450, state = 'invoiced', created_at = 5 } }
+        AJ.bills = { ok = true, list = { { id = 8, citizenid = 'ANN9', admissionId = 11, total = 900, discount = 450, state = 'invoiced', createdAt = 5 } } }
         Sql.rows['FROM players WHERE citizenid IN'] = { { citizenid = 'ANN9', charinfo = '{"firstname":"Ann","lastname":"Lee"}' } }
         local res = rpc('bills', CHIEF, { facility = 'pillbox', state = 'invoiced', q = 'PAT1' })
         assert_true(res.ok)
         assert_eq(res.list[1].due, 450)
         assert_eq(res.list[1].name, 'Ann Lee')
         assert_eq(res.more, false)
-        local s = sqlNamed('FROM pf_hosp_bills WHERE hospital_id')
-        assert_eq(s.params[1], 'pillbox'); assert_eq(s.params[2], 'invoiced'); assert_eq(s.params[3], 'PAT1')
+        local f = callsNamed('ListBills')[1].args[1]
+        assert_eq(f.hospitalId, 'pillbox'); assert_eq(f.state, 'invoiced'); assert_eq(f.cids[1], 'PAT1')
+        assert_eq(f.limit, 26); assert_eq(f.offset, 0)
         assert_eq(rpc('bills', CHIEF, { facility = 'pillbox', state = 'stolen' }).error, 'bad_args')
     end)
     it('lines only of a bill of a known facility', function()
-        Sql.single = { id = 8, hospital_id = 'elsewhere', total = 1, discount = 0, state = 'paid' }
+        AJ.billLines = { ok = true, bill = { id = 8, hospitalId = 'elsewhere', total = 1, discount = 0, state = 'paid' }, lines = {} }
         assert_eq(rpc('billLines', CHIEF, { billId = 8 }).error, 'not_found')
-        Sql.single = { id = 8, hospital_id = 'pillbox', total = 900, discount = 450, state = 'paid' }
-        Sql.rows['FROM pf_hosp_bill_lines'] = { { kind = 'bed', label = 'Ward', qty = 3, unit_price = 100 } }
+        AJ.billLines = { ok = true, bill = { id = 8, hospitalId = 'pillbox', total = 900, discount = 450, state = 'paid' },
+            lines = { { kind = 'bed', label = 'Ward', qty = 3, unitPrice = 100 } } }
         local res = rpc('billLines', CHIEF, { billId = 8 })
         assert_true(res.ok)
         assert_eq(res.lines[1].amount, 300)

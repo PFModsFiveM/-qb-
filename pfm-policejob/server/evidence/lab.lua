@@ -521,6 +521,69 @@ function L.JobsFor(evidenceId, canReview)
     return out
 end
 
+L.LIST_STATES = { queued = true, processing = true, ready = true, released = true, failed = true }
+
+--- ListLabJobs body: the jobs of up to 50 evidence items in one query (the MDT lab queue), or one
+--- page of jobs in one state (newest first, `after` = the last id seen). filter = { evidenceIds,
+--- state, after, limit }. Results follow PublicJob (released, or ready for a lab tech).
+--- Returns { ok, jobs, next } or an error.
+function L.ListJobs(filter, canReviewResults)
+    filter = type(filter) == 'table' and filter or {}
+    local state
+    if filter.state ~= nil then
+        if type(filter.state) ~= 'string' or not L.LIST_STATES[filter.state] then return E.Err('bad_args', 'Unknown state') end
+        state = filter.state
+    end
+    local rows, ok, limit
+    if filter.evidenceIds ~= nil then
+        if type(filter.evidenceIds) ~= 'table' or #filter.evidenceIds == 0 or #filter.evidenceIds > 50 then
+            return E.Err('bad_args', 'evidenceIds must list 1-50 ids')
+        end
+        local ids, marks, seen = {}, {}, {}
+        for _, v in ipairs(filter.evidenceIds) do
+            local id = E.Int(v, 1)
+            if not id then return E.Err('bad_args', 'Bad evidence id') end
+            if not seen[id] then
+                seen[id] = true
+                ids[#ids + 1] = id
+                marks[#marks + 1] = '?'
+            end
+        end
+        -- every job of these items, capped like JobsFor (50 per item)
+        limit = #ids * 50
+        local sql = 'SELECT ' .. JOB_COLS .. ' FROM pf_evidence_lab_jobs WHERE evidence_id IN (' .. table.concat(marks, ', ') .. ')'
+        if state then
+            sql = sql .. ' AND state = ?'
+            ids[#ids + 1] = state
+        end
+        ids[#ids + 1] = limit
+        rows, ok = q('query', sql .. ' ORDER BY evidence_id, id LIMIT ?', ids)
+    else
+        if not state then return E.Err('bad_args', 'Name the evidence or a state') end
+        limit = 25
+        if filter.limit ~= nil then
+            limit = E.Int(filter.limit, 1, 100)
+            if not limit then return E.Err('bad_args', 'limit must be 1-100') end
+        end
+        local after = 2147483647
+        if filter.after ~= nil then
+            after = E.Int(filter.after, 1)
+            if not after then return E.Err('bad_args', 'Bad page') end
+        end
+        rows, ok = q('query', 'SELECT ' .. JOB_COLS .. ' FROM pf_evidence_lab_jobs WHERE state = ? AND id < ? ORDER BY id DESC LIMIT ?',
+            { state, after, limit + 1 })
+    end
+    if ok == false then return E.Err('db_unavailable', 'The lab jobs could not be read') end
+    local jobs = {}
+    for _, r in ipairs(type(rows) == 'table' and rows or {}) do
+        if #jobs >= limit then break end
+        local j = normJob(r)
+        if j then jobs[#jobs + 1] = L.PublicJob(j, canReviewResults == true) end
+    end
+    local nextCursor = (filter.evidenceIds == nil and type(rows) == 'table' and #rows > limit and #jobs > 0) and jobs[#jobs].id or nil
+    return { ok = true, jobs = jobs, next = nextCursor }
+end
+
 local function canReview(actor)
     if not actor then return false end
     if actor.kind == 'system' then return false end

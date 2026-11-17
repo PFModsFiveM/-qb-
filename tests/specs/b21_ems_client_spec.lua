@@ -105,16 +105,23 @@ describe('patient care: the server answers, the page shows them', function()
         Mock.coords[2001] = vector3(2, 0, 0)   -- server id 11
         Mock.coords[2002] = vector3(1, 0, 0)   -- server id 12
         Mock.coords[2003] = vector3(9, 0, 0)   -- too far
-        answers['pf-emsmdt:server:getCitizenData'] = function(t)
-            if t == 12 then return { citizenid = 'C12', firstname = 'Ann', lastname = 'Lee' } end
-            return nil
+        -- batch 22: one server answer (pf-emsmdt:server:getNearbyPatients) names whom the server sees
+        answers['pf-emsmdt:server:getNearbyPatients'] = function(ids)
+            local out = {}
+            for _, t in ipairs(ids) do
+                if t == 12 then out[#out + 1] = { target = 12, citizenid = 'C12', name = 'Ann Lee', distance = 1.0 } end
+            end
+            return { ok = true, list = out }
         end
         local r = reply('emsCareNearby')
         assert_true(r.ok)
         assert_eq(#r.list, 1)
         assert_eq(r.list[1].target, 12)
         assert_eq(r.list[1].name, 'Ann Lee')
-        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 2, 'only the two within reach were asked')
+        local asked = callsNamed('pf-emsmdt:server:getNearbyPatients')
+        assert_eq(#asked, 1, 'one request')
+        assert_eq(#asked[1].args[1], 2, 'only the two within reach were listed')
+        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 0)
     end)
 
     it('select: refused by the server -> not_found; else exam options and treat options as answered', function()
@@ -195,6 +202,11 @@ describe('one request per callback name at a time (pfm-core keeps one slot per n
         Mock.coords[2002] = vector3(1, 0, 0)   -- server id 12
         Mock.coords[2003] = vector3(9, 0, 0)
         answers['pf-emsmdt:server:getCitizenData'] = function(t) return { citizenid = 'C' .. t, firstname = 'P', lastname = tostring(t) } end
+        answers['pf-emsmdt:server:getNearbyPatients'] = function(ids)
+            local out = {}
+            for _, t in ipairs(ids) do out[#out + 1] = { target = t, citizenid = 'C' .. t, name = 'P ' .. t, distance = t == 12 and 1.0 or 2.0 } end
+            return { ok = true, list = out }
+        end
     end
 
     it('nearby with two patients in reach answers with both', function()
@@ -202,10 +214,8 @@ describe('one request per callback name at a time (pfm-core keeps one slot per n
         asyncMode = true
         local out
         nui.emsCareNearby({}, function(r) out = r end)
-        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 1, 'the second waits for the first answer')
-        deliver('pf-emsmdt:server:getCitizenData')
-        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 2)
-        deliver('pf-emsmdt:server:getCitizenData')
+        assert_eq(#callsNamed('pf-emsmdt:server:getNearbyPatients'), 1, 'one request for both (batch 22)')
+        deliver('pf-emsmdt:server:getNearbyPatients')
         assert_true(out ~= nil and out.ok, 'the page got its answer')
         assert_eq(#out.list, 2)
         assert_eq(out.list[1].target, 12, 'nearest first')
@@ -220,12 +230,10 @@ describe('one request per callback name at a time (pfm-core keeps one slot per n
         local near, sel
         nui.emsCareNearby({}, function(r) near = r end)
         nui.emsCareSelect({ target = 11 }, function(r) sel = r end)
-        assert_eq(#callsNamed('pf-emsmdt:server:getCitizenData'), 1)
-        deliver('pf-emsmdt:server:getCitizenData')
-        deliver('pf-emsmdt:server:getCitizenData')
+        deliver('pf-emsmdt:server:getNearbyPatients')
         assert_eq(#near.list, 2)
         deliver('pf-emsmdt:server:getCitizenData')   -- the selection's own request
-        assert_eq(callsNamed('pf-emsmdt:server:getCitizenData')[3].args[1], 11)
+        assert_eq(callsNamed('pf-emsmdt:server:getCitizenData')[1].args[1], 11)
         deliver('pf-ambulancejob:server:examOptions')
         deliver('pf-ambulancejob:server:treatOptions')
         assert_true(sel.ok)

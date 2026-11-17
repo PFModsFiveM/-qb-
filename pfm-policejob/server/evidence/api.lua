@@ -362,6 +362,16 @@ export('GetLabJob', function(jobId, opts)
     return E.Lab.Get(jobId, viewerActor(opts.viewer))
 end)
 
+--- ListLabJobs(filter): filter = { evidenceIds = { 1-50 ids } | state (+ after, limit), viewer = src }.
+--- One query for a whole lab queue page instead of one GetEvidence per item. A viewer must be
+--- on-duty police; results ready for review show only to a lab tech viewer.
+export('ListLabJobs', function(filter)
+    filter = type(filter) == 'table' and filter or {}
+    if not viewerAllowed(filter.viewer) then return E.Err('no_permission', 'On-duty police only') end
+    if not lab() or not E.DbReady() then return E.Err('db_unavailable', 'The lab is not available') end
+    return E.Lab.ListJobs(filter, E.Lab.CanReview(viewerActor(filter.viewer)))
+end)
+
 export('ReleaseLabResult', function(jobId, opts)
     opts = type(opts) == 'table' and opts or {}
     if not lab() then return E.Err('db_unavailable', 'The lab is not available') end

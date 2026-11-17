@@ -115,6 +115,7 @@ Config.Evidence = {
         -- batch 18 (lab and lockers)
         SubmitToLab      = { ['pf-policemdt-DEV'] = true },
         GetLabJob        = { ['pf-policemdt-DEV'] = true, ['pf-justice'] = true },
+        ListLabJobs      = { ['pf-policemdt-DEV'] = true },
         ReleaseLabResult = { ['pf-policemdt-DEV'] = true },
         RegisterReferenceSample = { ['pf-justice'] = true },
         CreateEvidenceLocker = { ['pf-policemdt-DEV'] = true },

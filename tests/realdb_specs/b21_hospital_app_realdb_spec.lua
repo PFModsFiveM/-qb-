@@ -1,8 +1,7 @@
 -- pf-emsmdt batch 21D on a real database: the hospital workstation's read-only SQL on
 -- pf-ambulancejob's tables, created by pf-ambulancejob's own migrations (pf_hosp_bills,
 -- pf_hosp_bill_lines) and pfm-core's players table: the name search (JSON_VALUE of first and last
--- name, minimum term length, LIKE wildcards literal), bills (facility, state, search, paging), bill
--- lines and the offline-name lookup. pf-ambulancejob's exports are mocked by contract for the
+-- name, minimum term length, LIKE wildcards literal) and the offline-name lookup. pf-ambulancejob's exports are mocked by contract for the
 -- facility list; the counter queue (pf-ambulancejob's ListPharmacyQueue) is in the e2e spec.
 load_resource('tests/lua/fivem_mocks.lua')
 load_resource('tests/lua/real_mysql.lua')
@@ -81,36 +80,8 @@ describe('b21 hospital app on MariaDB: name search (B21-5)', function()
     end)
 end)
 
-describe('b21 hospital app on MariaDB: bills', function()
-    it('newest first, 25 a page, and a second page', function()
-        local p1 = rpc('bills', { facility = 'pillbox' })
-        assert_true(p1.ok, tostring(p1.error))
-        assert_eq(#p1.list, 25)
-        assert_eq(p1.more, true)
-        local p2 = rpc('bills', { facility = 'pillbox', page = 2 })
-        assert_eq(#p2.list, 3)
-        assert_eq(p2.more, false)
-        assert_eq(p2.list[3].id, b1)
-    end)
-    it('by state and name; the due amount after coverage', function()
-        local res = rpc('bills', { facility = 'pillbox', state = 'invoiced', q = 'bob' })
-        assert_eq(#res.list, 1)
-        assert_eq(res.list[1].id, b2)
-        assert_eq(res.list[1].due, 450)
-        assert_eq(res.list[1].name, 'Bob Stone')
-        assert_eq(#rpc('bills', { facility = 'pillbox', state = 'paid', q = 'BOB002' }).list, 0)
-        assert_eq(#rpc('bills', { facility = 'paleto' }).list, 1)
-    end)
-    it('lines of one bill', function()
-        local res = rpc('billLines', { billId = b2 })
-        assert_true(res.ok, tostring(res.error))
-        assert_eq(#res.lines, 2)
-        assert_eq(res.lines[2].amount, 200)
-        assert_eq(res.discount, 450)
-        assert_true(rpc('billLines', { billId = b3 }).ok, 'paleto is a known facility too')
-        assert_eq(rpc('billLines', { billId = 999999 }).error, 'not_found')
-    end)
-end)
+-- (bills and bill lines: batch 22 moved those reads into pf-ambulancejob's ListBills / GetBillLines;
+-- tests/realdb_specs/b22_hospital_reads_realdb_spec.lua runs them and the workstation over them)
 
 describe('b21 hospital app on MariaDB: names', function()
     it('offline patients get their names from players.charinfo in one query', function()

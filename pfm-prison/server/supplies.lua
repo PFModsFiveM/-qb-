@@ -14,6 +14,11 @@
 --
 -- prison_food_stock is in pfm-core's shared items; it is still registered at start through pfm-core
 -- AddItems when missing (an older pfm-core).
+--
+-- The commissary sells from stock the same way (batch 22): its goods sit in the commissary stash
+-- (pf-government procurement buyer corrections:bolingbroke_commissary delivers into it). A purchase
+-- takes the goods out of the stash before any money moves (server/economy.lua buyLocked: sold out
+-- refuses there), and a purchase the ledger clearly refused puts them back (E.ReturnStock).
 
 PFPrison = PFPrison or {}
 PFPrison.Supplies = PFPrison.Supplies or {}
@@ -28,6 +33,11 @@ S.DEFAULTS = {
         Pantry = { id = 'pfm_prison_pantry', label = 'Prison pantry', slots = 20, maxweight = 600000 },
         StockItem = 'prison_food_stock',
         PortionsPerUnit = 4,
+    },
+    Commissary = {
+        Enabled = true,
+        RequireStock = true,       -- false: the 19E commissary (goods without stock)
+        Stash = { id = 'pfm_prison_commissary', label = 'Prison commissary stock', slots = 30, maxweight = 300000 },
     },
     StockItemDef = {
         name = 'prison_food_stock', label = 'Bulk Food Stock', weight = 2000, type = 'item', image = 'sandwich.png',
@@ -44,6 +54,16 @@ local function kitchenCfg()
     return out
 end
 S.KitchenCfg = kitchenCfg
+
+local function commissaryCfg()
+    local over = (Config.Supplies or {}).Commissary
+    if type(over) ~= 'table' then return S.DEFAULTS.Commissary end
+    local out = {}
+    for k, v in pairs(S.DEFAULTS.Commissary) do out[k] = v end
+    for k, v in pairs(over) do out[k] = v end
+    return out
+end
+S.CommissaryCfg = commissaryCfg
 
 local function inv(name, ...)
     local args, n = { ... }, select('#', ...)
@@ -111,6 +131,39 @@ function S.Cook(n, put)
     return made
 end
 
+-- ── commissary stock ─────────────────────────────────────────────────────────────────────────
+
+--- Whether commissary sales draw from the stash.
+function S.CommissaryStocked()
+    local c = commissaryCfg()
+    return c.Enabled ~= false and c.RequireStock ~= false
+end
+
+--- Units of an item in the commissary stash (0 when the stash cannot be read).
+function S.CommissaryStock(item)
+    local c = commissaryCfg()
+    if not ensureStash(c.Stash) then return 0 end
+    return count(c.Stash.id, item)
+end
+
+--- Takes qty of an item out of the commissary stash. True only when all of it left the stash.
+--- The count and the removal follow each other with no wait between them.
+function S.TakeCommissary(item, qty)
+    local c = commissaryCfg()
+    qty = math.floor(tonumber(qty) or 0)
+    if type(item) ~= 'string' or qty < 1 or not ensureStash(c.Stash) then return false end
+    if count(c.Stash.id, item) < qty then return false end
+    return inv('RemoveItem', c.Stash.id, item, qty, false, 'pfm-prison:commissary-sale') == true
+end
+
+--- Puts qty of an item back into the commissary stash (a sale that did not go through).
+function S.ReturnCommissary(item, qty)
+    local c = commissaryCfg()
+    qty = math.floor(tonumber(qty) or 0)
+    if type(item) ~= 'string' or qty < 1 or not ensureStash(c.Stash) then return false end
+    return inv('AddItem', c.Stash.id, item, qty, false, false, 'pfm-prison:commissary-return') == true
+end
+
 --- Puts the cooking step in front of the 19E kitchen output (W.AddMeals), once.
 function S.Install()
     local W = PFPrison.Work
@@ -129,4 +182,5 @@ CreateThread(function()
     Wait(1000)
     S.EnsureItem()
     ensureStash(kitchenCfg().Pantry)
+    if S.CommissaryStocked() then ensureStash(commissaryCfg().Stash) end
 end)

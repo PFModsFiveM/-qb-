@@ -46,6 +46,11 @@ Mock.exportsByResource['pfm-policejob'] = {
     SubmitToLab = function(_, id, tests, opts) rec(PJ, 'SubmitToLab', { id, tests, opts }) return { ok = true, jobId = 9, eta = 100 } end,
     ReleaseLabResult = function(_, jobId, opts) rec(PJ, 'ReleaseLabResult', { jobId, opts }) return { ok = false, error = 'no_permission', message = 'Only a qualified lab technician may release results' } end,
     GetTimeline = function(_, cid, from, to, opts) rec(PJ, 'GetTimeline', { cid, from, to, opts }) return PJ.timeline end,
+    -- batch 22: the lab queue reads the page's jobs in one call
+    ListLabJobs = function(_, filter) rec(PJ, 'ListLabJobs', { filter })
+        local jobs = {}
+        for _, id in ipairs(filter.evidenceIds or {}) do jobs[#jobs + 1] = { id = 40 + id, evidenceId = id, test = 'dna', state = 'queued' } end
+        return { ok = true, jobs = jobs } end,
 }
 local GOV = { quals = {} }
 Mock.exportsByResource['pf-government'] = {
@@ -318,8 +323,10 @@ describe('21B page relays: evidence chain and lab', function()
         assert_eq(f.viewer, OFF)
         assert_eq(r.list[1].labs[1].id, 41)
         assert_eq(r.list[2].labs[1].id, 42)
-        assert_eq(r.list[1].integrity, 88)
-        assert_eq(last(PJ, 'GetEvidence')[2].viewer, OFF)
+        -- batch 22: one ListLabJobs for the page (caller as viewer); the list's stored integrity stays
+        assert_eq(r.list[1].integrity, 100)
+        assert_eq(last(PJ, 'ListLabJobs')[1].viewer, OFF)
+        assert_eq(last(PJ, 'GetEvidence'), nil)
         assert_eq(call('pf_mdt:lab:queue', OFF, { state = 'released' }).error, 'bad_args')
     end)
 

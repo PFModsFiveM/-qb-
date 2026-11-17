@@ -12,6 +12,8 @@
 --   earning         society:corrections    -> trust            key pfm-prison:trust:<cid>:e<order>.<ticket>.<n>
 --   purchase        trust -> society:corrections (goods given only once the move completed)
 --                                                              key pfm-prison:trust:<cid>:b<id>
+--                   with commissary stock (server/supplies.lua) the goods leave the stash before
+--                   the move (ref buys:<item>:<qty>:due) and go back when it clearly failed
 --   restitution     trust -> player:<victim>:bank              key pf-justice:restitution:<orderId>:<n>
 --   release_payout  trust -> player:<cid>:bank                 key pfm-prison:trust:<cid>:r<n>
 --
@@ -50,7 +52,10 @@ E.SQL = {
     sumKindSince = [[SELECT COALESCE(SUM(amount), 0) FROM pf_prison_account_tx
         WHERE citizenid = ? AND kind = ? AND at >= ? AND ledger_state <> 'failed']],
     refsSince = [[SELECT ref FROM pf_prison_account_tx
-        WHERE citizenid = ? AND kind = 'purchase' AND at >= ? AND ledger_state <> 'failed' AND ref LIKE ?]],
+        WHERE citizenid = ? AND kind = 'purchase' AND at >= ? AND ledger_state <> 'failed' AND (ref LIKE ? OR ref LIKE ?)]],
+    -- failed stock-backed purchases whose goods are not back in the commissary stash yet
+    stockOwed = [[SELECT * FROM pf_prison_account_tx WHERE kind = 'purchase' AND ledger_state = 'failed'
+        AND ref LIKE 'buys:%:due' AND id > ? ORDER BY id LIMIT 50]],
     countRef = 'SELECT COUNT(*) FROM pf_prison_account_tx WHERE ref LIKE ?',
     countKind = 'SELECT COUNT(*) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = ?',
     lastKindAt = 'SELECT MAX(at) FROM pf_prison_account_tx WHERE citizenid = ? AND kind = ?',
@@ -328,10 +333,10 @@ end
 --- Gives the goods of one completed purchase once: the row is marked given first, so a second call
 --- finds nothing; goods that do not fit stay owed and come at the next look.
 function E.Deliver(src, row)
-    local item, qty = tostring(row.ref or ''):match('^buy:([%w_]+):(%d+):due$')
+    local prefix, item, qty = tostring(row.ref or ''):match('^(buys?):([%w_]+):(%d+):due$')
     qty = tonumber(qty)
     if not item or not qty then return false end
-    local due, given = ('buy:%s:%d:due'):format(item, qty), ('buy:%s:%d:given'):format(item, qty)
+    local due, given = ('%s:%s:%d:due'):format(prefix, item, qty), ('%s:%s:%d:given'):format(prefix, item, qty)
     if not setRef(row.id, given, due) then return false end
     local ok, added = pcall(function() return exports['pfm-inventory']:AddItem(src, item, qty, false, false, 'pfm-prison:commissary') end)
     if ok and added then
@@ -343,11 +348,52 @@ function E.Deliver(src, row)
     return false
 end
 
-local function boughtToday(cid, item)
-    local rows = db('query', E.SQL.refsSince, { cid, dayStart(os.time()), ('buy:%s:%%'):format(item) }) or {}
+--- Goods taken from the commissary stash for a purchase that clearly failed go back, once: the
+--- row's ref moves from :due to :back first; when the stash does not take them it moves back so
+--- the next sweep (E.StockTick) tries again. row.id nil: the row was never written.
+function E.ReturnStock(row)
+    local item, qty = tostring(row.ref or ''):match('^buys:([%w_]+):(%d+):due$')
+    qty = tonumber(qty)
+    local S = PFPrison.Supplies
+    if not item or not qty or not S or not S.ReturnCommissary then return false end
+    local due, back = ('buys:%s:%d:due'):format(item, qty), ('buys:%s:%d:back'):format(item, qty)
+    if row.id and not setRef(row.id, back, due) then return false end
+    if S.ReturnCommissary(item, qty) then return true end
+    if row.id then setRef(row.id, due, back) end
+    print(('^3[pfm-prison]^7 commissary: %d x %s could not go back into the stash yet'):format(qty, item))
+    return false
+end
+
+--- Failed stock-backed purchases whose goods are not back yet (the stash refused them, or the
+--- server stopped in between), 50 rows a call, paged by id. Every 10 minutes from E.Tick.
+E.stockCursor = E.stockCursor or 0
+function E.StockTick()
+    local rows = db('query', E.SQL.stockOwed, { E.stockCursor }) or {}
     local n = 0
-    for _, r in ipairs(rows) do n = n + num(tostring(r.ref):match('^buy:[%w_]+:(%d+):'), 0) end
+    for _, row in ipairs(rows) do
+        E.stockCursor = math.max(E.stockCursor, num(row.id, 0))
+        local res = E.WithLock(row.citizenid, function() return E.ReturnStock(row) end)
+        if res == true then n = n + 1 end
+    end
+    if #rows < 50 then E.stockCursor = 0 end
     return n
+end
+
+local function boughtToday(cid, item)
+    local rows = db('query', E.SQL.refsSince, { cid, dayStart(os.time()), ('buy:%s:%%'):format(item), ('buys:%s:%%'):format(item) }) or {}
+    local n = 0
+    for _, r in ipairs(rows) do
+        local it, q = tostring(r.ref):match('^buys?:([%w_]+):(%d+):')
+        if it == item then n = n + num(q, 0) end
+    end
+    return n
+end
+
+--- Units the commissary can still sell of an item, or nil when sales do not draw from stock.
+local function stockOf(item)
+    local S = PFPrison.Supplies
+    if not (S and S.CommissaryStocked and S.CommissaryStocked()) then return nil end
+    return S.CommissaryStock(item)
 end
 
 local function buyLocked(src, cid, entry, qty)
@@ -364,13 +410,23 @@ local function buyLocked(src, cid, entry, qty)
     if bal.available < total then return { ok = false, error = 'insufficient_funds', message = 'Not enough money in your trust account' } end
     local okFit, fits = pcall(function() return exports['pfm-inventory']:CanAddItem(src, entry.item, qty) end)
     if not okFit or not fits then return { ok = false, error = 'bad_args', message = 'You have no room for that' } end
-    local ref = ('buy:%s:%d:due'):format(entry.item, qty)
+    -- with commissary stock the goods leave the stash before any money moves; sold out refuses here
+    local S = PFPrison.Supplies
+    local stocked = S and S.CommissaryStocked and S.CommissaryStocked() or false
+    if stocked and not S.TakeCommissary(entry.item, qty) then
+        return { ok = false, error = 'out_of_stock', message = 'The commissary has sold out of that' }
+    end
+    local ref = ((stocked and 'buys' or 'buy') .. ':%s:%d:due'):format(entry.item, qty)
     local r = E.Move({ cid = cid, kind = 'purchase', amount = -total, key = E.TrustKey(cid, 'b' .. PFPayout.NewId()), ref = ref,
         from = TRUST, to = EC.CommissaryAccount or 'society:corrections', ledgerKind = 'commissary',
         reason = ('Commissary: %d x %s'):format(qty, entry.item) })
     if r.ok then
         E.Deliver(src, { id = r.id, ref = ref })
         E.Event(cid, 'trust', { what = 'purchase', item = entry.item, qty = qty, amount = total })
+    elseif stocked and r.state == 'failed' then
+        -- clearly refused (or never written): the goods go back; an unclear move keeps them out
+        -- until the ledger answers (SettleTick)
+        E.ReturnStock({ id = r.id, ref = ref })
     end
     return r
 end
@@ -448,7 +504,8 @@ function E.SettleTick(now)
                 E.WithLock(row.citizenid, function()
                     if setState(row.id, to, 'pending') then
                         settled = settled + 1
-                        if to == 'completed' then afterCompleted(row) end
+                        if to == 'completed' then afterCompleted(row)
+                        elseif row.kind == 'purchase' then E.ReturnStock(row) end
                     end
                 end)
             end
@@ -554,6 +611,10 @@ function E.Tick(now)
     E.RetryTick(now)
     E.RecordTick()
     E.PayoutTick(now)
+    if now - (E.lastStockSweep or 0) >= 600 then
+        E.lastStockSweep = now
+        E.StockTick()
+    end
 end
 
 --- The trust reconciles with the ledger: the completed rows of every inmate sum to the net of
@@ -651,8 +712,11 @@ QBCore.Functions.CreateCallback('pfm-prison:server:trustState', function(src, cb
     local deposited = num(db('scalar', E.SQL.sumKindSince, { cid, 'deposit', dayStart(os.time()) }), 0)
     local catalog = {}
     for i, entry in ipairs(EC.Commissary or {}) do
+        local left = math.max(0, num(entry.maxPerDay, 99) - boughtToday(cid, entry.item))
+        local stock = stockOf(entry.item)
+        -- what can be bought now: today's limit, and the units in stock when sales draw from it
         catalog[i] = { index = i, label = entry.label or entry.item, price = entry.price,
-            left = math.max(0, num(entry.maxPerDay, 99) - boughtToday(cid, entry.item)) }
+            left = stock and math.min(left, stock) or left, inStock = stock }
     end
     local recent = {}
     for _, r in ipairs(db('query', E.SQL.recent, { cid }) or {}) do
