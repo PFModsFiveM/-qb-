@@ -69,7 +69,7 @@ PFPayout = nil
 load_resource('pfm-banking/payouts.lua')
 for _, f in ipairs({ 'config.lua', 'shared/states.lua', 'server/main.lua', 'server/schema.lua', 'server/orders.lua',
     'server/clock.lua', 'server/records.lua', 'server/custody.lua', 'server/booking.lua', 'server/property.lua',
-    'server/bail.lua', 'server/legacy_import.lua', 'server/compat.lua', 'server/courts.lua', 'server/warrants.lua', 'server/api.lua' }) do
+    'server/bail.lua', 'server/legacy_import.lua', 'server/compat.lua', 'server/courts.lua', 'server/warrants.lua', 'server/restitution.lua', 'server/api.lua' }) do
     load_resource('[pfscripts]/pf-justice/' .. f)
 end
 for k, v in pairs(bankingConfig) do if Config[k] == nil then Config[k] = v end end
@@ -314,6 +314,7 @@ describe('decisions create orders through the 15B API', function()
         assert_eq(bail.state, 'offered')
         assert_eq(tonumber(bail.amount), 2500)
         assert_eq(tonumber(bail.custody_id), custodyId)
+        assert_eq(tonumber(bail.expires_at), os.time() + Config.Courts.BailOfferSeconds, 'a court bail stays open a day, not 10 minutes')
         -- remand (no minutes: the clock never ends it) and a court-ordered release
         local d2 = cid()
         local c2 = openCustody(d2, 'held')
@@ -489,5 +490,87 @@ describe('warrant reviews with pf-policemdt-DEV', function()
         assert_true(d.ok, tostring(d.error))
         assert_eq(approvals[#approvals].opts.judgeCid, 'SGTCID')
         assert_eq(n("SELECT COUNT(*) FROM pf_justice_audit WHERE entity = 'warrant_review' AND entity_id = ? AND detail LIKE '%fallback%'", { tostring(res.reviewId) }), 1)
+    end)
+end)
+
+describe('RecordRestitution from the pfm-prison trust (19E)', function()
+    local function restitution(d, amount)
+        local res = J.API.CreateOrder({ cid = d, kind = 'restitution', amount = amount, victimCid = 'VICTIM1',
+            sourceRef = { type = 'court_decision', id = 'r' .. d } }, { key = 'test:rest:' .. d })
+        assert_true(res.ok, tostring(res.error))
+        return res.orderId
+    end
+    local function pay(key, amount, to)
+        local r = PFLedger.Transfer({ from = 'system:pfm-prison-trust', to = to or 'player:VICTIM1:bank', amount = amount, key = key,
+            kind = 'restitution', reason = 'test' })
+        assert_true(r.ok, 'ledger ' .. tostring(r.error))
+    end
+    local function record(orderId, amount, key, from)
+        as('pfm-prison')
+        local res = api:RecordRestitution(orderId, { amount = amount, ledgerKey = key, from = from or 'system:pfm-prison-trust' },
+            { key = key, actor = { kind = 'system', label = 'pfm-prison trust' } })
+        as(nil)
+        return res
+    end
+
+    it('credits verified ledger payments once per key and settles the order when fully paid', function()
+        Mock.newPlayer(20, 'VICTIM1')
+        assert_eq(record(0, 1, 'pfm-prison:trust:X:0').error, 'bad_args', 'the probe answers bad_args')
+        as('pf-random')
+        assert_eq(api:RecordRestitution(1, { amount = 1 }, { key = 'k:1' }).error, 'not_allowed')
+        as(nil)
+        local d = cid('RES')
+        local id = restitution(d, 1000)
+        assert_eq(record(id, 400, 'pfm-prison:trust:' .. d .. ':1').error, 'not_found', 'no ledger row for the key')
+        pay('pfm-prison:trust:' .. d .. ':1', 400)
+        local r1 = record(id, 400, 'pfm-prison:trust:' .. d .. ':1')
+        assert_true(r1.ok, tostring(r1.error))
+        assert_eq(r1.applied, 400)
+        assert_eq(r1.paidAmount, 400)
+        assert_eq(r1.state, 'issued')
+        local dup = record(id, 400, 'pfm-prison:trust:' .. d .. ':1')
+        assert_true(dup.ok and dup.duplicate)
+        assert_eq(tonumber(one('SELECT paid_amount FROM pf_justice_orders WHERE id = ?', { id }).paid_amount), 400, 'no second credit')
+        assert_eq(record(id, 500, 'pfm-prison:trust:' .. d .. ':1').error, 'key_reused')
+        -- wrong amount, payee, source
+        pay('pfm-prison:trust:' .. d .. ':2', 300)
+        assert_eq(record(id, 350, 'pfm-prison:trust:' .. d .. ':2').error, 'amount_mismatch')
+        assert_eq(record(id, 300, 'pfm-prison:trust:' .. d .. ':2', 'system:elsewhere').error, 'source_mismatch')
+        pay('pfm-prison:trust:' .. d .. ':3', 300, 'society:doj')
+        assert_eq(record(id, 300, 'pfm-prison:trust:' .. d .. ':3').error, 'payee_mismatch')
+        -- a later payment over what is owed is capped; the order settles through the state machine
+        pay('pfm-prison:trust:' .. d .. ':4', 700)
+        local r4 = record(id, 700, 'pfm-prison:trust:' .. d .. ':4')
+        assert_true(r4.ok, tostring(r4.error))
+        assert_eq(r4.applied, 600)
+        assert_true(r4.settled)
+        local row = one('SELECT * FROM pf_justice_orders WHERE id = ?', { id })
+        assert_eq(row.state, 'paid')
+        assert_eq(tonumber(row.paid_amount), 1000)
+        assert_eq(n("SELECT COUNT(*) FROM pf_justice_order_events WHERE order_id = ? AND action = 'restitution'", { id }), 2)
+        assert_eq(n("SELECT COUNT(*) FROM pf_justice_records WHERE ref_type = 'order' AND ref_id = ? AND kind = 'conviction'", { tostring(id) }), 1)
+        pay('pfm-prison:trust:' .. d .. ':5', 10)
+        assert_eq(record(id, 10, 'pfm-prison:trust:' .. d .. ':5').error, 'invalid_state', 'a paid order takes no more')
+    end)
+
+    it('an unsettled ledger key answers pending (retry the same key); a failed one is a clear failure', function()
+        Mock.newPlayer(20, 'VICTIM1')
+        local d = cid('RES')
+        local id = restitution(d, 500)
+        local bank = Mock.exportsByResource['pfm-banking']
+        local real = bank.GetTransaction
+        local fake
+        bank.GetTransaction = function(_, key) return fake end
+        fake = { tx_id = 'T1', state = 'debited', amount = '100.00', from_account = 'system:pfm-prison-trust', to_account = 'player:VICTIM1:bank' }
+        assert_eq(record(id, 100, 'pfm-prison:trust:' .. d .. ':p').error, 'pending')
+        fake.state = 'failed'
+        assert_eq(record(id, 100, 'pfm-prison:trust:' .. d .. ':p').error, 'ledger_failed')
+        fake.state = 'completed'
+        local ok = record(id, 100, 'pfm-prison:trust:' .. d .. ':p')
+        assert_true(ok.ok, 'the same key credits once the ledger completed it')
+        assert_eq(ok.applied, 100)
+        bank.GetTransaction = real
+        assert_eq(record(id, 0, 'k:x').error, 'bad_args')
+        assert_eq(record(id, 5, 'k:x', nil).error ~= nil, true)
     end)
 end)

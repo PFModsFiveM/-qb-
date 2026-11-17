@@ -457,6 +457,35 @@ describe('19D routine, counts and meals', function()
         assert_eq(res.offline[1], 'INB')
         assert_eq(res.present, 1)
     end)
+    it('an inmate in custody care (19F follow-up: pf-ambulancejob IsInCustodyCare) is accounted for and shows infirmary / transfer', function()
+        local care = {}
+        Mock.exportsByResource['pf-ambulancejob'] = {
+            IsInCustodyCare = function(_, who) if care[who] then return true, care[who], 'pillbox' end return false end,
+        }
+        citizen(1, 'INA')
+        citizen(2, 'INB')
+        jail(1, 30)
+        jail(2, 30)
+        Mock.clock = Mock.clock + CF.IntakeSeconds + 1
+        toPhase('count')
+        S.Tick(Mock.clock)
+        -- INA is at the hospital on an escorted transfer, INB in the prison infirmary
+        care[1], care[2] = 'transfer', 'infirmary'
+        Mock.coords[1] = OUTSIDE
+        S.Tick(Mock.clock)
+        assert_eq(F.Activity('INA'), 'transfer')
+        assert_eq(as('pf-justice', 'GetInmate', 'INB').inmate.status, 'infirmary')
+        local res = S.CloseCount(nil, Mock.clock)
+        assert_eq(#res.missing, 0, 'not missing while in custody care')
+        assert_eq(res.present, 2)
+        assert_eq(#res.accounted, 2)
+        -- the care ends: the routine status comes back, and outside the walls is missing again
+        care[1], care[2] = nil, nil
+        toPhase('yard')
+        S.Tick(Mock.clock)
+        assert_eq(F.Activity('INB'), 'yard')
+        Mock.exportsByResource['pf-ambulancejob'] = nil
+    end)
     it('an officer conducts the count on duty inside the walls; it does not reopen in the same phase', function()
         citizen(1, 'INA')
         jail(1, 30)

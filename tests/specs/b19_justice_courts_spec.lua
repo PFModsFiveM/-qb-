@@ -39,7 +39,7 @@ function GetCurrentResourceName() return 'pf-justice' end
 Config = nil
 MySQL = setmetatable({}, { __index = function(_, kind) return recordingDb(kind) end })
 for _, f in ipairs({ 'config.lua', 'shared/states.lua', 'server/main.lua', 'server/schema.lua', 'server/orders.lua',
-    'server/records.lua', 'server/courts.lua', 'server/warrants.lua' }) do
+    'server/records.lua', 'server/courts.lua', 'server/warrants.lua', 'server/restitution.lua' }) do
     load_resource('[pfscripts]/pf-justice/' .. f)
 end
 local juConfig = Config
@@ -203,6 +203,25 @@ describe('court exports at the boundary', function()
             Mock.invokingResource = 'pf-policemdt-DEV'
             assert_eq(juExport(name)(1, {}, {}).error, 'not_allowed', name)
         end
+    end)
+end)
+
+describe('RecordRestitution (pfm-prison trust) at the boundary', function()
+    it('the probe with orderId 0 and bad arguments answer bad_args without a lock or a query', function()
+        local fn = juExport('RecordRestitution')
+        Mock.invokingResource = 'pf-random'
+        assert_eq(fn(1, { amount = 1, ledgerKey = 'k:1' }, { key = 'k:1' }).error, 'not_allowed')
+        Mock.invokingResource = 'pfm-prison'
+        local before = #queries
+        assert_eq(fn(0, { amount = 1, ledgerKey = 'k:1' }, { key = 'k:1' }).error, 'bad_args')
+        assert_eq(fn('x', { amount = 1, ledgerKey = 'k:1' }, { key = 'k:1' }).error, 'bad_args')
+        assert_eq(fn(5, { amount = 0, ledgerKey = 'k:1' }, { key = 'k:1' }).error, 'bad_args')
+        assert_eq(fn(5, { amount = 10, ledgerKey = 'k:1' }, { key = 'k:2' }).error, 'bad_args', 'the key is the ledger key')
+        assert_eq(#queries, before, 'no database work')
+        assert_false(J.Locks.Held('order:5'))
+        J.ready = false
+        assert_eq(fn(5, { amount = 10, ledgerKey = 'k:1' }, { key = 'k:1' }).error, 'db_unavailable')
+        assert_eq(#queries, before)
     end)
 end)
 

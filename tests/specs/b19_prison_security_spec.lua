@@ -195,16 +195,27 @@ Mock.exportsByResource['pfm-doorlock'] = {
     SetDoorState = function(_, id, locked) doors[#doors + 1] = { id = id, locked = locked } return { ok = true, doorId = 13, locked = locked, changed = true } end,
     GetDoorState = function() return true end,
 }
-local warrants = { list = {}, missing = false }
+local warrants = { list = {}, recalls = {}, missing = false, requestError = nil, recallError = nil }
 local function installMdt()
     if warrants.missing then Mock.exportsByResource['pf-policemdt-DEV'] = {} return end
     Mock.exportsByResource['pf-policemdt-DEV'] = {
         RequestWarrant = function(_, spec, opts)
             warrants.list[#warrants.list + 1] = { spec = spec, opts = opts }
+            if warrants.requestError then return { ok = false, error = warrants.requestError } end
             return { ok = true, warrantId = 'W2611170001' }
+        end,
+        RecallWarrant = function(_, id, reason, opts)
+            warrants.recalls[#warrants.recalls + 1] = { id = id, reason = reason, opts = opts }
+            if warrants.recallError then return { ok = false, error = warrants.recallError } end
+            return { ok = true, warrantId = id }
         end,
     }
 end
+-- pf-ambulancejob custody care (19G IsInCustodyCare): [src] = 'transfer' | 'infirmary'
+local care = {}
+Mock.exportsByResource['pf-ambulancejob'] = {
+    IsInCustodyCare = function(_, who) if care[who] then return true, care[who], 'pillbox' end return false end,
+}
 installMdt()
 local infractions = {}
 Mock.exportsByResource['pfm-prison'] = {
@@ -312,8 +323,11 @@ BeforeEach = function()
     Mock.players, Mock.coords = {}, {}
     resetJU()
     installJustice()
-    warrants.list, warrants.missing = {}, false
+    warrants.list, warrants.recalls, warrants.missing, warrants.requestError, warrants.recallError = {}, {}, false, nil, nil
     installMdt()
+    for k in pairs(care) do care[k] = nil end
+    PFPrison.Work = nil
+    Sec.recalls = {}
     RNG = 0.0
     evidence.list, evidence.fail = {}, false
     doors, infractions, opened = {}, {}, {}
@@ -694,5 +708,92 @@ describe('lockdown, doors, cameras, alarms', function()
         assert_true(st.ok)
         assert_eq(#st.doors, 3)
         assert_eq(st.lockdown, false)
+    end)
+end)
+
+describe('follow-up: hospital transfer, warrant recall, the old work event', function()
+    local function sampleAt(pos, s)
+        Mock.coords[INMATE] = pos
+        advance(s or 2)
+        PFPrison.SampleTick()
+    end
+    local PILLBOX = vector3(298.0, -584.0, 43.0)
+    it('an inmate on an escorted hospital transfer is neither sent back nor an escape', function()
+        jail()
+        advance(30)
+        sampleAt(at(0, 0))
+        care[INMATE] = 'transfer'
+        sampleAt(PILLBOX, 120)
+        sampleAt(PILLBOX, 60)
+        assert_eq(#events('prison:client:Enter', INMATE), 1, 'not taken back to a cell')
+        assert_eq(#events('prison:client:Escaped', INMATE), 0)
+        assert_eq(#eventsOf('sendback'), 0)
+        -- the prison infirmary is inside the walls; outside it, it is no transfer: back to a cell
+        care[INMATE] = 'infirmary'
+        sampleAt(PILLBOX, 60)
+        assert_eq(#events('prison:client:Enter', INMATE), 2)
+        -- without pf-ambulancejob the old rules apply
+        care[INMATE] = 'transfer'
+        local saved = Mock.exportsByResource['pf-ambulancejob']
+        Mock.exportsByResource['pf-ambulancejob'] = nil
+        sampleAt(PILLBOX, 60)
+        Mock.exportsByResource['pf-ambulancejob'] = saved
+        assert_eq(#events('prison:client:Enter', INMATE), 3)
+    end)
+    local function escape()
+        jail()
+        advance(30)
+        Mock.coords[INMATE] = GATE
+        Mock.fireNet('prison:server:StartGateHack', INMATE, 1)
+        local start = events('prison:client:GateHackStart', INMATE)[1]
+        advance(6)
+        Mock.fireNet('prison:server:GateHackResult', INMATE, start.args[2], true)
+        local dx, dy = GATE.x - MIDDLE.x, GATE.y - MIDDLE.y
+        local len = math.sqrt(dx * dx + dy * dy)
+        sampleAt(GATE)
+        sampleAt(vector3(GATE.x + dx / len * 20, GATE.y + dy / len * 20, GATE.z))
+        sampleAt(vector3(GATE.x + dx / len * 60, GATE.y + dy / len * 60, GATE.z))
+    end
+    it('the stored escape warrant is recalled at the recapture (keyed; busy retried; invalid_state is done)', function()
+        escape()
+        assert_eq(Escapes[1].warrant_id, 'W2611170001')
+        warrants.recallError = 'busy'
+        sampleAt(at(0, 0), 60)
+        B.Pump()
+        assert_eq(#warrants.recalls, 1)
+        assert_eq(warrants.recalls[1].id, 'W2611170001')
+        assert_eq(warrants.recalls[1].opts.key, 'pfm-prison:escape:1:recall')
+        warrants.recallError = 'invalid_state'
+        Sec.Tick()
+        assert_eq(#warrants.recalls, 2)
+        assert_eq(warrants.recalls[2].opts.key, 'pfm-prison:escape:1:recall')
+        assert_eq(next(Sec.recalls), nil, 'invalid_state counts as done')
+        Sec.Tick()
+        assert_eq(#warrants.recalls, 2)
+    end)
+    it('a clear refusal of the warrant request is not asked again', function()
+        warrants.requestError = 'suspect_required'
+        escape()
+        assert_eq(#warrants.list, 1)
+        Mock.clock = Mock.clock + 1000
+        Sec.Tick()
+        assert_eq(#warrants.list, 1)
+        assert_eq(Escapes[1].warrant_id, nil)
+    end)
+    it('the old JobDone event gives a pf-justice inmate no random credit while the work module runs', function()
+        jail()
+        local job = PFPrison.Internal.jobs[INMATE]
+        local spot = Config.Locations.jobs[job.name][job.location].coords
+        local forwarded = {}
+        PFPrison.Work = { Electrician = function(src, loc) forwarded[#forwarded + 1] = { src = src, loc = loc } return nil end }
+        advance(30)
+        Mock.coords[INMATE] = vector3(spot.x, spot.y, spot.z)
+        PFPrison.SampleTick()
+        advance(200)
+        PFPrison.SampleTick()
+        Mock.fireNet('prison:server:JobDone', INMATE, job.location)
+        assert_eq(#forwarded, 1)
+        assert_eq(forwarded[1].loc, job.location)
+        for _, c in ipairs(calls('AdjustOrder')) do assert_true(c.args.change.kind ~= 'credit', 'no credit from the old event') end
     end)
 end)
