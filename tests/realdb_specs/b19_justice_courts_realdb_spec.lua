@@ -209,6 +209,37 @@ describe('FileCase as pf-policemdt-DEV hands a submission over', function()
     end)
 end)
 
+describe('FileCase as 19C files an overdue community-service order (PFJustice.API)', function()
+    it('a violation case without charges from the penal code, once per key, with a violation hearing; sentenced from it', function()
+        local d = cid()
+        assert_true(J.API.FileCase ~= nil, 'installed at boot')
+        local spec = { cid = d, kind = 'violation', orderId = 77,
+            charges = { { code = 'CS-DEADLINE', label = 'Community service order #77 not completed by its deadline (2 of 10 units)', count = 1 } } }
+        local opts = { key = 'pf-justice:cs:order:77:court', actor = { kind = 'system', label = 'community service' }, filedBy = 'system' }
+        local res = J.API.FileCase(spec, opts)
+        assert_true(res.ok, tostring(res.error) .. ' ' .. tostring(res.message))
+        local row = caseRow(res.caseId)
+        assert_eq(row.kind, 'violation')
+        assert_true(row.case_no:match('^VI') ~= nil)
+        assert_eq(row.state, 'hearing_scheduled')
+        assert_eq(n("SELECT COUNT(*) FROM pf_justice_case_refs WHERE case_id = ? AND ref_type = 'order' AND ref_id = '77'", { res.caseId }), 1)
+        assert_eq(n("SELECT COUNT(*) FROM pf_justice_hearings WHERE case_id = ? AND kind = 'violation'", { res.caseId }), 1)
+        local again = J.API.FileCase(spec, opts)
+        assert_true(again.duplicate)
+        assert_eq(again.caseId, res.caseId)
+        -- the schedule never decides a violation; a judge may give more community service, never automatic prison
+        Mock.players[JUDGE] = nil
+        Courts.lastJudgeAt = 0
+        MySQL.update.await('UPDATE pf_justice_hearings SET at = ? WHERE case_id = ?', { os.time() - 7200, res.caseId })
+        Courts.AutoTick(os.time())
+        assert_eq(caseRow(res.caseId).state, 'hearing_scheduled')
+        job(JUDGE, 'JUDGECID', 'judge', 1, true)
+        local s = decide(res.caseId, { kind = 'sentence', orders = { { kind = 'community_service', units = 5 } } })
+        assert_true(s.ok, tostring(s.error) .. ' ' .. tostring(s.message))
+        assert_eq(one('SELECT kind FROM pf_justice_orders WHERE id = ?', { s.orders[1] }).kind, 'community_service')
+    end)
+end)
+
 describe('decisions create orders through the 15B API', function()
     it('plea, trial, verdict and sentence; a court fine goes to society:doj; a retry creates nothing new', function()
         local d = cid()
