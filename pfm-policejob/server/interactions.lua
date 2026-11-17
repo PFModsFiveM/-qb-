@@ -4,6 +4,28 @@ local function IsOnDutyLeo(Player)
     return Player and Player.PlayerData.job.type == 'leo' and Player.PlayerData.job.onduty
 end
 
+-- One action of a kind per second per player for the touch actions in this file (architecture 6.3);
+-- the field custody actions in server/custody_field.lua keep their own table.
+local touchRate = {} -- [src] = { [action] = GetGameTimer() }
+local function AllowTouch(src, action)
+    local now = GetGameTimer()
+    touchRate[src] = touchRate[src] or {}
+    local last = touchRate[src][action]
+    local gap = tonumber(Config.CustodyField and Config.CustodyField.RateMs) or 1000
+    if last and now - last < gap then return false end
+    touchRate[src][action] = now
+    return true
+end
+
+--- A client's player id: an integer of a connected player, or nil (net events used to pass it on as is).
+local function TargetId(v)
+    local n = tonumber(v)
+    if not n or n ~= n or n < 1 or n > 65535 or n % 1 ~= 0 then return nil end
+    local ped = GetPlayerPed(n)
+    if not ped or ped == 0 then return nil end
+    return n
+end
+
 -- City events (pf-services): a jail sentence is a court record the newsroom may cover (news lead).
 -- Only public facts go out: the name, the sentence length, the prison.
 local function CityEvent(kind, data, opts)
@@ -122,6 +144,7 @@ RegisterNetEvent('police:server:SearchPlayer', function()
     local Player = exports['pfm-core']:GetPlayer(src)
     if not Player then return end
     if not IsOnDutyLeo(Player) then return end
+    if not AllowTouch(src, 'search') then return end
     local player, distance = QBCore.Functions.GetClosestPlayer(src)
     if player ~= -1 and distance < SEARCH_REACH then
         local SearchedPlayer = exports['pfm-core']:GetPlayer(tonumber(player))
@@ -143,8 +166,8 @@ end)
 -- Cuffs put on by an on-duty officer come back after a relog (within RelogMinutes); cuffs put on by
 -- anyone else with a handcuffs item come off by themselves after CivilianCuffMinutes, so a player
 -- left cuffed by a robber is not stuck.
-local Cuffs = {}        -- [targetSrc] = { soft, by = officerSrc, leo = bool, at = os.time() }
-local CuffRecords = {}  -- [citizenid] = { soft, leo, at }: kept across a drop for the relog
+local Cuffs = {}        -- [targetSrc] = { soft, kind = 'handcuffs' | 'ziptie', by = officerSrc, leo = bool, at = os.time(), arrests }
+local CuffRecords = {}  -- [citizenid] = { soft, kind, leo, at }: kept across a drop for the relog
 local pendingCuffs = {} -- [targetSrc] = { officer, soft, nonce, startedAt, deadline, presses }
 local resistCooldowns = {} -- [officerSrc] = GetGameTimer() of the last resisted attempt
 local resistImmuneUntil = {} -- [targetSrc] = GetGameTimer(): a suspect who just broke free cannot resist again before
@@ -157,8 +180,9 @@ local function setStateBag(src, key, value)
     pcall(function() Player(src).state:set(key, value, true) end)
 end
 
---- Puts cuffs on (cuffed = true) or takes them off a player, on the server. opts: soft, by (the
---- cuffing player's source, for the paired animation), leo (cuffed by an on-duty officer).
+--- Puts cuffs on (cuffed = true) or takes them off a player, on the server. opts: soft, kind
+--- ('handcuffs' or 'ziptie'), by (the cuffing player's source, for the paired animation), leo (cuffed
+--- by an on-duty officer).
 --- @return boolean ok
 function PoliceSetCuffed(target, cuffed, opts)
     opts = opts or {}
@@ -170,16 +194,24 @@ function PoliceSetCuffed(target, cuffed, opts)
     T.Functions.SetMetaData('ishandcuffed', cuffed)
     setStateBag(target, 'handcuffed', cuffed)
     if cuffed then
-        local rec = { soft = opts.soft == true, by = tonumber(opts.by) or -1, leo = opts.leo == true, at = tonumber(opts.at) or os.time() }
+        local kind = opts.kind == 'ziptie' and 'ziptie' or 'handcuffs'
+        local rec = { soft = opts.soft == true or kind == 'ziptie', kind = kind, by = tonumber(opts.by) or -1, leo = opts.leo == true, at = tonumber(opts.at) or os.time() }
         Cuffs[target] = rec
-        CuffRecords[cid] = { soft = rec.soft, leo = rec.leo, at = rec.at }
+        CuffRecords[cid] = { soft = rec.soft, kind = kind, leo = rec.leo, at = rec.at }
     else
         Cuffs[target] = nil
         CuffRecords[cid] = nil
         pendingCuffs[target] = nil
     end
-    TriggerClientEvent('police:client:SetCuffed', target, cuffed, opts.soft == true, tonumber(opts.by) or -1)
+    TriggerClientEvent('police:client:SetCuffed', target, cuffed, cuffed and Cuffs[target].soft or opts.soft == true, tonumber(opts.by) or -1)
+    -- an escort that rested on the cuffs ends with them (server/custody_field.lua)
+    if not cuffed and PoliceField and PoliceField.OnUncuffed then PoliceField.OnUncuffed(target) end
     return true
+end
+
+--- The server's cuff record of a player (kind, soft, leo, by, at) or nil; custody_field.lua reads it.
+function PoliceCuffRecord(target)
+    return Cuffs[tonumber(target) or -1]
 end
 
 --- exports['pfm-policejob']:SetCuffed(src, cuffed, reason) for other server resources (a jail, an
@@ -199,8 +231,15 @@ local function ApplyCuff(officerSrc, targetSrc, isSoftcuff)
     local O = exports['pfm-core']:GetPlayer(officerSrc)
     if not T or not O then return end
     local cuffing = T.PlayerData.metadata['ishandcuffed'] ~= true
-    PoliceSetCuffed(targetSrc, cuffing, { soft = isSoftcuff, by = officerSrc, leo = IsOnDutyLeo(O) })
+    local leo = IsOnDutyLeo(O)
+    PoliceSetCuffed(targetSrc, cuffing, { soft = isSoftcuff, by = officerSrc, leo = leo })
     TriggerClientEvent('police:client:CuffAnimation', officerSrc, cuffing)
+    -- an officer's cuffs are a use-of-force mark on their timeline (and the custody log when one is open)
+    if cuffing and leo and PoliceField then
+        PoliceField.Mark(officerSrc, 'use_of_force', { kind = 'handcuffs', soft = isSoftcuff == true, target = T.PlayerData.citizenid })
+        local c = PoliceField.OpenCustody(targetSrc)
+        if c and PoliceJustice then PoliceJustice.Call('AddCustodyLog', c.id, 'use_of_force', { kind = 'handcuffs', soft = isSoftcuff == true }, { actor = { src = officerSrc } }) end
+    end
 end
 
 local nonceCounter = 0
@@ -211,8 +250,9 @@ end
 
 RegisterNetEvent('police:server:CuffPlayer', function(playerId, isSoftcuff)
     local src = source
-    playerId = tonumber(playerId)
+    playerId = TargetId(playerId)
     if not playerId or playerId == src then return end
+    if not AllowTouch(src, 'cuff') then return end
     local playerPed = GetPlayerPed(src)
     local targetPed = GetPlayerPed(playerId)
     local playerCoords = GetEntityCoords(playerPed)
@@ -229,6 +269,13 @@ RegisterNetEvent('police:server:CuffPlayer', function(playerId, isSoftcuff)
     local target = CuffedPlayer.PlayerData.source
     local cfg = resistCfg()
     local meta = CuffedPlayer.PlayerData.metadata
+    -- zipties are cut (police:server:CutZiptie), not unlocked with a cuff key; officers carry cutters
+    local rec = Cuffs[target]
+    if meta['ishandcuffed'] == true and rec and rec.kind == 'ziptie' and not leo
+        and not exports['pfm-inventory']:HasItem(src, (Config.CustodyField or {}).ZiptieCutterItem or 'ziptie_cutter', 1) then
+        TriggerClientEvent('QBCore:Notify', src, 'They are ziptied: you need a ziptie cutter', 'error')
+        return
+    end
     local now = GetGameTimer()
     -- a softcuff skips the resist window only for an on-duty officer (anyone with a handcuffs item
     -- could softcuff a standing player and rob them with no chance to resist)
@@ -305,7 +352,7 @@ AddEventHandler('QBCore:Server:PlayerLoaded', function(LoadedPlayer)
     local rec = cid and CuffRecords[cid]
     local relogSeconds = (tonumber(gameplayCfg().RelogCuffMinutes) or 30) * 60
     if rec and rec.leo and os.time() - rec.at <= relogSeconds then
-        PoliceSetCuffed(data.source, true, { soft = rec.soft, leo = true, at = rec.at })
+        PoliceSetCuffed(data.source, true, { soft = rec.soft, kind = rec.kind, leo = true, at = rec.at })
     elseif (data.metadata or {})['ishandcuffed'] then
         PoliceSetCuffed(data.source, false)
     end
@@ -351,83 +398,14 @@ AddEventHandler('playerDropped', function()
     pendingCuffs[src] = nil
     resistCooldowns[src] = nil
     resistImmuneUntil[src] = nil
+    touchRate[src] = nil
     Cuffs[src] = nil -- CuffRecords keeps a police cuff for the relog
+    -- escorts, detentions and placements (server/custody_field.lua): one drop handler for both files
+    if PoliceField and PoliceField.OnDropped then PoliceField.OnDropped(src) end
 end)
 
-RegisterNetEvent('police:server:EscortPlayer', function(playerId)
-    local src = source
-    local playerPed = GetPlayerPed(src)
-    local targetPed = GetPlayerPed(playerId)
-    local playerCoords = GetEntityCoords(playerPed)
-    local targetCoords = GetEntityCoords(targetPed)
-    if #(playerCoords - targetCoords) > 2.5 then return DropPlayer(src, 'Attempted exploit abuse') end
-
-    local Player = exports['pfm-core']:GetPlayer(source)
-    local EscortPlayer = exports['pfm-core']:GetPlayer(playerId)
-    if not Player or not EscortPlayer then return end
-
-    if ((Player.PlayerData.job.type == 'leo' or Player.PlayerData.job.name == 'ambulance') and Player.PlayerData.job.onduty) or (EscortPlayer.PlayerData.metadata['ishandcuffed'] or EscortPlayer.PlayerData.metadata['isdead'] or EscortPlayer.PlayerData.metadata['inlaststand']) then
-        TriggerClientEvent('police:client:GetEscorted', EscortPlayer.PlayerData.source, Player.PlayerData.source)
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_cuffed_dead'), 'error')
-    end
-end)
-
-RegisterNetEvent('police:server:KidnapPlayer', function(playerId)
-    local src = source
-    local playerPed = GetPlayerPed(src)
-    local targetPed = GetPlayerPed(playerId)
-    local playerCoords = GetEntityCoords(playerPed)
-    local targetCoords = GetEntityCoords(targetPed)
-    if #(playerCoords - targetCoords) > 2.5 then return DropPlayer(src, 'Attempted exploit abuse') end
-
-    local Player = exports['pfm-core']:GetPlayer(source)
-    local EscortPlayer = exports['pfm-core']:GetPlayer(playerId)
-    if not Player or not EscortPlayer then return end
-
-    if EscortPlayer.PlayerData.metadata['ishandcuffed'] or EscortPlayer.PlayerData.metadata['isdead'] or EscortPlayer.PlayerData.metadata['inlaststand'] then
-        TriggerClientEvent('police:client:GetKidnappedTarget', EscortPlayer.PlayerData.source, Player.PlayerData.source)
-        TriggerClientEvent('police:client:GetKidnappedDragger', Player.PlayerData.source, EscortPlayer.PlayerData.source)
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_cuffed_dead'), 'error')
-    end
-end)
-
-RegisterNetEvent('police:server:SetPlayerOutVehicle', function(playerId)
-    local src = source
-    local playerPed = GetPlayerPed(src)
-    local targetPed = GetPlayerPed(playerId)
-    local playerCoords = GetEntityCoords(playerPed)
-    local targetCoords = GetEntityCoords(targetPed)
-    if #(playerCoords - targetCoords) > 2.5 then return DropPlayer(src, 'Attempted exploit abuse') end
-
-    local EscortPlayer = exports['pfm-core']:GetPlayer(playerId)
-    if not exports['pfm-core']:GetPlayer(src) or not EscortPlayer then return end
-
-    if EscortPlayer.PlayerData.metadata['ishandcuffed'] or EscortPlayer.PlayerData.metadata['isdead'] then
-        TriggerClientEvent('police:client:SetOutVehicle', EscortPlayer.PlayerData.source)
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_cuffed_dead'), 'error')
-    end
-end)
-
-RegisterNetEvent('police:server:PutPlayerInVehicle', function(playerId)
-    local src = source
-    local playerPed = GetPlayerPed(src)
-    local targetPed = GetPlayerPed(playerId)
-    local playerCoords = GetEntityCoords(playerPed)
-    local targetCoords = GetEntityCoords(targetPed)
-    if #(playerCoords - targetCoords) > 2.5 then return DropPlayer(src, 'Attempted exploit abuse') end
-
-    local EscortPlayer = exports['pfm-core']:GetPlayer(playerId)
-    if not exports['pfm-core']:GetPlayer(src) or not EscortPlayer then return end
-
-    if EscortPlayer.PlayerData.metadata['ishandcuffed'] or EscortPlayer.PlayerData.metadata['isdead'] then
-        TriggerClientEvent('police:client:PutInVehicle', EscortPlayer.PlayerData.source)
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.not_cuffed_dead'), 'error')
-    end
-end)
+-- Escort, carry ("kidnap") and vehicle placement live in server/custody_field.lua: the server keeps
+-- who holds whom, chooses the seat and lets go of the target when the escorting player drops.
 
 RegisterNetEvent('police:server:BillPlayer', function(playerId, price)
     local src = source
@@ -468,7 +446,7 @@ end)
 
 RegisterNetEvent('police:server:JailPlayer', function(playerId, time)
     local src = source
-    playerId = tonumber(playerId)
+    playerId = TargetId(playerId)
     if not playerId or playerId == src then return end
     local playerPed = GetPlayerPed(src)
     local targetPed = GetPlayerPed(playerId)
@@ -496,6 +474,7 @@ RegisterNetEvent('police:server:JailPlayer', function(playerId, time)
     local target = OtherPlayer.PlayerData.source
     -- the cuffs come off on the server first; the client drops the escort
     PoliceSetCuffed(target, false)
+    if PoliceField then PoliceField.Clear(target, 'jailed') end
     TriggerClientEvent('police:client:SendToJail', target, time)
     local ok, jailed, err = pcall(function()
         return exports['pfm-prison']:JailPlayer(target, time, { officer = src })
@@ -572,6 +551,7 @@ function PJ.FieldJail(src, Officer, Target, minutes)
         end
         -- the order holds them now: cuffs off on the server; pfm-prison takes them to a cell
         PoliceSetCuffed(target, false)
+        if PoliceField then PoliceField.Clear(target, 'jailed') end
         TriggerClientEvent('police:client:SendToJail', target, minutes)
         TriggerClientEvent('QBCore:Notify', src, Lang:t('info.sent_jail_for', { time = minutes }))
         if not res.duplicate then
@@ -590,6 +570,8 @@ end
 
 RegisterNetEvent('police:server:SeizeCash', function(playerId)
     local src = source
+    playerId = TargetId(playerId)
+    if not playerId or playerId == src then return end
     local playerPed = GetPlayerPed(src)
     local targetPed = GetPlayerPed(playerId)
     local playerCoords = GetEntityCoords(playerPed)
@@ -618,6 +600,8 @@ end)
 
 RegisterNetEvent('police:server:SeizeDriverLicense', function(playerId)
     local src = source
+    playerId = TargetId(playerId)
+    if not playerId or playerId == src or not AllowTouch(src, 'seize') then return end
     local playerPed = GetPlayerPed(src)
     local targetPed = GetPlayerPed(playerId)
     local playerCoords = GetEntityCoords(playerPed)
@@ -629,9 +613,14 @@ RegisterNetEvent('police:server:SeizeDriverLicense', function(playerId)
     if not Player or not SearchedPlayer then return end
     if not IsOnDutyLeo(Player) then return end
 
-    local driverLicense = SearchedPlayer.PlayerData.metadata['licences']['driver']
-    if driverLicense then
-        local licenses = { ['driver'] = false, ['business'] = SearchedPlayer.PlayerData.metadata['licences']['business'] }
+    local current = SearchedPlayer.PlayerData.metadata['licences']
+    current = type(current) == 'table' and current or {}
+    if current['driver'] then
+        -- only the driving licence goes; every other licence (weapon, business, pilot...) is kept
+        -- (the old code rebuilt the table with driver and business only and wiped the rest)
+        local licenses = {}
+        for k, v in pairs(current) do licenses[k] = v end
+        licenses['driver'] = false
         SearchedPlayer.Functions.SetMetaData('licences', licenses)
         TriggerClientEvent('QBCore:Notify', SearchedPlayer.PlayerData.source, Lang:t('info.driving_license_confiscated'))
     else
@@ -641,6 +630,8 @@ end)
 
 RegisterNetEvent('police:server:RobPlayer', function(playerId)
     local src = source
+    playerId = TargetId(playerId)
+    if not playerId or playerId == src then return end
     local playerPed = GetPlayerPed(src)
     local targetPed = GetPlayerPed(playerId)
     local playerCoords = GetEntityCoords(playerPed)

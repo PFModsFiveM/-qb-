@@ -32,6 +32,7 @@ end
 BeforeEach = function()
     Mock.reset()
     LedgerEnv.reset()
+    Mock.gameTimer = Mock.gameTimer + 5000 -- searches are rate limited per officer (batch 18A)
     Mock.players, Mock.coords = {}, {}
     searches, answer, closest = {}, true, { -1, 99 }
     local cop = Mock.newPlayer(COP)
@@ -63,6 +64,13 @@ describe('police search', function()
         assert_eq(#searches, 1)
         assert_false(notified(COP, 'info.cash_found'))
         assert_false(notified(SUSPECT, 'info.being_searched'))
+    end)
+
+    it('a second search within a second is ignored (batch 18A rate limit)', function()
+        closest = { SUSPECT, 1.0 }
+        Mock.fireNet('police:server:SearchPlayer', COP)
+        Mock.fireNet('police:server:SearchPlayer', COP)
+        assert_eq(#searches, 1)
     end)
 
     it('nobody within 2.5 m: no search', function()

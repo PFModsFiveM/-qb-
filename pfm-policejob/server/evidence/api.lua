@@ -96,9 +96,16 @@ function A.BuildSpec(spec, opts, actor)
     if def.contact and collector and Store.GloveRuleActive() and not Store.HasGloves(collector) then flags = 'contaminated' end
     local holderKind, holderRef = 'record', 'record'
     if give then holderKind, holderRef = C.Holder(give.type, give.inv) end
+    -- a server process may state the sample's starting quality (a deformed surgical projectile);
+    -- a player's never counts
+    local quality = 100
+    if actor.kind ~= 'player' and spec.quality ~= nil then
+        quality = E.Int(spec.quality, 0, 100)
+        if not quality then return nil, nil, 'bad_args', 'bad quality' end
+    end
     local fields = {
         kind = spec.kind, label = label, attrs = attrs, state = sealed and 'sealed' or 'collected', sealed = sealed,
-        quality = 100, flags = flags, holder_kind = holderKind, holder_ref = holderRef,
+        quality = quality, flags = flags, holder_kind = holderKind, holder_ref = holderRef,
         scene_coords = coords and E.CoordsText(coords) or nil, scene_label = E.Str(scene.label, 96), scene_id = sceneId,
         collected_by = collector and collector.PlayerData.citizenid or (actor.cid or actor.label),
         collected_at = E.Now(), method = method, case_refs = links, origin_type = originType, origin_id = originId,
@@ -182,6 +189,11 @@ local function publicEvent(ev)
     }
 end
 
+local function viewerActor(viewer)
+    if viewer == nil then return nil end
+    return E.Actor({ src = viewer })
+end
+
 export('GetEvidence', function(id, opts)
     opts = type(opts) == 'table' and opts or {}
     if not viewerAllowed(opts.viewer) then return E.Err('no_permission', 'On-duty police only') end
@@ -189,13 +201,26 @@ export('GetEvidence', function(id, opts)
     if id == nil or (type(id) ~= 'number' and type(id) ~= 'string') then return E.Err('bad_args', 'Missing id') end
     local row = resolveRow(id)
     if not row then return E.Err('not_found', 'No such evidence') end
-    local score, flags, events = Store.Refresh(row)
+    -- the stored score is rewritten only under the row lock; while someone else holds it the
+    -- score is computed for this answer alone
+    local score, flags, events
+    local lockKey = 'ev:' .. row.id
+    if E.Lock(lockKey) then
+        local ok, a, b, c = pcall(Store.Refresh, row)
+        E.Unlock(lockKey)
+        if not ok then error(a) end
+        score, flags, events = a, b, c
+    else
+        events = Store.Custody(row.id)
+        score, flags = Store.ComputeIntegrity(row, events, E.Now())
+    end
     local custody, limit = {}, E.Cfg().CustodyListLimit or 100
     for i = math.max(1, #events - limit + 1), #events do custody[#custody + 1] = publicEvent(events[i]) end
+    local viewer = viewerActor(opts.viewer)
     return {
         ok = true, item = Store.Public(row), custody = custody, custodyTotal = #events,
         integrity = { score = score, flags = flags },
-        labs = {}, -- lab jobs arrive with batch 18 (SubmitToLab)
+        labs = E.Lab and E.Lab.JobsFor(row.id, E.Lab.CanReview(viewer)) or {},
     }
 end)
 
@@ -303,6 +328,48 @@ export('DisposeEvidence', function(id, mode, opts)
     return withActor(opts, function(actor) return C.Dispose(id, mode, opts, actor) end)
 end)
 
+-- ── lab and lockers (batch 18, server/evidence/lab.lua) ───────────────────────────────────────
+local function lab()
+    return E.Lab
+end
+
+export('SubmitToLab', function(id, tests, opts)
+    opts = type(opts) == 'table' and opts or {}
+    if not lab() then return E.Err('db_unavailable', 'The lab is not available') end
+    if not E.DbReady() then return E.Err('db_unavailable', 'Evidence storage is not ready') end
+    if type(id) == 'string' and id:match('^%u+%-%d+%-%d+$') then
+        local row = resolveRow(id)
+        if not row then return E.Err('not_found', 'No such evidence') end
+        id = row.id
+    end
+    return withActor(opts, function(actor) return E.Lab.Submit(id, tests, opts, actor) end)
+end)
+
+export('GetLabJob', function(jobId, opts)
+    opts = type(opts) == 'table' and opts or {}
+    if not viewerAllowed(opts.viewer) then return E.Err('no_permission', 'On-duty police only') end
+    if not lab() then return E.Err('db_unavailable', 'The lab is not available') end
+    return E.Lab.Get(jobId, viewerActor(opts.viewer))
+end)
+
+export('ReleaseLabResult', function(jobId, opts)
+    opts = type(opts) == 'table' and opts or {}
+    if not lab() then return E.Err('db_unavailable', 'The lab is not available') end
+    -- only a person can review; the automatic release is internal to the lab tick
+    return withActor(opts, function(actor) return E.Lab.Release(jobId, { note = opts.note }, actor) end)
+end)
+
+export('RegisterReferenceSample', function(cid, kind, source, opts)
+    if not lab() then return E.Err('db_unavailable', 'The lab is not available') end
+    return E.Lab.RegisterReference(cid, kind, source, type(opts) == 'table' and opts or {})
+end)
+
+export('CreateEvidenceLocker', function(caseRef, opts)
+    opts = type(opts) == 'table' and opts or {}
+    if not lab() then return E.Err('db_unavailable', 'The lab is not available') end
+    return withActor(opts, function(actor) return E.Lab.CreateLocker(caseRef, opts, actor) end)
+end)
+
 -- ── start-up and ticks ────────────────────────────────────────────────────────────────────────
 function A.Start()
     if not PFPoliceSchema or not PFPoliceSchema.WaitReady() then
@@ -320,6 +387,8 @@ function A.MinuteTick(now)
     now = now or E.Now()
     S.Decay(now)
     C.CheckRemovals(now)
+    C.Reconcile()
+    if E.Lab then E.Lab.Tick(now) end
     if not A.lastSweep or now - A.lastSweep >= 86400 then
         A.lastSweep = now
         S.SweepRetention(now)

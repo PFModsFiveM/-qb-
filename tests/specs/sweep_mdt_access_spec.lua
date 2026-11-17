@@ -28,6 +28,9 @@ local function answer(sql, params)
         return r and { r } or {}
     end
     if sql:find('SELECT * FROM pf_mdt_officer_mgmt_profiles', 1, true) then return { { terminated = 0 } } end
+    if sql:find('FROM pf_mdt_warrants WHERE warrantId = ?', 1, true) then
+        return { { warrantId = params[1], status = 'active', approval_state = 'legacy' } }
+    end
     return {}
 end
 local function call(sql, params, cb)
@@ -44,6 +47,17 @@ Mock.exportsByResource['oxmysql'] = {
     update = function(_, sql, params, cb) call(sql, params) if type(cb) == 'function' then cb(1) end return 1 end,
     scalar = function(_, sql, params, cb) call(sql, params) if type(cb) == 'function' then cb(0) end return 0 end,
 }
+-- server/records_ext.lua (warrants v2) reads and writes through MySQL.*.await: same fake store
+local function lib(kind)
+    local function f(sql, params)
+        local r = answer(sql, params or {})
+        if kind == 'single' then return r[1] end
+        if kind == 'update' or kind == 'insert' then return 1 end
+        return r
+    end
+    return setmetatable({ await = f }, { __call = function(_, sql, params, cb) local r = f(sql, params) if cb then cb(r) end return r end })
+end
+MySQL = { query = lib('query'), single = lib('single'), insert = lib('insert'), update = lib('update'), scalar = lib('scalar') }
 local function ran(fragment)
     local n = 0
     for _, e in ipairs(db.log) do if e.sql:find(fragment, 1, true) then n = n + 1 end end
@@ -60,6 +74,7 @@ load_resource('[pfscripts]/pf-policemdt-DEV/config.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/access.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/main.lua')
 load_resource('[pfscripts]/pf-policemdt-DEV/server/officers.lua')
+load_resource('[pfscripts]/pf-policemdt-DEV/server/records_ext.lua')
 Config.Dispatch911.Enabled = true
 
 local CHIEF, OFFICER, CIVIL, MECHANIC = 1, 2, 3, 4

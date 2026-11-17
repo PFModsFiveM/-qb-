@@ -254,13 +254,23 @@ function MenuImpound(currentSelection)
         else
             shouldContinue = true
             for _, v in pairs(result) do
-                local enginePercent = Round(v.engine / 10, 0)
+                local enginePercent = Round((tonumber(v.engine) or 0) / 10, 0)
                 local currentFuel = v.fuel
-                local vname = sharedVehicles[v.vehicle].name
+                local vname = sharedVehicles[v.vehicle] and sharedVehicles[v.vehicle].name or tostring(v.vehicle)
+                local txt = Lang:t('info.vehicle_info', { value = enginePercent, value2 = currentFuel })
+                -- the impound record: why it is held and until when (pfm-menu shows text only)
+                if type(v.impound) == 'table' then
+                    txt = txt .. ' | ' .. tostring(v.impound.reason or '')
+                    if tonumber(v.impound.holdUntil) then
+                        local left = math.ceil((tonumber(v.impound.holdUntil) - GetCloudTimeAsInt()) / 3600)
+                        if left > 0 then txt = txt .. (' | held %d h more'):format(left) end
+                    end
+                    if v.impound.caseRef then txt = txt .. ' | case ' .. tostring(v.impound.caseRef) end
+                end
 
                 impoundMenu[#impoundMenu + 1] = {
                     header = vname .. ' [' .. v.plate .. ']',
-                    txt = Lang:t('info.vehicle_info', { value = enginePercent, value2 = currentFuel }),
+                    txt = txt,
                     params = {
                         event = 'police:client:TakeOutImpound',
                         args = {
@@ -342,6 +352,25 @@ RegisterNetEvent('police:client:CallAnim', function()
     end)
 end)
 
+-- The impound record (server/vehicle.lua): why, how long a seizure is held, which case. The
+-- server cleans every field and caps the hold.
+local function AskImpoundDetails(fullImpound)
+    local inputs = {
+        { text = 'Reason', name = 'reason', type = 'text', isRequired = true },
+        { text = 'Case / incident reference (optional)', name = 'caseRef', type = 'text', isRequired = false },
+    }
+    if fullImpound then
+        table.insert(inputs, 2, { text = ('Hold for hours (0 = no hold, max %d)'):format(((Config.Traffic or {}).Impound or {}).MaxHoldHours or 168), name = 'holdHours', type = 'number', isRequired = false })
+    end
+    local dialog = exports['pfm-input']:ShowInput({
+        header = fullImpound and 'Seize vehicle' or 'Impound to depot',
+        submitText = Lang:t('info.submit'),
+        inputs = inputs,
+    })
+    if not dialog then return nil end
+    return { reason = dialog.reason, holdHours = tonumber(dialog.holdHours), caseRef = dialog.caseRef }
+end
+
 RegisterNetEvent('police:client:ImpoundVehicle', function(fullImpound, price)
     local vehicle = QBCore.Functions.GetClosestVehicle()
     local bodyDamage = math.ceil(GetVehicleBodyHealth(vehicle))
@@ -352,6 +381,8 @@ RegisterNetEvent('police:client:ImpoundVehicle', function(fullImpound, price)
         local pos = GetEntityCoords(ped)
         local vehpos = GetEntityCoords(vehicle)
         if #(pos - vehpos) < 5.0 and not IsPedInAnyVehicle(ped) then
+            local details = AskImpoundDetails(fullImpound == true)
+            if not details then return end
             QBCore.Functions.Progressbar('impound', Lang:t('progressbar.impound'), 5000, false, true, {
                 disableMovement = true,
                 disableCarMovement = true,
@@ -374,7 +405,7 @@ RegisterNetEvent('police:client:ImpoundVehicle', function(fullImpound, price)
             }, function() -- Play When Done
                 local plate = QBCore.Functions.GetPlate(vehicle)
                 -- the server decides: tow it in (the car stays) or impound now (the server removes it)
-                TriggerServerEvent('police:server:Impound', plate, fullImpound, price, bodyDamage, engineDamage, totalFuel)
+                TriggerServerEvent('police:server:Impound', plate, fullImpound, price, bodyDamage, engineDamage, totalFuel, details)
                 ClearPedTasks(ped)
             end, function() -- Play When Cancel
                 ClearPedTasks(ped)

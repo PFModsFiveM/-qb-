@@ -1,29 +1,25 @@
 -- Variables
-local ObjectList = {}
 local SpawnedSpikes = {}
 local spikemodel = `P_ld_stinger_s`
 local ClosestSpike = nil
+local shieldEntity = nil
 
 -- Functions
 
-local function GetClosestPoliceObject()
-    local pos = GetEntityCoords(PlayerPedId(), true)
-    local current = nil
-    local dist = nil
+local function PropKinds()
+    return (Config.Equipment and Config.Equipment.Props and Config.Equipment.Props.Kinds) or Config.Objects or {}
+end
 
-    for id, _ in pairs(ObjectList) do
-        local dist2 = #(pos - ObjectList[id].coords)
-        if current then
-            if dist2 < dist then
-                current = id
-                dist = dist2
-            end
-        else
-            dist = dist2
-            current = id
+--- True when a police prop model stands within range of the player (a hint so the officer does not
+--- kneel for nothing; the server picks and checks the prop it takes up).
+local function PoliceObjectNearby(range)
+    local pos = GetEntityCoords(PlayerPedId())
+    for _, def in pairs(PropKinds()) do
+        if def.model and GetClosestObjectOfType(pos.x, pos.y, pos.z, range, def.model, false, false, false) ~= 0 then
+            return true
         end
     end
-    return current, dist
+    return false
 end
 
 function GetClosestSpike()
@@ -71,7 +67,8 @@ end
 
 -- Events
 
-RegisterNetEvent('police:client:spawnCone', function()
+-- Props are spawned by the server (server/objects.lua); the client plays the animation and asks.
+local function PlaceObject(kind)
     QBCore.Functions.Progressbar('spawn_object', Lang:t('progressbar.place_object'), 2500, false, true, {
         disableMovement = true,
         disableCarMovement = true,
@@ -83,131 +80,78 @@ RegisterNetEvent('police:client:spawnCone', function()
         flags = 16,
     }, {}, {}, function() -- Done
         StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        TriggerServerEvent('police:server:spawnObject', 'cone')
+        TriggerServerEvent('police:server:spawnObject', kind)
     end, function() -- Cancel
         StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
         QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
     end)
-end)
+end
 
-RegisterNetEvent('police:client:spawnBarrier', function()
-    QBCore.Functions.Progressbar('spawn_object', Lang:t('progressbar.place_object'), 2500, false, true, {
-        disableMovement = true,
-        disableCarMovement = true,
-        disableMouse = false,
-        disableCombat = true,
-    }, {
-        animDict = 'anim@narcotics@trash',
-        anim = 'drop_front',
-        flags = 16,
-    }, {}, {}, function() -- Done
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        TriggerServerEvent('police:server:spawnObject', 'barrier')
-    end, function() -- Cancel
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
-    end)
-end)
-
-RegisterNetEvent('police:client:spawnRoadSign', function()
-    QBCore.Functions.Progressbar('spawn_object', Lang:t('progressbar.place_object'), 2500, false, true, {
-        disableMovement = true,
-        disableCarMovement = true,
-        disableMouse = false,
-        disableCombat = true,
-    }, {
-        animDict = 'anim@narcotics@trash',
-        anim = 'drop_front',
-        flags = 16,
-    }, {}, {}, function() -- Done
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        TriggerServerEvent('police:server:spawnObject', 'roadsign')
-    end, function() -- Cancel
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
-    end)
-end)
-
-RegisterNetEvent('police:client:spawnTent', function()
-    QBCore.Functions.Progressbar('spawn_object', Lang:t('progressbar.place_object'), 2500, false, true, {
-        disableMovement = true,
-        disableCarMovement = true,
-        disableMouse = false,
-        disableCombat = true,
-    }, {
-        animDict = 'anim@narcotics@trash',
-        anim = 'drop_front',
-        flags = 16,
-    }, {}, {}, function() -- Done
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        TriggerServerEvent('police:server:spawnObject', 'tent')
-    end, function() -- Cancel
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
-    end)
-end)
-
-RegisterNetEvent('police:client:spawnLight', function()
-    QBCore.Functions.Progressbar('spawn_object', Lang:t('progressbar.place_object'), 2500, false, true, {
-        disableMovement = true,
-        disableCarMovement = true,
-        disableMouse = false,
-        disableCombat = true,
-    }, {
-        animDict = 'anim@narcotics@trash',
-        anim = 'drop_front',
-        flags = 16,
-    }, {}, {}, function() -- Done
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        TriggerServerEvent('police:server:spawnObject', 'light')
-    end, function() -- Cancel
-        StopAnimTask(PlayerPedId(), 'anim@narcotics@trash', 'drop_front', 1.0)
-        QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
-    end)
-end)
+RegisterNetEvent('police:client:spawnCone', function() PlaceObject('cone') end)
+RegisterNetEvent('police:client:spawnBarrier', function() PlaceObject('barrier') end)
+RegisterNetEvent('police:client:spawnRoadSign', function() PlaceObject('roadsign') end)
+RegisterNetEvent('police:client:spawnTent', function() PlaceObject('tent') end)
+RegisterNetEvent('police:client:spawnLight', function() PlaceObject('light') end)
+RegisterNetEvent('police:client:spawnTape', function() PlaceObject('tape') end)
 
 RegisterNetEvent('police:client:deleteObject', function()
-    local objectId, dist = GetClosestPoliceObject()
-    if dist < 5.0 then
-        QBCore.Functions.Progressbar('remove_object', Lang:t('progressbar.remove_object'), 2500, false, true, {
-            disableMovement = true,
-            disableCarMovement = true,
-            disableMouse = false,
-            disableCombat = true,
-        }, {
-            animDict = 'weapons@first_person@aim_rng@generic@projectile@thermal_charge@',
-            anim = 'plant_floor',
-            flags = 16,
-        }, {}, {}, function() -- Done
-            StopAnimTask(PlayerPedId(), 'weapons@first_person@aim_rng@generic@projectile@thermal_charge@', 'plant_floor', 1.0)
-            TriggerServerEvent('police:server:deleteObject', objectId)
-        end, function() -- Cancel
-            StopAnimTask(PlayerPedId(), 'weapons@first_person@aim_rng@generic@projectile@thermal_charge@', 'plant_floor', 1.0)
-            QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
-        end)
+    local range = (Config.Equipment and Config.Equipment.Props and Config.Equipment.Props.RemoveRange) or 3.0
+    if not PoliceObjectNearby(range) then return end
+    QBCore.Functions.Progressbar('remove_object', Lang:t('progressbar.remove_object'), 2500, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true,
+    }, {
+        animDict = 'weapons@first_person@aim_rng@generic@projectile@thermal_charge@',
+        anim = 'plant_floor',
+        flags = 16,
+    }, {}, {}, function() -- Done
+        StopAnimTask(PlayerPedId(), 'weapons@first_person@aim_rng@generic@projectile@thermal_charge@', 'plant_floor', 1.0)
+        TriggerServerEvent('police:server:deleteObject')
+    end, function() -- Cancel
+        StopAnimTask(PlayerPedId(), 'weapons@first_person@aim_rng@generic@projectile@thermal_charge@', 'plant_floor', 1.0)
+        QBCore.Functions.Notify(Lang:t('error.canceled'), 'error')
+    end)
+end)
+
+-- The officer who placed a prop sets it on the ground (the server placed it at their feet).
+RegisterNetEvent('police:client:PropPlaced', function(netid)
+    local tries = 0
+    while not NetworkDoesNetworkIdExist(netid) and tries < 20 do Wait(100) tries += 1 end
+    if not NetworkDoesNetworkIdExist(netid) then return end
+    local obj = NetToObj(netid)
+    if obj ~= 0 and DoesEntityExist(obj) then
+        NetworkRequestControlOfEntity(obj)
+        PlaceObjectOnGroundProperly(obj)
     end
 end)
 
-RegisterNetEvent('police:client:removeObject', function(objectId)
-    NetworkRequestControlOfEntity(ObjectList[objectId].object)
-    DeleteObject(ObjectList[objectId].object)
-    ObjectList[objectId] = nil
+-- Riot shield: the server spawned it; this client holds it on the left forearm.
+RegisterNetEvent('police:client:AttachShield', function(netid)
+    local tries = 0
+    while not NetworkDoesNetworkIdExist(netid) and tries < 20 do Wait(100) tries += 1 end
+    if not NetworkDoesNetworkIdExist(netid) then return end
+    local obj = NetToObj(netid)
+    if obj == 0 or not DoesEntityExist(obj) then return end
+    tries = 0
+    NetworkRequestControlOfEntity(obj)
+    while not NetworkHasControlOfEntity(obj) and tries < 20 do Wait(50) NetworkRequestControlOfEntity(obj) tries += 1 end
+    local ped = PlayerPedId()
+    AttachEntityToEntity(obj, ped, GetPedBoneIndex(ped, 61163), 0.0, 0.0, 0.0, 0.0, 0.0, 180.0, true, true, false, true, 1, true)
+    shieldEntity = obj
+    -- no sprinting or jumping with the shield up (runs only while it is held)
+    CreateThread(function()
+        while shieldEntity == obj and DoesEntityExist(obj) do
+            Wait(0)
+            DisableControlAction(0, 21, true)
+            DisableControlAction(0, 22, true)
+        end
+    end)
 end)
 
-RegisterNetEvent('police:client:spawnObject', function(objectId, type, player)
-    local coords = GetEntityCoords(GetPlayerPed(GetPlayerFromServerId(player)))
-    local heading = GetEntityHeading(GetPlayerPed(GetPlayerFromServerId(player)))
-    local forward = GetEntityForwardVector(PlayerPedId())
-    local x, y, z = table.unpack(coords + forward * 0.5)
-    local spawnedObj = CreateObject(Config.Objects[type].model, x, y, z, true, false, false)
-    PlaceObjectOnGroundProperly(spawnedObj)
-    SetEntityHeading(spawnedObj, heading)
-    FreezeEntityPosition(spawnedObj, Config.Objects[type].freeze)
-    ObjectList[objectId] = {
-        id = objectId,
-        object = spawnedObj,
-        coords = vector3(x, y, z - 0.3),
-    }
+RegisterNetEvent('police:client:ShieldRemoved', function()
+    shieldEntity = nil
 end)
 
 -- Spike strips are placed and listed by the server (server/objects.lua).

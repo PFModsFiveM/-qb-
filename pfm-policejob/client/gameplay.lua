@@ -1,4 +1,4 @@
--- PF gameplay pack: cuff resistance, tackle, GSR, panic button
+-- PF gameplay pack: cuff resistance, tackle, GSR, panic button, K9 sniff search
 
 local resisting = false
 
@@ -102,30 +102,8 @@ RegisterNetEvent('police:client:TackleTarget', function(tacklerId)
     QBCore.Functions.Notify(Lang:t('info.got_tackled'), 'error')
 end)
 
--- ══ GSR tracking (everyone) ═══════════════════════════════════════
-local lastGsrReport = 0
-
-CreateThread(function()
-    while true do
-        local ped = PlayerPedId()
-        local weapon = GetSelectedPedWeapon(ped)
-        if weapon ~= `WEAPON_UNARMED` then
-            Wait(100)
-            if IsPedShooting(ped) then
-                local group = GetWeapontypeGroup(weapon)
-                if group ~= `GROUP_MELEE` and group ~= `GROUP_THROWN` and group ~= `GROUP_STUNGUN` and group ~= `GROUP_FIREEXTINGUISHER` then
-                    local now = GetGameTimer()
-                    if now - lastGsrReport > 10000 then
-                        lastGsrReport = now
-                        TriggerServerEvent('police:server:MarkGSR')
-                    end
-                end
-            end
-        else
-            Wait(1000)
-        end
-    end
-end)
+-- Gunshot residue is recorded by the server (weaponDamageEvent and casing reports); this client
+-- no longer reports its own shots.
 
 -- ══ GSR swab (officer side) ═══════════════════════════════════════
 RegisterNetEvent('police:client:DoGSR', function()
@@ -180,3 +158,37 @@ RegisterNetEvent('police:client:PanicAlert', function(coords, callsign)
         if DoesBlipExist(blip) then RemoveBlip(blip) end
     end)
 end)
+
+-- ══ K9 sniff search (handler side) ══════════════════════════════════
+-- The handler points the dog at the closest person, or else the closest vehicle; the server checks
+-- the handler's certification and distance and decides whether the dog alerts.
+local function K9Sniff()
+    local PlayerData = QBCore.Functions.GetPlayerData()
+    if not PlayerData.job or PlayerData.job.type ~= 'leo' or not PlayerData.job.onduty then return end
+    local cfg = (Config.Equipment and Config.Equipment.K9) or {}
+    local kind, target
+    local player, distance = QBCore.Functions.GetClosestPlayer()
+    if player ~= -1 and distance <= (cfg.PlayerRange or 3.0) then
+        kind, target = 'player', GetPlayerServerId(player)
+    else
+        local vehicle, vdist = QBCore.Functions.GetClosestVehicle()
+        if vehicle and vehicle ~= 0 and vdist and vdist <= (cfg.VehicleRange or 5.0) then
+            kind, target = 'vehicle', NetworkGetNetworkIdFromEntity(vehicle)
+        end
+    end
+    if not kind then
+        QBCore.Functions.Notify(Lang:t('error.none_nearby'), 'error')
+        return
+    end
+    QBCore.Functions.Progressbar('k9_sniff', 'K9 sniffing...', 6000, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true,
+    }, {}, {}, {}, function()
+        TriggerServerEvent('police:server:K9Sniff', kind, target)
+    end)
+end
+
+RegisterCommand('k9sniff', K9Sniff, false)
+RegisterNetEvent('police:client:K9Sniff', K9Sniff)

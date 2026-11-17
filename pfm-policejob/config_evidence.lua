@@ -45,6 +45,7 @@ Config.Evidence = {
         SealBroken = 12,          -- each seal break outside a lab or court
         Gap = 20,                 -- each custody gap
         NoGloves = 10,            -- prints/DNA collected without gloves
+        Unverified = 20,          -- a legacy bag registered later: nothing vouches for its chain before that
     },
 
     -- Kinds and their attrs (type per field: str<N>, int, bool, url, plate). physical = carried in a bag;
@@ -96,6 +97,7 @@ Config.Evidence = {
     Rates = {
         collect = { perSecond = 2, burst = 4 },
         clear = { perSecond = 0.5, burst = 1 },
+        command = { perSecond = 1, burst = 2 }, -- /takedna, /registerbag, /evlocker, /callsign
     },
 
     -- Exports that write or read private data check GetInvokingResource() against these lists
@@ -110,8 +112,68 @@ Config.Evidence = {
         LinkEvidence     = { ['pf-policemdt-DEV'] = true },
         UnlinkEvidence   = { ['pf-policemdt-DEV'] = true },
         DisposeEvidence  = { ['pf-justice'] = true },
+        -- batch 18 (lab and lockers)
+        SubmitToLab      = { ['pf-policemdt-DEV'] = true },
+        GetLabJob        = { ['pf-policemdt-DEV'] = true, ['pf-justice'] = true },
+        ReleaseLabResult = { ['pf-policemdt-DEV'] = true },
+        RegisterReferenceSample = { ['pf-justice'] = true },
+        CreateEvidenceLocker = { ['pf-policemdt-DEV'] = true },
     },
 
     -- custody rows of released/destroyed evidence older than this are swept (nil keeps them forever)
     CustodyRetentionDays = nil,
+
+    -- Bags held by an online player are checked against their real inventory every minute: a bag
+    -- that vanished without an inventory event (pfm-inventory ClearInventory fires none) is recorded
+    -- as moved to the prison property list or flagged missing, so the gap shows in the chain.
+    Reconcile = {
+        BatchSize = 300,          -- rows checked per pass
+        MissesBeforeFlag = 2,     -- consecutive passes the bag must be absent (a move in flight is not a loss)
+    },
+
+    -- Lockers per case: a stash per locker, opened only at the station it belongs to. Stations are
+    -- the Config.Locations.evidence entries (by index) or the named places below.
+    LockerStations = {
+        -- placeholder coordinates (confirm in game): the surgery evidence locker at Pillbox Hill
+        pillbox = { label = 'Pillbox surgery evidence locker', coords = vector3(311.38, -594.29, 43.28) },
+    },
+    -- projectiles removed in surgery (pf-ambulancejob:server:projectileRecovered) are sealed into this locker
+    ProjectileLocker = { station = 'pillbox', stash = 'evl:pillbox:surgery', label = 'Pillbox surgery evidence' },
+    ProjectileFrom = 'pf-ambulancejob', -- the only resource whose projectile events are accepted
+
+    -- Crime lab (server/evidence/lab.lua). Every result is computed from server data only:
+    -- identities come from reference samples (booking/warrant), weapons from test-fires of seized
+    -- weapons, toxicology from the levels preserved with the sample when it left the body.
+    Lab = {
+        -- processing time per test (real seconds from submission until the result is ready for review)
+        Times = { dna = 1800, prints = 900, ballistics = 1200, tox = 1200, drug_id = 600, gsr = 600, trace = 2400 },
+        -- which evidence kinds each test accepts
+        Accepts = {
+            dna = { blood = true, dna_swab = true },
+            prints = { fingerprint = true },
+            ballistics = { casing = true, projectile = true, weapon = true },
+            tox = { blood = true },
+            drug_id = { drug = true, item = true },
+            gsr = { gsr_kit = true },
+            trace = { weapon = true, item = true, document = true },
+        },
+        FullQuality = 70,         -- at or above: a full profile (identification possible)
+        MinQuality = 25,          -- below: no usable profile at all
+        DecoyStep = 10,           -- a partial profile is consistent with one more reference per this many points below FullQuality
+        MaxCandidatesListed = 5,  -- larger candidate sets are reported as a count only
+        ContaminationPenalty = 25, -- prints/DNA collected without gloves: mixed profile, smudged ridges
+        TraceQuality = 45,        -- touch DNA recovered from handled objects is always partial
+        ProjectileQuality = 80,   -- projectiles recovered in surgery are deformed
+        BallisticsFull = 60,      -- below this a projectile only shows class characteristics
+        BallisticsMin = 20,
+        ToxDetect = 0.01,         -- a preserved toxin level at or above this is reported as detected
+        ToxCacheSeconds = 60,     -- toxin snapshot per bleeder reused for this long (blood drops come in bursts)
+        DrugItems = {},           -- extra items identified as controlled substances (Config.SeizableDrugs always are)
+        -- low-population fallback: a result nobody qualified reviewed is released after this many
+        -- hours, marked unreviewed (false: results wait for a lab tech forever)
+        AutoReleaseHours = 24,
+        BatchSize = 20,           -- jobs processed per tick
+        StaleSeconds = 300,       -- a job left 'processing' by a crash goes back to the queue after this
+        MaxTestsPerSubmit = 7,
+    },
 }

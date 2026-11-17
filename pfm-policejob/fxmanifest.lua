@@ -8,6 +8,8 @@ version '1.3.5'
 shared_scripts {
 	'config.lua',
 	'config_evidence.lua', -- evidence kinds, decay, integrity rules, caller allowlists
+	'config_traffic.lua', -- (18B) radar, ALPR, speed cameras, breath tests, citations
+	'config_equipment.lua', -- (18C) prop caps, telemetry, K9, drones
 	'@pfm-core/shared/locale.lua',
 	'locales/en.lua',
 	'locales/*.lua'
@@ -26,24 +28,30 @@ client_scripts {
 	'client/evidence.lua',
 	'client/objects.lua',
 	'client/tracker.lua',
-	'client/gameplay.lua'
+	'client/gameplay.lua',
+	'client/custody_field.lua', -- (18A) surrender, detain, frisk, zipties, escort, seats, arrest
+	'client/traffic.lua', -- (18B) radar, ALPR, breathalyzer
 }
 
 server_scripts {
 	'@oxmysql/lib/MySQL.lua',
 	'@pfm-banking/payouts.lua', -- job pay goes through the bank ledger (PFPayout)
 	'server/main.lua',
-	'server/schema.lua', -- the resource's one migration list (fines v1, evidence v2)
+	'server/schema.lua', -- the resource's one migration list (fines v1, evidence v2, batch-18 tables after)
+	'server/telemetry.lua', -- (18C) officer telemetry timeline (MarkTimeline / GetTimeline)
 	'server/fines.lua', -- /fine records and their sweep
 	'server/commands.lua',
 	'server/interactions.lua',
+	'server/custody_field.lua', -- (18A) field custody: detain, frisk, zipties, escort, seats, arrest handoff
 	'server/evidence/store.lua', -- evidence records, integrity, shared helpers
 	'server/evidence/custody.lua', -- chain of custody and the inventory move recorder
 	'server/evidence/scene.lua', -- persisted scene drops
 	'server/evidence/api.lua', -- evidence exports and server events
+	'server/evidence/lab.lua', -- (18D) lab queue, reference samples, matching
 	'server/evidence.lua',
 	'server/objects.lua',
 	'server/vehicle.lua',
+	'server/traffic.lua', -- (18B) radar, ALPR, speed cameras, breathalyzer, plate checks, citations
 	'server/gameplay.lua',
 }
 

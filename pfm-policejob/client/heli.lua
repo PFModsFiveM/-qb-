@@ -299,3 +299,83 @@ CreateThread(function()
 		end
 	end
 end)
+
+-- ══ Police drone ════════════════════════════════════════════════════
+-- The server opened a flight (item, on duty) and sent the operator's position, the radius and the
+-- time limit. The drone is a camera on this client: it stays inside the radius, reports its position
+-- every 2 s (the server lands it when a report is out of range) and lands on Backspace or time out.
+local droneActive = false
+
+local function DroneControls(cam, pos, origin, radius)
+	local speed = IsControlPressed(0, 21) and 1.2 or 0.45 -- shift: faster
+	local rot = GetCamRot(cam, 2)
+	local h = math.rad(rot.z)
+	local fx, fy = -math.sin(h), math.cos(h)
+	local dx, dy, dz = 0.0, 0.0, 0.0
+	if IsControlPressed(0, 32) then dx, dy = dx + fx, dy + fy end -- W
+	if IsControlPressed(0, 33) then dx, dy = dx - fx, dy - fy end -- S
+	if IsControlPressed(0, 34) then dx, dy = dx - fy, dy + fx end -- A
+	if IsControlPressed(0, 35) then dx, dy = dx + fy, dy - fx end -- D
+	if IsControlPressed(0, 44) then dz = dz + 1.0 end -- Q: up
+	if IsControlPressed(0, 38) then dz = dz - 1.0 end -- E: down
+	local nx, ny, nz = pos.x + dx * speed, pos.y + dy * speed, pos.z + dz * speed * 0.6
+	local ox, oy = nx - origin.x, ny - origin.y
+	local d = math.sqrt(ox * ox + oy * oy)
+	if d > radius then nx, ny = origin.x + ox / d * radius, origin.y + oy / d * radius end
+	local ground = GetHeightmapBottomZForPosition(nx, ny)
+	if nz < ground + 2.0 then nz = ground + 2.0 end
+	if nz > origin.z + 150.0 then nz = origin.z + 150.0 end
+	local mx = GetDisabledControlNormal(0, 1) * 6.0
+	local my = GetDisabledControlNormal(0, 2) * 6.0
+	SetCamRot(cam, math.max(-89.0, math.min(10.0, rot.x - my)), 0.0, rot.z - mx, 2)
+	return vector3(nx, ny, nz)
+end
+
+RegisterNetEvent('police:client:DroneStart', function(origin, radius, maxSeconds)
+	if droneActive or type(origin) ~= 'table' then return end
+	droneActive = true
+	origin = vector3(tonumber(origin.x) or 0.0, tonumber(origin.y) or 0.0, tonumber(origin.z) or 0.0)
+	radius = tonumber(radius) or 250.0
+	local untilAt = GetGameTimer() + (tonumber(maxSeconds) or 600) * 1000
+	local pos = origin + vector3(0.0, 0.0, 15.0)
+	local cam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
+	SetCamCoord(cam, pos.x, pos.y, pos.z)
+	SetCamRot(cam, -30.0, 0.0, GetEntityHeading(PlayerPedId()), 2)
+	SetCamFov(cam, 60.0)
+	RenderScriptCams(true, false, 0, true, false)
+	SetTimecycleModifier('scanline_cam_cheap')
+	local lastReport = 0
+	CreateThread(function()
+		while droneActive do
+			Wait(0)
+			DisableAllControlActions(0)
+			EnableControlAction(0, 1, true)
+			EnableControlAction(0, 2, true)
+			for _, c in ipairs({ 21, 32, 33, 34, 35, 38, 44, 177 }) do EnableControlAction(0, c, true) end
+			pos = DroneControls(cam, pos, origin, radius)
+			SetCamCoord(cam, pos.x, pos.y, pos.z)
+			SetFocusPosAndVel(pos.x, pos.y, pos.z, 0.0, 0.0, 0.0)
+			HideHUDThisFrame()
+			local now = GetGameTimer()
+			if now - lastReport >= 2000 then
+				lastReport = now
+				TriggerServerEvent('police:server:DronePosition', pos.x, pos.y, pos.z)
+			end
+			if IsControlJustPressed(0, 177) or now >= untilAt or IsEntityDead(PlayerPedId()) then
+				TriggerServerEvent('police:server:DroneStop')
+				droneActive = false
+			end
+		end
+		ClearFocus()
+		ClearTimecycleModifier()
+		RenderScriptCams(false, false, 0, true, false)
+		DestroyCam(cam, false)
+	end)
+end)
+
+RegisterNetEvent('police:client:DroneStop', function(reason)
+	if not droneActive then return end
+	droneActive = false
+	local text = (Config.Equipment and Config.Equipment.Text) or {}
+	QBCore.Functions.Notify(reason == 'range' and (text.drone_range or 'Drone out of range') or (text.drone_ended or 'Drone landed'), 'primary')
+end)

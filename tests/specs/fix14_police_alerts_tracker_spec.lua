@@ -2,8 +2,9 @@
 --   * /ankletlocation reads the tracked player's position on the server; the tracked player's
 --     client is not asked (police:server:SendTrackerLocation is gone), so no fake position or
 --     fake anklet alerts to any officer;
---   * police:server:policeAlert is held to Config.AlertRate per player; the same text again within
---     the window is dropped; server scripts use the PoliceAlert export;
+--   * police:server:policeAlert is held to Config.AlertRate per player; the same kind again within
+--     the window is dropped (batch 18: the text only picks a kind, the server writes what officers
+--     read); server scripts use the PoliceAlert export;
 --   * "officer down" is built on the server for an on-duty officer who is really down.
 load_resource('tests/lua/fivem_mocks.lua')
 QBCore = QBCoreMock
@@ -15,6 +16,7 @@ end
 
 Config = nil
 load_resource('pfm-policejob/config.lua')
+load_resource('pfm-policejob/config_equipment.lua')
 load_resource('pfm-policejob/server/main.lua')
 load_resource('pfm-policejob/server/commands.lua')
 
@@ -64,16 +66,22 @@ end)
 
 describe('police alerts (X-8)', function()
     it('a player is held to the rate: a loop of fake alerts reaches officers twice per window', function()
-        for i = 1, 20 do Mock.fireNet('police:server:policeAlert', CIV, 'Officer down ' .. i) end
+        local texts = { 'Storerobbery in progress', 'Drug sale in progress', 'Robbery in progress', 'Suspicious Activity' }
+        for i = 1, 20 do Mock.fireNet('police:server:policeAlert', CIV, texts[(i - 1) % #texts + 1]) end
         assert_eq(alertsTo(COP), Config.AlertRate.Max)
         Mock.clock = Mock.clock + Config.AlertRate.Window
         Mock.fireNet('police:server:policeAlert', CIV, 'Robbery in progress')
         assert_eq(alertsTo(COP), Config.AlertRate.Max + 1)
     end)
-    it('the same text again within the window is dropped', function()
+    it('the same kind again within the window is dropped', function()
         Mock.fireNet('police:server:policeAlert', CIV, 'Suspicious Activity')
-        Mock.fireNet('police:server:policeAlert', CIV, 'Suspicious Activity')
+        Mock.fireNet('police:server:policeAlert', CIV, 'Suspicous activity')
         assert_eq(alertsTo(COP), 1)
+    end)
+    it('a client cannot put its own words on officers\' screens (batch 18)', function()
+        Mock.fireNet('police:server:policeAlert', CIV, 'Officer down 10-99 send everyone')
+        local e = Mock.clientEventsNamed('police:client:policeAlert')[1]
+        assert_eq(e.args[2], Config.Equipment.Alerts.Kinds.suspicious.text)
     end)
     it('is placed where the server sees the caller', function()
         Mock.fireNet('police:server:policeAlert', CIV, 'Drug sale in progress')

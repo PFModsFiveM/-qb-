@@ -30,6 +30,7 @@ Config = nil
 load_resource('pfm-policejob/config.lua')
 load_resource('pfm-policejob/server/main.lua')
 load_resource('pfm-policejob/server/interactions.lua')
+load_resource('pfm-policejob/server/custody_field.lua') -- escort and vehicle placement (batch 18A)
 -- the evidence module (batch 15): bagging and custody run on the database (b15_evidence_realdb_spec)
 Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
 load_resource('pfm-policejob/config_evidence.lua')
@@ -168,5 +169,41 @@ describe('jail and status', function()
     it('policeAlert ignores non-text payloads', function()
         Mock.fireNet('police:server:policeAlert', CIV, { 'x' })
         assert_eq(#Mock.clientEventsNamed('police:client:policeAlert'), 0)
+    end)
+end)
+
+-- batch 18A audit fixes: the escort and vehicle events took the client's id as it came (a table or a
+-- string reached GetPlayerPed and the distance check); SeizeDriverLicense rebuilt the licences table
+-- with driver and business only, wiping every other licence.
+describe('escort and vehicle ids, licence seizure', function()
+    it('non-numeric or unknown ids change nothing and do not crash', function()
+        for _, ev in ipairs({ 'police:server:EscortPlayer', 'police:server:KidnapPlayer', 'police:server:PutPlayerInVehicle',
+            'police:server:SetPlayerOutVehicle', 'police:server:SeizeDriverLicense', 'police:server:SeizeCash', 'police:server:RobPlayer' }) do
+            for _, bad in ipairs({ { 2 }, 'abc', 2.5, -1, 0, 70000 }) do
+                Mock.gameTimer = Mock.gameTimer + 2000
+                Mock.fireNet(ev, COP, bad)
+            end
+        end
+        assert_eq(#Mock.clientEventsNamed('police:client:SetEscorted'), 0)
+        assert_eq(#Mock.clientEventsNamed('police:client:PutInVehicle'), 0)
+        assert_eq(#Mock.dropped, 0)
+    end)
+    it('a numeric string id is the player it names', function()
+        Mock.players[CIV].PlayerData.metadata.ishandcuffed = true
+        Mock.coords[COP], Mock.coords[CIV] = vector3(0, 0, 0), vector3(1, 0, 0)
+        Mock.gameTimer = Mock.gameTimer + 2000
+        Mock.fireNet('police:server:EscortPlayer', COP, '2')
+        local e = Mock.clientEventsNamed('police:client:SetEscorted')
+        assert_eq(#e, 1)
+        assert_eq(e[1].target, CIV)
+    end)
+    it('seizing the driving licence keeps the other licences', function()
+        Mock.players[CIV].PlayerData.metadata.licences = { driver = true, weapon = true, hunting = true }
+        Mock.coords[COP], Mock.coords[CIV] = vector3(0, 0, 0), vector3(1, 0, 0)
+        Mock.fireNet('police:server:SeizeDriverLicense', COP, CIV)
+        local l = Mock.players[CIV].PlayerData.metadata.licences
+        assert_eq(l.driver, false)
+        assert_eq(l.weapon, true)
+        assert_eq(l.hunting, true)
     end)
 end)

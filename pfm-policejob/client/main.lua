@@ -103,8 +103,29 @@ RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
     end
 end)
 
+local function ClearDutyBlips()
+    for _, v in pairs(DutyBlips or {}) do RemoveBlip(v) end
+    DutyBlips = {}
+end
+
 RegisterNetEvent('QBCore:Client:SetDuty', function(newDuty)
     PlayerJob.onduty = newDuty
+    -- the server stops sending the duty GPS off duty; take the last blips down
+    if not newDuty then ClearDutyBlips() end
+    TriggerServerEvent('police:server:UpdateBlips')
+end)
+
+-- The server says whether this officer is being recorded (bodycam / dashcam metadata timeline).
+local telemetryDevice = nil
+RegisterNetEvent('police:client:TelemetryState', function(device)
+    if device == telemetryDevice then return end
+    local text = (Config.Equipment and Config.Equipment.Text) or {}
+    if device == 'dash' then
+        QBCore.Functions.Notify(text.dashcam_on or 'Dashcam recording', 'primary')
+    elseif device == nil and telemetryDevice == 'dash' then
+        QBCore.Functions.Notify(text.dashcam_off or 'Dashcam stopped', 'primary')
+    end
+    telemetryDevice = device
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUpdated', function(key, val)
@@ -151,19 +172,17 @@ RegisterNetEvent('police:client:sendBillingMail', function(amount)
     end)
 end)
 
+-- Sent by the server only to on-duty leo/ems (an empty list clears the map).
 RegisterNetEvent('police:client:UpdateBlips', function(players)
+    ClearDutyBlips()
     if PlayerJob and (PlayerJob.type == 'leo' or PlayerJob.type == 'ems') and
         PlayerJob.onduty then
-        if DutyBlips then
-            for _, v in pairs(DutyBlips) do
-                RemoveBlip(v)
-            end
-        end
-        DutyBlips = {}
-        if players then
+        if type(players) == 'table' then
             for _, data in pairs(players) do
-                local id = GetPlayerFromServerId(data.source)
-                CreateDutyBlips(id, data.label, data.job, data.location)
+                if type(data) == 'table' and tonumber(data.source) and type(data.location) == 'table' then
+                    local id = GetPlayerFromServerId(data.source)
+                    CreateDutyBlips(id, tostring(data.label or ''), data.job, data.location)
+                end
             end
         end
     end

@@ -166,6 +166,7 @@ function C.Observe(obs)
             end
             if Store.IsTerminal(row.state) then note = 'bag moved after ' .. row.state end
         end
+        if obs.note then note = obs.note end
         if obs.resource and obs.resource ~= 'pfm-inventory' and obs.resource ~= 'qb-inventory' then
             note = ((note and note .. '; ') or '') .. 'by ' .. tostring(obs.resource):sub(1, 40)
         end
@@ -438,6 +439,10 @@ function C.Transfer(id, to, opts, actor)
         if Store.IsTerminal(row.state) then return E.Err('invalid_state', 'Evidence is ' .. row.state) end
         if not mayHandle(actor, row) then return E.Err('no_permission', 'You do not hold this evidence') end
         if not reachable(actor, row) then return E.Err('too_far', 'You are not where the evidence is') end
+        -- a sample under analysis stays at the lab until its tests are done
+        if row.holder_kind == 'lab' and dest.ref ~= row.holder_ref and E.Lab and E.Lab.HasOpenWork(row.id) then
+            return E.Err('invalid_state', 'Lab tests on this evidence are still running')
+        end
         if to.kind == 'locker' then
             local locker = Store.ResolveLocker(to.lockerId)
             if not locker then return E.Err('not_found', 'No such evidence locker') end
@@ -574,8 +579,21 @@ function C.Link(id, caseRef, opts, actor, unlink)
 end
 
 -- ── disposal ──────────────────────────────────────────────────────────────────────────────────
+--- True only when pf-justice confirms the court order allows this disposal. Fails closed: until
+--- pf-justice has IsCourtOrderValid (batch 19A) nothing can be released or destroyed. The call uses
+--- the planned shape IsCourtOrderValid(ref, purpose, cid) with the evidence named in a 4th argument.
+function C.CourtOrderAllows(order, mode, cid, row)
+    if GetResourceState('pf-justice') ~= 'started' then return false end
+    local ok, valid = pcall(function()
+        return exports['pf-justice']:IsCourtOrderValid(order, 'evidence_' .. mode, cid, { evidenceId = row.id, tag = row.tag })
+    end)
+    if not ok then return false end
+    if type(valid) == 'table' then return valid.ok == true and valid.valid ~= false end
+    return valid == true
+end
+
 --- Release or destroy under a court order. A player needs the supervisor grade; pf-justice calls as
---- system. When pf-justice can check court orders (IsCourtOrderValid), a refused order stops it.
+--- system. The court order must be confirmed by pf-justice (C.CourtOrderAllows).
 function C.Dispose(id, mode, opts, actor)
     opts = opts or {}
     if mode ~= 'release' and mode ~= 'destroy' then return E.Err('bad_args', 'Mode is release or destroy') end
@@ -586,16 +604,15 @@ function C.Dispose(id, mode, opts, actor)
     end
     local cid = mode == 'release' and E.Ref(opts.cid, 64) or nil
     if mode == 'release' and opts.cid ~= nil and not cid then return E.Err('bad_args', 'Bad citizen id') end
-    if GetResourceState('pf-justice') == 'started' then
-        local okCheck, valid = pcall(function() return exports['pf-justice']:IsCourtOrderValid(order, 'evidence_' .. mode, id) end)
-        if okCheck and valid == false then return E.Err('no_permission', 'The court order does not allow this') end
-    end
     return withRow(id, function(row)
         local state = mode == 'release' and 'released' or 'destroyed'
         if row.state == state then return { ok = true, duplicate = true, evidenceId = row.id, state = row.state } end
         if Store.IsTerminal(row.state) then return E.Err('invalid_state', 'Evidence is ' .. row.state) end
         if not reachable(actor, row) then return E.Err('too_far', 'You are not where the evidence is') end
         if not Store.CanMove(row.state, state) then return E.Err('invalid_state', 'Evidence is ' .. row.state) end
+        if not C.CourtOrderAllows(order, mode, cid, row) then
+            return E.Err('no_permission', 'The court order could not be confirmed')
+        end
         local taken
         if isPhysical(row) and row.holder_ref and (row.holder_ref:find('^player:') or row.holder_ref:find('^inv:')) then
             local why
@@ -616,6 +633,79 @@ function C.Dispose(id, mode, opts, actor)
         C.Record(row, state, fromRef, ref, actor, ('court order %s%s'):format(order, opts.note and ('; ' .. tostring(E.Str(opts.note, 120))) or ''))
         return { ok = true, evidenceId = row.id, state = row.state }
     end)
+end
+
+-- ── reconciliation (bags that vanish without an inventory event) ──────────────────────────────
+-- pfm-inventory's ClearInventory (pfm-prison uses it when jailing) removes items without telling
+-- any listener. Each pass compares the bags the records say an online player holds with that
+-- player's server inventory. A bag absent for MissesBeforeFlag passes in a row is recorded where it
+-- went: into the prison property list (metadata jailitems) when it is there, otherwise missing.
+C.misses = C.misses or {} -- [evidenceId] = consecutive passes the bag was not where the record says
+
+local function inFlight(id)
+    if C.suppress[id] or C.pendingRemoval[id] then return true end
+    for _, obs in ipairs(C.queue) do
+        if obs.id == id then return true end
+    end
+    return false
+end
+
+local function hasBag(list, id)
+    for _, it in pairs(type(list) == 'table' and list or {}) do
+        if Store.IsBag(it) and E.Int(it.info.evidenceId, 1) == id then return true end
+    end
+    return false
+end
+
+--- One pass. Returns how many bags were recorded as moved or missing.
+function C.Reconcile()
+    if not E.DbReady() then return 0 end
+    local cfg = E.Cfg().Reconcile or {}
+    -- a rotating window, so every held bag is checked even when there are more than one batch
+    local batch = cfg.BatchSize or 300
+    local lo = C.reconcileAfter or 0
+    local rows = Store.Query('query', [[SELECT id, holder_ref FROM pf_evidence_items WHERE holder_kind IN ('officer', 'civilian')
+        AND state NOT IN ('released', 'destroyed') AND id > ? ORDER BY id LIMIT ?]], { lo, batch })
+    rows = type(rows) == 'table' and rows or {}
+    local hi = #rows >= batch and E.Int(rows[#rows].id, 1) or math.huge
+    C.reconcileAfter = hi == math.huge and 0 or hi
+    local seen, recorded = {}, 0
+    for _, r in ipairs(type(rows) == 'table' and rows or {}) do
+        local id = E.Int(r.id, 1)
+        local cid = type(r.holder_ref) == 'string' and r.holder_ref:match('^player:(.+)$')
+        local P = cid and exports['pfm-core']:GetPlayerByCitizenId(cid)
+        -- an offline holder's inventory is not loaded: nothing to compare until they are back
+        if id and P and not inFlight(id) then
+            seen[id] = true
+            if hasBag(P.PlayerData.items, id) then
+                C.misses[id] = nil
+            else
+                C.misses[id] = (C.misses[id] or 0) + 1
+                if C.misses[id] >= (cfg.MissesBeforeFlag or 2) then
+                    local meta = P.PlayerData.metadata or {}
+                    local obs
+                    if hasBag(meta.jailitems, id) then
+                        -- prison property is not police custody: the note makes it count towards a gap
+                        obs = { id = id, kind = 'inventory', ref = ('inv:jailitems:' .. cid):sub(1, 64), event = 'moved',
+                            note = Store.CIVILIAN_NOTE .. '; stored with prison property (inventory cleared)' }
+                    else
+                        obs = { id = id, kind = 'unknown', ref = 'unknown', event = 'flagged_missing',
+                            note = 'not in the holder\'s inventory (removed without an inventory event)' }
+                    end
+                    local res = C.Observe(obs)
+                    if res == 'moved' then
+                        recorded = recorded + 1
+                        C.misses[id] = nil
+                    end
+                end
+            end
+        end
+    end
+    -- a bag in this window that is no longer held by an online player starts counting again
+    for id in pairs(C.misses) do
+        if not seen[id] and id > lo and id <= hi then C.misses[id] = nil end
+    end
+    return recorded
 end
 
 -- ── registration with pfm-inventory ───────────────────────────────────────────────────────────

@@ -243,3 +243,22 @@ Config.Justice = {
     UnjailGrade = 0,         -- minimum police grade for /unjail (admins with the command ACE always may)
     BookingZones = nil,
 }
+
+-- Field custody (batch 18A, server/custody_field.lua): surrender, detain, frisk, zipties, escort,
+-- vehicle placement, arrest, release at the scene, hand-over, property and holding cells. Every
+-- distance is checked on the server from server positions.
+Config.CustodyField = {
+    TouchDistance = 2.5,        -- metres between the two players for every field action
+    RateMs = 1000,              -- one action of each kind per player per this many ms
+    SurrenderSeconds = 120,     -- hands stay up this long
+    DetainMaxMinutes = 30,      -- a detention without an arrest ends by itself after this
+    FriskSeconds = 60,          -- a pat-down list can be acted on (seize) this long
+    ZiptieItem = 'zipties',     -- used up per ziptie
+    ZiptieCutterItem = 'ziptie_cutter', -- cuts zipties (on-duty police need none)
+    ArrestNeedsRestraint = true,-- the arrest needs the suspect cuffed/ziptied or down
+    VehicleReach = 6.0,         -- the vehicle must be this close to the officer
+    RearSeats = { 1, 2, 3, 4, 5, 6 }, -- seats tried in this order (the server picks the first free one)
+    AllowFrontSeat = false,     -- also try the front passenger seat when no rear seat is free
+    SeatCheckMs = 1500,         -- after this the server checks the suspect really sits there
+    PropertyKeep = { 'phone' }, -- items left on the suspect when property is seized at arrest
+}

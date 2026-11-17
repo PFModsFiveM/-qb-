@@ -70,25 +70,20 @@ RegisterNetEvent('police:client:SetOutVehicle', function()
     end
 end)
 
-RegisterNetEvent('police:client:PutInVehicle', function()
+-- The server chose the vehicle and the seat (server/custody_field.lua); this client lets go of the
+-- escort and sits there. The server checks afterwards that it worked and tries the next seat if not.
+RegisterNetEvent('police:client:PutInVehicle', function(netId, seat)
     local ped = PlayerPedId()
-    if isHandcuffed or isEscorted then
-        local vehicle = QBCore.Functions.GetClosestVehicle()
-        if DoesEntityExist(vehicle) then
-            for i = GetVehicleMaxNumberOfPassengers(vehicle), 0, -1 do
-                if IsVehicleSeatFree(vehicle, i) then
-                    isEscorted = false
-                    TriggerEvent('hospital:client:isEscorted', isEscorted)
-                    ClearPedTasks(ped)
-                    DetachEntity(ped, true, false)
-
-                    Wait(100)
-                    SetPedIntoVehicle(ped, vehicle, i)
-                    return
-                end
-            end
-        end
-    end
+    netId, seat = tonumber(netId), tonumber(seat)
+    if not netId or not seat or not NetworkDoesNetworkIdExist(netId) then return end
+    local vehicle = NetToVeh(netId)
+    if not DoesEntityExist(vehicle) or not IsVehicleSeatFree(vehicle, seat) then return end
+    isEscorted = false
+    TriggerEvent('hospital:client:isEscorted', isEscorted)
+    ClearPedTasks(ped)
+    DetachEntity(ped, true, false)
+    Wait(100)
+    SetPedIntoVehicle(ped, vehicle, seat)
 end)
 
 RegisterNetEvent('police:client:SeizeCash', function()
@@ -187,7 +182,8 @@ RegisterNetEvent('police:client:BillPlayer', function()
                 }
             }
         })
-        if tonumber(dialog['bill']) > 0 then
+        -- a closed dialog returns nothing
+        if dialog and (tonumber(dialog['bill']) or 0) > 0 then
             TriggerServerEvent('police:server:BillPlayer', playerId, tonumber(dialog['bill']))
         else
             QBCore.Functions.Notify(Lang:t('error.amount_higher'), 'error')
@@ -202,7 +198,10 @@ RegisterNetEvent('police:client:PutPlayerInVehicle', function()
     if player ~= -1 and distance < 2.5 then
         local playerId = GetPlayerServerId(player)
         if not isHandcuffed and not isEscorted then
-            TriggerServerEvent('police:server:PutPlayerInVehicle', playerId)
+            -- the nearest vehicle is only a hint: the server checks it is next to both of you
+            local vehicle = QBCore.Functions.GetClosestVehicle()
+            local netId = (vehicle and vehicle ~= 0 and DoesEntityExist(vehicle)) and VehToNet(vehicle) or nil
+            TriggerServerEvent('police:server:PutPlayerInVehicle', playerId, netId)
         end
     else
         QBCore.Functions.Notify(Lang:t('error.none_nearby'), 'error')
@@ -288,74 +287,40 @@ RegisterNetEvent('police:client:CuffPlayer', function()
     end
 end)
 
-RegisterNetEvent('police:client:GetEscorted', function(playerId)
-    local ped = PlayerPedId()
-    QBCore.Functions.GetPlayerData(function(PlayerData)
-        if PlayerData.metadata['isdead'] or isHandcuffed or PlayerData.metadata['inlaststand'] then
-            if not isEscorted then
-                isEscorted = true
-                local dragger = GetPlayerPed(GetPlayerFromServerId(playerId))
-                SetEntityCoords(ped, GetOffsetFromEntityInWorldCoords(dragger, 0.0, 0.45, 0.0))
-                AttachEntityToEntity(ped, dragger, 11816, 0.45, 0.45, 0.0, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
-            else
-                isEscorted = false
-                DetachEntity(ped, true, false)
-            end
-            TriggerEvent('hospital:client:isEscorted', isEscorted)
-        end
-    end)
-end)
+-- Being escorted or carried is set by the server (police:client:SetEscorted in
+-- client/custody_field.lua); the old toggles (GetEscorted, GetKidnappedTarget) are gone, so the
+-- attachment can no longer drift from the server's record.
 
+-- pf-ambulancejob lets go of the escort locally (hospital bed); the server record ends with the next
+-- action of the escorting player or when either of them drops.
 RegisterNetEvent('police:client:DeEscort', function()
     isEscorted = false
     TriggerEvent('hospital:client:isEscorted', isEscorted)
     DetachEntity(PlayerPedId(), true, false)
 end)
 
-RegisterNetEvent('police:client:GetKidnappedTarget', function(playerId)
-    local ped = PlayerPedId()
-    QBCore.Functions.GetPlayerData(function(PlayerData)
-        if PlayerData.metadata['isdead'] or PlayerData.metadata['inlaststand'] or isHandcuffed then
-            if not isEscorted then
-                isEscorted = true
-                local dragger = GetPlayerPed(GetPlayerFromServerId(playerId))
-                RequestAnimDict('nm')
-
-                while not HasAnimDictLoaded('nm') do
-                    Wait(10)
-                end
-                AttachEntityToEntity(ped, dragger, 0, 0.27, 0.15, 0.63, 0.5, 0.5, 0.0, false, false, false, false, 2, false)
-                TaskPlayAnim(ped, 'nm', 'firemans_carry', 8.0, -8.0, 100000, 33, 0, false, false, false)
-            else
-                isEscorted = false
-                DetachEntity(ped, true, false)
-                ClearPedTasksImmediately(ped)
-            end
-            TriggerEvent('hospital:client:isEscorted', isEscorted)
-        end
-    end)
+-- The carrying player: the server started a carry (police:server:KidnapPlayer) ...
+RegisterNetEvent('police:client:GetKidnappedDragger', function()
+    local dragger = PlayerPedId()
+    RequestAnimDict('missfinale_c2mcs_1')
+    while not HasAnimDictLoaded('missfinale_c2mcs_1') do
+        Wait(10)
+    end
+    TaskPlayAnim(dragger, 'missfinale_c2mcs_1', 'fin_c2_mcs_1_camman', 8.0, -8.0, 100000, 49, 0, false, false, false)
+    isEscorting = true
+    TriggerEvent('hospital:client:SetEscortingState', isEscorting)
+    TriggerEvent('qb-kidnapping:client:SetKidnapping', isEscorting)
 end)
 
-RegisterNetEvent('police:client:GetKidnappedDragger', function()
-    QBCore.Functions.GetPlayerData(function(_)
-        if not isEscorting then
-            local dragger = PlayerPedId()
-            RequestAnimDict('missfinale_c2mcs_1')
-
-            while not HasAnimDictLoaded('missfinale_c2mcs_1') do
-                Wait(10)
-            end
-            TaskPlayAnim(dragger, 'missfinale_c2mcs_1', 'fin_c2_mcs_1_camman', 8.0, -8.0, 100000, 49, 0, false, false, false)
-            isEscorting = true
-        else
-            local dragger = PlayerPedId()
-            ClearPedSecondaryTask(dragger)
-            ClearPedTasksImmediately(dragger)
-            isEscorting = false
-        end
-        TriggerEvent('hospital:client:SetEscortingState', isEscorting)
-        TriggerEvent('qb-kidnapping:client:SetKidnapping', isEscorting)
-    end)
+-- ... and ended it (let go, the target dropped or was put in a car).
+RegisterNetEvent('police:client:EscortEnded', function(_target, kind)
+    if kind ~= 'carry' or not isEscorting then return end
+    local dragger = PlayerPedId()
+    ClearPedSecondaryTask(dragger)
+    ClearPedTasksImmediately(dragger)
+    isEscorting = false
+    TriggerEvent('hospital:client:SetEscortingState', isEscorting)
+    TriggerEvent('qb-kidnapping:client:SetKidnapping', isEscorting)
 end)
 
 -- The server sets the cuff state (it owns it); this client only shows it and never reports it.

@@ -270,6 +270,8 @@ function S.Report(src, kind, data)
         -- a random sample id: the bag must not name whose blood it is (the lab does that, batch 18)
         attrs.sampleId = 'S-' .. E.RandomHex(8):upper()
         attrs.bloodtype = E.Str(P.PlayerData.metadata and P.PlayerData.metadata.bloodtype, 8)
+        -- toxin levels as the blood left the body, for the lab's tox test; kept on the drop row only
+        attrs.tox = S.ToxSnapshot(src, P.PlayerData.citizenid)
     elseif kind == 'fingerprint' then
         attrs.printId = E.Str(P.PlayerData.metadata and P.PlayerData.metadata.fingerprint, 32)
         if not attrs.printId then return nil, 'bad_args' end
@@ -296,6 +298,61 @@ function S.Report(src, kind, data)
     S.pending[#S.pending + 1] = drop
     sendAdd(drop)
     return drop
+end
+
+-- Attributes the server keeps on the drop row but never puts on the evidence item (the lab reads
+-- them from the drop when it tests the sample).
+S.PRIVATE_ATTRS = { tox = true }
+
+--- The bleeder's toxin levels from pf-ambulancejob (GetPatientSummary 'toxins' field), cached per
+--- citizen for a short time since blood drops come in bursts. nil when the medical resource does not
+--- provide them (the lab then refuses a tox test on that sample instead of guessing).
+S.toxCache = S.toxCache or {}
+function S.ToxSnapshot(src, cid)
+    if GetResourceState('pf-ambulancejob') ~= 'started' then return nil end
+    local now = E.Now()
+    local cached = S.toxCache[cid]
+    if cached and now - cached.at < ((E.Cfg().Lab or {}).ToxCacheSeconds or 60) then return cached.tox end
+    local ok, summary = pcall(function() return exports['pf-ambulancejob']:GetPatientSummary(src) end)
+    local tox
+    if ok and type(summary) == 'table' and type(summary.toxins) == 'table' then
+        tox = {}
+        local n = 0
+        for name, level in pairs(summary.toxins) do
+            local lv = tonumber(level)
+            if type(name) == 'string' and #name <= 24 and name:match('^[%w_]+$') and lv and lv == lv and lv >= 0 and lv < 1e6 then
+                tox[name] = math.floor(lv * 1000 + 0.5) / 1000
+                n = n + 1
+                if n >= 12 then break end
+            end
+        end
+    end
+    S.toxCache[cid] = { at = now, tox = tox }
+    return tox
+end
+
+--- A server-only record of who a registered sample came from (legacy bag registration): a drop row
+--- already 'collected', so it never shows at a scene. Returns its id, or nil.
+function S.RecordPrivateSource(kind, pos, attrs, sourceCid, evidenceId)
+    if not KINDS[kind] or not E.DbReady() then return nil end
+    S.nextId = S.nextId + 1
+    local id = S.nextId
+    local now = E.Now()
+    pos = pos or vector3(0, 0, 0)
+    local _, ok = Store.Query('insert', [[INSERT INTO pf_evidence_scene_drops (id, kind, x, y, z, cell, attrs, source_cid, state,
+        created_at, decay_at, collected_evidence_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'collected', ?, ?, ?)]],
+        { id, kind, math.floor(pos.x * 100 + 0.5) / 100, math.floor(pos.y * 100 + 0.5) / 100, math.floor(pos.z * 100 + 0.5) / 100,
+            S.Cell(pos.x, pos.y), json.encode(attrs or {}), sourceCid, now, now, evidenceId })
+    return ok and id or nil
+end
+
+--- The server-only facts of a drop row (who left it, private attrs). nil when there is none.
+function S.SourceOf(dropId)
+    dropId = E.Int(dropId, 1)
+    if not dropId then return nil end
+    local row = Store.Query('single', 'SELECT source_cid, attrs, created_at FROM pf_evidence_scene_drops WHERE id = ? LIMIT 1', { dropId })
+    if type(row) ~= 'table' then return nil end
+    return { cid = row.source_cid, attrs = type(row.attrs) == 'string' and json.decode(row.attrs) or {}, createdAt = tonumber(row.created_at) }
 end
 
 -- ── persistence ───────────────────────────────────────────────────────────────────────────────
@@ -417,7 +474,9 @@ function S.CollectLocked(src, P, drop, hint)
     local now = E.Now()
     local def = (cfg.Kinds or {})[drop.kind] or {}
     local attrs = {}
-    for k, v in pairs(drop.attrs) do attrs[k] = v end
+    for k, v in pairs(drop.attrs) do
+        if not S.PRIVATE_ATTRS[k] then attrs[k] = v end
+    end
     local quality = 100
     local degrade = minutesFor('DegradeMinutes', drop.kind, 0) * 60
     if def.biological and degrade > 0 and now - drop.createdAt > degrade then quality = sc('PartialQuality', 50) end

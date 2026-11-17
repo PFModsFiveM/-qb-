@@ -142,7 +142,7 @@ describe('MDT schema: one owner of the migration key', function()
     it('keeps v1-v6 with their numbers and names, and adds v7', function()
         local want = { 'server-owned MDT jail', 'sentence payment state', 'licence actions audit', 'charge changes audit',
             'roster reset backups', 'jail released while offline', 'MDT tables from the SQL files' }
-        assert_eq(#Schema.Migrations, 7)
+        assert_eq(#Schema.Migrations, 8)
         for v, name in ipairs(want) do
             assert_eq(Schema.Migrations[v].version, v)
             assert_eq(Schema.Migrations[v].name, name)

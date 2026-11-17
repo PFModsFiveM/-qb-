@@ -507,6 +507,11 @@ function Store.ComputeIntegrity(row, events, now)
         if def.contact then score = score - (cfg.NoGloves or 10) end
     end
     if row.holder_ref == 'unknown' then flag('missing') end
+    -- a legacy bag registered at a terminal: nothing recorded where it was before that
+    if row.method == 'registered' then
+        score = score - (cfg.Unverified or 20)
+        flag('unverified_chain')
+    end
     if score < 0 then score = 0 end
     return score, flags
 end
@@ -570,13 +575,45 @@ function Store.DrawerOf(stashId)
     return nil
 end
 
+--- Remembers a locker row's stash id and station (where it may be opened).
+function Store.RememberLocker(row)
+    if type(row) ~= 'table' or type(row.stash_id) ~= 'string' then return end
+    E.lockerStashes = E.lockerStashes or {}
+    E.lockerStations = E.lockerStations or {}
+    E.lockerStashes[row.stash_id] = true
+    E.lockerStations[row.stash_id] = row.station and tostring(row.station) or nil
+end
+
 --- Remembers the stash id of every locker row (after the schema is ready).
 function Store.LoadLockers()
-    local rows = Store.Query('query', 'SELECT stash_id FROM pf_evidence_lockers', {})
-    E.lockerStashes = E.lockerStashes or {}
-    for _, r in ipairs(type(rows) == 'table' and rows or {}) do
-        if type(r.stash_id) == 'string' then E.lockerStashes[r.stash_id] = true end
+    local rows = Store.Query('query', 'SELECT stash_id, station FROM pf_evidence_lockers', {})
+    for _, r in ipairs(type(rows) == 'table' and rows or {}) do Store.RememberLocker(r) end
+end
+
+--- Where a locker station is: an evidence location by index ('2', 'drawer:2') or a named place
+--- in Config.Evidence.LockerStations.
+function Store.StationCoords(station)
+    if station == nil then return nil end
+    station = tostring(station)
+    local n = tonumber(station:match('^(%d+)$') or station:match('^drawer:(%d+)$'))
+    if n then
+        local loc = Config.Locations and Config.Locations['evidence'] and Config.Locations['evidence'][n]
+        return loc and vector3(loc.x, loc.y, loc.z) or nil
     end
+    local named = (E.Cfg().LockerStations or {})[station]
+    local c = type(named) == 'table' and named.coords
+    return c and vector3(c.x, c.y, c.z) or nil
+end
+
+--- Finds or creates a locker row by stash id. Returns the row or nil.
+function Store.EnsureLocker(station, label, stashId, caseRef)
+    local row = q('single', Store.SQL.lockerByStash, { stashId })
+    if not row then
+        q('insert', Store.SQL.lockerInsert, { tostring(station), label, stashId, caseRef, E.Now() })
+        row = q('single', Store.SQL.lockerByStash, { stashId })
+    end
+    if row then Store.RememberLocker(row) end
+    return row
 end
 
 function Store.IsLockerStash(stashId)
@@ -585,9 +622,9 @@ end
 
 function Store.LockerLocation(stashId)
     local station = Store.DrawerOf(stashId)
-    local loc = station and Config.Locations and Config.Locations['evidence'] and Config.Locations['evidence'][station]
-    if not loc then return nil end
-    return vector3(loc.x, loc.y, loc.z)
+    if station then return Store.StationCoords(station) end
+    -- a case or surgery locker: its station row says where it is
+    return Store.StationCoords((E.lockerStations or {})[stashId])
 end
 
 --- A locker by row id, or a station drawer by its stash id (registered on first use).
@@ -600,13 +637,13 @@ function Store.ResolveLocker(lockerId)
             q('insert', Store.SQL.lockerInsert, { 'drawer:' .. station, lockerId, lockerId, nil, E.Now() })
             row = q('single', Store.SQL.lockerByStash, { lockerId })
         end
-        if row then E.lockerStashes = E.lockerStashes or {}; E.lockerStashes[row.stash_id] = true end
+        if row then Store.RememberLocker(row) end
         return row
     end
     local id = E.Int(lockerId, 1)
     if not id then return nil end
     local row = q('single', Store.SQL.locker, { id })
-    if row then E.lockerStashes = E.lockerStashes or {}; E.lockerStashes[row.stash_id] = true end
+    if row then Store.RememberLocker(row) end
     return row
 end
 

@@ -205,7 +205,8 @@ end)
 describe('the duty and status toggle', function()
     local function set(field, value)
         Mock.clientEvents = {}
-        Mock.fireEvent('pf_mdt:updatePlayerStatus', OFFICER, { changed = field, [field] = value })
+        -- a net event registered with RegisterNetEvent(name, fn), so server/access.lua gates it (18F)
+        Mock.fireNet('pf_mdt:updatePlayerStatus', OFFICER, { changed = field, [field] = value })
         local sent = Mock.clientEventsNamed('pf_mdt:client:UpdatePersonalInfo')
         return sent[#sent] and sent[#sent].args[1]
     end

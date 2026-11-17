@@ -1,10 +1,26 @@
-local sharedItems = exports['pfm-core']:GetShared('Items')
+-- Evidence and lab commands are plain functions (PoliceEvidenceCommands) so they can be tested;
+-- the evidence module (server/evidence/*) does the work and every check is made there or here on
+-- the server: duty, distance from the server positions, items in the server inventory.
+PoliceEvidenceCommands = PoliceEvidenceCommands or {}
+local EC = PoliceEvidenceCommands
 
-local function DnaHash(s)
-    local h = string.gsub(s, '.', function(c)
-        return string.format('%02x', string.byte(c))
-    end)
-    return h
+local function notify(src, msg, kind) TriggerClientEvent('QBCore:Notify', src, msg, kind or 'error') end
+
+local function onDutyLeo(P)
+    local job = P and P.PlayerData and P.PlayerData.job
+    return job ~= nil and job.type == 'leo' and job.onduty == true
+end
+
+local function commandRate(src)
+    local E = PFEvidence
+    if not E or not E.Rate then return true end
+    local rate = (E.Cfg().Rates or {}).command or {}
+    return E.Rate(tostring(src) .. ':command', rate.perSecond or 1, rate.burst or 2)
+end
+
+local function resultText(res)
+    if type(res) ~= 'table' then return 'Evidence could not be processed' end
+    return tostring(res.message or res.error or 'Evidence could not be processed')
 end
 
 -- License
@@ -115,10 +131,33 @@ QBCore.Commands.Add('escort', Lang:t('commands.escort'), {}, false, function(sou
     TriggerClientEvent('police:client:EscortPlayer', src)
 end)
 
-QBCore.Commands.Add('callsign', Lang:t('commands.callsign'), { { name = 'name', help = Lang:t('info.callsign_name') } }, false, function(source, args)
-    local src = source
+--- /callsign: on-duty police and EMS only; letters, digits, spaces and dashes, at most 12 characters.
+function EC.Callsign(src, args)
     local Player = exports['pfm-core']:GetPlayer(src)
-    Player.SetMetaData('callsign', table.concat(args, ' '))
+    if not Player then return false end
+    local job = Player.PlayerData.job or {}
+    if not job.onduty or (job.type ~= 'leo' and job.type ~= 'ems' and job.name ~= 'ambulance') then
+        notify(src, Lang:t('error.on_duty_police_only'))
+        return false
+    end
+    if not commandRate(src) then return false end
+    local parts = {}
+    for i, v in ipairs(type(args) == 'table' and args or {}) do
+        if i > 4 then break end
+        if type(v) == 'string' then parts[#parts + 1] = v end
+    end
+    local text = table.concat(parts, ' '):gsub('^%s+', ''):gsub('%s+$', '')
+    if text == '' or #text > 12 or text:find('[^%w%- ]') then
+        notify(src, 'A callsign is 1-12 letters, digits, spaces or dashes')
+        return false
+    end
+    Player.Functions.SetMetaData('callsign', text)
+    notify(src, 'Callsign set to ' .. text, 'success')
+    return true
+end
+
+QBCore.Commands.Add('callsign', Lang:t('commands.callsign'), { { name = 'name', help = Lang:t('info.callsign_name') } }, false, function(source, args)
+    EC.Callsign(source, args)
 end)
 
 QBCore.Commands.Add('jail', Lang:t('commands.jail_player'), {}, false, function(source)
@@ -276,22 +315,151 @@ QBCore.Commands.Add('clearblood', Lang:t('commands.clearblood'), {}, false, func
     end
 end)
 
-QBCore.Commands.Add('takedna', Lang:t('commands.takedna'), { { name = 'id', help = Lang:t('info.player_id') } }, true, function(source, args)
-    local src = source
+--- /takedna <id>: a DNA swab from a restrained (cuffed) or downed person within 2.5 m. The swab is an
+--- evidence record with a random sample id (the bag no longer carries the citizen id); who it was
+--- taken from is the record's origin, which the lab reads.
+function EC.TakeDna(src, args)
+    local E = PFEvidence
     local Player = exports['pfm-core']:GetPlayer(src)
-    local OtherPlayer = exports['pfm-core']:GetPlayer(tonumber(args[1]))
-    if not OtherPlayer or Player.PlayerData.job.type ~= 'leo' or not Player.PlayerData.job.onduty then return end
-    if exports['pfm-inventory']:RemoveItem(src, 'empty_evidence_bag', 1, false, 'qb-policejob:takedna') then
-        local info = {
-            label = Lang:t('info.dna_sample'),
-            type = 'dna',
-            dnalabel = DnaHash(OtherPlayer.PlayerData.citizenid)
-        }
-        if not exports['pfm-inventory']:AddItem(src, 'filled_evidence_bag', 1, false, info, 'qb-policejob:takedna') then return end
-        TriggerClientEvent('qb-inventory:client:ItemBox', src, sharedItems['filled_evidence_bag'], 'add')
-    else
-        TriggerClientEvent('QBCore:Notify', src, Lang:t('error.have_evidence_bag'), 'error')
+    if not Player or not onDutyLeo(Player) then
+        notify(src, Lang:t('error.on_duty_police_only'))
+        return false
     end
+    if not commandRate(src) then return false end
+    local targetId = tonumber(type(args) == 'table' and args[1] or nil)
+    local Target = targetId and targetId ~= src and exports['pfm-core']:GetPlayer(targetId) or nil
+    if not Target then
+        notify(src, Lang:t('error.not_online'))
+        return false
+    end
+    local reach = (E and E.Cfg().HandoverReach) or 2.5
+    if #(GetEntityCoords(GetPlayerPed(src)) - GetEntityCoords(GetPlayerPed(targetId))) > reach then
+        notify(src, 'Get closer to take a swab')
+        return false
+    end
+    local meta = Target.PlayerData.metadata or {}
+    if not (meta.ishandcuffed or meta.isdead or meta.inlaststand) then
+        notify(src, 'They must be restrained to take a swab')
+        return false
+    end
+    if not E or not E.Api or not E.Api.CreateEvidence then
+        notify(src, 'Evidence storage is not ready')
+        return false
+    end
+    local emptyBag = E.Cfg().EmptyBagItem or 'empty_evidence_bag'
+    if not exports['pfm-inventory']:RemoveItem(src, emptyBag, 1, false, 'pfm-policejob:takedna') then
+        notify(src, Lang:t('error.have_evidence_bag'))
+        return false
+    end
+    local sampleId = 'D-' .. E.RandomHex(8):upper()
+    local res = E.Api.CreateEvidence({
+        kind = 'dna_swab', label = Lang:t('info.dna_sample'), attrs = { sampleId = sampleId, quality = 100 },
+        collectedBy = src, method = 'swab', sealed = true, origin = { type = 'person', id = Target.PlayerData.citizenid },
+    }, { key = ('pfm-policejob:takedna:%s:%s'):format(Player.PlayerData.citizenid, sampleId), actor = { src = src } })
+    if type(res) ~= 'table' or not res.ok then
+        exports['pfm-inventory']:AddItem(src, emptyBag, 1, false, nil, 'pfm-policejob:takedna refund')
+        notify(src, resultText(res))
+        return false
+    end
+    notify(src, ('DNA swab %s taken'):format(res.tag or sampleId), 'success')
+    return res
+end
+
+QBCore.Commands.Add('takedna', Lang:t('commands.takedna'), { { name = 'id', help = Lang:t('info.player_id') } }, true, function(source, args)
+    EC.TakeDna(source, args)
+end)
+
+-- Evidence ids in commands: the tag (EV-2026-000012) or the number.
+local function evidenceId(arg)
+    if type(arg) ~= 'string' then return nil end
+    local E = PFEvidence
+    if arg:match('^%u+%-%d+%-%d+$') then
+        local row = E.Store.Normalise(E.Store.Query('single', E.Store.SQL.byTag, { arg }))
+        return row and row.id or nil
+    end
+    return E.Int(arg, 1)
+end
+
+--- /labsubmit <evidence> <test> [test...]: request tests on evidence held at the lab.
+function EC.LabSubmit(src, args)
+    local E = PFEvidence
+    if not E or not E.Lab then return notify(src, 'The lab is not available') end
+    if not commandRate(src) then return false end
+    args = type(args) == 'table' and args or {}
+    local id = E.DbReady() and evidenceId(args[1]) or nil
+    if not id then return notify(src, 'Usage: /labsubmit <evidence tag> <dna|prints|ballistics|tox|drug_id|gsr|trace>') end
+    local tests = {}
+    for i = 2, math.min(#args, 8) do tests[#tests + 1] = tostring(args[i]):lower() end
+    local res = E.Api.SubmitToLab(id, tests, { actor = { src = src } })
+    if not res.ok then return notify(src, resultText(res)) end
+    local mins = math.max(0, math.ceil(((res.eta or E.Now()) - E.Now()) / 60))
+    notify(src, ('Lab job %d queued; results in about %d min'):format(res.jobId, mins), 'success')
+    return res
+end
+
+--- /labresult <job>: the job's state, and its result once released (lab techs see results to review).
+function EC.LabResult(src, args)
+    local E = PFEvidence
+    if not E or not E.Lab then return notify(src, 'The lab is not available') end
+    if not commandRate(src) then return false end
+    local res = E.Api.GetLabJob(E.Int(type(args) == 'table' and args[1] or nil, 1), { viewer = src })
+    if not res.ok then return notify(src, resultText(res)) end
+    local job = res.job
+    local text = ('Lab job %d (%s): %s'):format(job.id, job.test, job.state)
+    if job.result then text = text .. ' - ' .. tostring(job.result.summary or job.result.outcome) end
+    notify(src, text:sub(1, 220), 'primary')
+    return res
+end
+
+--- /labrelease <job>: a lab tech releases a reviewed result.
+function EC.LabRelease(src, args)
+    local E = PFEvidence
+    if not E or not E.Lab then return notify(src, 'The lab is not available') end
+    if not commandRate(src) then return false end
+    local res = E.Api.ReleaseLabResult(E.Int(type(args) == 'table' and args[1] or nil, 1), { actor = { src = src } })
+    if not res.ok then return notify(src, resultText(res)) end
+    notify(src, ('Lab job %d released'):format(res.jobId), 'success')
+    return res
+end
+
+--- /registerbag [slot]: exchange an old evidence bag for a recorded one at an evidence locker or lab.
+function EC.RegisterBag(src, args)
+    local E = PFEvidence
+    if not E or not E.Lab then return notify(src, 'The lab is not available') end
+    if not commandRate(src) then return false end
+    local res = E.Lab.RegisterLegacyBag(src, type(args) == 'table' and args[1] or nil)
+    if not res.ok then return notify(src, resultText(res)) end
+    notify(src, ('Registered as %s'):format(res.tag or ('#' .. tostring(res.evidenceId))), 'success')
+    return res
+end
+
+--- /evlocker <case type> <case id>: create (once) and open the case's locker at this station.
+function EC.EvidenceLocker(src, args)
+    local E = PFEvidence
+    if not E or not E.Lab then return notify(src, 'The lab is not available') end
+    if not commandRate(src) then return false end
+    args = type(args) == 'table' and args or {}
+    local res = E.Api.CreateEvidenceLocker({ type = args[1], id = args[2] }, { actor = { src = src } })
+    if not res.ok then return notify(src, resultText(res)) end
+    local opened = E.Lab.OpenLocker(src, res.lockerId)
+    if not opened.ok then return notify(src, resultText(opened)) end
+    return opened
+end
+
+QBCore.Commands.Add('labsubmit', 'Request crime lab tests on evidence at the lab', { { name = 'evidence', help = 'Evidence tag' }, { name = 'test', help = 'dna, prints, ballistics, tox, drug_id, gsr or trace' } }, true, function(source, args)
+    EC.LabSubmit(source, args)
+end)
+QBCore.Commands.Add('labresult', 'Show a crime lab job', { { name = 'job', help = 'Lab job number' } }, true, function(source, args)
+    EC.LabResult(source, args)
+end)
+QBCore.Commands.Add('labrelease', 'Release a reviewed crime lab result (lab technician)', { { name = 'job', help = 'Lab job number' } }, true, function(source, args)
+    EC.LabRelease(source, args)
+end)
+QBCore.Commands.Add('registerbag', 'Register an old evidence bag at an evidence locker or the lab', { { name = 'slot', help = 'Inventory slot (optional)' } }, false, function(source, args)
+    EC.RegisterBag(source, args)
+end)
+QBCore.Commands.Add('evlocker', 'Open the evidence locker of a case at this station', { { name = 'type', help = 'incident, report, case...' }, { name = 'id', help = 'Case id' } }, true, function(source, args)
+    EC.EvidenceLocker(source, args)
 end)
 
 QBCore.Commands.Add('anklet', Lang:t('commands.anklet'), {}, false, function(source)
