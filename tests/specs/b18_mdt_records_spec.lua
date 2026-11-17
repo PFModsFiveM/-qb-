@@ -27,7 +27,7 @@ function GetConvar(name, default) return convars[name] or default end
 -- logged; answers by SQL text
 local db
 local function resetDb()
-    db = { log = {}, players = {}, insertId = 0, warrant = nil, singles = {} }
+    db = { log = {}, players = {}, insertId = 0, warrant = nil, singles = {}, requests = {} }
 end
 resetDb()
 local function answer(kind, sql, params)
@@ -36,11 +36,19 @@ local function answer(kind, sql, params)
         local p = db.players[params[1]]
         return p and { { charinfo = json.encode(p) } } or {}
     end
+    if sql:find('INSERT INTO pf_mdt_record_audit', 1, true) and params[5] == 'request' then db.requests[params[6]] = params[2] end
+    if sql:find("by_job = 'request' AND detail = ?", 1, true) then
+        return db.requests[params[1]] and { { entity_id = db.requests[params[1]] } } or {}
+    end
     if sql:find('FROM pf_mdt_warrants WHERE warrantId = ?', 1, true) then
         return db.warrant and { db.warrant } or {}
     end
     if sql:find('SELECT title, officer FROM pf_mdt_reports', 1, true) then return { { title = 'Pursuit', officer = 'A' } } end
     if kind == 'insert' then db.insertId = db.insertId + 1 return db.insertId end
+    if kind == 'update' and sql:find("SET status = 'removed'", 1, true) then
+        local st = db.warrant and db.warrant.status
+        return (st == 'active' or st == 'pending') and 1 or 0
+    end
     if kind == 'update' then return 1 end
     return {}
 end
@@ -236,6 +244,58 @@ describe('18F warrants v2', function()
         db.warrant = { warrantId = 'W1', status = 'pending', approval_state = 'pending_approval' }
         assert_eq(PFMdtRecords.ReviewWarrant(SGT, { warrantId = 'W1', decision = 'approve' }).error, 'no_permission')
         assert_eq(ran('SET approval_state'), 0)
+    end)
+end)
+
+describe('warrant requests from other resources (RequestWarrant / RecallWarrant)', function()
+    local function request(spec, opts) return Mock.selfExport('RequestWarrant')(spec, opts) end
+    it('only Config.Warrants.Requesters may call; the key is required and checked', function()
+        Mock.invokingResource = 'pf-mechanicjob'
+        assert_eq(request({ suspectCitizenId = 'SUS1' }, { key = 'k1' }).error, 'not_allowed')
+        assert_eq(Mock.selfExport('RecallWarrant')('W1', 'x', {}).error, 'not_allowed')
+        Mock.invokingResource = 'pfm-prison'
+        assert_eq(request({ suspectCitizenId = 'SUS1' }, {}).error, 'bad_args')
+        assert_eq(request({ suspectCitizenId = 'SUS1' }, { key = 'bad key!' }).error, 'bad_args')
+        assert_eq(request({ suspectCitizenId = 'SUS1' }, { key = string.rep('k', 129) }).error, 'bad_args')
+        assert_eq(request({ type = 'search', suspectCitizenId = 'SUS1' }, { key = 'k2' }).error, 'bad_args')
+        assert_eq(request({ suspectCitizenId = 'NOPE' }, { key = 'k3' }).error, 'suspect_required')
+        assert_eq(ran('INTO pf_mdt_warrants'), 0)
+    end)
+    it('one warrant per key, pending approval, audited with the system actor and the source', function()
+        Mock.invokingResource = 'pfm-prison'
+        local spec = { type = 'arrest', suspectCitizenId = 'SUS1', title = 'Escape', charges = { 'Escape' }, source = { type = 'prison_escape', id = 12 } }
+        local opts = { key = 'pfm-prison:escape:12', actor = { kind = 'system', label = 'Bolingbroke' } }
+        local first = request(spec, opts)
+        assert_eq(first.ok, true)
+        assert_true(first.warrantId:match('^W%d+$') ~= nil)
+        local again = request(spec, opts)
+        assert_eq(again.ok, true)
+        assert_eq(again.duplicate, true)
+        assert_eq(again.warrantId, first.warrantId)
+        assert_eq(ran('INTO pf_mdt_warrants'), 1)
+        local p = lastParams('INTO pf_mdt_warrants')
+        assert_eq(p[2], 'SUS1')
+        assert_eq(p[7], 'Bolingbroke')
+        local key = lastParams("by_job = 'request' AND detail = ?")
+        assert_eq(key[1], 'key:pfm-prison:escape:12')
+        local rows = {}
+        for _, e in ipairs(db.log) do
+            if e.sql:find('INSERT INTO pf_mdt_record_audit', 1, true) then rows[#rows + 1] = e.params end
+        end
+        assert_eq(rows[1][4], 'system:Bolingbroke')
+        assert_true(rows[2][6]:find('prison_escape', 1, true) ~= nil, 'source in the audit')
+    end)
+    it('recall removes an active or pending warrant once, audited; served is refused', function()
+        Mock.invokingResource = 'pfm-prison'
+        db.warrant = { warrantId = 'W1', status = 'active', approval_state = 'approved' }
+        local res = Mock.selfExport('RecallWarrant')('W1', 'recaptured', { actor = { kind = 'system', label = 'Bolingbroke' } })
+        assert_eq(res.ok, true)
+        assert_eq(ran("SET status = 'removed'"), 1)
+        assert_eq(ran('INSERT INTO pf_mdt_record_audit'), 1)
+        db.warrant.status = 'removed'
+        assert_eq(Mock.selfExport('RecallWarrant')('W1', 'again', {}).duplicate, true)
+        db.warrant.status = 'served'
+        assert_eq(Mock.selfExport('RecallWarrant')('W1', 'x', {}).ok, false)
     end)
 end)
 

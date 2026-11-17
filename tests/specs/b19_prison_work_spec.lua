@@ -175,6 +175,7 @@ local function workAll(job)
         at(st.coords)
         Mock.fireNet('pfm-prison:server:WorkStep', INMATE, i)
     end
+    advance(1)
 end
 
 BeforeEach = function()
@@ -271,6 +272,7 @@ describe('stations', function()
         Mock.fireNet('pfm-prison:server:WorkStep', INMATE, 1)
         assert_eq(W.sessions[INMATE].step, 1)
         -- the next station is a few metres away, but a far detour in one second is not walking
+        advance(1)
         W.sessions[INMATE].lastStepAt = Mock.clock - K.steps[2].minSeconds
         W.sessions[INMATE].lastPos = { x = K.steps[2].coords.x + 3000, y = K.steps[2].coords.y, z = K.steps[2].coords.z }
         at(K.steps[2].coords)
@@ -283,9 +285,11 @@ end)
 describe('finishing a shift', function()
     it('kitchen: one ticket, a keyed capped credit, a wage, and meals in the canteen that the routine serves', function()
         start('kitchen')
+        W.sessions[INMATE].startedAt = Mock.clock - K.minSeconds - 1
         advance(1)
         Mock.fireNet('pfm-prison:server:WorkFinish', INMATE)
         assert_eq(#Log, 0, 'not before every station')
+        W.sessions[INMATE].startedAt = Mock.clock
         workAll('kitchen')
         local s = W.sessions[INMATE]
         s.startedAt = Mock.clock - K.minSeconds + 5

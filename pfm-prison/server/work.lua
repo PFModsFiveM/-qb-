@@ -529,8 +529,8 @@ end)
 
 local lastAct = {}
 local function rate(src, seconds)
-    local now = GetGameTimer()
-    if lastAct[src] and now - lastAct[src] < seconds * 1000 then return false end
+    local now = os.time()
+    if lastAct[src] and now - lastAct[src] < seconds then return false end
     lastAct[src] = now
     return true
 end

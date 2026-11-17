@@ -19,14 +19,14 @@ local UPSERT = [[INSERT INTO pf_prison_inmates (citizenid, order_id, facility, s
         status_at = VALUES(status_at), job_ticket = VALUES(job_ticket), receipt_ids = VALUES(receipt_ids)]]
 
 describe('pfm-prison schema (key pfm-prison)', function()
-    it('v1 creates both tables once and a rerun applies nothing', function()
+    it('v1 creates both tables once and a rerun applies nothing (batch 19 adds v2-v4)', function()
         assert_true(PFPrisonSchema.Run())
         assert_true(tableExists('pf_prison_inmates'))
         assert_true(tableExists('pf_prison_events'))
-        assert_eq(n("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-prison'"), 1)
+        assert_eq(n("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-prison'"), #PFPrisonSchema.Migrations)
         PFPrisonSchema.ready = false
         assert_true(PFPrisonSchema.Run())
-        assert_eq(n("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-prison'"), 1)
+        assert_eq(n("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pfm-prison'"), #PFPrisonSchema.Migrations)
         for _, sql in ipairs(PFPrisonSchema.V1) do MySQL.query.await(sql) end -- every step is rerun-safe
     end)
     it('the bridge upsert keeps one row per citizen and the event table takes rows', function()

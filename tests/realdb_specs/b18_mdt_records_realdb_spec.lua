@@ -175,6 +175,38 @@ describe('warrants v2 (MariaDB)', function()
         Mock.gameTimer = Mock.gameTimer + 100000
         assert_eq(R.CreateWarrant(OFFICER, { suspect = 'Nobody Here', charges = {} }).error, 'suspect_required')
     end)
+    it('RequestWarrant: one warrant per key, supervisors may decide it, recall is idempotent', function()
+        Mock.invokingResource = 'pfm-prison'
+        local req = Mock.selfExport('RequestWarrant')
+        local spec = { type = 'arrest', suspectCitizenId = 'SUS2', title = 'Escape from custody', charges = { 'Escape' }, source = { type = 'prison_escape', id = 3 } }
+        local opts = { key = 'pfm-prison:escape:3', actor = { kind = 'system', label = 'Bolingbroke' } }
+        local first = req(spec, opts)
+        assert_eq(first.ok, true, tostring(first.error))
+        local again = req(spec, opts)
+        assert_eq(again.duplicate, true)
+        assert_eq(again.warrantId, first.warrantId)
+        assert_eq(n("SELECT COUNT(*) FROM pf_mdt_warrants WHERE suspectCitizenId = 'SUS2' AND title = 'Escape from custody'"), 1)
+        assert_eq(req({ suspectCitizenId = 'NOPE' }, { key = 'pfm-prison:escape:4' }).error, 'suspect_required')
+        Mock.invokingResource = 'pf-mechanicjob'
+        assert_eq(req(spec, { key = 'x:1' }).error, 'not_allowed')
+        Mock.invokingResource = nil
+        local w = one('SELECT status, approval_state, issuedBy FROM pf_mdt_warrants WHERE warrantId = ?', { first.warrantId })
+        assert_eq(w.status, 'pending')
+        assert_eq(w.approval_state, 'pending_approval')
+        assert_eq(w.issuedBy, 'Bolingbroke')
+        assert_eq(R.ReviewWarrant(CHIEF, { warrantId = first.warrantId, decision = 'approve' }).success, true)
+        -- the key survives the retention prune
+        MySQL.update.await('UPDATE pf_mdt_record_audit SET at = ? WHERE entity_id = ?', { os.time() - 500 * 86400, first.warrantId })
+        R.PruneAudit()
+        Mock.invokingResource = 'pfm-prison'
+        assert_eq(req(spec, opts).warrantId, first.warrantId)
+        local rec = Mock.selfExport('RecallWarrant')
+        assert_eq(rec(first.warrantId, 'recaptured', { actor = { kind = 'system', label = 'Bolingbroke' } }).ok, true)
+        assert_eq(one('SELECT status FROM pf_mdt_warrants WHERE warrantId = ?', { first.warrantId }).status, 'removed')
+        assert_eq(rec(first.warrantId, 'recaptured', {}).duplicate, true)
+        assert_eq(rec('WNONE', 'x', {}).error, 'not_found')
+        Mock.invokingResource = nil
+    end)
     it('the read exports serve pfm-policejob only', function()
         local id = newWarrant(OFFICER)
         Mock.invokingResource = 'pfm-policejob'

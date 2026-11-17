@@ -118,7 +118,7 @@ describe('migrations', function()
         assert_true(J.Schema.Run())
         assert_true(J.Schema.Run())
         assert_eq(runs, 1)
-        assert_eq(scalar("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-justice'"), 2)
+        assert_eq(scalar("SELECT COUNT(*) FROM pf_schema_migrations WHERE resource = 'pf-justice'"), 5)
         PFJustice.LegacyImport = nil
     end)
 

@@ -20,7 +20,11 @@ Mock.exportsByResource['pfm-prison'] = {
     end,
 }
 local inCare = {}
-Mock.exportsByResource['pf-ambulancejob'] = { IsInCare = function(_, src) return inCare[src] == true end }
+local custodyCare = {}   -- batch 19G: [src] = kind ('transfer' | 'infirmary')
+Mock.exportsByResource['pf-ambulancejob'] = {
+    IsInCare = function(_, src) return inCare[src] == true end,
+    IsInCustodyCare = function(_, src) if custodyCare[src] then return true, custodyCare[src], 'pillbox' end return false end,
+}
 local realState = GetResourceState
 function GetResourceState(res)
     if res == 'pfm-prison' and not prisonStarted then return 'stopped' end
@@ -412,6 +416,22 @@ describe('online clock inside the facility', function()
         inCare[INMATE] = false
         tick(1)
         assert_eq(order(id).served_seconds, 15)
+    end)
+
+    it('a sentenced inmate on an escorted hospital transfer (19G custody care) keeps serving; infirmary care outside does not', function()
+        local id = jail(30)
+        inside[INMATE] = false
+        inCare[INMATE] = true
+        PFJustice.Custody = nil
+        custodyCare[INMATE] = 'infirmary'
+        tick(1)
+        assert_eq(order(id).served_seconds, 0, 'infirmary care is inside the walls; outside it does not count')
+        custodyCare[INMATE] = 'transfer'
+        tick(1)
+        assert_eq(order(id).served_seconds, 15)
+        assert_eq(select(2, C.IsInside(INMATE, order(id))), 'hospital')
+        custodyCare[INMATE] = nil
+        inCare[INMATE] = false
     end)
 
     it('a suspended (escaped) order does not count; it resumes from where it stopped', function()
