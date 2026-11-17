@@ -282,8 +282,27 @@ describe('warrant requests from other resources (RequestWarrant / RecallWarrant)
         for _, e in ipairs(db.log) do
             if e.sql:find('INSERT INTO pf_mdt_record_audit', 1, true) then rows[#rows + 1] = e.params end
         end
-        assert_eq(rows[1][4], 'system:Bolingbroke')
+        assert_eq(rows[1][4], 'system_Bolingbroke')
         assert_true(rows[2][6]:find('prison_escape', 1, true) ~= nil, 'source in the audit')
+    end)
+    it('a system request gets a judge review: the requester id passes pf-justice validation (check B19-1)', function()
+        Mock.invokingResource = 'pfm-prison'
+        states['pf-justice'] = 'started'
+        local got
+        -- the same requester rule as pf-justice U.ValidCid (warrants.lua W.Request)
+        Mock.exportsByResource['pf-justice'] = { RequestWarrantReview = function(_, spec)
+            got = spec
+            if type(spec.requestedBy) ~= 'string' or #spec.requestedBy > 64 or not spec.requestedBy:match('^[%w_%-]+$') then
+                return { ok = false, error = 'bad_args' }
+            end
+            return { ok = true, reviewId = 77 }
+        end }
+        local res = request({ type = 'arrest', suspectCitizenId = 'SUS1', title = 'Escape' },
+            { key = 'pfm-prison:escape:99:warrant', actor = { kind = 'system', label = 'pfm-prison security' } })
+        assert_eq(res.ok, true)
+        assert_eq(got.requestedBy, 'system_pfm-prison_security')
+        assert_eq(res.reviewId, 77)
+        assert_eq(lastParams('SET review_id')[1], 77)
     end)
     it('recall removes an active or pending warrant once, audited; served is refused', function()
         Mock.invokingResource = 'pfm-prison'
