@@ -1,6 +1,7 @@
--- pf-ambulancejob ([pfscripts] copy): hospital bills on the ledger. A check-in bed charges once per
--- check-in; a respawn charges once per death (stable key); the client-chosen paid revive
--- ("isOldMan") is gone (batch 16A), so no revive fee is ever taken.
+-- pf-ambulancejob ([pfscripts] copy): hospital bills on the ledger. Since batch 17E a check-in charges
+-- nothing: the itemised bill is made once per admission when the stay ends (server/hospital/billing.lua,
+-- b17_hospital_billing_spec covers it in depth); a respawn admission is one per death (stable key);
+-- the client-chosen paid revive ("isOldMan") is gone (batch 16A), so no revive fee is ever taken.
 load_resource('tests/lua/ledger_env.lua')
 function IsDuplicityVersion() return true end
 
@@ -48,6 +49,8 @@ Mock.exportsByResource['pf-services'] = {
     Emit = function() return 1 end,
 }
 Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
+Invoices = {}
+Mock.exportsByResource['pfm-phone'] = { CreateInvoice = function(_, data) Invoices[#Invoices + 1] = data return #Invoices end }
 
 -- in-memory SQL for the medical store (its statements run in the batch-15 real-DB spec)
 DB = { patients = {}, injuries = {}, events = {}, nextId = 0 }
@@ -71,20 +74,47 @@ local function installFakeSQL()
     Q.UpsertInjuries = function(rows) for _, r in ipairs(rows) do local o = DB.injuries[r.id] or {}; for k, v in pairs(r) do o[k] = v end; DB.injuries[r.id] = o end return true end
     Q.InsertEvents = function(rows) for _, e in ipairs(rows) do DB.events[#DB.events + 1] = copy(e) end return true end
     Q.Sweep = function() return {} end
+    -- the hospital tables (their SQL runs in b17_hospital_billing_realdb_spec)
+    local S = PFHospital.SQL
+    S.InsertAdmission = function(r) local row = copy(r); row.id = #DB.adm + 1; DB.adm[row.id] = row; return row.id end
+    S.FindAdmissionByKey = function(key) for _, r in ipairs(DB.adm) do if r.idem_key == key then return copy(r) end end end
+    S.GetAdmission = function(id) return copy(DB.adm[id]) end
+    S.LoadOpenAdmissions = function() return {} end
+    S.MoveAdmission = function(id, from, row)
+        local r = DB.adm[id]
+        if not r or r.state ~= from then return 0 end
+        for k, v in pairs(row) do r[k] = v end
+        return 1
+    end
+    S.InsertRestriction = function() return 1 end
+    S.FindBillByAdmission = function(id) for _, b in ipairs(DB.bills) do if b.admission_id == id then return copy(b) end end end
+    S.GetBill = function(id) return copy(DB.bills[id]) end
+    S.InsertBill = function(r) local b = copy(r); b.id = #DB.bills + 1; b.attempt = 0; DB.bills[b.id] = b; return b.id end
+    S.InsertBillLines = function() return true end
+    S.MoveBill = function(id, from, attempt, r)
+        local b = DB.bills[id]
+        if not b or b.state ~= from or b.attempt ~= attempt then return 0 end
+        for _, k in ipairs({ 'state', 'attempt', 'pay_key', 'invoice_id', 'settled_at', 'next_check_at' }) do b[k] = r[k] end
+        return 1
+    end
+    S.DueBills = function() return {} end
+    S.TreatmentsFor = function() return {} end
+    S.InsertTreatment = function() return 1 end
 end
 
 local AJ = '[pfscripts]/pf-ambulancejob/'
-local FILES = { AJ .. 'config.lua', AJ .. 'config_medical.lua', AJ .. 'shared/framework.lua' }
+local FILES = { AJ .. 'config.lua', AJ .. 'config_medical.lua', AJ .. 'config_hospital.lua', AJ .. 'shared/framework.lua' }
 for _, f in ipairs({ 'anatomy', 'injuries', 'physiology_model', 'effects_model' }) do FILES[#FILES + 1] = AJ .. 'shared/medical/' .. f .. '.lua' end
 FILES[#FILES + 1] = AJ .. 'server/main.lua'
 for _, f in ipairs({ 'schema', 'store', 'engine', 'downstate', 'effects', 'api' }) do FILES[#FILES + 1] = AJ .. 'server/medical/' .. f .. '.lua' end
+for _, f in ipairs({ 'facility', 'beds', 'admissions', 'billing', 'ai_care' }) do FILES[#FILES + 1] = AJ .. 'server/hospital/' .. f .. '.lua' end
 
 local D, Store, Engine
 --- Loads the resource (and pfm-adminmenu) from scratch; `keepDB` keeps the patient rows (restart).
 local function boot(keepDB, schemaDown)
     Mock.eventHandlers, Mock.netHandlers, Mock.netHandlerList, Mock.callbacks = {}, {}, {}, {}
-    PFMed, PFEmsRequests = nil, nil
-    if not keepDB then DB = { patients = {}, injuries = {}, events = {}, nextId = 0 } end
+    PFMed, PFEmsRequests, PFHospital = nil, nil, nil
+    if not keepDB then DB = { patients = {}, injuries = {}, events = {}, nextId = 0, adm = {}, bills = {} } end
     LedgerEnv.load('pf-ambulancejob', FILES)
     installFakeSQL()
     Mock.exportsByResource['pf-ambulancejob'] = Mock.exportsByResource['__self']
@@ -92,6 +122,7 @@ local function boot(keepDB, schemaDown)
     QBCore = QBCoreMock
     load_resource('pfm-adminmenu/server/server.lua')
     if not schemaDown then assert(PFMed.Schema.Start(), 'schema ready') end
+    assert(PFHospital.Admissions.Start(), 'hospital ready')
 end
 
 local PATIENT, MEDIC, CIV, ADMIN = 1, 2, 3, 4
@@ -144,7 +175,7 @@ BeforeEach = function()
     Mock.clock = 1700000000
     Mock.players, Mock.coords, Mock.aces, Mock.dropped = {}, {}, {}, {}
     Mock.invokingResource = nil
-    Health, Armour, Attached, Items, Bags, Requests, Closes = {}, {}, {}, {}, {}, {}, {}
+    Health, Armour, Attached, Items, Bags, Requests, Closes, Invoices = {}, {}, {}, {}, {}, {}, {}, {}
     FakeDB.society('ambulance', 0)
     boot(false)
     Engine.Random = function() return 0.5 end
@@ -165,29 +196,41 @@ local function die()
 end
 
 describe('pf-ambulancejob hospital bills', function()
-    it('a check-in bed charges the patient once and credits the ambulance account', function()
-        Mock.coords[CIV] = Config.Locations['hospital'][1]['location']
-        Mock.players[MEDIC].PlayerData.job.onduty = false
-        Mock.fireNet('hospital:server:SendToBed', CIV, 1, true, 1)
-        assert_eq(Mock.players[CIV].PlayerData.money.bank, 5000 - Config.BillCost)
-        assert_eq(ambulance(), Config.BillCost)
+    local function reception() return Config.Hospital.Facilities.pillbox.reception.coords end
+    local function checkInAndDischarge(src)
+        Mock.coords[src] = reception()
+        local res = Mock.callCallback('pf-ambulancejob:server:checkIn', src, 'pillbox')
+        assert_true(res.ok, tostring(res.message))
+        local before = Mock.players[src].PlayerData.money.bank
+        Mock.players[MEDIC].PlayerData.job = { name = 'ambulance', type = 'ems', onduty = true, grade = { level = 2 } }
+        Mock.coords[MEDIC] = reception()
+        assert_true(Mock.callCallback('pf-ambulancejob:server:discharge', MEDIC, res.admissionId, {}).ok)
+        return before, res.admissionId
+    end
+    it('a check-in charges nothing; the stay is billed once to the ambulance account when it ends', function()
+        local before = checkInAndDischarge(CIV)
+        assert_eq(before, 5000, 'nothing at check-in')
+        local fee = Config.Hospital.Tariff.Admission.checkin
+        assert_eq(Mock.players[CIV].PlayerData.money.bank, 5000 - fee)
+        assert_eq(ambulance(), fee)
     end)
-    it('a patient who cannot pay is treated, and nobody is credited', function()
-        Mock.coords[CIV] = Config.Locations['hospital'][1]['location']
+    it('a patient who cannot pay is treated, and nobody is credited (an invoice instead)', function()
         Mock.players[CIV].PlayerData.money.bank = 100
-        Mock.fireNet('hospital:server:SendToBed', CIV, 1, true, 1)
+        checkInAndDischarge(CIV)
         assert_eq(Mock.players[CIV].PlayerData.money.bank, 100)
         assert_eq(ambulance(), 0)
-        assert_eq(#Mock.clientEventsNamed('hospital:client:SendToBed'), 1)
+        assert_eq(#Invoices, 1)
+        assert_eq(Invoices[1].candecline, 0)
     end)
-    it('respawning at the hospital charges once per death', function()
+    it('respawning at the hospital is one admission (and so one bill) per death', function()
         Config.WipeInventoryOnRespawn = false
         die()
         Mock.fireNet('hospital:server:RespawnAtHospital', PATIENT, 1)
         advance(6)
         Mock.fireNet('hospital:server:RespawnAtHospital', PATIENT, 1)
-        assert_eq(Mock.players[PATIENT].PlayerData.money.bank, 5000 - Config.BillCost)
-        assert_eq(ambulance(), Config.BillCost)
+        assert_eq(#DB.adm, 1)
+        assert_eq(DB.adm[1].reason, 'respawn')
+        assert_eq(Mock.players[PATIENT].PlayerData.money.bank, 5000, 'billed when the stay ends, not at respawn')
     end)
     it('the respawn wipes the inventory as configured', function()
         Config.WipeInventoryOnRespawn = true

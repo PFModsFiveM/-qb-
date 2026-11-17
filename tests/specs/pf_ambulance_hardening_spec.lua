@@ -1,6 +1,7 @@
 -- pf-ambulancejob (the ambulance job in use) with the server hardening: beds, armour, wound
 -- treatment and revives are checked on the server (batch 16A: down state, revive tokens and
--- server-read armour; the client armour event is ignored).
+-- server-read armour; the client armour event is ignored; batch 17B: wound care and medic revives
+-- go through the treatment engine).
 load_resource('tests/lua/ledger_env.lua')
 function IsDuplicityVersion() return true end
 
@@ -71,13 +72,16 @@ local function installFakeSQL()
     Q.UpsertInjuries = function(rows) for _, r in ipairs(rows) do local o = DB.injuries[r.id] or {}; for k, v in pairs(r) do o[k] = v end; DB.injuries[r.id] = o end return true end
     Q.InsertEvents = function(rows) for _, e in ipairs(rows) do DB.events[#DB.events + 1] = copy(e) end return true end
     Q.Sweep = function() return {} end
+    Q.InsertTreatment = function() return 1 end
 end
 
 local AJ = '[pfscripts]/pf-ambulancejob/'
 local FILES = { AJ .. 'config.lua', AJ .. 'config_medical.lua', AJ .. 'shared/framework.lua' }
-for _, f in ipairs({ 'anatomy', 'injuries', 'physiology_model', 'effects_model' }) do FILES[#FILES + 1] = AJ .. 'shared/medical/' .. f .. '.lua' end
+for _, f in ipairs({ 'anatomy', 'injuries', 'physiology_model', 'effects_model', 'treatments' }) do FILES[#FILES + 1] = AJ .. 'shared/medical/' .. f .. '.lua' end
 FILES[#FILES + 1] = AJ .. 'server/main.lua'
-for _, f in ipairs({ 'schema', 'store', 'engine', 'downstate', 'effects', 'api' }) do FILES[#FILES + 1] = AJ .. 'server/medical/' .. f .. '.lua' end
+for _, f in ipairs({ 'schema', 'store', 'engine', 'downstate', 'effects', 'api', 'treatment' }) do FILES[#FILES + 1] = AJ .. 'server/medical/' .. f .. '.lua' end
+FILES[#FILES + 1] = AJ .. 'server/items.lua'
+FILES[#FILES + 1] = AJ .. 'server/treatment.lua'
 
 local D, Store, Engine
 --- Loads the resource (and pfm-adminmenu) from scratch; `keepDB` keeps the patient rows (restart).
@@ -180,13 +184,19 @@ describe('pf-ambulancejob hardening', function()
         D.ArmourTick()
         assert_eq(meta(MEDIC).armor, 100)
     end)
-    it('treating wounds needs an on-duty medic and a bandage', function()
+    it('treating wounds needs an on-duty medic, a bandage and a wound; it dresses, never heals everything', function()
+        local inj = Engine.AddInjury('PATIENTCID', { mechanism = 'edged', type = 'laceration', subtype = 'superficial', region = 'forearm_l', severity = 1 }, {})
+        Items[CIV] = { bandage = 1 }
         Mock.fireNet('hospital:server:TreatWounds', CIV, PATIENT)       -- not a medic
         Mock.fireNet('hospital:server:TreatWounds', MEDIC, PATIENT)     -- no bandage
-        assert_eq(#Mock.clientEventsNamed('hospital:client:HealInjuries'), 0)
+        assert_eq(Store.Peek('PATIENTCID').injuries[inj.id].treatments.dressed, nil)
+        assert_eq(Items[CIV].bandage, 1)
         Items[MEDIC] = { bandage = 1 }
+        advance(5)
         Mock.fireNet('hospital:server:TreatWounds', MEDIC, PATIENT)
-        assert_eq(#Mock.clientEventsNamed('hospital:client:HealInjuries'), 1)
+        assert_eq(Items[MEDIC].bandage, 0)
+        assert_eq(Store.Peek('PATIENTCID').injuries[inj.id].treatments.dressed, true)
+        assert_eq(#Mock.clientEventsNamed('hospital:client:HealInjuries'), 0, 'no client full heal')
     end)
     it('an on-duty medic revives a down patient; an off-duty one is refused (not banned)', function()
         goDown()
