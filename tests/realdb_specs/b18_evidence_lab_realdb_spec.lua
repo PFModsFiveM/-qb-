@@ -78,9 +78,13 @@ Mock.exportsByResource['pf-government'] = {
 }
 local toxins = {}
 Mock.exportsByResource['pf-ambulancejob'] = {
-    GetPatientSummary = function(_, src)
+    -- like pf-ambulancejob GetToxinLevels: only toxins above zero
+    GetToxinLevels = function(_, src)
         local P = Mock.players[src]
-        return { ok = true, toxins = P and toxins[P.PlayerData.citizenid] or nil }
+        if not P then return { ok = false, error = 'offline' } end
+        local out = {}
+        for k, v in pairs(toxins[P.PlayerData.citizenid] or {}) do if v > 0 then out[k] = v end end
+        return { ok = true, toxins = out }
     end,
 }
 local courtCalls, courtAnswer = {}, nil
@@ -591,5 +595,46 @@ describe('disposal under a court order', function()
         assert_eq(call.purpose, 'evidence_destroy')
         assert_eq(call.extra.evidenceId, id)
         assert_eq(row(id).state, 'destroyed')
+    end)
+end)
+
+describe('in-game commands (pfm-core calls them through a funcref)', function()
+    it('/takedna, /labsubmit, /labresult, /labrelease, /evlocker and /registerbag work with pfm-core as the invoker', function()
+        local function tick() Mock.gameTimer = Mock.gameTimer + 100000 end -- past the command rate limit
+        Mock.invokingResource = 'pfm-core'
+        local ok, err = pcall(function()
+            Mock.players[CIV].PlayerData.metadata.ishandcuffed = true
+            local swab = EC.TakeDna(COP, { tostring(CIV) })
+            assert_true(type(swab) == 'table' and swab.ok, '/takedna: ' .. tostring(type(swab) == 'table' and swab.error))
+            assert_eq(Mock.players[COP].PlayerData.items[1].amount, 9, 'the bag is used, not refunded')
+            Mock.invokingResource = nil
+            toLab(swab.evidenceId)
+            Mock.invokingResource = 'pfm-core'
+            tick()
+            local sub = EC.LabSubmit(COP, { row(swab.evidenceId).tag, 'dna' })
+            assert_true(type(sub) == 'table' and sub.ok, '/labsubmit')
+            Mock.clock = Mock.clock + Config.Evidence.Lab.Times.dna + 1
+            L.Tick(Mock.clock)
+            tick()
+            local review = EC.LabResult(TECH, { tostring(sub.jobId) })
+            assert_true(type(review) == 'table' and review.ok, '/labresult')
+            assert_eq(review.job.result.outcome, 'known_sample', 'the lab tech sees the result to review')
+            tick()
+            local rel = EC.LabRelease(TECH, { tostring(sub.jobId) })
+            assert_true(type(rel) == 'table' and rel.ok, '/labrelease')
+            tick()
+            local station = Config.Locations.evidence[3]
+            Mock.coords[COP] = vector3(station.x, station.y, station.z)
+            local opened = EC.EvidenceLocker(COP, { 'case', 'C-77' })
+            assert_true(type(opened) == 'table' and opened.ok, '/evlocker')
+            assert_eq(Inv.opened[#Inv.opened].id, 'evl:3:case:C-77')
+            tick()
+            Mock.players[COP].PlayerData.items[6] = { name = 'filled_evidence_bag', slot = 6, amount = 1, info = { type = 'fingerprint', fingerprint = 'FP-ALICE' } }
+            local reg = EC.RegisterBag(COP, { '6' })
+            assert_true(type(reg) == 'table' and reg.ok, '/registerbag')
+        end)
+        Mock.invokingResource = nil
+        Mock.coords[COP] = vector3(0, 0, 0)
+        if not ok then error(err, 0) end
     end)
 end)

@@ -459,8 +459,8 @@ end)
 --- One pf_police_speed_events row; returns its id (nil without the database).
 function T.RecordSpeedEvent(e)
     if not DbReady() then return nil end
-    local id = Q('insert', 'INSERT INTO pf_police_speed_events (plate, source, officer_cid, speed_kmh, limit_kmh, x, y, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        { e.plate, e.source, e.officerCid, math.min(e.speed, 999), e.limit, e.x, e.y, e.at or Now() })
+    local id = Q('insert', 'INSERT INTO pf_police_speed_events (plate, source, officer_cid, speed_kmh, limit_kmh, x, y, at, driver_cid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        { e.plate, e.source, e.officerCid, math.min(e.speed, 999), e.limit, e.x, e.y, e.at or Now(), e.driverCid })
     return tonumber(id)
 end
 
@@ -502,7 +502,11 @@ function T.RadarMeasure(src, netId)
     local plate = T.Plate(GetVehicleNumberPlateText(target))
     local eventId
     if plate and speed > limit then
-        eventId = T.RecordSpeedEvent({ plate = plate, source = 'radar', officerCid = P.PlayerData.citizenid, speed = speed, limit = limit, x = tpos.x, y = tpos.y })
+        -- the driver as the server sees it now: only this player (or the plate's owner) can be cited
+        local driver = T.DriverOf(target)
+        local DP = driver and GetPlayer(driver)
+        eventId = T.RecordSpeedEvent({ plate = plate, source = 'radar', officerCid = P.PlayerData.citizenid, speed = speed, limit = limit,
+            x = tpos.x, y = tpos.y, driverCid = DP and DP.PlayerData.citizenid or nil })
     end
     return { ok = true, plate = plate, speed = speed, limit = limit, device = device, eventId = eventId }
 end
@@ -557,12 +561,14 @@ function T.CameraTick(now)
             local key = 'cam:' .. tostring(cam.id or i) .. '|' .. plate
             if T.CamSeen[key] and now - T.CamSeen[key] < window then return end
             T.CamSeen[key] = now
-            local id = T.RecordSpeedEvent({ plate = plate, source = 'camera', speed = speed, limit = limit, x = e.pos.x, y = e.pos.y, at = now })
+            local driver = T.DriverOf(e.veh)
+            local DP = driver and GetPlayer(driver)
+            local id = T.RecordSpeedEvent({ plate = plate, source = 'camera', speed = speed, limit = limit, x = e.pos.x, y = e.pos.y, at = now,
+                driverCid = DP and DP.PlayerData.citizenid or nil })
             T.QueueRead({ plate = plate, reader = ('cam:' .. tostring(cam.id or i)):sub(1, 32), x = e.pos.x, y = e.pos.y, speed = math.min(speed, 999), at = now })
             if not id then return end
             events = events + 1
-            local driver = cfg.AutoCite and T.DriverOf(e.veh)
-            local DP = driver and GetPlayer(driver)
+            if not cfg.AutoCite then DP = nil end
             -- on-duty police and EMS drivers are logged, never cited (responding to calls)
             local job = DP and DP.PlayerData.job or {}
             local exempt = job.onduty == true and (cfg.ExemptJobTypes or { leo = true, ems = true })[job.type] == true
@@ -640,7 +646,8 @@ T.SQL = {
     citeRetry = "UPDATE pf_police_citations SET attempts = attempts + 1, next_at = ?, error = ?, updated_at = ? WHERE id = ? AND state = 'pending'",
     citeFailed = "UPDATE pf_police_citations SET state = 'failed', attempts = attempts + 1, error = ?, updated_at = ? WHERE id = ? AND state = 'pending'",
     citeDue = "SELECT * FROM pf_police_citations WHERE state = 'pending' AND next_at <= ? ORDER BY id LIMIT 20",
-    speedEvent = 'SELECT id, plate, officer_cid, speed_kmh, limit_kmh, citation_order_id, at FROM pf_police_speed_events WHERE id = ? LIMIT 1',
+    speedEvent = 'SELECT id, plate, officer_cid, speed_kmh, limit_kmh, citation_order_id, at, driver_cid FROM pf_police_speed_events WHERE id = ? LIMIT 1',
+    plateOwner = 'SELECT citizenid FROM player_vehicles WHERE plate = ? LIMIT 1',
     speedLink = 'UPDATE pf_police_speed_events SET citation_order_id = ? WHERE id = ? AND citation_order_id IS NULL',
 }
 
@@ -776,7 +783,14 @@ function T.IssueCitation(src, target, code, speedEventId)
         elseif ev.officer_cid ~= P.PlayerData.citizenid then bad = Fail('no_permission', 'Only the officer who measured can cite this reading')
         elseif Now() - (tonumber(ev.at) or 0) > maxAge then bad = Fail('invalid_state', 'This reading is too old')
         elseif ev.citation_order_id ~= nil then bad = Fail('conflict', 'This reading was cited already')
-        elseif (tonumber(ev.speed_kmh) or 0) <= (tonumber(ev.limit_kmh) or 0) then bad = Fail('invalid_state', 'No speeding in this reading') end
+        elseif (tonumber(ev.speed_kmh) or 0) <= (tonumber(ev.limit_kmh) or 0) then bad = Fail('invalid_state', 'No speeding in this reading')
+        elseif ev.driver_cid ~= spec.cid then
+            -- the reading is tied to its vehicle: the cited player drove it when it was measured, or owns it
+            local owner = Q('scalar', T.SQL.plateOwner, { ev.plate })
+            if type(owner) ~= 'string' or owner ~= spec.cid then
+                bad = Fail('no_permission', 'This person was not driving the measured vehicle and does not own it')
+            end
+        end
         if bad then T.CiteLocks[evId] = nil return bad end
         spec.speedEventId, spec.plate = evId, ev.plate
         spec.speed, spec.limit = tonumber(ev.speed_kmh), tonumber(ev.limit_kmh)

@@ -28,7 +28,7 @@ Mock.exportsByResource['pf-justice'] = {
 }
 local summaries = {}
 Mock.exportsByResource['pf-ambulancejob'] = {
-    GetPatientSummary = function(_, src) summaries.calls = (summaries.calls or 0) + 1 return summaries[src] end,
+    GetToxinLevels = function(_, src) summaries.calls = (summaries.calls or 0) + 1 return summaries[src] end,
 }
 QBCoreMock.Shared.Items.evidence_bag = { name = 'evidence_bag', unique = true }
 
@@ -160,8 +160,8 @@ end)
 describe('surgery projectiles', function()
     it('come only from pf-ambulancejob and carry the injury key', function()
         local seen
-        local real, realEnsure = A.CreateEvidence, Store.EnsureLocker
-        A.CreateEvidence = function(spec, opts) seen = { spec = spec, opts = opts } return { ok = true, evidenceId = 1 } end
+        local real, realEnsure = A.Internal.CreateEvidence, Store.EnsureLocker
+        A.Internal.CreateEvidence = function(spec, opts) seen = { spec = spec, opts = opts } return { ok = true, evidenceId = 1 } end
         Store.EnsureLocker = function(station, label, stash) return { id = 1, station = station, label = label, stash_id = stash } end
         Mock.invokingResource = 'pf-hackscript'
         assert_eq(L.OnProjectileRecovered('CIVCID', { injuryId = 'I1' }).error, 'not_allowed')
@@ -169,7 +169,7 @@ describe('surgery projectiles', function()
         Mock.invokingResource = 'pf-ambulancejob'
         assert_eq(L.OnProjectileRecovered('CIVCID', { injuryId = 'bad id!' }).error, 'bad_args')
         L.OnProjectileRecovered('CIVCID', { injuryId = 'I1', caliber = '9mm', weaponHash = 123, weaponSerial = 'S1' })
-        A.CreateEvidence, Store.EnsureLocker = real, realEnsure
+        A.Internal.CreateEvidence, Store.EnsureLocker = real, realEnsure
         assert_eq(seen.opts.key, 'pf-ambulancejob:projectile:I1')
         assert_eq(seen.opts.giveTo, 'stash:evl:pillbox:surgery')
         assert_eq(seen.spec.kind, 'projectile')
@@ -228,12 +228,18 @@ describe('scene blood keeps toxins on the drop row only', function()
     it('snapshots the bleeder once per burst and never copies them to the evidence item', function()
         started['pf-ambulancejob'] = true
         summaries[CIV] = { ok = true, toxins = { ethanol = 0.08, ['bad key'] = 1, cocaine = 'x' } }
+        summaries[COP] = { ok = false, error = 'not_allowed' }
+        assert_eq(S.ToxSnapshot(COP, 'COPCID'), nil, 'a refusal is not a clean sample')
         local tox = S.ToxSnapshot(CIV, 'CIVCID')
         assert_eq(tox.ethanol, 0.08)
         assert_eq(tox['bad key'], nil)
         assert_eq(tox.cocaine, nil)
         S.ToxSnapshot(CIV, 'CIVCID')
-        assert_eq(summaries.calls, 1, 'cached')
+        assert_eq(summaries.calls, 2, 'cached per citizen')
+        summaries[MEDIC] = { ok = true, toxins = {} }
+        local clean = S.ToxSnapshot(MEDIC, 'MEDCID')
+        assert_eq(type(clean), 'table', 'answered and clean: an empty panel, so a tox test can still run')
+        assert_eq(next(clean), nil)
         assert_true(S.PRIVATE_ATTRS.tox)
         started['pf-ambulancejob'] = nil
         S.toxCache = {}
@@ -255,12 +261,12 @@ end)
 describe('/takedna', function()
     it('creates a dna_swab with a sample id through the evidence module; no hex label on any bag', function()
         local made
-        local real = A.CreateEvidence
-        A.CreateEvidence = function(spec, opts) made = { spec = spec, opts = opts } return { ok = true, evidenceId = 1, tag = 'EV-2026-000001' } end
+        local real = A.Internal.CreateEvidence
+        A.Internal.CreateEvidence = function(spec, opts) made = { spec = spec, opts = opts } return { ok = true, evidenceId = 1, tag = 'EV-2026-000001' } end
         Mock.coords[CIV] = vector3(1, 0, 0)
         Mock.players[CIV].PlayerData.metadata.ishandcuffed = true
         local res = EC.TakeDna(COP, { tostring(CIV) })
-        A.CreateEvidence = real
+        A.Internal.CreateEvidence = real
         assert_true(res and res.ok)
         assert_eq(made.spec.kind, 'dna_swab')
         assert_eq(made.spec.origin.id, 'CIVCID')
@@ -321,5 +327,27 @@ describe('locker stations', function()
         local score, flags = Store.ComputeIntegrity({ method = 'registered', kind = 'blood' }, {}, Mock.clock)
         assert_eq(score, 100 - Config.Evidence.Integrity.Unverified)
         assert_eq(flags[1], 'unverified_chain')
+    end)
+end)
+
+describe('commands run inside a pfm-core funcref call', function()
+    it('the internal evidence calls ignore the caller allowlist (GetInvokingResource is pfm-core there)', function()
+        Mock.invokingResource = 'pfm-core'
+        Mock.coords[CIV] = vector3(1, 0, 0)
+        Mock.players[CIV].PlayerData.metadata.ishandcuffed = true
+        PFPoliceSchema.state = 'ready'
+        local res = EC.TakeDna(COP, { tostring(CIV) })
+        -- the mocked database stores nothing, so the record cannot be read back; what matters is
+        -- that the call got past the allowlist into the evidence module
+        local notAllowed = 0
+        for _, e in ipairs(Mock.clientEventsNamed('QBCore:Notify')) do
+            if tostring(e.args[1]):find('may not call', 1, true) then notAllowed = notAllowed + 1 end
+        end
+        assert_eq(notAllowed, 0)
+        assert_eq(A.CreateEvidence({ kind = 'vehicle', attrs = { plate = 'AB1' } }, { key = 'k1', actor = { src = COP } }).error, 'not_allowed',
+            'the export itself still checks its caller')
+        assert_true(A.Internal.CreateEvidence({ kind = 'vehicle', attrs = { plate = 'AB1' } }, { key = 'k1', actor = { src = COP } }).error ~= 'not_allowed')
+        Mock.invokingResource = nil
+        assert_true(res == false or type(res) == 'table')
     end)
 end)

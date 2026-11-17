@@ -304,21 +304,22 @@ end
 -- them from the drop when it tests the sample).
 S.PRIVATE_ATTRS = { tox = true }
 
---- The bleeder's toxin levels from pf-ambulancejob (GetPatientSummary 'toxins' field), cached per
---- citizen for a short time since blood drops come in bursts. nil when the medical resource does not
---- provide them (the lab then refuses a tox test on that sample instead of guessing).
+--- The bleeder's toxin levels from pf-ambulancejob (GetToxinLevels: only toxins above zero),
+--- cached per citizen for a short time since blood drops come in bursts. nil when the medical
+--- resource cannot answer (the lab then refuses a tox test on that sample instead of guessing); an
+--- empty table when it answered and the blood was clean.
 S.toxCache = S.toxCache or {}
 function S.ToxSnapshot(src, cid)
     if GetResourceState('pf-ambulancejob') ~= 'started' then return nil end
     local now = E.Now()
     local cached = S.toxCache[cid]
     if cached and now - cached.at < ((E.Cfg().Lab or {}).ToxCacheSeconds or 60) then return cached.tox end
-    local ok, summary = pcall(function() return exports['pf-ambulancejob']:GetPatientSummary(src) end)
+    local ok, res = pcall(function() return exports['pf-ambulancejob']:GetToxinLevels(src) end)
     local tox
-    if ok and type(summary) == 'table' and type(summary.toxins) == 'table' then
+    if ok and type(res) == 'table' and res.ok == true and type(res.toxins) == 'table' then
         tox = {}
         local n = 0
-        for name, level in pairs(summary.toxins) do
+        for name, level in pairs(res.toxins) do
             local lv = tonumber(level)
             if type(name) == 'string' and #name <= 24 and name:match('^[%w_]+$') and lv and lv == lv and lv >= 0 and lv < 1e6 then
                 tox[name] = math.floor(lv * 1000 + 0.5) / 1000

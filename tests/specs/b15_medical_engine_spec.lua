@@ -538,6 +538,15 @@ describe('exports', function()
         assert_eq(as('pfm-policejob', function() return aj():GetBreathAlcohol('NOSUCH') end).ok, false)
     end)
 
+    it('GetToxinLevels gives pfm-policejob the toxin levels only', function()
+        online(1)
+        Engine.AddToxin('CID1', 'ethanol', 0.05)
+        local r = as('pfm-policejob', function() return aj():GetToxinLevels(1) end)
+        assert_true(r.ok); assert_true(math.abs(r.toxins.ethanol - 0.05) < 0.001)
+        assert_eq(r.vitals, nil)
+        assert_eq(as('pf-emsmdt', function() return aj():GetToxinLevels(1) end).error, 'not_allowed')
+    end)
+
     it('GetPatientSummary reads an offline citizen from the database', function()
         DB.patients.CID9 = { citizenid = 'CID9', consciousness = 'dead', stage = 'injured', blood_ml = 2000, hgb_factor = 1, airway = 'clear',
             breathing = 1, pain = 0, temp_c = 37, last_tick_at = os.time(), updated_at = os.time() }

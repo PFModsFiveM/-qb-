@@ -150,16 +150,18 @@ T.CleanData = cleanData
 
 -- ── buffer ────────────────────────────────────────────────────────────────────────────────────
 --- Queues one row. When the buffer is full the oldest position sample (or else the oldest row) goes.
+local function evictOne()
+    local victim = 1
+    for i, r in ipairs(T.buffer) do
+        if r.kind == 'pos' then victim = i break end
+    end
+    table.remove(T.buffer, victim)
+    T.dropped = T.dropped + 1
+end
+
 function T.Push(row)
     local max = num(cfg().MaxBuffer, 5000)
-    if #T.buffer >= max then
-        local victim = 1
-        for i, r in ipairs(T.buffer) do
-            if r.kind == 'pos' then victim = i break end
-        end
-        table.remove(T.buffer, victim)
-        T.dropped = T.dropped + 1
-    end
+    while #T.buffer >= max and #T.buffer > 0 do evictOne() end
     T.buffer[#T.buffer + 1] = row
 end
 
@@ -401,10 +403,18 @@ function T.Flush()
     if #T.buffer == 0 or not dbReady() then return 0 end
     local written, per = 0, math.max(1, math.floor(num(cfg().InsertBatch, 200)))
     while #T.buffer > 0 do
+        -- the batch leaves the buffer before the insert waits: a second flush (the GetTimeline
+        -- flush next to the 30 s thread) or an eviction during the wait can then never write a row
+        -- twice or drop one that was not written
         local n = math.min(per, #T.buffer)
+        local batch = {}
+        for i = 1, n do batch[i] = T.buffer[i] end
+        local rest = {}
+        for i = n + 1, #T.buffer do rest[#rest + 1] = T.buffer[i] end
+        T.buffer = rest
         local values, params = {}, {}
         for i = 1, n do
-            local r = T.buffer[i]
+            local r = batch[i]
             -- a missing value is written as a literal NULL so the parameter list never has holes
             local cols = {}
             local p = { r.cid, r.device, r.kind, r.x, r.y, r.z, r.data, r.clientReported or 0, r.at }
@@ -419,8 +429,16 @@ function T.Flush()
             values[i] = '(' .. table.concat(cols, ', ') .. ')'
         end
         local _, ok = q('query', INSERT_HEAD .. table.concat(values, ', '), params)
-        if not ok then break end
-        for _ = 1, n do table.remove(T.buffer, 1) end
+        if not ok then
+            -- back at the front (oldest first) for the next flush, still within MaxBuffer
+            local back = {}
+            for i = 1, n do back[i] = batch[i] end
+            for _, r in ipairs(T.buffer) do back[#back + 1] = r end
+            T.buffer = back
+            local max = num(cfg().MaxBuffer, 5000)
+            while #T.buffer > max do evictOne() end
+            break
+        end
         written = written + n
     end
     return written

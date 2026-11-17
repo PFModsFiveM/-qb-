@@ -203,7 +203,7 @@ describe('medical items in pfm-core shared/items.lua', function()
             assert_eq(def.type, 'item')
             assert_true(type(def.label) == 'string' and #def.label > 0)
             assert_true(type(def.weight) == 'number' and def.weight > 0, name .. ' weight')
-            assert_eq(def.image, name .. '.png')
+            assert_true(type(def.image) == 'string' and def.image:match('^[%w_]+%.[Pp][Nn][Gg]$') ~= nil, name .. ' image (file presence: tests/js/item_images_spec.js)')
             assert_eq(def.unique, false)
         end
     end)

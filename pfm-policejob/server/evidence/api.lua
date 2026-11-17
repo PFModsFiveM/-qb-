@@ -18,10 +18,15 @@ local function actorFrom(opts, fallbackSrc)
     return E.Actor(raw)
 end
 
+-- A.Internal[name]: the same body without the caller allowlist, for this resource's own commands,
+-- usable items and event handlers. Those run inside a pfm-core funcref call (QBCore.Commands.Add,
+-- CreateUseableItem) or another resource's TriggerEvent, where GetInvokingResource() names that
+-- resource, so the allowlisted wrapper would refuse them. The actor rules inside each body still apply.
+A.Internal = A.Internal or {}
+
 --- Wraps an export: allowlist, then the body inside pcall (a failure changes nothing it reports).
 local function export(name, body)
-    local fn = function(...)
-        if not E.Allowed(name) then return E.Err('not_allowed', 'This resource may not call ' .. name) end
+    local internal = function(...)
         local res = table.pack(pcall(body, ...))
         if not res[1] then
             print(('^1[pfm-policejob]^7 %s failed: %s'):format(name, tostring(res[2])))
@@ -29,6 +34,11 @@ local function export(name, body)
         end
         return res[2]
     end
+    local fn = function(...)
+        if not E.Allowed(name) then return E.Err('not_allowed', 'This resource may not call ' .. name) end
+        return internal(...)
+    end
+    A.Internal[name] = internal
     A[name] = fn
     exports(name, fn)
     return fn

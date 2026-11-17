@@ -489,7 +489,13 @@ QBCore.Functions.CreateCallback('police:server:ReleaseImpound', function(source,
     if #(GetEntityCoords(GetPlayerPed(src)) - vector3(lot.x, lot.y, lot.z)) > 10.0 then return cb(nil) end
     if releasing[plate] then return cb(nil) end
     releasing[plate] = true
-    local record = I.Active(plate)
+    -- fail closed: a hold that cannot be read is never skipped (no row at all is a legacy impound)
+    local record, recordErr = I.Active(plate)
+    if recordErr then
+        releasing[plate] = nil
+        TriggerClientEvent('QBCore:Notify', src, 'Impound records cannot be read right now; the vehicle stays in the impound', 'error')
+        return cb(nil)
+    end
     local override = tonumber((TrafficCfg().Impound or {}).OverrideGrade) or 3
     if record and record.holdUntil and record.holdUntil > os.time() and GradeOf(Player) < override then
         releasing[plate] = nil

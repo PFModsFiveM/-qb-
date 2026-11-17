@@ -790,7 +790,7 @@ function L.OnProjectileRecovered(cid, p)
     local locker = Store.EnsureLocker(cfg.station or 'pillbox', cfg.label or 'Surgery evidence', stash, nil)
     if not locker then return E.Err('db_unavailable') end
     exports['pfm-inventory']:CreateInventory(stash, { label = locker.label, maxweight = 4000000, slots = 500 })
-    local res = E.Api.CreateEvidence({
+    local res = E.Api.Internal.CreateEvidence({
         kind = 'projectile', label = 'Projectile (surgery)', method = 'surgery', sealed = true,
         attrs = { caliber = p.caliber, weaponHash = p.weaponHash, serial = p.weaponSerial, fromInjuryId = injuryId },
         origin = { type = 'injury', id = injuryId }, quality = lc('ProjectileQuality', 80),
@@ -928,7 +928,7 @@ function L.RegisterLegacyBag(src, slot)
     end
     spec.origin = spec.origin or { type = 'legacy_bag', id = tostring(math.floor(tonumber(item.slot) or 0)) }
     local key = ('pfm-policejob:legacy:%s:%s'):format(actor.cid, E.RandomHex(12))
-    local res = E.Api.CreateEvidence(spec, { key = key, giveTo = src, actor = { src = src } })
+    local res = E.Api.Internal.CreateEvidence(spec, { key = key, giveTo = src, actor = { src = src } })
     if type(res) ~= 'table' or not res.ok then
         exports['pfm-inventory']:AddItem(src, legacy, 1, itemSlot, info, 'evidence:register-legacy refund')
         return type(res) == 'table' and res or E.Err('db_unavailable')

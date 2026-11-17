@@ -90,7 +90,8 @@ S.Migrations = {
     -- Batch 18 (schema owner 18B): traffic and impound (18B), telemetry (18C), lab (18D). DDL as in
     -- PF_DATABASE_MIGRATIONS.md section 5, plus pf_police_citations (18B: one row per citation uid,
     -- so a citation pf-justice could not take yet is retried with the same key) and three lookup
-    -- indexes on pf_police_impounds.
+    -- indexes on pf_police_impounds, and pf_police_speed_events.driver_cid (the player the server saw
+    -- driving the measured vehicle; a speeding citation goes only to that player or the plate's owner).
     {
         version = 3,
         name = 'traffic, impound, telemetry, lab',
@@ -104,8 +105,12 @@ S.Migrations = {
                 `id` BIGINT NOT NULL AUTO_INCREMENT, `plate` VARCHAR(16) NOT NULL, `source` VARCHAR(16) NOT NULL,
                 `officer_cid` VARCHAR(64) NULL, `speed_kmh` SMALLINT NOT NULL, `limit_kmh` SMALLINT NOT NULL,
                 `x` DECIMAL(9,2) NOT NULL, `y` DECIMAL(9,2) NOT NULL, `citation_order_id` INT NULL, `at` BIGINT NOT NULL,
+                `driver_cid` VARCHAR(64) NULL,
                 PRIMARY KEY (`id`), KEY `idx_speed_plate` (`plate`, `at`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4]],
+            -- the driver the server saw at the reading (added in the 18B rework; guarded for a database
+            -- that ran the first draft of v3)
+            'ALTER TABLE `pf_police_speed_events` ADD COLUMN IF NOT EXISTS `driver_cid` VARCHAR(64) NULL',
             [[CREATE TABLE IF NOT EXISTS `pf_police_breath_tests` (
                 `id` BIGINT NOT NULL AUTO_INCREMENT, `citizenid` VARCHAR(64) NOT NULL, `officer_cid` VARCHAR(64) NOT NULL,
                 `bac` DECIMAL(4,3) NOT NULL, `device` VARCHAR(16) NOT NULL, `at` BIGINT NOT NULL,

@@ -34,9 +34,11 @@ PFPoliceSchema = { Ready = function() return true end }
 
 -- MySQL that records statements; query.await may be told to fail or to return rows
 local failNext, nextRows = false, nil
+local duringQuery = nil -- runs inside a query, like other code running while oxmysql awaits
 local function record(kind)
     local fn = function(query, params)
         Mock.dbCalls[#Mock.dbCalls + 1] = { kind = kind, query = query, params = params }
+        if duringQuery then local f = duringQuery duringQuery = nil f() end
         if failNext then failNext = false error('db down') end
         if nextRows and kind == 'query' and query:find('^%s*SELECT') then local r = nextRows nextRows = nil return r end
         return {}
@@ -72,7 +74,7 @@ BeforeEach = function()
     T.dropped = 0
     Mock.reset()
     Mock.players, Mock.coords, Mock.models, Mock.vehicleOf, Mock.plates = {}, {}, {}, {}, {}
-    weapons, held, resources, courtValid, failNext, nextRows = {}, {}, {}, false, false, nil
+    weapons, held, resources, courtValid, failNext, nextRows, duringQuery = {}, {}, {}, false, false, nil, nil
     Mock.invokingResource = nil
     Mock.clock = Mock.clock + 100000
     Mock.gameTimer = Mock.gameTimer + 100000
@@ -212,6 +214,54 @@ describe('batched, bounded writes', function()
         assert_eq(T.Flush(), 0)
         assert_eq(#T.buffer, 1)
         assert_eq(T.Flush(), 1)
+    end)
+    it('a flush or new rows during the insert wait write every row exactly once', function()
+        local function row(i) return { cid = 'COPCID', device = 'body', kind = 'note', data = json.encode({ i = i }), clientReported = 0, at = i } end
+        for i = 1, 3 do T.Push(row(i)) end
+        duringQuery = function()
+            T.Push(row(4))                         -- the sampler adds a row meanwhile
+            T.Flush()                              -- GetTimeline flushes meanwhile
+        end
+        T.Flush()
+        local seen = {}
+        for _, c in ipairs(inserts()) do
+            for _, v in ipairs(c.params) do
+                local d = type(v) == 'string' and v:sub(1, 1) == '{' and json.decode(v)
+                if d and d.i then seen[d.i] = (seen[d.i] or 0) + 1 end
+            end
+        end
+        for i = 1, 4 do assert_eq(seen[i], 1, 'row ' .. i) end
+        assert_eq(#T.buffer, 0)
+    end)
+    it('a full buffer during the insert wait never drops a row that was not written', function()
+        Config.Equipment.Telemetry.MaxBuffer = 3
+        T.Push({ cid = 'COPCID', device = 'body', kind = 'cuff', clientReported = 0, at = 1 })
+        T.Push({ cid = 'COPCID', device = 'body', kind = 'frisk', clientReported = 0, at = 2 })
+        duringQuery = function()
+            for i = 1, 2 do T.Push({ cid = 'COPCID', device = 'body', kind = 'note', clientReported = 0, at = 10 + i }) end
+        end
+        Config.Equipment.Telemetry.InsertBatch = 2
+        assert_eq(T.Flush(), 4)
+        Config.Equipment.Telemetry.InsertBatch = 200
+        local written = {}
+        for _, c in ipairs(inserts()) do
+            for k = 5, #c.params, 5 do written[#written + 1] = c.params[k] end -- the `at` of each row (x, y, z, data are NULL)
+        end
+        assert_eq(table.concat(written, ','), '1,2,11,12')
+        assert_eq(#T.buffer, 0)
+    end)
+    it('a failed insert puts its rows back at the front, within MaxBuffer', function()
+        Config.Equipment.Telemetry.MaxBuffer = 3
+        T.Push({ cid = 'COPCID', device = 'body', kind = 'cuff', clientReported = 0, at = 1 })
+        T.Push({ cid = 'COPCID', device = 'body', kind = 'frisk', clientReported = 0, at = 2 })
+        duringQuery = function()
+            for i = 1, 3 do T.Push({ cid = 'COPCID', device = 'body', kind = 'pos', clientReported = 0, at = 10 + i }) end
+            failNext = true
+        end
+        assert_eq(T.Flush(), 0)
+        assert_eq(#T.buffer, 3)
+        assert_eq(T.buffer[1].kind, 'cuff')
+        assert_eq(T.buffer[2].kind, 'frisk')
     end)
     it('nothing is written before the schema is ready', function()
         local ready = PFPoliceSchema.Ready

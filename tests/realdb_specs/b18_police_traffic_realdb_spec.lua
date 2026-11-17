@@ -219,6 +219,7 @@ describe('citations', function()
         Mock.plates[CRUISER], Mock.coords[CRUISER] = 'LSPD1', vector3(0, 0, 0)
         Mock.plates[CAR], Mock.coords[CAR] = 'FAST1', vector3(0, 80, 0)
         speeds[CAR] = 40.0 -- 144 km/h
+        Mock.vehicleOf[CIV] = CAR                     -- the citizen drives the measured car
         local reading = T.RadarMeasure(COP, CAR)
         assert_true(reading.ok and reading.eventId ~= nil)
         local r = T.IssueCitation(COP, CIV, 'speeding', reading.eventId)
@@ -226,11 +227,28 @@ describe('citations', function()
         local ev = MySQL.single.await('SELECT * FROM pf_police_speed_events WHERE id = ?', { reading.eventId })
         assert_eq(tonumber(ev.citation_order_id), r.orderId)
         assert_eq(tonumber(ev.speed_kmh), 144)
+        assert_eq(ev.driver_cid, 'CIVCID')
         assert_eq(T.IssueCitation(COP, CIV, 'speeding', reading.eventId).error, 'conflict')
         -- even without the link (a crash between the two writes) the unique reading blocks a second row
         MySQL.update.await('UPDATE pf_police_speed_events SET citation_order_id = NULL WHERE id = ?', { reading.eventId })
         assert_eq(T.IssueCitation(COP, CIV, 'speeding', reading.eventId).error, 'conflict')
         assert_eq(count('SELECT COUNT(*) FROM pf_police_citations WHERE speed_event_id = ?', { reading.eventId }), 1)
+    end)
+
+    it('a reading of a car nobody drove cites only its registered owner', function()
+        Mock.vehicleOf[COP] = CRUISER
+        Mock.models[CRUISER] = GetHashKey('police')
+        Mock.plates[CRUISER], Mock.coords[CRUISER] = 'LSPD1', vector3(0, 0, 0)
+        Mock.plates[CAR], Mock.coords[CAR] = 'OWNED9', vector3(0, 80, 0)
+        speeds[CAR] = 40.0
+        local reading = T.RadarMeasure(COP, CAR)
+        assert_eq(MySQL.scalar.await('SELECT driver_cid FROM pf_police_speed_events WHERE id = ?', { reading.eventId }), nil)
+        local other = Mock.newPlayer(4, 'OTHERCID')
+        Mock.coords[4] = vector3(2, 1, 0)
+        assert_eq(T.IssueCitation(COP, 4, 'speeding', reading.eventId).error, 'no_permission')
+        car('OWNED9', 0)                              -- registered to CIVCID
+        assert_eq(T.IssueCitation(COP, 4, 'speeding', reading.eventId).error, 'no_permission')
+        assert_true(T.IssueCitation(COP, CIV, 'speeding', reading.eventId).ok)
     end)
 
     it('a speed camera cites the driving player with the uid of its speed event', function()

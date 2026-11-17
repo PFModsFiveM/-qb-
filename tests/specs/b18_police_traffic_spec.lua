@@ -331,7 +331,7 @@ describe('citations', function()
     end)
     it('speeding only from the officer\'s own fresh radar reading, cited once', function()
         Mock.coords[CIV] = vector3(2, 0, 0)
-        local ev = { id = 5, plate = 'ABC123', officer_cid = 'OTHER', speed_kmh = 120, limit_kmh = 80, at = Mock.clock }
+        local ev = { id = 5, plate = 'ABC123', officer_cid = 'OTHER', speed_kmh = 120, limit_kmh = 80, at = Mock.clock, driver_cid = 'CIVCID' }
         singles['FROM pf_police_speed_events'] = function() return ev end
         assert_eq(T.IssueCitation(COP, CIV, 'speeding', 5).error, 'no_permission')
         ev.officer_cid = 'COPCID'
@@ -347,6 +347,30 @@ describe('citations', function()
         assert_eq(justice[1].spec.plate, 'ABC123')
         ev.citation_order_id = 71
         assert_eq(T.IssueCitation(COP, CIV, 'speeding', 5).error, 'conflict')
+    end)
+    it('a speeding reading is tied to its vehicle: only its driver at the reading or its owner', function()
+        Mock.coords[CIV] = vector3(2, 0, 0)
+        -- an NPC car was measured (no player driving): a player standing nearby cannot be cited for it
+        local ev = { id = 6, plate = 'NPC1', officer_cid = 'COPCID', speed_kmh = 130, limit_kmh = 80, at = Mock.clock, driver_cid = nil }
+        singles['FROM pf_police_speed_events'] = function() return ev end
+        local owner
+        MySQL.scalar.await = function(q) if q:find('FROM player_vehicles', 1, true) then return owner end end
+        assert_eq(T.IssueCitation(COP, CIV, 'speeding', 6).error, 'no_permission')
+        ev.driver_cid = 'SOMEONE'
+        assert_eq(T.IssueCitation(COP, CIV, 'speeding', 6).error, 'no_permission')
+        assert_eq(#justice, 0)
+        -- the registered owner of the plate may be cited
+        owner = 'CIVCID'
+        assert_true(T.IssueCitation(COP, CIV, 'speeding', 6).ok)
+        MySQL.scalar.await = function() return nil end
+    end)
+    it('the radar stores the driver the server sees in the measured vehicle', function()
+        Mock.vehicleOf[CIV] = CAR
+        assert_true(T.RadarMeasure(COP, CAR).ok)
+        assert_eq(insertsInto('pf_police_speed_events')[1].p[9], 'CIVCID')
+        Mock.vehicleOf[CIV] = nil
+        assert_true(T.RadarMeasure(COP, CAR).ok)
+        assert_eq(insertsInto('pf_police_speed_events')[2].p[9], nil)
     end)
     it('too far, unknown codes and civilians are refused', function()
         Mock.coords[CIV] = vector3(20, 0, 0)
@@ -437,5 +461,29 @@ describe('speed cameras', function()
         T.CamSeen = {}
         speeds[CAR] = (cam.kmh + Config.Traffic.SpeedCameras.ToleranceKmh) / 3.6
         assert_eq(T.CameraTick(Mock.clock + 3), 0)
+    end)
+end)
+
+describe('impound release', function()
+    it('fails closed when the impound record cannot be read; no record row at all still releases', function()
+        local LOT = Config.Locations['impound'][1]
+        Mock.coords[COP] = LOT
+        function CreateVehicleServerSetter() return 700 end
+        function SetVehicleNumberPlateText() end
+        local carRow = { vehicle = 'adder', mods = '{}' }
+        singles['FROM player_vehicles WHERE plate = ? AND state = ?'] = function() return carRow end
+        -- the impound record query raises (database error)
+        singles['FROM pf_police_impounds'] = function() error('db down') end
+        assert_eq(Mock.callCallback('police:server:ReleaseImpound', COP, 'HELD1', 1), nil)
+        local n = 0
+        for _, u in ipairs(updates) do if u.q:find('UPDATE player_vehicles', 1, true) then n = n + 1 end end
+        assert_eq(n, 0, 'the car stays impounded')
+        -- the schema is not ready: same
+        singles['FROM pf_police_impounds'] = function() return nil end
+        PFPoliceSchema.state = 'failed'
+        assert_eq(Mock.callCallback('police:server:ReleaseImpound', COP, 'HELD1', 1), nil)
+        PFPoliceSchema.state = 'ready'
+        -- readable and no row (a legacy impound): released as before
+        assert_eq(Mock.callCallback('police:server:ReleaseImpound', COP, 'HELD1', 1), 700)
     end)
 end)

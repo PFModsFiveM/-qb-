@@ -344,7 +344,7 @@ function EC.TakeDna(src, args)
         notify(src, 'They must be restrained to take a swab')
         return false
     end
-    if not E or not E.Api or not E.Api.CreateEvidence then
+    if not E or not E.Api or not E.Api.Internal or not E.Api.Internal.CreateEvidence then
         notify(src, 'Evidence storage is not ready')
         return false
     end
@@ -354,7 +354,7 @@ function EC.TakeDna(src, args)
         return false
     end
     local sampleId = 'D-' .. E.RandomHex(8):upper()
-    local res = E.Api.CreateEvidence({
+    local res = E.Api.Internal.CreateEvidence({
         kind = 'dna_swab', label = Lang:t('info.dna_sample'), attrs = { sampleId = sampleId, quality = 100 },
         collectedBy = src, method = 'swab', sealed = true, origin = { type = 'person', id = Target.PlayerData.citizenid },
     }, { key = ('pfm-policejob:takedna:%s:%s'):format(Player.PlayerData.citizenid, sampleId), actor = { src = src } })
@@ -392,7 +392,7 @@ function EC.LabSubmit(src, args)
     if not id then return notify(src, 'Usage: /labsubmit <evidence tag> <dna|prints|ballistics|tox|drug_id|gsr|trace>') end
     local tests = {}
     for i = 2, math.min(#args, 8) do tests[#tests + 1] = tostring(args[i]):lower() end
-    local res = E.Api.SubmitToLab(id, tests, { actor = { src = src } })
+    local res = E.Api.Internal.SubmitToLab(id, tests, { actor = { src = src } })
     if not res.ok then return notify(src, resultText(res)) end
     local mins = math.max(0, math.ceil(((res.eta or E.Now()) - E.Now()) / 60))
     notify(src, ('Lab job %d queued; results in about %d min'):format(res.jobId, mins), 'success')
@@ -404,7 +404,7 @@ function EC.LabResult(src, args)
     local E = PFEvidence
     if not E or not E.Lab then return notify(src, 'The lab is not available') end
     if not commandRate(src) then return false end
-    local res = E.Api.GetLabJob(E.Int(type(args) == 'table' and args[1] or nil, 1), { viewer = src })
+    local res = E.Api.Internal.GetLabJob(E.Int(type(args) == 'table' and args[1] or nil, 1), { viewer = src })
     if not res.ok then return notify(src, resultText(res)) end
     local job = res.job
     local text = ('Lab job %d (%s): %s'):format(job.id, job.test, job.state)
@@ -418,7 +418,7 @@ function EC.LabRelease(src, args)
     local E = PFEvidence
     if not E or not E.Lab then return notify(src, 'The lab is not available') end
     if not commandRate(src) then return false end
-    local res = E.Api.ReleaseLabResult(E.Int(type(args) == 'table' and args[1] or nil, 1), { actor = { src = src } })
+    local res = E.Api.Internal.ReleaseLabResult(E.Int(type(args) == 'table' and args[1] or nil, 1), { actor = { src = src } })
     if not res.ok then return notify(src, resultText(res)) end
     notify(src, ('Lab job %d released'):format(res.jobId), 'success')
     return res
@@ -441,7 +441,7 @@ function EC.EvidenceLocker(src, args)
     if not E or not E.Lab then return notify(src, 'The lab is not available') end
     if not commandRate(src) then return false end
     args = type(args) == 'table' and args or {}
-    local res = E.Api.CreateEvidenceLocker({ type = args[1], id = args[2] }, { actor = { src = src } })
+    local res = E.Api.Internal.CreateEvidenceLocker({ type = args[1], id = args[2] }, { actor = { src = src } })
     if not res.ok then return notify(src, resultText(res)) end
     local opened = E.Lab.OpenLocker(src, res.lockerId)
     if not opened.ok then return notify(src, resultText(opened)) end

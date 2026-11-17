@@ -45,6 +45,11 @@ MySQL = {
 Config = nil
 load_resource('pfm-policejob/config.lua')
 load_resource('pfm-policejob/server/main.lua')
+-- batch 18B: a release reads the impound record first and fails closed without the schema, so the
+-- schema is ready here (no record row for these cars: legacy impounds, released as before)
+Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
+load_resource('pfm-policejob/server/schema.lua')
+assert(PFPoliceSchema.Run())
 load_resource('pfm-policejob/server/vehicle.lua')
 
 local COP = 1
