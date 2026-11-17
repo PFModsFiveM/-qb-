@@ -35,14 +35,24 @@ describe('injury helpers', function()
         for _, injuryType in pairs(Config.WeaponInjuryTypes) do assert_true(Config.InjuryTypes[injuryType] ~= nil, injuryType) end
         for _, part in pairs(Config.BodyParts) do assert_true(Config.BodyZones[part.zone] ~= nil, part.zone) end
     end)
-    it("the EMS MDT's treatment buttons are real treatments", function()
+    -- batch 21C: the EMS MDT no longer has fixed treatment buttons. Its Patient Care page builds the
+    -- treatment menu from pf-ambulancejob's catalogue (shared/medical/treatments.lua, loaded by the
+    -- pf-emsmdt manifest), sends every action to pf-ambulancejob:server:treat and shows the answer.
+    it("the EMS MDT's treatments are catalogue actions sent to the server, and the old keys still map", function()
+        load_resource('[pfscripts]/pf-ambulancejob/shared/medical/treatments.lua')
+        local T = PFMed.Treatments
+        local manifest = __readfile('[pfscripts]/pf-emsmdt/fxmanifest.lua')
+        assert_true(manifest:find("'@pf-ambulancejob/shared/medical/treatments.lua'", 1, true) ~= nil, 'the MDT loads the catalogue')
         local html = __readfile('[pfscripts]/pf-emsmdt/html/index.html')
-        local n = 0
-        for name in html:gmatch('data%-treatment="([%w_]+)"') do
-            n = n + 1
-            assert_true(Config.Treatments[name] ~= nil, 'button ' .. name)
+        assert_eq(html:find('data-treatment="', 1, true), nil, 'no fixed treatment buttons')
+        local bridge = __readfile('[pfscripts]/pf-emsmdt/client/injury_integration.lua')
+        assert_true(bridge:find("'pf-ambulancejob:server:treat'", 1, true) ~= nil, 'treatments go to the server callback')
+        assert_eq(bridge:find('applyTreatment', 1, true), nil, 'not the old fire-and-forget event')
+        -- the keys the old MDT buttons sent (bandage, splint, burn_dressing, oxygen) still reach real actions
+        for _, key in ipairs({ 'bandage', 'splint', 'burn_dressing', 'oxygen' }) do
+            local action = T.LegacyKeys[key]
+            assert_true(action ~= nil and T.Actions[action] ~= nil, 'legacy key ' .. key)
         end
-        assert_true(n > 0)
     end)
     it('every legacy injury type and zone has an engine mapping for the one-time import (16B)', function()
         local LI = PFMed.LegacyImport
