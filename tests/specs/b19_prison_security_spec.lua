@@ -265,6 +265,11 @@ FakeDB.extraPatterns = {
     { 'pf_prison_escapes', function() return 0 end },
     { 'UPDATE pf_prison_visits', function(p) VisitUpdates[#VisitUpdates + 1] = p return 1 end },
     { 'INSERT INTO pf_prison_events', function(p) Events[#Events + 1] = { cid = p[1], kind = p[3], detail = p[4], actor = p[5] } return #Events end },
+    { 'FROM pf_prison_events WHERE facility = ? AND kind = ? AND at', function(p)
+        local out = {}
+        for i = #Events, 1, -1 do if Events[i].kind == p[2] then out[#out + 1] = { citizenid = Events[i].cid, detail = Events[i].detail } end end
+        return out
+    end },
     { 'pf_prison_events', function() return 0 end },
 }
 Mock.exportsByResource['pfm-core'].RunMigrations = function() return true end
@@ -768,6 +773,33 @@ describe('follow-up: hospital transfer, warrant recall, the old work event', fun
         assert_eq(#warrants.recalls, 2)
         assert_eq(warrants.recalls[2].opts.key, 'pfm-prison:escape:1:recall')
         assert_eq(next(Sec.recalls), nil, 'invalid_state counts as done')
+        Sec.Tick()
+        assert_eq(#warrants.recalls, 2)
+    end)
+    it('a recall still due at a restart is asked again once after the boot, with the same key, then done', function()
+        escape()
+        warrants.recallError = 'busy'
+        sampleAt(at(0, 0), 60)
+        B.Pump()
+        assert_eq(#warrants.recalls, 1)
+        local due = eventsOf('warrant_recall')
+        assert_eq(#due, 1)
+        assert_eq(json.decode(due[1].detail).key, 'pfm-prison:escape:1:recall')
+        assert_eq(json.decode(due[1].detail).warrantId, 'W2611170001')
+        -- restart: memory is gone
+        Sec.recalls, Sec.escapes = {}, {}
+        warrants.recallError = nil
+        assert_true(Sec.Boot())
+        assert_eq(Sec.recalls['pfm-prison:escape:1:recall'].warrantId, 'W2611170001')
+        Sec.Tick()
+        assert_eq(#warrants.recalls, 2)
+        assert_eq(warrants.recalls[2].id, 'W2611170001')
+        assert_eq(warrants.recalls[2].opts.key, 'pfm-prison:escape:1:recall')
+        assert_eq(#eventsOf('warrant_recalled'), 1)
+        -- done: neither the queue nor a later reload asks again
+        Sec.Tick()
+        assert_eq(Sec.LoadRecalls(), 0)
+        Sec.Boot()
         Sec.Tick()
         assert_eq(#warrants.recalls, 2)
     end)

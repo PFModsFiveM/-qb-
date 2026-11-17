@@ -77,6 +77,10 @@ Sec.SQL = {
     escapeWarrant = 'UPDATE pf_prison_escapes SET warrant_id = ? WHERE id = ? AND warrant_id IS NULL',
     escapeRecaptured = 'UPDATE pf_prison_escapes SET recaptured_at = ? WHERE id = ? AND recaptured_at IS NULL',
     escapeRecapturedByOrder = 'UPDATE pf_prison_escapes SET recaptured_at = ? WHERE citizenid = ? AND order_id = ? AND recaptured_at IS NULL',
+    -- warrant recall markers (pf_prison_events kinds 'warrant_recall' due / 'warrant_recalled' done;
+    -- detail = { key, warrantId, escapeId }); read back for RecallLookbackDays, swept with the events
+    recallMarkers = [[SELECT citizenid, detail FROM pf_prison_events WHERE facility = ? AND kind = ? AND at >= ?
+        ORDER BY id DESC LIMIT 200]],
     escapesOpen = [[SELECT id, citizenid, order_id, method, gate, warrant_id, escaped_at FROM pf_prison_escapes
         WHERE recaptured_at IS NULL AND escaped_at >= ? ORDER BY id]],
     visitSearched = [[UPDATE pf_prison_visits SET searched = 1 WHERE visitor_cid = ? AND state IN ('booked', 'checked_in')
@@ -110,7 +114,8 @@ local function decode(s)
     return ok and v or nil
 end
 
-local EVENT_KINDS = { search = true, escape = true, recapture = true, anomaly = true, lockdown = true, alarm = true, door = true, camera = true }
+local EVENT_KINDS = { search = true, escape = true, recapture = true, anomaly = true, lockdown = true, alarm = true, door = true, camera = true,
+    warrant_recall = true, warrant_recalled = true }
 
 --- One pf_prison_events row of this module (detail clipped to 4 KB).
 function Sec.Event(cid, kind, detail, actorCid)
@@ -827,9 +832,17 @@ end
 
 -- The escape warrant is recalled at the recapture (pf-policemdt-DEV RecallWarrant, keyed per
 -- escape). Done on ok, duplicate (already removed), invalid_state (served, expired or denied) and
--- not_found; busy / db_unavailable / a missing export are asked again (Tick).
-Sec.recalls = Sec.recalls or {} -- [key] = { warrantId, cid, attempts }
+-- not_found; busy / db_unavailable / a missing export are asked again (Tick). A 'warrant_recall'
+-- event row marks it due and a 'warrant_recalled' row done, so a restart in between retries it with
+-- the same key (Sec.LoadRecalls at start and every RecallReloadSeconds).
+Sec.recalls = Sec.recalls or {} -- [key] = { warrantId, cid, attempts, escapeId }
 local RECALL_DONE = { invalid_state = true, not_found = true }
+
+local function recallDone(key, r, result)
+    Sec.recalls[key] = nil
+    Sec.Event(r.cid, 'warrant_recalled', { key = key, warrantId = r.warrantId, escapeId = r.escapeId, result = result })
+end
+
 function Sec.RunRecall(key, r)
     r.attempts = r.attempts + 1
     local ok, res
@@ -841,17 +854,48 @@ function Sec.RunRecall(key, r)
     end
     local e = ok and type(res) == 'table' and res.error or nil
     if ok and type(res) == 'table' and (res.ok == true or RECALL_DONE[e]) then
-        Sec.recalls[key] = nil
-        Sec.Event(r.cid, 'recapture', { warrantId = r.warrantId, recalled = res.ok == true, result = e })
+        recallDone(key, r, res.ok == true and (res.duplicate and 'duplicate' or 'recalled') or e)
         return true
     end
     local clear = ok and type(res) == 'table' and e ~= nil and not WARRANT_RETRY[e]
-    if clear or r.attempts >= num(ESC.MaxActionAttempts, 10) then
+    if clear then
+        -- a clear refusal (not_allowed, bad_args) does not change by asking again
+        recallDone(key, r, e)
+        Sec.Event(r.cid, 'anomaly', { what = 'warrant_recall_refused', warrantId = r.warrantId, error = e })
+        return true
+    end
+    if r.attempts >= num(ESC.MaxActionAttempts, 10) then
+        -- still due (no done marker): the next reload asks again
         Sec.recalls[key] = nil
         Sec.Event(r.cid, 'anomaly', { what = 'warrant_recall_failed', warrantId = r.warrantId, error = e or 'unavailable', attempts = r.attempts })
         return true
     end
     return false
+end
+
+--- Recalls marked due and not done (after a restart, or given up for now): back in the queue.
+function Sec.LoadRecalls(at)
+    at = at or now()
+    local since = at - num(ESC.RecallLookbackDays, 30) * 86400
+    local done = {}
+    local doneRows, okDone = db('query', Sec.SQL.recallMarkers, { FAC, 'warrant_recalled', since })
+    if not okDone then return 0 end
+    for _, row in ipairs(type(doneRows) == 'table' and doneRows or {}) do
+        local d = decode(row.detail)
+        if type(d) == 'table' and type(d.key) == 'string' then done[d.key] = true end
+    end
+    local dueRows = db('query', Sec.SQL.recallMarkers, { FAC, 'warrant_recall', since })
+    local n = 0
+    for _, row in ipairs(type(dueRows) == 'table' and dueRows or {}) do
+        local d = decode(row.detail)
+        if type(d) == 'table' and type(d.key) == 'string' and d.key:match('^pfm%-prison:escape:%d+:recall$')
+            and type(d.warrantId) == 'string' and d.warrantId ~= '' and not done[d.key] and not Sec.recalls[d.key] then
+            Sec.recalls[d.key] = { warrantId = d.warrantId:sub(1, 32), cid = validCid(row.citizenid) and row.citizenid or nil, attempts = 0,
+                escapeId = math.tointeger(tonumber(d.escapeId)) }
+            n = n + 1
+        end
+    end
+    return n
 end
 
 --- main.lua: a confirmed escape of a pf-justice inmate (justice_bridge already suspended the order).
@@ -912,8 +956,10 @@ function Sec.OnRecaptured(cid, orderId, escapedAt)
     else db('update', Sec.SQL.escapeRecapturedByOrder, { t, cid, orderId }) end
     if esc and esc.id and esc.warrantId then
         local rkey = ('pfm-prison:escape:%d:recall'):format(esc.id)
-        local r = { warrantId = esc.warrantId, cid = cid, attempts = 0 }
+        local r = { warrantId = esc.warrantId, cid = cid, attempts = 0, escapeId = esc.id }
         Sec.recalls[rkey] = r
+        -- the due marker first: a restart before the recall succeeds asks again with the same key
+        Sec.Event(cid, 'warrant_recall', { key = rkey, warrantId = esc.warrantId, escapeId = esc.id })
         Sec.RunRecall(rkey, r)
     end
     local escOrder = esc and esc.orderId or orderId
@@ -966,6 +1012,10 @@ function Sec.Tick(at)
         end
     end
     for key, f in pairs(Sec.forfeits) do Sec.RunForfeit(key, f) end
+    if at >= num(Sec.nextRecallLoad, 0) then
+        Sec.nextRecallLoad = at + num(ESC.RecallReloadSeconds, 600)
+        Sec.LoadRecalls(at)
+    end
     for key, r in pairs(Sec.recalls) do Sec.RunRecall(key, r) end
     Sec.RetryPending(at)
     -- bounded memory: cooldown marks older than their cooldown are dropped
@@ -980,6 +1030,8 @@ function Sec.Boot()
     if not dbReady() then return false end
     Sec.LoadEscapes()
     Sec.LoadPending()
+    Sec.LoadRecalls()
+    Sec.nextRecallLoad = now() + num(ESC.RecallReloadSeconds, 600)
     return true
 end
 

@@ -199,6 +199,8 @@ Config.Security = {
         WarrantMaxAttempts = 30,
         Charges = { 'Escape from custody' },
         MaxActionAttempts = 10,
+        RecallReloadSeconds = 600, -- warrant recalls still due (a restart, a long MDT outage) are read back this often
+        RecallLookbackDays = 30,   -- how far back due recalls are read
     },
     TickSeconds = 15,
     -- server resources that may call the security exports (pf-justice, the MDTs, the admin menu)

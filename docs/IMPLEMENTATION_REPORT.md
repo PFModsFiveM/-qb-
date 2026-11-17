@@ -2838,3 +2838,28 @@ nothing emits `pf-ambulancejob:server:projectileRecovered` yet; pf-justice `IsCo
 review; the owner should rotate the old MDT evidence webhook; pf-justice has no export to move custody between
 officers' cids; radial-menu entries for the new police actions (21); MDT page buttons for warrant review, BOLOs and
 audit (21A); in-game checks per unit (radar cone, ALPR alerts, prop placement, shield bone, drone, GSR hashes).
+
+## Batch 19 — 2026-11-17: justice and corrections
+
+Seven units built in parallel, cross-unit follow-ups, one combined adversarial check (CHECK_SUMMARY), lead fixes.
+pf-justice schema moves to v5, pfm-prison to v4, pf-ambulancejob to v7 (pf-policemdt-DEV stays at v8).
+
+| Unit | What changed |
+|---|---|
+| 19A courts | `pf-justice/server/{courts,warrants,restitution}.lua`, schema v3-v5, config: cases, hearings and decisions (plea, verdict, sentence, dismissal, bail, release order, appeal) creating orders with stable keys; court roles from job/grade/duty; low-population fallback only for arraignment and bail; `FileCase`, `IsCourtOrderValid`, `RequestWarrantReview` with the shapes the batch-18 callers use; warrant decisions sent back with `SetWarrantApproval` (police grade 4 may decide after 30 min without a judge on duty); court bail open for a day; `RecordRestitution` verified against the ledger; government expungement through the MDT's soft delete. |
+| 19B supervision | `supervision.lua`, `monitors.lua`: probation/parole rows follow their orders, appointments with mail and calendar entries, `/checkin` at an office zone (server position), violations as reports to an officer (never custody), monitor geofence (home, curfew, no-go zones) at 0.2 Hz from server positions. |
+| 19C community service | `community_service.lua`, `shared/cs_tasks.lua`, client scripts: shifts and tasks on government work orders, ordered steps at server-chosen points with distance and timing checks, a unit only after a government `ReportWorkUnit` success, progress kept across disconnects, overdue orders filed as a court case (never prison); supervisor bonus off by default. |
+| 19D prison facility | `facility.lua`, `schedule.lua`, `discipline.lua`, `visitation.lua`, schema v2-v4: intake, classification, cells, a 120-minute routine cycle, headcounts only with an inmate online, discipline with notice, an impartial hearing officer and keyed forfeits, visit booking and check-in, `RecordInfraction`, `SetLockdown`. |
+| 19E prison work and economy | `work.lua`, `economy.lua`, `config_work.lua`: kitchen, laundry (linen to the hospital stash), maintenance as government work orders, electrician; trust escrow with keyed ledger moves, wages from `society:corrections`, commissary, restitution share, release payout; credits capped; trust reconciles with its rows. Prison items in pfm-core. |
+| 19F prison security | `security.lua`, `main.lua`, client: doors through `SetDoorState`, cameras for staff (no recording), alarms and zones, contraband searches into forfeiture and evidence, lockdown, escapes with a keyed warrant request and recall on recapture (survives restarts); hospital transfers left alone; old electrician event goes through the capped path. |
+| 19G medical in custody | `server/hospital/custody.lua`, schema v7: prison infirmary as a hospital department, intake screening, prescriptions dispensed from the infirmary stash, escorted hospital transfer with custody continuity, leaving reported (never punished), corrections staff see fitness and restriction kinds only. |
+
+Lead fixes: pf-policemdt-DEV `RequestWarrant` / `RecallWarrant` (keyed, system actor); pf-justice clock counts a sentenced
+inmate on an escorted hospital transfer as time served; pf-government Bolingbroke district and work-order callers for
+pfm-prison; commissary food and drink consumable; older version asserts updated (pf-justice 5, pfm-prison 4).
+
+Tests: TEST_SUMMARY. Not tested in game.
+
+Open: GOV `SetLicenseStatus` for court licence suspensions (D16); remand time credit is a manual `AdjustOrder`;
+custody care is not billed (owner decision); the court, corrections and probation screens are batch 21 (commands
+until then); all prison, court, office and work-site coordinates are first placements; in-game checks per unit.
