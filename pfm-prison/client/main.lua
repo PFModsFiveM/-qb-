@@ -14,6 +14,9 @@ local canteen_ped = 0
 local freedom_ped = 0
 local freedom
 local canteen
+-- the cell the server assigned (pfm-prison:client:Housing, batch 19D): where Enter places the inmate
+local assignedCell = nil -- { id, block, coords = vector4 }
+local enteredAt = 0
 
 -- Functions
 
@@ -163,6 +166,7 @@ AddEventHandler('onResourceStart', function(resource)
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
+	assignedCell = nil
 	inJail = false
 	jailTime = 0
 	currentJob = nil
@@ -209,9 +213,11 @@ RegisterNetEvent('prison:client:Enter', function(time, job, location, returned, 
 	while not IsScreenFadedOut() do
 		Wait(10)
 	end
-	local RandomStartPosition = Config.Locations.spawns[math.random(1, #Config.Locations.spawns)]
-	SetEntityCoords(PlayerPedId(), RandomStartPosition.coords.x, RandomStartPosition.coords.y, RandomStartPosition.coords.z - 0.9, 0, 0, 0, false)
-	SetEntityHeading(PlayerPedId(), RandomStartPosition.coords.w)
+	-- the assigned cell when the server sent one, else a spawn point (the old runtime has no cells)
+	local spot = assignedCell and assignedCell.coords or Config.Locations.spawns[math.random(1, #Config.Locations.spawns)].coords
+	SetEntityCoords(PlayerPedId(), spot.x, spot.y, spot.z - 0.9, 0, 0, 0, false)
+	SetEntityHeading(PlayerPedId(), spot.w)
+	enteredAt = GetGameTimer()
 	Wait(500)
 
 	inJail = true
@@ -265,6 +271,7 @@ end)
 
 -- Released by the server (time served, unjailed): the belongings are back; out of the gate.
 RegisterNetEvent('prison:client:Released', function()
+	assignedCell = nil
 	local wasInJail = inJail
 	jailTime = 0
 	inJail = false
@@ -333,4 +340,60 @@ CreateThread(function()
 			end
 		end)
 	end
+end)
+
+-- ── housing and routine (batch 19D server/facility.lua, schedule.lua) ──────────────────────────
+-- Display only: the server decides the cell and the routine; positions are still the server's.
+
+-- plain text for the notification (no markup can come through a label)
+local function plain(v, max)
+	if type(v) ~= 'string' then return '' end
+	return (v:gsub('[%c<>&"\']', ''):sub(1, max or 64))
+end
+
+local function validCellCoords(c)
+	if type(c) ~= 'table' then return nil end
+	local x, y, z, w = tonumber(c.x), tonumber(c.y), tonumber(c.z), tonumber(c.w) or 0.0
+	if not x or not y or not z or x ~= x or y ~= y or z ~= z then return nil end
+	local m = Config.Locations['middle']
+	local radius = (Config.Prison and tonumber(Config.Prison.InsideRadius)) or 200.0
+	-- a cell is inside the walls; anything else is ignored
+	if #(vector2(x, y) - vector2(m.x, m.y)) > radius then return nil end
+	return vector4(x, y, z, w)
+end
+
+-- payload { cellId, block, classification, coords = { x, y, z, w } }
+RegisterNetEvent('pfm-prison:client:Housing', function(data)
+	local invoker = GetInvokingResource()
+	if invoker and invoker ~= GetCurrentResourceName() then return end
+	if type(data) ~= 'table' then return end
+	local coords = validCellCoords(data.coords)
+	if not coords then return end
+	assignedCell = { id = plain(data.cellId, 16), block = plain(data.block, 8), coords = coords }
+	-- housed right after being taken in (Enter came first): walk them to the cell now
+	if inJail and GetGameTimer() - enteredAt < 15000 then
+		SetEntityCoords(PlayerPedId(), coords.x, coords.y, coords.z - 0.9, 0, 0, 0, false)
+		SetEntityHeading(PlayerPedId(), coords.w)
+	end
+end)
+
+local PHASES = { count = true, meal = true, work = true, yard = true, lockin = true, lock_in = true }
+local STATUS = { intake = 'Intake', in_cell = 'In your cell', yard = 'Yard', work = 'Work', meal = 'Meal', infirmary = 'Infirmary',
+	visitation = 'Visitation', solitary = 'Solitary', transfer = 'Hospital transfer' }
+
+-- payload { phase, label, endsAt, status }: one line when the inmate's routine status changes
+RegisterNetEvent('pfm-prison:client:Routine', function(data)
+	local invoker = GetInvokingResource()
+	if invoker and invoker ~= GetCurrentResourceName() then return end
+	if type(data) ~= 'table' or not inJail then return end
+	local label = plain(data.label, 48)
+	if label == '' and PHASES[data.phase] then label = data.phase end
+	local status = STATUS[data.status] or ''
+	local text = label ~= '' and ('Routine: ' .. label) or 'Routine'
+	if status ~= '' then text = text .. ' - ' .. status end
+	local endsAt, nowAt = tonumber(data.endsAt), GetCloudTimeAsInt and GetCloudTimeAsInt() or nil
+	if endsAt and nowAt and endsAt > nowAt then
+		text = text .. (' (%d min)'):format(math.ceil((endsAt - nowAt) / 60))
+	end
+	QBCore.Functions.Notify(text, 'primary', 6000)
 end)

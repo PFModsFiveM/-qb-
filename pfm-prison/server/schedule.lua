@@ -94,10 +94,11 @@ end
 -- ── activity ───────────────────────────────────────────────────────────────────────────────────
 
 --- What the routine makes of one online inmate now.
-function S.ActivityFor(cid, phase, now)
+function S.ActivityFor(cid, phase, now, src)
     local D, V = PFPrison.Discipline, PFPrison.Visitation
-    local cur = F.activity[cid]
-    if cur and ACCOUNTED[cur.status] then return cur.status end
+    -- in the prison infirmary or on an escorted hospital transfer (pf-ambulancejob custody care)
+    local care = F.CareKind(src or F.SrcOf(cid))
+    if care then return care end
     if F.intakeAt[cid] and now - F.intakeAt[cid] < num(CF.IntakeSeconds, 60) then return 'intake' end
     if D and F.Callable(D.InSolitary) and D.InSolitary(cid, now) then return 'solitary' end
     if V and F.Callable(V.InProgress) and V.InProgress(cid) then return 'visitation' end
@@ -187,7 +188,7 @@ function S.CloseCount(byCid, now)
         local act = F.activity[cid]
         if not src then
             offline[#offline + 1] = cid
-        elseif row and act and ACCOUNTED[act.status] then
+        elseif row and ((act and ACCOUNTED[act.status]) or F.CareKind(src)) then
             accounted[#accounted + 1] = cid
             present = present + 1
         elseif row and I.insidePrison(I.pedPos(src)) then
@@ -254,7 +255,7 @@ function S.Tick(now)
     end
     if phase.meal then S.ServeMeals(phase, now) end
     for _, e in ipairs(online) do
-        local status = S.ActivityFor(e.cid, phase, now)
+        local status = S.ActivityFor(e.cid, phase, now, e.src)
         if F.SetActivity(e.cid, status) then
             TriggerClientEvent('pfm-prison:client:Routine', e.src, { phase = phase.name, label = phase.label, endsAt = phase.endsAt, status = status })
         end

@@ -105,12 +105,14 @@ Config.Consumables = {
         ['sandwich'] = math.random(35, 54),
         ['tosti'] = math.random(40, 50),
         ['twerks_candy'] = math.random(35, 54),
-        ['snikkel_candy'] = math.random(40, 50)
+        ['snikkel_candy'] = math.random(40, 50),
+        ['commissary_noodles'] = math.random(35, 50)   -- pfm-prison commissary (batch 19E)
     },
     drink = { -- default drink items
         ['water_bottle'] = math.random(35, 54),
         ['kurkakola'] = math.random(35, 54),
-        ['coffee'] = math.random(40, 50)
+        ['coffee'] = math.random(40, 50),
+        ['commissary_soda'] = math.random(30, 45)      -- pfm-prison commissary (batch 19E)
     },
     alcohol = { -- default alcohol items
         ['whiskey'] = math.random(20, 30),

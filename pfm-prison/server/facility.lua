@@ -231,10 +231,24 @@ function F.SetActivity(cid, status)
     return true
 end
 
+--- 'infirmary' | 'transfer' while pf-ambulancejob holds the inmate in custody care (batch 19G
+--- IsInCustodyCare, open to every caller), else nil. Without pf-ambulancejob nobody is in care.
+local CARE = { infirmary = true, transfer = true }
+function F.CareKind(src)
+    src = tonumber(src)
+    if not src or GetResourceState('pf-ambulancejob') ~= 'started' then return nil end
+    local ok, inCare, kind = pcall(function() return exports['pf-ambulancejob']:IsInCustodyCare(src) end)
+    if ok and inCare == true and CARE[kind] then return kind end
+    return nil
+end
+
 function F.Activity(cid)
     local row = B and B.rows and B.rows[cid]
     if not row then return nil end
     if row.status ~= 'in_cell' then return row.status end
+    -- custody care is read live: the routine's last status may be a tick old
+    local care = F.CareKind(F.SrcOf(cid))
+    if care then return care end
     local a = F.activity[cid]
     return a and a.status or 'in_cell'
 end

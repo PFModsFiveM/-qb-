@@ -789,11 +789,13 @@ end
 
 -- ── escapes ─────────────────────────────────────────────────────────────────────────────────────
 
--- The arrest warrant for an escapee, asked from the police MDT. pf-policemdt-DEV has no server
--- export to create a warrant yet (only its officers' callback): until it has RequestWarrant the
--- call fails closed (no warrant is invented) and is asked again WarrantRetrySeconds later.
+-- The arrest warrant for an escapee, asked from the police MDT (pf-policemdt-DEV RequestWarrant,
+-- keyed per escape; it files the judge review). A missing export, busy or db_unavailable is asked
+-- again WarrantRetrySeconds later; a clear refusal (not_allowed, bad_args, suspect_required) stops.
+-- No warrant is ever invented here.
+local WARRANT_RETRY = { busy = true, db_unavailable = true, unavailable = true }
 function Sec.RequestWarrant(esc)
-    if esc.warrantId or not esc.id then return false end
+    if esc.warrantId or not esc.id or esc.warrantRefused then return false end
     esc.attempts = (esc.attempts or 0) + 1
     esc.nextAt = now() + num(ESC.WarrantRetrySeconds, 120)
     if GetResourceState('pf-policemdt-DEV') ~= 'started' then return false end
@@ -813,8 +815,41 @@ function Sec.RequestWarrant(esc)
         return true
     end
     if not ok then warnOnce('warrant', 'pf-policemdt-DEV RequestWarrant is not available: escape warrants are not requested yet') end
-    if esc.attempts == 1 then
-        Sec.Event(esc.cid, 'anomaly', { what = 'warrant_request_failed', escapeId = esc.id, error = ok and type(res) == 'table' and res.error or 'unavailable' })
+    local e = ok and type(res) == 'table' and res.error or 'unavailable'
+    if ok and type(res) == 'table' and not WARRANT_RETRY[e] then
+        esc.warrantRefused = true
+        Sec.Event(esc.cid, 'anomaly', { what = 'warrant_request_refused', escapeId = esc.id, error = e })
+    elseif esc.attempts == 1 then
+        Sec.Event(esc.cid, 'anomaly', { what = 'warrant_request_failed', escapeId = esc.id, error = e })
+    end
+    return false
+end
+
+-- The escape warrant is recalled at the recapture (pf-policemdt-DEV RecallWarrant, keyed per
+-- escape). Done on ok, duplicate (already removed), invalid_state (served, expired or denied) and
+-- not_found; busy / db_unavailable / a missing export are asked again (Tick).
+Sec.recalls = Sec.recalls or {} -- [key] = { warrantId, cid, attempts }
+local RECALL_DONE = { invalid_state = true, not_found = true }
+function Sec.RunRecall(key, r)
+    r.attempts = r.attempts + 1
+    local ok, res
+    if GetResourceState('pf-policemdt-DEV') == 'started' then
+        ok, res = pcall(function()
+            return exports['pf-policemdt-DEV']:RecallWarrant(r.warrantId, 'Recaptured: back in Bolingbroke Penitentiary',
+                { actor = { label = 'pfm-prison' }, key = key })
+        end)
+    end
+    local e = ok and type(res) == 'table' and res.error or nil
+    if ok and type(res) == 'table' and (res.ok == true or RECALL_DONE[e]) then
+        Sec.recalls[key] = nil
+        Sec.Event(r.cid, 'recapture', { warrantId = r.warrantId, recalled = res.ok == true, result = e })
+        return true
+    end
+    local clear = ok and type(res) == 'table' and e ~= nil and not WARRANT_RETRY[e]
+    if clear or r.attempts >= num(ESC.MaxActionAttempts, 10) then
+        Sec.recalls[key] = nil
+        Sec.Event(r.cid, 'anomaly', { what = 'warrant_recall_failed', warrantId = r.warrantId, error = e or 'unavailable', attempts = r.attempts })
+        return true
     end
     return false
 end
@@ -875,6 +910,12 @@ function Sec.OnRecaptured(cid, orderId, escapedAt)
     local t = now()
     if esc and esc.id then db('update', Sec.SQL.escapeRecaptured, { t, esc.id })
     else db('update', Sec.SQL.escapeRecapturedByOrder, { t, cid, orderId }) end
+    if esc and esc.id and esc.warrantId then
+        local rkey = ('pfm-prison:escape:%d:recall'):format(esc.id)
+        local r = { warrantId = esc.warrantId, cid = cid, attempts = 0 }
+        Sec.recalls[rkey] = r
+        Sec.RunRecall(rkey, r)
+    end
     local escOrder = esc and esc.orderId or orderId
     local at = esc and esc.escapedAt or escapedAt
     local seconds = math.floor(num(ESC.ForfeitSeconds, 3600))
@@ -920,11 +961,12 @@ end
 function Sec.Tick(at)
     at = at or now()
     for _, esc in pairs(Sec.escapes) do
-        if esc.id and not esc.warrantId and esc.attempts < num(ESC.WarrantMaxAttempts, 30) and at >= num(esc.nextAt, 0) then
+        if esc.id and not esc.warrantId and not esc.warrantRefused and esc.attempts < num(ESC.WarrantMaxAttempts, 30) and at >= num(esc.nextAt, 0) then
             Sec.RequestWarrant(esc)
         end
     end
     for key, f in pairs(Sec.forfeits) do Sec.RunForfeit(key, f) end
+    for key, r in pairs(Sec.recalls) do Sec.RunRecall(key, r) end
     Sec.RetryPending(at)
     -- bounded memory: cooldown marks older than their cooldown are dropped
     local zoneCd, camCd, searchCd = num(SC.ZoneCooldown, 300), num(SC.CameraAuditSeconds, 60), num(SEARCH.TargetCooldown, 60)

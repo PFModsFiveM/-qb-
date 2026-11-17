@@ -513,6 +513,16 @@ local function SendBack(src, t, now)
     if ev then ev(Player.PlayerData.citizenid, 'sendback', { x = math.floor(t.lastSeenX or 0), y = math.floor(t.lastSeenY or 0) }) end
 end
 
+-- An inmate on an escorted hospital transfer (pf-ambulancejob custody care, kind 'transfer', batch
+-- 19G) is outside the walls on purpose: no escape, no return to a cell while it lasts. Without
+-- pf-ambulancejob (or when the call fails) nobody is in custody care: the old rules apply.
+local function onHospitalTransfer(src)
+    if GetResourceState('pf-ambulancejob') ~= 'started' then return false end
+    local ok, inCare, kind = pcall(function() return exports['pf-ambulancejob']:IsInCustodyCare(src) end)
+    return ok and inCare == true and kind == 'transfer'
+end
+PFPrison.OnHospitalTransfer = onHospitalTransfer
+
 -- Distance (on the ground) from point p to the path a -> b.
 local function pathDistance(a, b, p)
     local abx, aby = b.x - a.x, b.y - a.y
@@ -565,6 +575,11 @@ local function sample(src, now)
         -- batch 19F: restricted zones inside the walls
         local zones = security('SampleInmate')
         if zones then pcall(zones, src, pos, now) end
+        return
+    end
+    if onHospitalTransfer(src) then
+        -- the path outside proves nothing about a gate: it starts again when they are back inside
+        t.passedGateAt, t.passedGate, t.lastInside = nil, nil, nil
         return
     end
     local li = t.lastInside
@@ -701,6 +716,15 @@ RegisterNetEvent('prison:server:JobDone', function(location)
     local regime = PFPrison.Regime(src)
     local Player = getPlayer(src)
     if not Player or not regime then return end
+    -- batch 19E: a pf-justice inmate's electrician round is a recorded, capped shift of
+    -- server/work.lua (credit and wage logged there); this old event never gives its random cut
+    -- to them while that module runs (an old client may still send it)
+    local W = PFPrison.Work
+    if regime == 'justice' and type(W) == 'table' and isCallable(W.Electrician) then
+        local ok, _, why = pcall(W.Electrician, src, location)
+        if ok and why then notify(src, why, 'error') end
+        return
+    end
     local now = os.time()
     local spot = jobSpot(job)
     local pos = pedPos(src)
